@@ -10,10 +10,10 @@
 
     <item android:id="@+id/paste"
           android:title="@string/contextmenu_paste"/>
-
+<!--
     <item android:id="@+id/subscribe"
           android:title="@string/contextmenu_subscribe"/>
-
+-->
     <item android:id="@+id/add_search_engine"
           android:title="@string/contextmenu_add_search_engine"/>
 

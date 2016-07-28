@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+            android:layout_height="wrap_content"
+            android:layout_width="match_parent"
+            android:orientation="vertical"
+            android:fillViewport="true">
+
+    <LinearLayout android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:minHeight="@dimen/firstrun_min_height"
+                  android:background="@color/about_page_header_grey"
+                  android:gravity="center_horizontal"
+                  android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/img_grade"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:scaleType="centerInside"
+            android:padding="5dp"
+            android:src="@drawable/fp_grade_a" />
+
+        <TextView android:layout_width="@dimen/firstrun_content_width"
+                  android:layout_height="wrap_content"
+                  android:gravity="center"
+                  android:paddingBottom="10dp"
+                  android:visibility="visible"
+                  android:textAppearance="@style/TextAppearance.FirstrunLight.Main"
+                  android:text="@string/gradeDesc"/>
+
+        <RadioGroup
+            android:id="@+id/radio_group_grade"
+            style="@style/Widget.Firstrun.RadioGroup"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerHorizontal="true"
+            android:orientation="vertical">
+
+            <RadioButton android:id="@+id/radio_gradeA"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/gradeA"
+                android:checked="true"
+                />
+            <RadioButton android:id="@+id/radio_gradeB"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/gradeB"
+                />
+            <RadioButton android:id="@+id/radio_gradeC"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/gradeC"
+                />
+        </RadioGroup>
+
+        <TextView android:id="@+id/text_desc_grade"
+                  android:layout_width="@dimen/firstrun_content_width"
+                  android:layout_height="wrap_content"
+                  android:gravity="center"
+                  android:paddingTop="5dp"
+                  android:visibility="gone"
+                  android:textSize="11sp"
+                  android:textAppearance="@style/TextAppearance.FirstrunLight.Main"
+                  android:text=""/>
+
+        <View android:layout_weight="1"
+              android:layout_height="0dp"
+              android:layout_width="match_parent"/>
+
+        <TextView android:id="@+id/firstrun_link"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:padding="30dp"
+                  android:gravity="center"
+                  android:textAppearance="@style/TextAppearance.FirstrunRegular.Link"
+                  android:text="@string/firstrun_button_next"/>
+    </LinearLayout>
+</ScrollView>

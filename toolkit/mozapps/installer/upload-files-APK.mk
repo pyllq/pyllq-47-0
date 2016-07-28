@@ -28,6 +28,7 @@ DIST_FILES += \
   $(NULL)
 endif
 DIST_FILES += \
+  libpye.so \
   liblgpllibs.so \
   libxul.so \
   libnssckbi.so \
@@ -53,6 +54,7 @@ DIST_FILES += \
   chrome.manifest \
   update.locale \
   removed-files \
+  distribution \
   $(NULL)
 
 NON_DIST_FILES = \

@@ -700,7 +700,7 @@ public:
 
         // Dispatch APZ input event on Gecko thread.
         NativePanZoomController::GlobalRef npzc = mNPZC;
-        nsAppShell::PostEvent([npzc, input, guid, blockId, status] {
+        nsAppShell::PostEvent([this, npzc, input, guid, blockId, status] {
             MOZ_ASSERT(NS_IsMainThread());
 
             JNIEnv* const env = jni::GetGeckoThreadEnv();

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="langOptions">
+        <item>@string/simplified</item>
+        <item>@string/traditional</item>
+        <item>@string/original</item>
+    </string-array>
+    <string-array name="langOptionsValues">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+
+    <string-array name="pinyinOptions">
+        <item>@string/hanyuPinyin</item>
+        <item>@string/hanyuPinyinNum</item>
+        <item>@string/bpmf</item>
+        <item>@string/bpmfNum</item>
+    </string-array>
+    <string-array name="pinyinOptionsValues">
+        <item>0</item>
+        <item>4</item>
+        <item>8</item>
+        <item>12</item>
+    </string-array>
+
+    <string-array name="pinyinLocations">
+        <item>@string/top</item>
+        <item>@string/bottom</item>
+    </string-array>
+    <string-array name="pinyinLocationsValues">
+        <item>0</item>
+        <item>16</item>
+    </string-array>
+
+    <string-array name="grades">
+    <item>@string/gradeA</item>
+    <item>@string/gradeB</item>
+    <item>@string/gradeC</item>
+    </string-array>
+
+    <string-array name="gradesValues">
+    <item>0</item>
+    <item>2</item>
+    <item>12</item>
+    </string-array>
+
+
+</resources>

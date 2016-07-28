@@ -2,8 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MOZ_APP_BASENAME=Fennec
-MOZ_APP_VENDOR=Mozilla
+MOZ_APP_BASENAME=chinesebrowser
+MOZ_APP_VENDOR=Brainiii
 
 MOZ_APP_VERSION=$FIREFOX_VERSION
 MOZ_APP_VERSION_DISPLAY=$FIREFOX_VERSION_DISPLAY
@@ -56,7 +56,14 @@ MOZ_ENABLE_SZIP=1
 fi
 
 # Enable UI for healthreporter
-MOZ_SERVICES_HEALTHREPORT=1
+MOZ_SERVICES_HEALTHREPORT=
+
+MOZ_CRASHREPORTER=
+MOZ_TELEMETRY_REPORTING=
+MOZ_DATA_REPORTING=
+MOZ_UPDATER=
+MOZ_WEBSMS_BACKEND=
+MOZ_ANDROID_BEAM=
 
 # Enable runtime locale switching.
 MOZ_LOCALE_SWITCHER=1

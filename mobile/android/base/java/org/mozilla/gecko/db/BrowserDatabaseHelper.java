@@ -1173,6 +1173,34 @@ public final class BrowserDatabaseHelper extends SQLiteOpenHelper {
         createCombinedViewOn19(db);
     }
 
+    public static void removeAllPinnedBookmarks(SQLiteDatabase db) {
+        try {
+            Log.d(LOGTAG, "remove all bookmarks");
+            db.execSQL("DELETE FROM bookmarks WHERE _id > 5 AND parent = -3");
+        } catch (SQLiteException e) {
+            Log.e(LOGTAG, "Error in removing all bookmarks", e);
+        }
+    }
+
+    public static void removeAllBookmarks(SQLiteDatabase db) {
+        try {
+            Log.d(LOGTAG, "remove all bookmarks");
+            db.execSQL("DELETE FROM bookmarks WHERE _id > 5");
+        } catch (SQLiteException e) {
+            Log.e(LOGTAG, "Error in removing all bookmarks", e);
+        }
+    }
+
+    public static void removeBookmarkDuplicates(SQLiteDatabase db) {
+        try {
+            Log.d(LOGTAG, "remove bookmark duplicates");
+            db.execSQL("DELETE FROM bookmarks WHERE parent = -3 AND _id NOT IN " +
+                "(SELECT MAX(_id) AS _id FROM bookmarks WHERE parent = -3 GROUP BY position)");
+        } catch (SQLiteException e) {
+            Log.e(LOGTAG, "Error in removing bookmark duplicates", e);
+        }
+    }
+
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         debug("Upgrading browser.db: " + db.getPath() + " from " +
@@ -1277,6 +1305,8 @@ public final class BrowserDatabaseHelper extends SQLiteOpenHelper {
                 mContext.deleteDatabase("favicon_urls.db");
             }
         }
+
+        removeBookmarkDuplicates(db);
     }
 
     @Override

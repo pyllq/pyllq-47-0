@@ -235,6 +235,7 @@ else
     endif
   endif
 endif
+PROGUARD_PASSES=0
 
 proguard_config_dir=$(topsrcdir)/mobile/android/config/proguard
 

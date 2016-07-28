@@ -912,6 +912,7 @@ public:
          *  mYOffset is always from top to bottom */   
         int32_t  mAdvance;
         float    mXOffset, mYOffset;
+        uint32_t hb_flag;
     };
 
     void SetGlyphs(uint32_t aCharIndex, CompressedGlyph aGlyph,

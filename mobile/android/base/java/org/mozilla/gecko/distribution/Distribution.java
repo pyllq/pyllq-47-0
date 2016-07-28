@@ -852,8 +852,12 @@ public class Distribution {
         // the APK, or it exists in /system/.
         // Look in each location in turn.
         // (This could be optimized by caching the path in shared prefs.)
-        if (checkDataDistribution() || checkSystemDistribution()) {
-            return distributionDir;
+        //if (checkDataDistribution() || checkSystemDistribution()) {
+        //    return distributionDir;
+        //}
+        File copied = new File(getDataDir(), DISTRIBUTION_PATH);
+        if (copied.exists()) {
+            return this.distributionDir = copied;
         }
 
         return null;

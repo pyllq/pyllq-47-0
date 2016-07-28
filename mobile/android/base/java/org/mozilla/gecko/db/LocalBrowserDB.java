@@ -55,6 +55,7 @@ import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
 import android.net.Uri;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.util.Log;
 import org.mozilla.gecko.util.IOUtils;
 
@@ -1496,6 +1497,8 @@ public class LocalBrowserDB implements BrowserDB {
 
     @Override
     public void pinSite(ContentResolver cr, String url, String title, int position) {
+        Log.d(LOGTAG,"pinSite position:"+position);
+        
         ContentValues values = new ContentValues();
         final long now = System.currentTimeMillis();
         values.put(Bookmarks.TITLE, title);
@@ -1606,8 +1609,7 @@ public class LocalBrowserDB implements BrowserDB {
         } while (c.moveToNext());
     }
 
-    @Override
-    public Cursor getTopSites(ContentResolver cr, int suggestedRangeLimit, int limit) {
+    public Cursor getTopSitesOrig(ContentResolver cr, int suggestedRangeLimit, int limit) {
         final Uri uri = mTopSitesUriWithProfile.buildUpon()
                 .appendQueryParameter(BrowserContract.PARAM_LIMIT,
                         String.valueOf(limit))
@@ -1653,5 +1655,27 @@ public class LocalBrowserDB implements BrowserDB {
 
         return new MergeCursor(new Cursor[] {topSitesCursor, blanksCursor});
 
+    }
+
+    @Override
+    public Cursor getTopSites(ContentResolver cr, int suggestedRangeLimit, int limit) {
+        final Uri uri = mTopSitesUriWithProfile.buildUpon()
+                .appendQueryParameter(BrowserContract.PARAM_LIMIT,
+                        String.valueOf(limit))
+                .appendQueryParameter(BrowserContract.PARAM_SUGGESTEDSITES_LIMIT,
+                        String.valueOf(suggestedRangeLimit))
+                .build();
+
+        Cursor cursor = cr.query(uri,
+                                 new String[] { Combined._ID,
+                                         Combined.URL,
+                                         Combined.TITLE,
+                                         Combined.BOOKMARK_ID,
+                                         Combined.HISTORY_ID },
+                                 null,
+                                 null,
+                                 null);
+
+        return new TopSitesCursorWrapper(cursor, null, null, limit);
     }
 }

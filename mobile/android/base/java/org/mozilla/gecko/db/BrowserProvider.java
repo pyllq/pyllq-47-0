@@ -26,6 +26,11 @@ import org.mozilla.gecko.db.BrowserContract.UrlAnnotations;
 import org.mozilla.gecko.db.DBUtils.UpdateOperation;
 import org.mozilla.gecko.sync.Utils;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONException;
+
+import android.app.SearchManager;
 import android.content.ContentProviderOperation;
 import android.content.ContentProviderResult;
 import android.content.ContentUris;
@@ -38,10 +43,30 @@ import android.database.MatrixCursor;
 import android.database.SQLException;
 import android.database.sqlite.SQLiteCursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteException;
 import android.database.sqlite.SQLiteQueryBuilder;
 import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.util.Log;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.Locale;
+
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 
 public class BrowserProvider extends SharedBrowserDatabaseProvider {
     private static final String LOGTAG = "GeckoBrowserProvider";
@@ -72,6 +97,11 @@ public class BrowserProvider extends SharedBrowserDatabaseProvider {
     static final String VIEW_BOOKMARKS_WITH_FAVICONS = Bookmarks.VIEW_WITH_FAVICONS;
     static final String VIEW_HISTORY_WITH_FAVICONS = History.VIEW_WITH_FAVICONS;
     static final String VIEW_COMBINED_WITH_FAVICONS = Combined.VIEW_WITH_FAVICONS;
+
+    static final String BOOKMARKS_PINNED_WITH_THUMBNAILS =
+        "select * from bookmarks join thumbnails on (bookmarks.url=thumbnails.url and parent=-3 and deleted = 0 and type = 1);";
+    static final String BOOKMARKS_FOR_EXPORT =
+        "select * from bookmarks where (parent <> -3 and deleted = 0 and type = 1);";
 
     // Bookmark matches
     static final int BOOKMARKS = 100;
@@ -673,7 +703,7 @@ public class BrowserProvider extends SharedBrowserDatabaseProvider {
         return updated;
     }
 
-    private Cursor getTopSites(final Uri uri) {
+    private Cursor getTopSitesOrig(final Uri uri) {
         // In order to correctly merge the top and pinned sites we:
         //
         // 1. Generate a list of free ids for topsites - this is the positions that are NOT used by pinned sites.
@@ -868,10 +898,10 @@ public class BrowserProvider extends SharedBrowserDatabaseProvider {
                            " AND " +
                            Bookmarks.URL + " NOT IN (SELECT url " + pinnedSitesFromClause + ")" +
                            suggestedLimitClause + " )",
-
+ 
                            suggestedSiteArgs);
             }
-
+ 
             if (hasPreparedBlankTiles) {
                 db.execSQL("INSERT INTO " + TABLE_TOPSITES +
                            // We need to LIMIT _after_ selecting the relevant suggested sites, which requires us to
@@ -940,6 +970,44 @@ public class BrowserProvider extends SharedBrowserDatabaseProvider {
             // is removed as soon as we close our connection.
             // (B) this might also mitigate the situation causing this crash where we're accessing
             // a cursor and crashing in fillWindow.
+            c.moveToFirst();
+
+            db.setTransactionSuccessful();
+            return c;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    private Cursor getTopSites(final Uri uri) {
+        final SQLiteDatabase db = getWritableDatabase(uri);
+
+        final String pinnedSitesFromClause = "FROM " + TABLE_BOOKMARKS + " WHERE " +
+                                             Bookmarks.PARENT + " == " + Bookmarks.FIXED_PINNED_LIST_ID +
+                                             " AND " + Bookmarks.IS_DELETED + " IS NOT 1";
+
+        db.beginTransaction();
+        try {
+
+            final SQLiteCursor c = (SQLiteCursor) db.rawQuery(
+                        "SELECT " +
+                        Bookmarks._ID + ", " +
+                        Bookmarks._ID + " AS " + TopSites.BOOKMARK_ID + ", " +
+                        " -1 AS " + TopSites.HISTORY_ID + ", " +
+                        Bookmarks.URL + ", " +
+                        Bookmarks.TITLE + ", " +
+                        Bookmarks.POSITION + ", " +
+                        "NULL AS " + Combined.HISTORY_ID + ", " +
+                        TopSites.TYPE_PINNED + " as " + TopSites.TYPE +
+                        " " + pinnedSitesFromClause +
+
+                        " ORDER BY " + Bookmarks.POSITION,
+
+                        null);
+
+            c.setNotificationUri(getContext().getContentResolver(),
+                                 BrowserContract.AUTHORITY_URI);
+
             c.moveToFirst();
 
             db.setTransactionSuccessful();
@@ -1103,6 +1171,312 @@ public class BrowserProvider extends SharedBrowserDatabaseProvider {
                 BrowserContract.AUTHORITY_URI);
 
         return cursor;
+    }
+
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        SQLiteDatabase db = getWritableDatabase(BrowserContract.AUTHORITY_URI);
+        if(method.equals("exportBookmarks")) {
+            JSONArray list = new JSONArray();
+
+            exportBookmarks(db,BOOKMARKS_PINNED_WITH_THUMBNAILS,true,list);
+            exportBookmarks(db,BOOKMARKS_FOR_EXPORT,false,list);
+
+            try {
+                File file = new File(arg);
+                FileWriter f = new FileWriter(file);
+                f.write(list.toString());
+                f.flush();
+                f.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }            
+        }
+        else if(method.equals("importBookmarks")) {
+            importBookmarks(db,arg);
+            BrowserDatabaseHelper.removeBookmarkDuplicates(db);
+        }
+        else if(method.equals("removeAllBookmarks")) {
+            BrowserDatabaseHelper.removeAllBookmarks(db);
+        }
+        else if(method.equals("removeAllPinnedBookmarks")) {
+            BrowserDatabaseHelper.removeAllPinnedBookmarks(db);
+        }
+
+        return null;
+    }
+
+    private int importBookmarks(SQLiteDatabase db, String jsonBookmarks) {
+        JSONArray bookmarks = null;
+        try {
+            bookmarks = new JSONArray(jsonBookmarks);
+        } catch (JSONException e) {
+            Log.e(LOGTAG, "Error parsing bookmarks.json", e);
+        }
+
+        if (bookmarks == null) {
+            return 0;
+        }
+
+        return importBookmarks(db, bookmarks);
+    }
+
+    private int getIntResult(SQLiteDatabase db, String query) {
+        int result = 0;
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery(query, null);
+            if (cursor != null) {
+                cursor.moveToFirst();
+                result = cursor.getInt(0);
+            }
+        } finally {
+            if (cursor != null)
+                cursor.close();
+        }
+        return result;
+    }
+
+    private int getMaxPositionBookmarks(SQLiteDatabase db) {
+        return getIntResult(db,"select MAX(position) from bookmarks where parent = -3");
+    }
+
+    private boolean hasPinnedBookmark(SQLiteDatabase db, String url) {
+        int numRows = getIntResult(db,"select COUNT(*) from bookmarks where url = '" + url + "' AND parent = -3 AND position >= 0");
+        return numRows>0?true:false;        
+    }
+
+    public int importBookmarks(SQLiteDatabase db, final JSONArray bookmarks) {
+        final long now = System.currentTimeMillis();
+        Log.v(LOGTAG, "importing bookmarks..");
+
+        int offset = getMaxPositionBookmarks(db);
+
+        Locale locale = Locale.getDefault();
+        int pos = 0;
+
+        for (int i = 0; i < bookmarks.length(); i++) {
+            try {
+                final JSONObject bookmark = bookmarks.getJSONObject(i);
+
+                String title = bookmark.getString("title");
+                String url = bookmark.getString("url");
+                int type = bookmark.getInt("type");
+                int parent = bookmark.getInt("parent");
+                int position = bookmark.getInt("position");
+                long dateCreated = bookmark.getLong("dateCreated");
+
+                boolean insertEntry = true;
+                if (parent == -3 && hasPinnedBookmark(db,url)) {
+                    Log.d(LOGTAG, "skipping:"+url);
+                    insertEntry = false;
+                }
+
+                if (insertEntry) {
+                    // create thumbnail entry in database
+                    ContentValues values = new ContentValues();
+                    values.put(Bookmarks.PARENT, parent);
+
+                    values.put(Bookmarks.DATE_CREATED, dateCreated);
+                    values.put(Bookmarks.DATE_MODIFIED, now);
+
+                    values.put(Bookmarks.TITLE, title);
+                    values.put(Bookmarks.URL, url);
+                    values.put(Bookmarks.GUID, Utils.generateGuid()); // 
+                    values.put(Bookmarks.POSITION, offset++); // not base on the read position
+
+                    if (bookmark.has("keyword")) {
+                        String keyword = bookmark.getString("keyword");
+                        values.put(Bookmarks.KEYWORD, keyword);
+
+                        // delete bookmarks base on uri and parent
+                        final String[] urlArgs = new String[] { url, String.valueOf(parent), keyword };
+                        final String urlEquals = Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " = ? AND " + Bookmarks.KEYWORD + " = ?";
+                        db.delete(TABLE_BOOKMARKS, urlEquals, urlArgs);
+                    }
+                    else {
+                        // delete bookmarks base on uri and parent
+                        final String[] urlArgs = new String[] { url, String.valueOf(parent) };
+                        final String urlEquals = Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " = ?";
+                        db.delete(TABLE_BOOKMARKS, urlEquals, urlArgs);
+                    }
+
+                    // Get the page's favicon ID from the history table
+                    Cursor c = db.query(TABLE_HISTORY,
+                                        new String[] { History.FAVICON_ID },
+                                        History.URL + " = ?",
+                                        new String[] { url },
+                                        null,null,null);
+                    if (c.moveToFirst()) {
+                        int columnIndex = c.getColumnIndexOrThrow(History.FAVICON_ID);
+                        if (!c.isNull(columnIndex))
+                            values.put(Bookmarks.FAVICON_ID, c.getLong(columnIndex));
+                    }
+                    c.close();
+
+
+                    db.insertOrThrow(TABLE_BOOKMARKS, Bookmarks.TITLE, values);
+
+                    if (parent==-3) {
+                        values.remove(Bookmarks.PARENT);
+                        values.remove(Bookmarks.GUID);
+                        values.put(Bookmarks.PARENT, 1);
+                        values.put(Bookmarks.GUID, Utils.generateGuid()); // 
+                        db.insertOrThrow(TABLE_BOOKMARKS, Bookmarks.TITLE, values);
+                    }
+
+                    Log.v(LOGTAG, "url:"+url);
+
+                    pos++;
+
+                    // just insert directly, we are running in a seperate thread
+                    if (bookmark.has("icon")) {
+                        String base64 = bookmark.getString("icon");
+                        try {
+                            byte[] raw = Base64.decode(base64, Base64.DEFAULT);
+
+                            Log.v(LOGTAG, "thumbnail url:"+url);
+
+                            ContentValues v = new ContentValues();
+                            v.put(Thumbnails.DATA, raw);
+                            v.put(Thumbnails.URL, url);
+                            long thumbnailId = db.insertOrThrow(TABLE_THUMBNAILS, null, v);
+
+                        } catch (Exception e) {
+                            Log.e(LOGTAG, "exception saving bitmap");
+                            e.printStackTrace();
+                        }
+                    }
+                }
+
+            } catch (JSONException e) {
+                Log.e(LOGTAG, "Error creating distribution bookmark", e);
+                e.printStackTrace();
+            }
+        }
+
+        return pos;
+    }
+
+    private void exportBookmarks(SQLiteDatabase db, String queryString, boolean bHasThumbnails, JSONArray list) {
+        Log.v(LOGTAG, "exportBookmarks:"+queryString);
+
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery(queryString, null);
+            if (cursor != null) {
+
+                final int idTitleCol = cursor.getColumnIndexOrThrow(Bookmarks.TITLE);
+                final int idUrlCol = cursor.getColumnIndexOrThrow(Bookmarks.URL);
+                final int idTypeCol = cursor.getColumnIndexOrThrow(Bookmarks.TYPE);
+                final int idParentCol = cursor.getColumnIndexOrThrow(Bookmarks.PARENT);
+                final int idPositionCol = cursor.getColumnIndexOrThrow(Bookmarks.POSITION);
+                final int idKeywordCol = cursor.getColumnIndexOrThrow(Bookmarks.KEYWORD);
+                final int idDescriptionCol = cursor.getColumnIndexOrThrow(Bookmarks.DESCRIPTION);
+                final int idTagsCol = cursor.getColumnIndexOrThrow(Bookmarks.TAGS);
+                //final int idFaviconIdCol = cursor.getColumnIndexOrThrow(Bookmarks.FAVICON_ID);
+                final int idDateCreatedCol = cursor.getColumnIndexOrThrow(Bookmarks.DATE_CREATED);
+                final int idDateModifiedCol = cursor.getColumnIndexOrThrow(Bookmarks.DATE_MODIFIED);
+                final int idGuidCol = cursor.getColumnIndexOrThrow(Bookmarks.GUID);
+                final int idIsDeletedCol = cursor.getColumnIndexOrThrow(Bookmarks.IS_DELETED);
+
+                //final int idFaviconCol = cursor.getColumnIndexOrThrow(Bookmarks.FAVICON);
+                //final int idFaviconUrlCol = cursor.getColumnIndexOrThrow(Bookmarks.FAVICON_URL);
+
+                final int idThumbnailCol;
+                if (bHasThumbnails) {
+                    idThumbnailCol = cursor.getColumnIndexOrThrow("thumbnails.data");
+                }
+                else
+                    idThumbnailCol = 0;
+
+                cursor.moveToFirst();
+                while (!cursor.isAfterLast()) {
+                    String title = cursor.getString(idTitleCol);
+                    String url = cursor.getString(idUrlCol);
+                    int type = cursor.getInt(idTypeCol);
+                    int parent = cursor.getInt(idParentCol);
+                    int position = cursor.getInt(idPositionCol);
+                    String keyword = cursor.getString(idKeywordCol);
+                    String description = cursor.getString(idDescriptionCol);
+                    String tags = cursor.getString(idTagsCol);                   
+                    //String faviconId = cursor.getString(idFaviconIdCol);
+                    long dateCreated = cursor.getLong(idDateCreatedCol);
+                    long dateModified = cursor.getLong(idDateModifiedCol);
+                    String guid = cursor.getString(idGuidCol);
+                    int isDeleted = cursor.getInt(idIsDeletedCol);
+
+                    //String favicon = cursor.getString(idFaviconCol);
+                    //String faviconUrl = cursor.getString(idFaviconUrlCol);
+                    Log.v(LOGTAG, "url:"+url);
+
+                    byte[] data;
+                    String base64data="";
+                    if (bHasThumbnails) {
+                        data = cursor.getBlob(idThumbnailCol);
+                        base64data = Base64.encodeToString(data,Base64.DEFAULT);
+
+                        Log.v(LOGTAG, "blob length:"+data.length);
+                    }
+
+                    try {
+                        JSONObject obj = new JSONObject();
+                        obj.put("title",title);
+                        obj.put("url",url);
+                        obj.put("type",type);
+                        obj.put("parent",parent);
+                        obj.put("position",position);
+                        obj.put("keyword",keyword);
+                        obj.put("description",description);
+                        obj.put("tags",tags);
+                        //obj.put("faviconId",faviconId);
+                        obj.put("dateCreated",dateCreated);
+                        //obj.put("dateModified",dateModified);
+                        //obj.put("guid",guid);
+                        //obj.put("isDeleted",isDeleted);
+
+                        if (bHasThumbnails) {
+                            obj.put("icon",base64data);
+                        }
+
+                        list.put(obj);
+
+                    } catch (JSONException e) {
+                        Log.e(LOGTAG, "Error creating doorhanger button", e);
+                    }
+
+                    cursor.moveToNext();
+                }
+            }
+        } finally {
+            if (cursor != null)
+                cursor.close();
+        }
+
+    }
+
+
+    private static final String[] mobileIdColumns = new String[] { Bookmarks._ID };
+    private static final String[] mobileIdSelectionArgs = new String[] { Bookmarks.MOBILE_FOLDER_GUID };
+        
+    private Integer getMobileFolderId(SQLiteDatabase db) {
+        Cursor c = null;
+
+        try {
+            c = db.query(TABLE_BOOKMARKS,
+                         mobileIdColumns,
+                         Bookmarks.GUID + " = ?",
+                         mobileIdSelectionArgs,
+                         null, null, null);
+
+            if (c == null || !c.moveToFirst())
+                return null;
+
+            return c.getInt(c.getColumnIndex(Bookmarks._ID));
+        } finally {
+            if (c != null)
+                c.close();
+        }
     }
 
     /**

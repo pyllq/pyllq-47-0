@@ -7539,6 +7539,18 @@ ClusterIterator::ClusterIterator(nsTextFrame* aTextFrame, int32_t aPosition,
                                   aContext.get() + indexInText,
                                   aContext.Length() - indexInText);
   }
+
+  gfxTextRun* textrun = mTextFrame->GetTextRun(nsTextFrame::eInflated);
+  if (textrun) {
+    gfxShapedText::CompressedGlyph *charGlyphs = textrun->GetCharacterGlyphs();
+    bool bcr = false;
+    for (int32_t i = 0; i <= textLen; ++i) {
+      if (bcr || (!charGlyphs[i].IsSimpleGlyph() && charGlyphs[i].GetGlyphCount())) {
+        bcr = true;
+        mWordBreaks[i] = charGlyphs[i + textOffset].CanBreakBefore() == 1;
+      }
+    }
+  }
 }
 
 nsIFrame::FrameSearchResult

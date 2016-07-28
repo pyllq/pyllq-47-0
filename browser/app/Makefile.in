@@ -46,6 +46,9 @@ GARBAGE += $(addprefix $(FINAL_TARGET)/defaults/pref/, firefox.js)
 
 endif
 
+OS_LDFLAGS += /media/chromium/pye/out/Release/lib/libpye.so -Wl,-rpath,'$$'ORIGIN/.
+#LIBS += \
+
 ifdef MOZ_WIDGET_GTK
 libs::
 	$(INSTALL) $(IFLAGS1) $(DIST)/branding/mozicon128.png $(FINAL_TARGET)/icons

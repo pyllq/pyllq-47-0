@@ -338,11 +338,8 @@ public class TopSitesPanel extends HomeFragment {
         menu.setHeaderTitle(info.getDisplayTitle());
 
         if (info.type != TopSites.TYPE_BLANK) {
-            if (info.type == TopSites.TYPE_PINNED) {
-                menu.findItem(R.id.top_sites_pin).setVisible(false);
-            } else {
-                menu.findItem(R.id.top_sites_unpin).setVisible(false);
-            }
+            menu.findItem(R.id.top_sites_pin).setVisible(false);
+            menu.findItem(R.id.top_sites_unpin).setVisible(false);
         } else {
             menu.findItem(R.id.home_open_new_tab).setVisible(false);
             menu.findItem(R.id.home_open_private_tab).setVisible(false);
@@ -377,6 +374,7 @@ public class TopSitesPanel extends HomeFragment {
         }
 
         TopSitesGridContextMenuInfo info = (TopSitesGridContextMenuInfo) menuInfo;
+        Log.d(LOGTAG, "onContextItemSelected:"+info.title+":"+info.position);
 
         final int itemId = item.getItemId();
         final BrowserDB db = GeckoProfile.get(getActivity()).getDB();
@@ -452,6 +450,7 @@ public class TopSitesPanel extends HomeFragment {
 
         @Override
         public void onEditPinnedSite(int position, String searchTerm) {
+            Log.d(LOGTAG, "onEditPinnedSite:"+position);
             final FragmentManager manager = getChildFragmentManager();
             PinSiteDialog dialog = (PinSiteDialog) manager.findFragmentByTag(TAG_PIN_SITE);
             if (dialog == null) {
@@ -508,7 +507,7 @@ public class TopSitesPanel extends HomeFragment {
         @Override
         public Cursor loadCursor() {
             final long start = SystemClock.uptimeMillis();
-            final Cursor cursor = mDB.getTopSites(getContext().getContentResolver(), mMaxGridEntries, SEARCH_LIMIT);
+            final Cursor cursor = mDB.getTopSites(getContext().getContentResolver(), mMaxGridEntries, mMaxGridEntries);
             final long end = SystemClock.uptimeMillis();
             final long took = end - start;
             Telemetry.addToHistogram(TELEMETRY_HISTOGRAM_LOAD_CURSOR, (int) Math.min(took, Integer.MAX_VALUE));
@@ -523,7 +522,8 @@ public class TopSitesPanel extends HomeFragment {
 
         @Override
         public int getCount() {
-            return Math.max(0, super.getCount() - mMaxGridEntries);
+            return 0;
+            //return Math.max(0, super.getCount() - mMaxGridEntries);
         }
 
         @Override

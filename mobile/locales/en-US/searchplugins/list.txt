@@ -1,5 +1,7 @@
-amazondotcom
+pinyincidian
 google:hidden
+taobao
+baidu
 twitter
 wikipedia
 yahoo

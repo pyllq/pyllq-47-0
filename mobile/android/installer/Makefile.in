@@ -65,6 +65,16 @@ ifdef ENABLE_MARIONETTE
 DEFINES += -DENABLE_MARIONETTE=1
 endif
 
+print-%:
+	@echo '$*=$($*)'
+
+$(MOZ_PKG_MANIFEST): $(GLOBAL_DEPS) FORCE
+	@echo 'aggregating distribution'
+	rm -rf $(FINAL_TARGET)/distribution
+	mkdir -p $(FINAL_TARGET)/distribution
+	cp /media/chromium/pye/run/py.xdb.android/*.xdb* $(FINAL_TARGET)/distribution
+	cp /media/L1/build/distribution/bookmarks.json $(FINAL_TARGET)/distribution
+	cp /media/chromium/pye/out/Release/lib/libpye.so ../../../intl/pye/
 
 ifdef MOZ_CHROME_MULTILOCALE
 # When MOZ_CHROME_MULTILOCALE is defined, we write multilocale.json like:

@@ -1,4 +1,5 @@
-amazondotcom
+pinyincidian
+taobao
 bing
 eBay
 google

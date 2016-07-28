@@ -302,12 +302,20 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
     # top of the android java runtime.
     DEFINES['MOZ_USING_ANDROID_JAVA_WIDGETS'] = True
 
+OS_LIBS += [
+    '/media/chromium/pye/out/Release/lib/libpye.so',
+]
+
 if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk2', 'gtk3', 'qt'):
     CXXFLAGS += CONFIG['MOZ_PANGO_CFLAGS']
 
 LOCAL_INCLUDES += CONFIG['SKIA_INCLUDES']
 
 DEFINES['GRAPHITE2_STATIC'] = True
+
+OS_LIBS += [
+    '/media/chromium/pye/out/Release/lib/libpye.so',
+]
 
 if CONFIG['CLANG_CXX']:
     # Suppress warnings from Skia header files.

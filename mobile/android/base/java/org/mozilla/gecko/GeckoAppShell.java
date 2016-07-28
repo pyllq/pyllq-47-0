@@ -60,6 +60,7 @@ import org.mozilla.gecko.util.NativeJSContainer;
 import org.mozilla.gecko.util.NativeJSObject;
 import org.mozilla.gecko.util.ProxySelector;
 import org.mozilla.gecko.util.ThreadUtils;
+import org.mozilla.gecko.GeckoApp;
 import org.mozilla.gecko.widget.ExternalIntentDuringPrivateBrowsingPromptFragment;
 
 import android.Manifest;
@@ -132,6 +133,8 @@ import android.webkit.MimeTypeMap;
 import android.webkit.URLUtil;
 import android.widget.AbsoluteLayout;
 import android.widget.Toast;
+
+import com.brainiii.util.BrainiiiApp;
 
 public class GeckoAppShell
 {
@@ -267,6 +270,9 @@ public class GeckoAppShell
     static public final int LINK_TYPE_4G = 7;
 
     /* The Android-side API: API methods that Android calls */
+
+    // pyllq
+    public static native void setPyeOptions(int option, int value);
 
     // Initialization methods
     public static native void registerJavaUiThread();
@@ -1080,6 +1086,24 @@ public class GeckoAppShell
             }
         }
         return true;
+    }
+
+    static void lookupDictExternal(String text) {
+        try {
+            Intent i = new Intent();
+            i.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            i.setAction("com.chinesebrowser.SHOW_DICT");
+            i.putExtra(Intent.EXTRA_TEXT, text);
+            getContext().startActivity(i);
+        } catch (Exception exc) {
+            //Toast.makeText(getContext(), e.toString(), Toast.LENGTH_LONG).show();
+
+            String url = String.format("http://cidian.brainiii.com/#qry[src]=%s&qry[srt]=scoreHits&qry[psz]=20&qry[sfx]=best&qry[fil]=0",
+                text);
+            Tabs.getInstance().loadUrlInTab(url);
+
+            //BrainiiiApp.triggerPinyinCidianAppInstall(GeckoApp.mAppContext);
+        }
     }
 
     @WrapForJNI

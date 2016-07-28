@@ -635,7 +635,9 @@ public abstract class GeckoApp
 
             // Context: Sharing via chrome list (no explicit session is active)
             Telemetry.sendUIEvent(TelemetryContract.Event.SHARE, TelemetryContract.Method.LIST, "text");
-
+        } else if ("Share:Lookup".equals(event)) {
+            String text = message.getString("text");
+            GeckoAppShell.lookupDictExternal(text);
         } else if ("Snackbar:Show".equals(event)) {
             SnackbarHelper.showSnackbar(this, message, callback);
         } else if ("SystemUI:Visibility".equals(event)) {
@@ -1271,6 +1273,7 @@ public abstract class GeckoApp
             "RuntimePermissions:Prompt",
             "Session:StatePurged",
             "Share:Text",
+			"Share:Lookup",
             "Snackbar:Show",
             "SystemUI:Visibility",
             "ToggleChrome:Focus",
@@ -2140,6 +2143,7 @@ public abstract class GeckoApp
             "RuntimePermissions:Prompt",
             "Session:StatePurged",
             "Share:Text",
+			"Share:Lookup",
             "Snackbar:Show",
             "SystemUI:Visibility",
             "ToggleChrome:Focus",

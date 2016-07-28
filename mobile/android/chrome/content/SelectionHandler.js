@@ -164,6 +164,12 @@ var SelectionHandler = {
       }
 
       case "Gesture:SingleTap": {
+        if (this._activeType == this.TYPE_SELECTION) {
+          let data = JSON.parse(aData);
+          if (this._pointInSelection(data.x, data.y)) {
+            this.lookupSelection();
+          }
+        }        
         if (this._activeType == this.TYPE_CURSOR) {
           // attachCaret() is called in the "Gesture:SingleTap" handler in BrowserEventHandler
           // We're guaranteed to call this first, because this observer was added last
@@ -824,6 +830,27 @@ var SelectionHandler = {
       },
     },
 
+    LOOKUP: {
+      label: Strings.browser.GetStringFromName("contextmenu.lookup"),
+      id: "lookup_action",
+      icon: "drawable://ab_lookup",
+      action: function() {
+        SelectionHandler.lookupSelection();
+        UITelemetry.addEvent("action.1", "actionbar", null, "lookup");
+      },
+      order: 2,
+      selector: {
+        matches: function(aElement) {
+          // Don't include "copy" for password fields.
+          // mozIsTextField(true) tests for only non-password fields.
+          if (aElement instanceof Ci.nsIDOMHTMLInputElement && !aElement.mozIsTextField(true)) {
+            return false;
+          }
+          return SelectionHandler.isSelectionActive();
+        }
+      }
+    },
+
     SEARCH: {
       label: function() {
         return Strings.browser.formatStringFromName("contextmenu.search", [Services.search.defaultEngine.name], 1);
@@ -1085,6 +1112,20 @@ var SelectionHandler = {
     this._domWinUtils.sendMouseEventToWindow("mouseup", aX, aY, 0, 0, 0, true);
   },
 
+  lookupSelection: function sh_lookupSelection() {
+    console.log("lookupSelection");
+    let selectedText = this._getSelectedText();
+    if (selectedText.length) {
+      let clipboard = Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
+      clipboard.copyString(selectedText, this._contentWindow.document);
+      Messaging.sendRequest({
+        type: "Share:Lookup",
+        text: selectedText
+      });
+    }
+    this._closeSelection();
+  },
+
   copySelection: function sh_copySelection() {
     let selectedText = this._getSelectedText();
     if (selectedText.length) {
@@ -1252,6 +1293,16 @@ var SelectionHandler = {
     }
 
     return offset;
+  },
+
+  _pointInSelection: function sh_pointInSelection(aX, aY) {
+    let offset = this._getViewOffset();
+    let rangeRect = this._getSelection().getRangeAt(0).getBoundingClientRect();
+    let radius = ElementTouchHelper.getTouchRadius();
+    return (aX - offset.x > rangeRect.left - radius.left &&
+            aX - offset.x < rangeRect.right + radius.right &&
+            aY - offset.y > rangeRect.top - radius.top &&
+            aY - offset.y < rangeRect.bottom + radius.bottom);
   },
 
   /*

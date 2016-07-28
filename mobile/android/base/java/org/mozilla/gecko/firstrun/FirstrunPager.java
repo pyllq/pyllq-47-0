@@ -37,6 +37,7 @@ public class FirstrunPager extends ViewPager {
     protected FirstrunPanel.PagerNavigation pagerNavigation;
     private Decor mDecor;
     private View mTabStrip;
+    private ViewPagerAdapter mViewPagerAdapter;
 
     public FirstrunPager(Context context) {
         this(context, null);
@@ -68,16 +69,18 @@ public class FirstrunPager extends ViewPager {
     public void load(Context appContext, FragmentManager fm, final FirstrunAnimationContainer.OnFinishListener onFinishListener) {
         final List<FirstrunPagerConfig.FirstrunPanelConfig> panels;
 
-        if (Restrictions.isUserRestricted(context)) {
-            panels = FirstrunPagerConfig.getRestricted();
-        } else {
-            panels = FirstrunPagerConfig.getDefault(appContext);
-            if (panels.size() == 1) {
-                mTabStrip.setVisibility(GONE);
-            }
-        }
+        panels = FirstrunPagerConfig.getDefault(appContext);
+//        if (Restrictions.isUserRestricted(context)) {
+//            panels = FirstrunPagerConfig.getRestricted();
+//        } else {
+//            panels = FirstrunPagerConfig.getDefault(appContext);
+//            if (panels.size() == 1) {
+//                mTabStrip.setVisibility(GONE);
+//            }
+//        }
 
-        setAdapter(new ViewPagerAdapter(fm, panels));
+        mViewPagerAdapter = new ViewPagerAdapter(fm, panels);
+        setAdapter(mViewPagerAdapter);
         this.pagerNavigation = new FirstrunPanel.PagerNavigation() {
             @Override
             public void next() {
@@ -104,6 +107,9 @@ public class FirstrunPager extends ViewPager {
             public void onPageSelected(int i) {
                 mDecor.onPageSelected(i);
                 Telemetry.sendUIEvent(TelemetryContract.Event.SHOW, TelemetryContract.Method.PANEL, "onboarding." + i);
+
+                FirstrunPanel panel = (FirstrunPanel)mViewPagerAdapter.getItem(i);
+                panel.onSelected();
             }
 
             @Override

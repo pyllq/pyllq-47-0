@@ -20,6 +20,10 @@
     <item android:id="@+id/bookmark"
           android:title="@string/bookmark"/>
 
+    <item android:id="@+id/about_home"
+          android:icon="@drawable/ic_menu_home"
+          android:title="@string/about_home"/>
+          
     <item android:id="@+id/new_tab"
           android:title="@string/new_tab"/>
 
@@ -31,6 +35,30 @@
 
     <item android:id="@+id/reading_list"
           android:title="@string/overlay_share_reading_list_btn_label" />
+
+    <item android:id="@+id/save_as_pdf"
+          android:title="@string/save_as_pdf" />
+
+    <item android:id="@+id/tools_bookmarks"
+          android:title="@string/bookmarks_title">
+        <menu>
+          <item android:id="@+id/import_bookmarks"
+                android:icon="@drawable/ic_menu_import"
+                android:title="Import bookmarks"/>
+
+          <item android:id="@+id/export_bookmarks"
+                android:icon="@drawable/ic_menu_export"
+                android:title="Export bookmarks"/>
+
+          <item android:id="@+id/remove_all_bookmarks"
+                android:icon="@drawable/ic_menu_reader_remove"
+                android:title="Remove all bookmarks"/>
+
+          <item android:id="@+id/remove_all_pinned_bookmarks"
+                android:icon="@drawable/ic_menu_reader_remove"
+                android:title="Remove all pinned bookmarks"/>                  
+        </menu>
+    </item>
 
     <item android:id="@+id/find_in_page"
           android:title="@string/find_in_page" />
@@ -75,8 +103,10 @@
                   android:title="@string/downloads"/>
             <item android:id="@+id/addons"
                   android:title="@string/addons"/>
+<!--
             <item android:id="@+id/logins"
                   android:title="@string/logins"/>
+-->
             <item android:id="@+id/new_guest_session"
                   android:visible="false"
                   android:title="@string/new_guest_session"/>
@@ -107,4 +137,13 @@
           android:visible="false"
           android:enabled="false" />
 
+    <item android:id="@+id/page"
+          android:visible="false"
+          android:enabled="false"
+          android:title="@string/page" />
+
+    <item android:id="@+id/tools"
+          android:visible="false"
+          android:enabled="false"
+          android:title="@string/tools" />
 </menu>

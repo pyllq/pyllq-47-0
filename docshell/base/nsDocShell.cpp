@@ -219,6 +219,9 @@
 
 #include "mozIThirdPartyUtil.h"
 
+// pyllq
+#include "../../intl/pye/libpye.h"
+
 static NS_DEFINE_CID(kAppShellCID, NS_APPSHELL_CID);
 
 #if defined(DEBUG_bryner) || defined(DEBUG_chb)
@@ -8897,6 +8900,23 @@ nsDocShell::RestoreFromHistory()
   return privWin->FireDelayedDOMEvents();
 }
 
+int getPrefInteger(const char *key, int defaultValue) {
+  nsresult rv;
+
+  nsString s = Preferences::GetString(key);
+  int32_t val = defaultValue;
+
+  if (!s.IsEmpty()) {
+    val = s.ToInteger(&rv);
+    if (NS_FAILED(rv)) {
+      return defaultValue;
+    }
+  }
+
+  return val;
+}
+
+
 nsresult
 nsDocShell::CreateContentViewer(const nsACString& aContentType,
                                 nsIRequest* aRequest,
@@ -9023,6 +9043,16 @@ nsDocShell::CreateContentViewer(const nsACString& aContentType,
   NS_ENSURE_SUCCESS(
     aOpenedChannel->GetLoadGroup(getter_AddRefs(currentLoadGroup)),
     NS_ERROR_FAILURE);
+
+    // pyllq
+    static int pyedocid=1;
+    pyeObject::NewDocument(pyedocid++);
+
+    int langEncoding = getPrefInteger("pyllq.langEncoding",0);
+    int pinyinFormat = getPrefInteger("pyllq.pinyinFormat",0);
+    int pinyinLocation = getPrefInteger("pyllq.pinyinLocation",0);
+    int grade = getPrefInteger("pyllq.grade",0);
+    pyeObject::setOption(langEncoding|pinyinFormat|pinyinLocation|(grade<<8),0);
 
   if (currentLoadGroup != mLoadGroup) {
     nsLoadFlags loadFlags = 0;

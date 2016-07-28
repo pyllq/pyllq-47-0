@@ -16,7 +16,7 @@ public class AboutPages {
     public static final String ADDONS          = "about:addons";
     public static final String CONFIG          = "about:config";
     public static final String DOWNLOADS       = "about:downloads";
-    public static final String FIREFOX         = "about:firefox";
+    public static final String FIREFOX         = "about:browser";
     public static final String HEALTHREPORT    = "about:healthreport";
     public static final String HOME            = "about:home";
     public static final String LOGINS          = "about:logins";

@@ -240,13 +240,13 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
                         menu.findItem(R.id.add_to_launcher).setVisible(false);
                     }
 
-                    MenuUtils.safeSetVisible(menu, R.id.subscribe, tab.hasFeeds());
+//                    MenuUtils.safeSetVisible(menu, R.id.subscribe, tab.hasFeeds());
                     MenuUtils.safeSetVisible(menu, R.id.add_search_engine, tab.hasOpenSearch());
                 } else {
                     // if there is no tab, remove anything tab dependent
                     menu.findItem(R.id.copyurl).setVisible(false);
                     menu.findItem(R.id.add_to_launcher).setVisible(false);
-                    MenuUtils.safeSetVisible(menu, R.id.subscribe, false);
+//                    MenuUtils.safeSetVisible(menu, R.id.subscribe, false);
                     MenuUtils.safeSetVisible(menu, R.id.add_search_engine, false);
                 }
             }

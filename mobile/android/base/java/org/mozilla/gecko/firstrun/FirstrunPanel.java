@@ -52,6 +52,8 @@ public class FirstrunPanel extends Fragment {
         return root;
     }
 
+    public void onSelected() {}
+    
     public interface PagerNavigation {
         void next();
         void finish();

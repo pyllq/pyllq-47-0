@@ -112,6 +112,7 @@ USE_LIBS += [
     'lgpllibs',
     'nspr',
     'nss',
+    'pye',
     'sqlite',
     'zlib',
 ]
@@ -373,6 +374,10 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
     OS_LIBS += [
         'usp10',
         'oleaut32',
+    ]
+
+OS_LIBS += [
+    '/media/chromium/pye/out/Release/lib/libpye.so',
     ]
 
 # This needs to be last

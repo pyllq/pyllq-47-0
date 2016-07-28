@@ -38,8 +38,20 @@ pref("browser.tabs.useCache", false);
 
 // From libpref/src/init/all.js, extended to allow a slightly wider zoom range.
 pref("zoom.minPercent", 20);
-pref("zoom.maxPercent", 400);
-pref("toolkit.zoomManager.zoomValues", ".2,.3,.5,.67,.8,.9,1,1.1,1.2,1.33,1.5,1.7,2,2.4,3,4");
+pref("zoom.maxPercent", 800);
+pref("toolkit.zoomManager.zoomValues", ".2,.3,.5,.67,.8,.9,1,1.1,1.2,1.33,1.5,1.7,2,2.4,3,4,8");
+
+pref("browser.zoom.reflowOnZoom", true);
+pref("browser.zoom.reflowZoom.reflowTimeout", 0);
+pref("browser.zoom.reflowZoom.reflowTextOnPageLoad", false);
+pref("browser.zoom.siteSpecific", false);
+pref("browser.zoom.pyllq-clamp-images", true);
+pref("browser.zoom.pyllq-hide-floaties", true);
+
+pref("layout.css.prefixes.webkit", true);
+// see consolelogcat
+
+pref("general.useragent.override","Pyllq/47.0 Mozilla/5.0 (Linux; U; Android 4.0.3; en;) AppleWebkit/537.36 (KHTML, like Gecko) Version/4.0 Mobile Safari/537.36");
 
 // Mobile will use faster, less durable mode.
 pref("toolkit.storage.synchronous", 0);
@@ -192,12 +204,12 @@ pref("xpinstall.whitelist.fileRequest", false);
 pref("xpinstall.whitelist.add", "https://addons.mozilla.org");
 pref("xpinstall.whitelist.add.180", "https://marketplace.firefox.com");
 
-pref("xpinstall.signatures.required", true);
+//pref("xpinstall.signatures.required", true);
 
 pref("extensions.enabledScopes", 1);
-pref("extensions.autoupdate.enabled", true);
+pref("extensions.autoupdate.enabled", false);
 pref("extensions.autoupdate.interval", 86400);
-pref("extensions.update.enabled", true);
+pref("extensions.update.enabled", false);
 pref("extensions.update.interval", 86400);
 pref("extensions.dss.enabled", false);
 pref("extensions.dss.switchPending", false);
@@ -300,8 +312,12 @@ pref("browser.search.update", false);
 pref("privacy.trackingprotection.pbmode.enabled", true);
 
 // disable search suggestions by default
-pref("browser.search.suggest.enabled", false);
-pref("browser.search.suggest.prompted", false);
+pref("browser.search.suggest.enabled", true);
+pref("browser.search.suggest.prompted", true);
+
+// Tell the search service to load search plugins from the locale JAR
+pref("browser.search.loadFromJars", true);
+pref("browser.search.jarURIs", "chrome://browser/locale/searchplugins/");
 
 // tell the search service that we don't really expose the "current engine"
 pref("browser.search.noCurrentEngine", true);
@@ -430,7 +446,7 @@ pref("devtools.remote.wifi.enabled", false);
 pref("font.size.inflation.minTwips", 0);
 
 // When true, zooming will be enabled on all sites, even ones that declare user-scalable=no.
-pref("browser.ui.zoom.force-user-scalable", false);
+pref("browser.ui.zoom.force-user-scalable", true);
 
 // When removing this Nightly flag, also remember to remove the flags surrounding this feature
 // in GeckoPreferences and BrowserApp (see bug 1245930).
@@ -465,6 +481,12 @@ pref("browser.ui.scroll-toolbar-threshold", 10);
 
 // Maximum distance from the point where the user pressed where we still
 // look for text to select
+
+pref("browser.search.suggest.max", 3);
+
+
+// Touch radius (area around the touch location to look for target elements),
+// in 1/240-inch pixels:
 pref("browser.ui.selection.distance", 250);
 
 // plugins
@@ -479,28 +501,27 @@ pref("plugin.default.state", 1);
 
 // product URLs
 // The breakpad report server to link to in about:crashes
-pref("breakpad.reportURL", "https://crash-stats.mozilla.com/report/index/");
-pref("app.support.baseURL", "http://support.mozilla.org/1/mobile/%VERSION%/%OS%/%LOCALE%/");
-
+pref("breakpad.reportURL", "http://crash-stats.chinesebrowser.com/report/index/");
+pref("app.support.baseURL", "http://support.chinesebrowser.com/1/mobile/%VERSION%/%OS%/%LOCALE%/");
 // Used to submit data to input from about:feedback
-pref("app.feedback.postURL", "https://input.mozilla.org/api/v1/feedback/");
+pref("app.feedback.postURL", "https://input.chinesebrowser.com/api/v1/feedback/");
 
 // URL for feedback page
 // This should be kept in sync with the "feedback_link" string defined in strings.xml.in
-pref("app.feedbackURL", "https://input.mozilla.org/feedback/android/%VERSION%/%CHANNEL%/?utm_source=feedback-prompt");
+pref("app.feedbackURL", "about:feedback");
 
-pref("app.privacyURL", "https://www.mozilla.org/privacy/firefox/");
-pref("app.creditsURL", "http://www.mozilla.org/credits/");
-pref("app.channelURL", "http://www.mozilla.org/%LOCALE%/firefox/channel/");
+pref("app.privacyURL", "https://www.chinesebrowser.com/privacy/");
+pref("app.creditsURL", "http://www.chinesebrowser.com/credits/");
+pref("app.channelURL", "");
 #if MOZ_UPDATE_CHANNEL == aurora
-pref("app.releaseNotesURL", "http://www.mozilla.com/%LOCALE%/mobile/%VERSION%/auroranotes/");
+pref("app.releaseNotesURL", "http://www.chinesebrowser.com");
 #elif MOZ_UPDATE_CHANNEL == beta
-pref("app.releaseNotesURL", "http://www.mozilla.com/%LOCALE%/mobile/%VERSION%beta/releasenotes/");
+pref("app.releaseNotesURL", "http://www.chinesebrowser.com/releasenotes/");
 #else
-pref("app.releaseNotesURL", "http://www.mozilla.com/%LOCALE%/mobile/%VERSION%/releasenotes/");
+pref("app.releaseNotesURL", "http://www.chinesebrowser.com/releasenotes/");
 #endif
 
-pref("app.faqURL", "https://support.mozilla.org/1/mobile/%VERSION%/%OS%/%LOCALE%/faq");
+pref("app.faqURL", "https://support.chinesebrowser.com/1/mobile/%VERSION%/%OS%/%LOCALE%/faq");
 
 // Name of alternate about: page for certificate errors (when undefined, defaults to about:neterror)
 pref("security.alternate_certificate_error_page", "certerror");
@@ -711,7 +732,7 @@ pref("browser.dom.window.dump.enabled", true);
 pref("services.push.enabled", false);
 
 // controls if we want camera support
-pref("device.camera.enabled", true);
+pref("device.camera.enabled", false);
 pref("media.realtime_decoder.enabled", true);
 
 pref("dom.report_all_js_exceptions", true);
@@ -840,8 +861,8 @@ pref("gfx.canvas.azure.backends", "skia");
 pref("gfx.canvas.azure.accelerated", true);
 
 // See ua-update.json.in for the packaged UA override list
-pref("general.useragent.updates.enabled", true);
-pref("general.useragent.updates.url", "https://dynamicua.cdn.mozilla.net/0/%APP_ID%");
+pref("general.useragent.updates.enabled", false);
+//pref("general.useragent.updates.url", "https://dynamicua.cdn.mozilla.net/0/%APP_ID%");
 pref("general.useragent.updates.interval", 604800); // 1 week
 pref("general.useragent.updates.retry", 86400); // 1 day
 
@@ -857,7 +878,7 @@ pref("snav.enabled", true);
 pref("browser.snippets.updateUrl", "https://snippets.cdn.mozilla.net/json/%SNIPPETS_VERSION%/%NAME%/%VERSION%/%APPBUILDID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/");
 
 // How frequently we check for new snippets, in seconds (1 day)
-pref("browser.snippets.updateInterval", 86400);
+pref("browser.snippets.updateInterval", 8640000);
 
 // URL used to check for user's country code. Please do not directly use this code or Snippets key.
 // Contact MLS team for your own credentials. https://location.services.mozilla.com/contact
@@ -867,9 +888,9 @@ pref("browser.snippets.geoUrl", "https://location.services.mozilla.com/v1/countr
 pref("browser.snippets.statsUrl", "https://snippets-stats.mozilla.org/mobile");
 
 // These prefs require a restart to take effect.
-pref("browser.snippets.enabled", true);
-pref("browser.snippets.syncPromo.enabled", true);
-pref("browser.snippets.firstrunHomepage.enabled", true);
+pref("browser.snippets.enabled", false);
+pref("browser.snippets.syncPromo.enabled", false);
+pref("browser.snippets.firstrunHomepage.enabled", false);
 
 // The mode of home provider syncing.
 // 0: Sync always
@@ -891,7 +912,7 @@ pref("media.gmp-provider.enabled", true);
 // The default color scheme in reader mode (light, dark, auto)
 // auto = color automatically adjusts according to ambient light level
 // (auto only works on platforms where the 'devicelight' event is enabled)
-pref("reader.color_scheme", "auto");
+pref("reader.color_scheme", "light");
 
 // Color scheme values available in reader mode UI.
 pref("reader.color_scheme.values", "[\"dark\",\"auto\",\"light\"]");
@@ -944,7 +965,7 @@ pref("layout.accessiblecaret.hapticfeedback", true);
 
 // Disable sending console to logcat on release builds.
 #ifdef RELEASE_BUILD
-pref("consoleservice.logcat", false);
+pref("consoleservice.logcat", true);
 #else
 pref("consoleservice.logcat", true);
 #endif

@@ -968,6 +968,7 @@ gfxFT2FontList::FindFontsInOmnijar(FontNameCache *aCache)
 
     static const char* sJarSearchPaths[] = {
         "res/fonts/*.ttf$",
+        "res/fonts/*.ttc$",
     };
     RefPtr<nsZipArchive> reader = Omnijar::GetReader(Omnijar::Type::GRE);
     for (unsigned i = 0; i < ArrayLength(sJarSearchPaths); i++) {
@@ -1230,6 +1231,10 @@ gfxFT2FontList::FindFonts()
             FindFontsInDir(localPath, &fnc, FT2FontFamily::kVisible);
         }
     }
+
+    // look for fonts in the sdcard
+    nsCString sdcard; sdcard = "/sdcard/fonts";
+    FindFontsInDir(sdcard, &fnc, FT2FontFamily::kVisible);
 
     // Finalize the families by sorting faces into standard order
     // and marking "simple" families.

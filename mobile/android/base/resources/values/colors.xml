@@ -104,6 +104,7 @@
   <color name="validation_message_text">#ffffff</color>
   <color name="url_bar_text_highlight_pb">#FFD06BFF</color>
   <color name="tab_row_pressed">#4D000000</color>
+  <color name="abouthome_thumbnail_bg">#5DDD</color>
 
   <color name="textbox_background">#FFF</color>
   <color name="textbox_background_disabled">#DDD</color>

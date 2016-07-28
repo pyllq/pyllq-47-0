@@ -24,7 +24,7 @@ import org.mozilla.gecko.util.Experiments;
  * This is used for animation purposes.
  */
 public class FirstrunAnimationContainer extends LinearLayout {
-    public static final String PREF_FIRSTRUN_ENABLED = "startpane_enabled";
+    public static final String PREF_FIRSTRUN_ENABLED = "firstrun_pyllq";
 
     public static interface OnFinishListener {
         public void onFinish();

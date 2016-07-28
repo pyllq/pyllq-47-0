@@ -61,7 +61,7 @@ class JavaPanZoomController
     public static final float AXIS_BREAKOUT_THRESHOLD = 1/32f * GeckoAppShell.getDpi();
 
     // The maximum amount we allow you to zoom into a page
-    private static final float MAX_ZOOM = 4.0f;
+    private static final float MAX_ZOOM = 8.0f;
 
     // The maximum amount we would like to scroll with the mouse
     private static final float MAX_SCROLL = 0.075f * GeckoAppShell.getDpi();
@@ -1299,6 +1299,9 @@ class JavaPanZoomController
         }
 
         GeckoAppShell.sendEventToGecko(event);
+
+        Log.e(LOGTAG, "trigger mTarget.setViewportMetrics");
+        mTarget.setViewportMetrics(getValidViewportMetrics()); 
     }
 
     @Override

@@ -6,6 +6,8 @@ include $(topsrcdir)/toolkit/library/libxul.mk
 
 include $(topsrcdir)/config/config.mk
 
+OS_LDFLAGS += /media/chromium/pye/out/Release/lib/libpye.so -Wl,-rpath,'$$'ORIGIN/.
+
 ifeq (WINNT_1,$(OS_TARGET)_$(MOZ_PROFILE_USE))
 # Wrap linker to measure peak virtual memory usage.
 EXPAND_LIBS_EXEC := $(PYTHON) $(topsrcdir)/config/link.py linker-vsize

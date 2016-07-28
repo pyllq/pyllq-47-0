@@ -1,5 +1,5 @@
         <service
-            android:exported="true"
+            android:exported="false" android:enabled="false"
             android:name="org.mozilla.gecko.fxa.authenticator.FxAccountAuthenticatorService" >
             <intent-filter >
                 <action android:name="android.accounts.AccountAuthenticator" />
@@ -11,7 +11,7 @@
         </service>
 
         <service
-            android:exported="false"
+            android:exported="false" android:enabled="false"
             android:name="org.mozilla.gecko.fxa.receivers.FxAccountDeletedService" >
         </service>
 
@@ -22,7 +22,7 @@
 
         <!-- Firefox Sync. -->
         <service
-            android:exported="false"
+            android:exported="false" android:enabled="false"
             android:name="org.mozilla.gecko.fxa.sync.FxAccountSyncService" >
             <intent-filter >
                 <action android:name="android.content.SyncAdapter" />

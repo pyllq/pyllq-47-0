@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+            android:layout_height="wrap_content"
+            android:layout_width="match_parent"
+            android:orientation="vertical"
+            android:fillViewport="true">
+
+    <LinearLayout android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:minHeight="@dimen/firstrun_min_height"
+                  android:background="@color/about_page_header_grey"
+                  android:gravity="center_horizontal"
+                  android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingTop="20dp"
+            >
+            <ImageView
+                android:id="@+id/ruby_top"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:scaleType="center"
+                android:visibility="invisible"
+                android:padding="5dp"
+                android:src="@drawable/fp_bpmf_num" />
+            <ImageView
+                android:id="@+id/enc_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:scaleType="center"
+                android:src="@drawable/fp_trad" />
+            <ImageView
+                android:id="@+id/ruby_bottom"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:scaleType="center"
+                android:visibility="invisible"
+                android:padding="5dp"
+                android:src="@drawable/fp_bpmf" />
+        </LinearLayout>
+
+        <TextView android:id="@+id/text_desc"
+                  android:layout_width="@dimen/firstrun_content_width"
+                  android:layout_height="wrap_content"
+                  android:gravity="center"
+                  android:padding="30dp"
+                  android:textAppearance="@style/TextAppearance.FirstrunLight.Main"
+                  android:text=""/>
+
+        <RadioGroup
+            android:id="@+id/radio_group_location"
+            style="@style/Widget.Firstrun.RadioGroup"
+            android:visibility="gone"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerHorizontal="true"
+            android:orientation="vertical">
+            <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pinyin Location"
+            />
+            <RadioButton android:id="@+id/radio_top"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/top"
+                android:checked="true"
+                />
+            <RadioButton android:id="@+id/radio_bottom"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/bottom"
+                />
+        </RadioGroup>
+
+        <RadioGroup
+            android:id="@+id/radio_group_enc"
+            style="@style/Widget.Firstrun.RadioGroup"
+            android:visibility="gone"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerHorizontal="true"
+            android:paddingTop="10dp"
+            android:orientation="vertical">
+   
+            <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Character format"
+            />
+
+            <RadioButton android:id="@+id/radio_simplified"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/simplified"
+                android:checked="true"
+                />
+            <RadioButton android:id="@+id/radio_traditional"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/traditional"
+                />
+            <RadioButton android:id="@+id/radio_original"
+                style="@style/Widget.Firstrun.RadioButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/original"
+                />
+        </RadioGroup>
+
+        <RadioGroup
+            android:id="@+id/radio_group_pinyin"
+            style="@style/Widget.Firstrun.RadioGroup"
+            android:visibility="gone"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerHorizontal="true"
+            android:paddingTop="10dp"
+            android:orientation="vertical">
+
+            <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pinyin format"
+            />
+
+            <RadioButton android:id="@+id/radio_hanyuPinyin"
+              style="@style/Widget.Firstrun.RadioButton"
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"  
+              android:text="@string/hanyuPinyin"
+              android:checked="true"
+              />
+            <RadioButton android:id="@+id/radio_hanyuPinyinNum"
+              style="@style/Widget.Firstrun.RadioButton"
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"  
+              android:text="@string/hanyuPinyinNum"
+              />
+            <RadioButton android:id="@+id/radio_bpmf"
+              style="@style/Widget.Firstrun.RadioButton"
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"  
+              android:text="@string/bpmf"
+              />
+            <RadioButton android:id="@+id/radio_bpmfNum"
+              style="@style/Widget.Firstrun.RadioButton"
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"  
+              android:text="@string/bpmfNum"
+              />
+        </RadioGroup>
+
+        <View android:layout_weight="1"
+              android:layout_height="0dp"
+              android:layout_width="match_parent"/>
+
+        <TextView android:id="@+id/firstrun_link"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:padding="30dp"
+                  android:gravity="center"
+                  android:textAppearance="@style/TextAppearance.FirstrunRegular.Link"
+                  android:text="@string/firstrun_button_next"/>
+    </LinearLayout>
+</ScrollView>

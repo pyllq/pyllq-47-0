@@ -11,6 +11,8 @@ import android.os.Environment;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.WorkerThread;
+import android.app.Dialog;
+import android.app.ProgressDialog;
 import org.json.JSONArray;
 import org.mozilla.gecko.adjust.AdjustHelperInterface;
 import org.mozilla.gecko.annotation.RobocopTarget;
@@ -108,6 +110,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
+import android.database.ContentObserver;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
@@ -119,6 +122,7 @@ import android.nfc.NfcAdapter;
 import android.nfc.NfcEvent;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.StrictMode;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.Fragment;
@@ -147,6 +151,7 @@ import android.view.animation.Interpolator;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.RelativeLayout;
+import android.widget.Toast;
 import android.widget.ViewFlipper;
 import com.keepsafe.switchboard.AsyncConfigLoader;
 import com.keepsafe.switchboard.SwitchBoard;
@@ -172,6 +177,20 @@ import java.util.UUID;
 import java.util.Vector;
 import java.util.regex.Pattern;
 
+import java.io.InputStream;
+import java.io.File;
+import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.EnumSet;
+import java.util.Vector;
+
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+
+import com.brainiii.util.BrainiiiApp;
+
 public class BrowserApp extends GeckoApp
                         implements TabsPanel.TabsLayoutChangeListener,
                                    PropertyAnimator.PropertyAnimationListener,
@@ -188,6 +207,8 @@ public class BrowserApp extends GeckoApp
     private static final String LOGTAG = "GeckoBrowserApp";
 
     private static final int TABS_ANIMATION_DURATION = 450;
+
+    private static final int BOOKMARKS_IMPORT_FILE_SELECT_CODE = 1010;
 
     public static final String GUEST_BROWSING_ARG = "--guest";
 
@@ -274,6 +295,8 @@ public class BrowserApp extends GeckoApp
     private OrderedBroadcastHelper mOrderedBroadcastHelper;
 
     private ReadingListHelper mReadingListHelper;
+
+ 	private BrainiiiApp mBrainiiiApp;
 
     private AccountsHelper mAccountsHelper;
 
@@ -794,6 +817,8 @@ public class BrowserApp extends GeckoApp
                        })
                       .run();
         }
+
+		mBrainiiiApp = new BrainiiiApp(this);
     }
 
     /**
@@ -905,7 +930,7 @@ public class BrowserApp extends GeckoApp
         try {
             final SharedPreferences prefs = GeckoSharedPrefs.forProfile(this);
 
-            if (prefs.getBoolean(FirstrunAnimationContainer.PREF_FIRSTRUN_ENABLED, false)) {
+            if (prefs.getBoolean(FirstrunAnimationContainer.PREF_FIRSTRUN_ENABLED, true)) {
                 if (!Intent.ACTION_VIEW.equals(intent.getAction())) {
                     showFirstrunPager();
 
@@ -1329,7 +1354,7 @@ public class BrowserApp extends GeckoApp
             }
             return true;
         }
-
+/**
         if (itemId == R.id.subscribe) {
             // This can be selected from either the browser menu or the contextmenu, depending on the size and version (v11+) of the phone.
             Tab tab = Tabs.getInstance().getSelectedTab();
@@ -1347,7 +1372,7 @@ public class BrowserApp extends GeckoApp
             }
             return true;
         }
-
+**/
         if (itemId == R.id.add_search_engine) {
             // This can be selected from either the browser menu or the contextmenu, depending on the size and version (v11+) of the phone.
             Tab tab = Tabs.getInstance().getSelectedTab();
@@ -2025,7 +2050,7 @@ public class BrowserApp extends GeckoApp
                     public void run() {
                         if (menu != null) {
                             menu.findItem(R.id.settings).setEnabled(true);
-                            menu.findItem(R.id.help).setEnabled(true);
+                            //menu.findItem(R.id.help).setEnabled(true);
                         }
                     }
                 });
@@ -2461,8 +2486,22 @@ public class BrowserApp extends GeckoApp
 
                 final int index = url.indexOf(" ");
                 if (index == -1) {
+                    if (url.length()>2) {
+                        int cp0 = Character.codePointAt(url, 0);
+                        int cp1 = Character.codePointAt(url, 1);
+                        if (cp0 >= 0x3400 || cp1 >= 0x3400) {
+                            keyword = url.substring(0, 2);
+                            keywordSearch = url.substring(2); 
+                        }
+                        else {
                     keyword = url;
                     keywordSearch = "";
+                        }
+                    }
+                    else {
+                    keyword = url;
+                    keywordSearch = "";
+                    }
                 } else {
                     keyword = url.substring(0, index);
                     keywordSearch = url.substring(index + 1);
@@ -2623,9 +2662,28 @@ public class BrowserApp extends GeckoApp
         }
     }
 
+    private void showFileChooser() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT); 
+        intent.setType("*/*.json"); 
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+
+        try {
+            startActivityForResult(
+                    Intent.createChooser(intent, "Select a File to import"),
+                    BOOKMARKS_IMPORT_FILE_SELECT_CODE);
+        } catch (android.content.ActivityNotFoundException ex) {
+            // Potentially direct the user to the Market with a Dialog
+            Toast.makeText(this, "Please install a File Manager.", 
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         Log.d(LOGTAG, "onActivityResult: " + requestCode + ", " + resultCode + ", " + data);
+
+        String url = null;
+
         switch (requestCode) {
             case ACTIVITY_REQUEST_PREFERENCES:
                 // We just returned from preferences. If our locale changed,
@@ -2650,6 +2708,55 @@ public class BrowserApp extends GeckoApp
                 });
                 break;
 
+           case BOOKMARKS_IMPORT_FILE_SELECT_CODE:
+                if (resultCode == RESULT_OK) {
+                    // Get the Uri of the selected file 
+                    Uri uri = data.getData();
+                    Log.d(LOGTAG, "File Uri: " + uri.toString());
+
+                    InputStream inputStream = null;
+                    File file = null;
+                    if ("content".equalsIgnoreCase(uri.getScheme())) {
+                        try {
+                            Log.v(LOGTAG, "Reading stream from content provider");
+                            inputStream = getContentResolver().openInputStream(uri);
+                        } catch (java.io.FileNotFoundException e) {
+                            Log.e(LOGTAG, "Error openning stream ", e);
+                        }
+                    }
+                    else if ("file".equalsIgnoreCase(uri.getScheme())) {
+                        Log.v(LOGTAG, "Reading stream from file");
+                        try {
+                            file = new File(uri.getPath());
+                            inputStream = new FileInputStream(file);
+                        } catch ( java.io.FileNotFoundException e) {
+                            Log.e(LOGTAG, "Error openning stream ", e);
+                        }
+                    }
+
+                    if (inputStream == null) {
+                        Log.v(LOGTAG, "Input stream is null");
+                    }
+                    else {
+                        try {
+                            // Convert input stream to JSONArray
+                            BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
+                            StringBuilder stringBuilder = new StringBuilder();
+                            String s;
+                            while ((s = reader.readLine()) != null) {
+                                stringBuilder.append(s);
+                            }
+
+                            //Log.v(LOGTAG, "bookmark:"+stringBuilder.toString());
+                            runContentProviderCall("importBookmarks",stringBuilder.toString(),"imported from "+uri.toString());
+                        } catch (java.io.IOException e) {
+                            Log.e(LOGTAG, "Error reading stream ", e);        
+                        }
+                    }
+                }
+                super.onActivityResult(requestCode, resultCode, data);
+                return;
+
             case ACTIVITY_REQUEST_TAB_QUEUE:
                 TabQueueHelper.processTabQueuePromptResponse(resultCode, this);
                 break;
@@ -2668,7 +2775,7 @@ public class BrowserApp extends GeckoApp
                 @Override
                 public void onFinish() {
                     if (mFirstrunAnimationContainer.showBrowserHint()) {
-                        enterEditingMode();
+                        //enterEditingMode();
                     }
                 }
             });
@@ -3221,7 +3328,7 @@ public class BrowserApp extends GeckoApp
 
         if (!GeckoThread.isRunning()) {
             aMenu.findItem(R.id.settings).setEnabled(false);
-            aMenu.findItem(R.id.help).setEnabled(false);
+            //aMenu.findItem(R.id.help).setEnabled(false);
         }
 
         Tab tab = Tabs.getInstance().getSelectedTab();
@@ -3239,8 +3346,8 @@ public class BrowserApp extends GeckoApp
         final MenuItem charEncoding = aMenu.findItem(R.id.char_encoding);
         final MenuItem findInPage = aMenu.findItem(R.id.find_in_page);
         final MenuItem desktopMode = aMenu.findItem(R.id.desktop_mode);
-        final MenuItem enterGuestMode = aMenu.findItem(R.id.new_guest_session);
-        final MenuItem exitGuestMode = aMenu.findItem(R.id.exit_guest_session);
+        //final MenuItem enterGuestMode = aMenu.findItem(R.id.new_guest_session);
+        //final MenuItem exitGuestMode = aMenu.findItem(R.id.exit_guest_session);
 
         // Only show the "Quit" menu item on pre-ICS, television devices,
         // or if the user has explicitly enabled the clear on shutdown pref.
@@ -3270,7 +3377,7 @@ public class BrowserApp extends GeckoApp
                 // There is no page menu prior to v11 resources.
                 MenuUtils.safeSetEnabled(aMenu, R.id.page, false);
             }
-            MenuUtils.safeSetEnabled(aMenu, R.id.subscribe, false);
+            //MenuUtils.safeSetEnabled(aMenu, R.id.subscribe, false);
             MenuUtils.safeSetEnabled(aMenu, R.id.add_search_engine, false);
             MenuUtils.safeSetEnabled(aMenu, R.id.add_to_launcher, false);
 
@@ -3434,13 +3541,13 @@ public class BrowserApp extends GeckoApp
         findInPage.setEnabled(!isAboutHome(tab));
 
         charEncoding.setVisible(GeckoPreferences.getCharEncodingState());
-
+/**
         if (mProfile.inGuestMode()) {
             exitGuestMode.setVisible(true);
         } else {
             enterGuestMode.setVisible(true);
         }
-
+**/
         if (!Restrictions.isAllowed(this, Restrictable.GUEST_BROWSING)) {
             MenuUtils.safeSetVisible(aMenu, R.id.new_guest_session, false);
         }
@@ -3595,6 +3702,42 @@ public class BrowserApp extends GeckoApp
             return true;
         }
 
+        if (itemId == R.id.remove_all_bookmarks) {
+            new AlertDialog.Builder(this)
+            .setMessage("Remove all Bookmarks?")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton(android.R.string.yes, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int whichButton) {
+                    runContentProviderCall("removeAllBookmarks","","");
+                }})
+            .setNegativeButton(android.R.string.no, null).show();
+            return true;
+        }
+
+        if (itemId == R.id.remove_all_pinned_bookmarks) {
+            new AlertDialog.Builder(this)
+            .setMessage("Remove all Pinned Bookmarks at Home Page?")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton(android.R.string.yes, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int whichButton) {
+                    runContentProviderCall("removeAllPinnedBookmarks","","");
+                }})
+            .setNegativeButton(android.R.string.no, null).show();
+            return true;
+        }
+
+        if (itemId == R.id.import_bookmarks) {
+            showFileChooser();
+            return true;
+        }
+
+        if (itemId == R.id.export_bookmarks) {
+            String fileName = new SimpleDateFormat("'bookmark-'yyyyMMdd-HHmm'.json'").format(new Date());
+            File fileExport = new File(Environment.getExternalStorageDirectory(), fileName);
+            runContentProviderCall("exportBookmarks",fileExport.toString(),"exported to "+fileExport.toString());
+            return true;
+        }
+
         if (itemId == R.id.history_list) {
             final String url = AboutPages.getURLForBuiltinPanelType(PanelType.HISTORY);
             Tabs.getInstance().loadUrl(url);
@@ -3638,11 +3781,12 @@ public class BrowserApp extends GeckoApp
             return true;
         }
 
+/*
         if (itemId == R.id.logins) {
             Tabs.getInstance().loadUrlInTab(AboutPages.LOGINS);
             return true;
         }
-
+*/
         if (itemId == R.id.downloads) {
             Tabs.getInstance().loadUrlInTab(AboutPages.DOWNLOADS);
             return true;
@@ -3683,6 +3827,7 @@ public class BrowserApp extends GeckoApp
             return true;
         }
 
+/**
         if (itemId == R.id.new_guest_session) {
             showGuestModeDialog(GuestModeDialog.ENTERING);
             return true;
@@ -3692,7 +3837,7 @@ public class BrowserApp extends GeckoApp
             showGuestModeDialog(GuestModeDialog.LEAVING);
             return true;
         }
-
+**/
         // We have a few menu items that can also be in the context menu. If
         // we have not already handled the item, give the context menu handler
         // a chance.
@@ -3849,11 +3994,12 @@ public class BrowserApp extends GeckoApp
                 // Increment the launch count and store the new value.
                 launchCount++;
                 settings.edit().putInt(keyName, launchCount).apply();
-
+/**
                 // If we've reached our magic number, show the feedback page.
                 if (launchCount == FEEDBACK_LAUNCH_COUNT) {
                     GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Feedback:Show", null));
                 }
+**/
             }
         } finally {
             StrictMode.setThreadPolicy(savedPolicy);
@@ -4029,6 +4175,83 @@ public class BrowserApp extends GeckoApp
 
         Log.w(LOGTAG, "No candidate updater found; ignoring launch request.");
         return false;
+    }
+
+
+
+//    public static interface BookmarkProgressListener {
+//        public void publishProgress(final int progress);
+//    }
+//
+//    public static final int DIALOG_DOWNLOAD_PROGRESS = 10;
+//    private ProgressDialog mProgressDialog;
+//    private String mProgressDialogMessage;
+//
+//    @Override
+//    protected Dialog onCreateDialog(int id) {
+//        switch (id) {
+//            case DIALOG_DOWNLOAD_PROGRESS:
+//                mProgressDialog = new ProgressDialog(this);
+//                mProgressDialog.setMessage(mProgressDialogMessage);
+//                mProgressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+//                mProgressDialog.setCancelable(false);
+//                mProgressDialog.show();
+//                return mProgressDialog;
+//            default:
+//                return null;
+//        }
+//    }
+
+    protected void runContentProviderCall(final String cmd, final String args, final String completionMsg) {
+//        final BookmarkProgressListener callback = new BookmarkProgressListener() {
+//            @Override
+//            public void publishProgress(final int progress) {
+//                runOnUiThread(new Runnable() {
+//                    public void run() {
+//                        mProgressDialog.setProgress(progress);
+//                    }
+//                });
+//            }
+//        };
+//
+//        ContentObserver mBookmarksContentObserver = new ContentObserver(null) {
+//            @Override
+//            public void onChange(boolean selfChange) {
+//                runOnUiThread(new Runnable() {
+//                    public void run() {
+//                        mProgressDialog.setProgress(progress);
+//                    }
+//                });                
+//            }
+//        };
+        if (cmd.equals("importBookmarks")) {
+            SnackbarHelper.showSnackbar(BrowserApp.this, "importing bookmarks...", Snackbar.LENGTH_LONG);
+        }
+
+        ThreadUtils.postToBackgroundThread(
+            new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        // pyllq - contentproviders are registered thru manifest
+                        getContentResolver().call(BrowserContract.AUTHORITY_URI, cmd, args, null);
+                        // pyllq - notify change so that view gets updated;
+                        getContentResolver().notifyChange(BrowserContract.AUTHORITY_URI,null);
+                    } catch (Exception e) {
+                        Log.e(LOGTAG, "Exception handling message:", e);
+                    }
+
+                    if (completionMsg.length() > 0) {
+                        ThreadUtils.postToUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                SnackbarHelper.showSnackbar(BrowserApp.this, completionMsg, Snackbar.LENGTH_LONG);
+                            }
+                        });
+                    }
+                }
+            }
+        );
     }
 
     /* Implementing ActionModeCompat.Presenter */

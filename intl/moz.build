@@ -17,4 +17,5 @@ DIRS += [
 DIRS += [
     'uconv',
     'build',
+    'pye',
 ]

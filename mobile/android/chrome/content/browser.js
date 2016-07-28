@@ -329,6 +329,38 @@ function dump(msg) {
   Log.d("Browser", msg);
 }
 
+// pyllq +++
+function doChangeMaxLineBoxWidth(aWidth) {
+  aWidth = Math.round( aWidth );
+
+  gReflowPending = null;
+  let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
+  let docShell = webNav.QueryInterface(Ci.nsIDocShell);
+  let docViewer = docShell.contentViewer;
+
+  let range = null;
+  if (BrowserApp.selectedTab._mReflozPoint) {
+    range = BrowserApp.selectedTab._mReflozPoint.range;
+  }
+
+  try {
+    docViewer.pausePainting();
+    docViewer.changeMaxLineBoxWidth(aWidth);
+
+    if (range) {
+      //ZoomHelper.zoomInAndSnapToRange(range);
+    } else {
+      // In this case, we actually didn't zoom into a specific range. It
+      // probably happened from a page load reflow-on-zoom event, so we
+      // need to make sure painting is re-enabled.
+      BrowserApp.selectedTab.clearReflowOnZoomPendingActions();
+    }
+  } finally {
+    docViewer.resumePainting();
+  }
+}
+// pyllq ---
+
 const kStateActive = 0x00000001; // :active pseudoclass for elements
 
 const kXLinkNamespace = "http://www.w3.org/1999/xlink";
@@ -376,6 +408,9 @@ var Strings = {
   },
 };
 
+var gClampImages = true;
+var gHideFloaties = true;
+var gViewport = null;
 Strings.init();
 
 const kFormHelperModeDisabled = 0;
@@ -484,6 +519,7 @@ var BrowserApp = {
     RemoteDebugger.init();
     UserAgentOverrides.init();
     DesktopUserAgent.init();
+    HttpRequestObserver.init();
     Distribution.init();
     Tabs.init();
     SearchEngines.init();
@@ -3161,6 +3197,54 @@ var LightWeightThemeWebInstaller = {
   }
 };
 
+
+// pyllq
+var UA_FF = "Mozilla/5.0 (Android; Mobile; rv:47.0) Gecko/47.0 Firefox/47.0";
+var UA_CHROME = "Pyllq/47.0 Mozilla/5.0 (Linux; U; Android 4.0.3; en;) AppleWebkit/537.36 (KHTML, like Gecko) Version/4.0 Mobile Safari/537.36";
+
+var UA_LIST = {};
+UA_LIST["weibo.com"]=0;
+UA_LIST["weibo.cn"]=0;
+
+// sites that require a chrome UA
+var HttpRequestObserver = {
+  init: function() { 
+    Services.obs.addObserver(this, "http-on-modify-request", false);         
+  },
+
+  uninit: function() {
+    Services.obs.removeObserver(this, "http-on-modify-request"); 
+  },
+
+  observe: function(subject, topic, data)  
+  {  
+    if (topic == "http-on-modify-request") {
+      var httpChannel = subject.QueryInterface(Ci.nsIHttpChannel);
+      if (httpChannel==null) return;
+
+      var domainHost;
+      try {
+        var referer = httpChannel.getRequestHeader("Referer");
+        if (referer.length>0) {
+            domainHost = Services.io.newURI(referer,null,null).host;
+        }
+        else {
+          domainHost = httpChannel.URI.host;
+        }
+      } catch (e) {
+        domainHost = httpChannel.URI.host;
+      }
+
+      for (var s = domainHost; s != ""; s = s.replace(/^.*?(\.|$)/,"")) {
+        if (UA_LIST[s] != null) return;
+      }
+      console.log("setting UA to FF:"+httpChannel.URI.host);
+      httpChannel.setRequestHeader("User-Agent", UA_FF, false);
+    }
+  }
+};
+
+
 var DesktopUserAgent = {
   DESKTOP_UA: null,
   TCO_DOMAIN: "t.co",
@@ -3367,6 +3451,10 @@ nsBrowserAccess.prototype = {
 // get created with the right size rather than being 1x1
 var gScreenWidth = 1;
 var gScreenHeight = 1;
+
+// pyllq +++
+var gReflowPending = null;
+// pyllq ---
 
 function Tab(aURL, aParams) {
   this.filter = null;
@@ -3586,7 +3674,155 @@ Tab.prototype = {
     }
   },
 
+// pyllq +++
   /**
+   * Retrieves the font size in twips for a given element.
+   */
+  getInflatedFontSizeFor: function(aElement) {
+    // GetComputedStyle should always give us CSS pixels for a font size.
+    let fontSizeStr = this.window.getComputedStyle(aElement)['fontSize'];
+    let fontSize = fontSizeStr.slice(0, -2);
+    return aElement.fontSizeInflation * fontSize;
+  },
+
+  /**
+   * This returns the zoom necessary to match the font size of an element to
+   * the minimum font size specified by the browser.zoom.reflowOnZoom.minFontSizeTwips
+   * preference.
+   */
+  getZoomToMinFontSize: function(aElement) {
+    // We only use the font.size.inflation.minTwips preference because this is
+    // the only one that is controlled by the user-interface in the 'Settings'
+    // menu. Thus, if font.size.inflation.emPerLine is changed, this does not
+    // effect reflow-on-zoom.
+    let minFontSize = convertFromTwipsToPx(Services.prefs.getIntPref("font.size.inflation.minTwips"));
+    return minFontSize / this.getInflatedFontSizeFor(aElement);
+  },
+
+  clearReflowOnZoomPendingActions: function() {
+    // Reflow was completed, so now re-enable painting.
+    let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
+    let docShell = webNav.QueryInterface(Ci.nsIDocShell);
+    let docViewer = docShell.contentViewer;
+    docViewer.resumePainting();
+
+    BrowserApp.selectedTab._mReflozPositioned = false;
+  },
+
+  /**
+   * Reflow on zoom consists of a few different sub-operations:
+   *
+   * 1. When a double-tap event is seen, we verify that the correct preferences
+   *    are enabled and perform the pre-position handling calculation. We also
+   *    signal that reflow-on-zoom should be performed at this time, and pause
+   *    painting.
+   * 2. During the next call to setViewport(), which is in the Tab prototype,
+   *    we detect that a call to changeMaxLineBoxWidth should be performed. If
+   *    we're zooming out, then the max line box width should be reset at this
+   *    time. Otherwise, we call performReflowOnZoom.
+   *   2a. PerformReflowOnZoom() and resetMaxLineBoxWidth() schedule a call to
+   *       doChangeMaxLineBoxWidth, based on a timeout specified in preferences.
+   * 3. doChangeMaxLineBoxWidth changes the line box width (which also
+   *    schedules a reflow event), and then calls ZoomHelper.zoomInAndSnapToRange.
+   * 4. ZoomHelper.zoomInAndSnapToRange performs the positioning of reflow-on-zoom
+   *    and then re-enables painting.
+   *
+   * Some of the events happen synchronously, while others happen asynchronously.
+   * The following is a rough sketch of the progression of events:
+   *
+   * double tap event seen -> onDoubleTap() -> ... asynchronous ...
+   *   -> setViewport() -> performReflowOnZoom() -> ... asynchronous ...
+   *   -> doChangeMaxLineBoxWidth() -> ZoomHelper.zoomInAndSnapToRange()
+   *   -> ... asynchronous ... -> setViewport() -> Observe('after-viewport-change')
+   *   -> resumePainting()
+   */
+  performReflowOnZoom: function(aViewport) {
+    console.log("performReflowOnZoom");
+    let zoom = aViewport.zoom;
+
+    let viewportWidth = gScreenWidth / zoom;
+    let reflozTimeout = Services.prefs.getIntPref("browser.zoom.reflowZoom.reflowTimeout");
+
+    if (gReflowPending) {
+      clearTimeout(gReflowPending);
+    }
+
+    // We add in a bit of fudge just so that the end characters
+    // don't accidentally get clipped. 15px is an arbitrary choice.
+    gReflowPending = setTimeout(doChangeMaxLineBoxWidth,
+                                reflozTimeout,
+                                viewportWidth - 15);
+  },
+
+  _clampImages: function(aViewport, aClampImages = true, aHideFloats = true) {
+    if (!gClampImages) aClampImages = false;
+    if (!gHideFloaties) aHideFloats = false;
+    if (!aClampImages && !aHideFloats) return;
+
+    var tab = BrowserApp.selectedTab;
+    var tabwin = tab.window;
+    var document = tabwin.document;
+
+    var viewport = tab.getViewport();
+    //console.log("ci:viewport.cssWidth:"+viewport.cssWidth);
+    //console.log("ci:tabwin.innerWidth:"+tabwin.innerWidth);
+    //console.log("ci:gScreenWidth:"+gScreenWidth);
+    //console.log("ci:aViewport.zoom:"+aViewport.zoom);
+    //console.log("ci:window.innerWidth:"+window.innerWidth);
+
+    var z = tabwin.innerWidth/window.innerWidth;
+    if (z > 0.99) z = 1;
+    var zoomstr = Math.round(z*100)+'%';
+
+    if (aClampImages) {
+      var a = document.getElementsByTagName("img");
+      for (var i=0; i < a.length; i++) {
+        var e = a[i];
+        if (!e._origwidth) e._origwidth = e.width;
+        if (e._origwidth > tabwin.innerWidth)
+          e.style.maxWidth = zoomstr;
+        else
+          e.style.maxWidth = "100%";        
+      }
+    }
+
+    if (aHideFloats) {
+
+      if (document._floaties==null) {
+        document._floaties = [];
+      }
+
+      var a = document.getElementsByTagName("*");
+      for (var i=0; i < a.length; i++) {
+        var e = a[i];
+        var style = window.getComputedStyle(e);
+        if (style['position'] == "fixed" && e.style._origdisplay==null) {
+          e.style._origdisplay = e.style.display;
+          document._floaties.push(e);
+        }
+      }
+
+      for (var i=0; i < document._floaties.length; i++) {
+        var e = document._floaties[i];
+        e.style.display = (z==1)?e.style._origdisplay:"none";
+      }
+      
+    }
+
+  },
+
+  performReflowOnZoomImmediate: function(aViewport) {
+    let zoom = aViewport.zoom;
+    let viewportWidth = gScreenWidth / zoom;
+    if (gReflowPending) {
+      clearTimeout(gReflowPending);
+      gReflowPending = null;
+    }    
+    doChangeMaxLineBoxWidth(viewportWidth-15);
+  },
+// pyllq ---
+
+  /** 
    * Reloads the tab with the desktop mode setting.
    */
   reloadWithMode: function (aDesktopMode) {
@@ -3761,12 +3997,6 @@ Tab.prototype = {
   },
 
   setViewport: function(aViewport) {
-    if (AppConstants.MOZ_ANDROID_APZ) {
-      // This should already be getting short-circuited out in GeckoLayerClient,
-      // but this is an extra safety precaution
-      return;
-    }
-
     // Transform coordinates based on zoom
     let x = aViewport.x / aViewport.zoom;
     let y = aViewport.y / aViewport.zoom;
@@ -3783,6 +4013,9 @@ Tab.prototype = {
 
     if (aViewport.displayPort)
       this.setDisplayPort(aViewport.displayPort);
+    
+    gViewport = aViewport;
+    //this.performReflowOnZoomImmediate(aViewport);
   },
 
   setResolution: function(aZoom, aForce) {
@@ -4644,6 +4877,12 @@ var BrowserEventHandler = {
     BrowserApp.deck.addEventListener("DOMUpdatePageReport", PopupBlockerObserver.onUpdatePageReport, false);
     BrowserApp.deck.addEventListener("MozMouseHittest", this, true);
 
+    document.addEventListener("MozMagnifyGesture", this, true);
+    Services.prefs.addObserver("browser.zoom.reflowOnZoom", this, false);
+    Services.prefs.addObserver("browser.zoom.pyllq-clamp-images", this, false);
+    Services.prefs.addObserver("browser.zoom.pyllq-hide-floaties", this, false);
+    this.updateReflozPref();
+
     InitLater(() => BrowserApp.deck.addEventListener("click", InputWidgetHelper, true));
     InitLater(() => BrowserApp.deck.addEventListener("click", SelectHelper, true));
     if (AppConstants.NIGHTLY_BUILD) {
@@ -4655,6 +4894,20 @@ var BrowserEventHandler = {
       return Reader.onBackPress(BrowserApp.selectedTab.id);
     }, "Browser:OnBackPressed");
   },
+
+// pyllq +++
+  resetMaxLineBoxWidth: function() {
+    BrowserApp.selectedTab.probablyNeedRefloz = true;
+    let vp = BrowserApp.selectedTab.getViewport();
+    BrowserApp.selectedTab.performReflowOnZoom(vp);
+  },
+
+  updateReflozPref: function() {
+    this.mReflozPref = Services.prefs.getBoolPref("browser.zoom.reflowOnZoom");
+    gClampImages = Services.prefs.getBoolPref("browser.zoom.pyllq-clamp-images");
+    gHideFloaties = Services.prefs.getBoolPref("browser.zoom.pyllq-hide-floaties");
+  },
+// pyllq ---
 
   handleEvent: function(aEvent) {
     switch (aEvent.type) {
@@ -4669,6 +4922,10 @@ var BrowserEventHandler = {
       case 'MozMouseHittest':
         this._handleRetargetedTouchStart(aEvent);
         break;
+      case 'MozMagnifyGesture':
+        this.observe(this, aEvent.type,
+                     JSON.stringify({x: aEvent.screenX, y: aEvent.screenY,
+                                     zoomDelta: aEvent.delta}));        
     }
   },
 
@@ -4747,7 +5004,18 @@ var BrowserEventHandler = {
         tabID: tab.id
       });
       return;
+// pyllq +++
+    } else if (aTopic == "nsPref:changed") {
+      if (aData == "browser.zoom.reflowOnZoom") {
+        this.mReflozPref = Services.prefs.getBoolPref("browser.zoom.reflowOnZoom");
+      } else if (aData == "browser.zoom.pyllq-clamp-images") {
+        gClampImages = Services.prefs.getBoolPref("browser.zoom.pyllq-clamp-images");
+      } else if (aData == "browser.zoom.pyllq-hide-floaties") {
+        gHideFloaties = Services.prefs.getBoolPref("browser.zoom.pyllq-hide-floaties");
+      }
+      return;
     }
+// pyllq ---
 
     // the remaining events are all dependent on the browser content document being the
     // same as the browser displayed document. if they are not the same, we should ignore
@@ -4874,6 +5142,15 @@ var BrowserEventHandler = {
         this.onDoubleTap(aData);
         break;
 
+// pyllq +++
+      case"Gesture:ScaleEnd":
+        break;
+
+      case "MozMagnifyGesture":
+        this.onPinchFinish(aData);
+        break;
+// pyllq ---
+
       default:
         dump('BrowserEventHandler.handleUserEvent: unexpected topic "' + aTopic + '"');
         break;
@@ -4897,6 +5174,7 @@ var BrowserEventHandler = {
   },
 
   onDoubleTap: function(aData) {
+    console.log("Gesture:DoubleTap:"+aData);
     let metadata = ViewportHandler.getMetadataForDocument(BrowserApp.selectedBrowser.contentDocument);
     if (metadata && !metadata.allowDoubleTapZoom) {
       return;
@@ -4919,6 +5197,72 @@ var BrowserEventHandler = {
       ZoomHelper.zoomToElement(element, data.y);
     }
   },
+
+// pyllq +++
+  /**
+   * Determine if reflow-on-zoom functionality should be suppressed, given a
+   * particular element. Double-tapping on the following elements suppresses
+   * reflow-on-zoom:
+   *
+   * <video>, <object>, <embed>, <applet>, <canvas>, <img>, <media>, <pre>
+   */
+  _shouldSuppressReflowOnZoom: function(aElement) {
+    if (aElement instanceof HTMLVideoElement ||
+        aElement instanceof HTMLObjectElement ||
+        aElement instanceof HTMLEmbedElement ||
+        aElement instanceof HTMLAppletElement ||
+        aElement instanceof HTMLCanvasElement ||
+        aElement instanceof HTMLImageElement ||
+        aElement instanceof HTMLMediaElement ||
+        aElement instanceof HTMLPreElement) {
+      return true;
+    }
+
+    return false;
+  },
+
+  onPinchFinish: function(aData) {
+    console.log("onPinchFinish:"+aData);
+
+    let data = {};
+    try {
+      data = JSON.parse(aData);
+    } catch(ex) {
+      console.log(ex);
+      return;
+    }
+
+    if (gViewport != null) {
+      var zoomDelta = data.zoomDelta;
+      //if (zoomDelta <0) zoomDelta = -zoomDelta;
+
+      let element = ElementTouchHelper.anyElementFromPoint(data.x, data.y);
+      if (zoomDelta > 0 && this._shouldSuppressReflowOnZoom(element)) {
+        console.log("skipping zoomreflow");
+        BrowserApp.selectedTab._clampImages(gViewport,false,true);
+      }
+      else {
+        //if (zoomDelta > 0.25)
+        BrowserApp.selectedTab.performReflowOnZoomImmediate(gViewport);
+        BrowserApp.selectedTab._clampImages(gViewport);
+      }
+
+      gViewport = null;
+    }
+
+    //  BrowserEventHandler.resetMaxLineBoxWidth();
+
+    if (BrowserEventHandler.mReflozPref &&
+         !BrowserApp.selectedTab._mReflozPoint) {
+       let zoomPointX = data.x;
+       let zoomPointY = data.y;
+
+       BrowserApp.selectedTab._mReflozPoint = { x: zoomPointX, y: zoomPointY,
+         range: BrowserApp.selectedBrowser.contentDocument.caretPositionFromPoint(zoomPointX, zoomPointY) };
+         BrowserApp.selectedTab.probablyNeedRefloz = true;
+    }
+  },
+// pyllq ---
 
   _shouldZoomToElement: function(aElement) {
     let win = aElement.ownerDocument.defaultView;
@@ -5614,6 +5958,7 @@ var XPInstallObserver = {
     let strings = Strings.browser;
     let brandShortName = Strings.brand.GetStringFromName("brandShortName");
 
+    console.log(aTopic);
     switch (aTopic) {
       case "addon-install-started":
         Snackbars.show(strings.GetStringFromName("alertAddonsDownloading"), Snackbars.LENGTH_LONG);

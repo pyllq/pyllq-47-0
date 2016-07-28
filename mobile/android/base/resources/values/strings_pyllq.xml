@@ -1,0 +1,79 @@
+<resources>
+    <string name="pyllq_preferences">Pyllq settings</string>
+    <string name="pyllq_preferences_desc">settings for pinyin engine</string>
+
+    <string name="firstrun_firstpage">Welcome</string>
+    <string name="firstrun_firstpage_desc">Thank you for installing Monarch Chinesebrowser 47.0\r\n\r\nPlease select your pinyin preferences in the next few pages.</string>
+
+    <string name="firstrun_lastpage">Let\'s Go</string>
+    <string name="firstrun_lastpage_desc">Monarch Chinesebrowser 47.0\r\n\r\nSupport can be found at facebook.com/chinesebrowser</string>
+
+    <string name="firstrun_whatsnew">What\'s new.</string>
+
+    <string name="langEncoding">Character</string>
+    <string name="langEncodingDesc">select your Chinese character encoding to be displayed</string>
+    <string name="simplified">Simplified</string>
+    <string name="traditional">Traditional</string>
+    <string name="original">As per Original (no conversion)</string>
+
+    <string name="pinyinFormat">Pinyin format</string>
+    <string name="pinyinFormatDesc">select your preferred Pinyin format</string>
+    <string name="hanyuPinyin">Hanyu Pinyin</string>
+    <string name="bpmf">BPMF</string>
+    <string name="hanyuPinyinNum">Hanyu Pinyin with numeric tones</string>
+    <string name="bpmfNum">BPMF with numeric tones</string>
+
+    <string name="pinyinLocation">Pinyin location</string>
+    <string name="pinyinLocationDesc">select your preferred Pinyin location</string>
+    <string name="top">Top</string>
+    <string name="bottom">Bottom</string>
+
+    <string name="grade">Grade</string>
+    <string name="gradeDesc">select your reading grade level</string>
+    <string name="grade0">00 K1-K2</string>
+    <string name="grade1">01 P1-2</string>
+    <string name="grade2">02 P3-4</string>
+    <string name="grade3">03 P5-6 HCL / P5-6 / P5-6 Foundation</string>
+    <string name="grade4">04 P5-6.1 HCL / P5-6.1 / S1-2 NT</string>
+    <string name="grade5">05 P5-6.2 HCL / S3-4 NT / S1-2 NA / S1-2 EXP</string>
+    <string name="grade6">06 S1-2.1 NA / S1-2.1 EXP / S1-2 HCL</string>
+    <string name="grade7">07 S3-4 NA / S1-2.2 EXP / S1-2.1 HCL</string>
+    <string name="grade8">08 S3-4.1 NA / S3-4 EXP / S1-2.2 HCL</string>
+    <string name="grade9">09 S5 NA / S3-4.1 EXP / S1-2.3 HCL</string>
+    <string name="grade10">10 S5.1 NA / S3-4.2 EXP / S3-4 HCL</string>
+    <string name="grade11">11 S3-4.1 HCL</string>
+    <string name="grade12">12 Power Reader</string>
+    <string name="gradeA">Beginner</string>
+    <string name="gradeADesc">All chinese characters are shown with pinyin</string>    
+    <string name="gradeB">Junior</string>
+    <string name="gradeBDesc">This grade is targetted for a bilingual at age 8 or younger</string>
+    <string name="gradeC">Senior</string>
+    <string name="gradeCDesc">This grade is targetted for someone who has a strong background in Chinese</string>
+
+    <string name="firstrun_whatsnew_title">What\'s new</string>
+    <string name="firstrun_whatsnew_close">Close</string>
+
+<string name="firstrun_whatsnew_text">
+<b>47.0#0 2016-07-26</b>\n
+<b>Major Updates</b>\n
++ Chinesebrowser HTML codebase is updated to Mozilla Firefox version 47.0.\n
++ Introduced the following character and pinyin features. See Pyllq Settings.\n
+  * simplified/traditional/as per original character options\n
+  * Hanyu/Bopomofo pinyin options (with numeral tone marking option)\n
+  * pinyin location option\n
+  * pinyin to be shown according to grade settings (Beginner/Junior/Senior)\n
++ PDF output is now available with pinyin.\n
++ Page zoom now comes with clamp images and hide floaties features. (can be disabled in settings)\n
+\n
+<b>Minor Updates</b>\n
++ fixed general chinese websites behaviour bugs\n
++ fixed home page (pin/thumbnail errors)\n
++ partially fixed bookmark import/export idiosyncrasies.\n
++ initial thumbnail setups in Home page has been removed. Home page is now blank for a new install.\n
++ various other minor fixes.\n
+\n
+‎<b>Chinese Fonts</b>‬ if they are missing from your phone will be shown as blank out (black) squares. ‪Chinesebrowser‬ also scans /sdcard/fonts for fonts during start up. You can download some fonts with .ttc or .ttf extensions (eg simsun.ttc) and put it in /sdcard/fonts and the missing font problem will be resolved. There is no rooting requirements or any need to install fonts to the system folders. You can also place other fonts into this same folder /sdcards/fonts.\n
+\n
+</string>
+
+</resources>

@@ -140,6 +140,9 @@ gfxTextRun::Create(const gfxTextRunFactory::Parameters *aParams,
         return nullptr;
     }
 
+    // pyllq - disable LetterSpacing support
+    aFlags &= ~(gfxTextRunFactory::TEXT_ENABLE_SPACING);
+
     return new (storage) gfxTextRun(aParams, aLength, aFontGroup, aFlags);
 }
 
@@ -225,6 +228,10 @@ gfxTextRun::SetPotentialLineBreaks(uint32_t aStart, uint32_t aLength,
             // align with the platform's idea of what constitutes a cluster.
             canBreak = CompressedGlyph::FLAG_BREAK_TYPE_NONE;
         }
+
+        if (!charGlyphs[i].IsSimpleGlyph() && charGlyphs[i].GetGlyphCount())
+            continue;
+
         changed |= charGlyphs[i].SetCanBreakBefore(canBreak);
     }
     return changed != 0;

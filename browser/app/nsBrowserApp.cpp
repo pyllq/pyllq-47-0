@@ -29,6 +29,9 @@
 #include "nsIFile.h"
 #include "nsStringGlue.h"
 
+// pyllq
+#include "../../intl/pye/libpye.h"
+
 #ifdef XP_WIN
 // we want a wmain entry point
 #ifdef MOZ_ASAN
@@ -356,6 +359,13 @@ int main(int argc, char* argv[], char* envp[])
   #error "Unknown platform"  // having this here keeps cppcheck happy
 #endif
   }
+
+  // pyllq
+  nsAutoString path;
+  xreDirectory->GetPath(path);
+  //printf("exec path: %s\n",NS_ConvertUTF16toUTF8(path).get());
+  path.AppendASCII("/py.xdb");
+  pyeObject::initFactory(NS_ConvertUTF16toUTF8(path).get());
 
   int result = do_main(argc, argv, envp, xreDirectory);
 

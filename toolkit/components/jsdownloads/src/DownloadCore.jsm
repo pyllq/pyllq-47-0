@@ -2724,7 +2724,7 @@ this.DownloadPDFSaver.prototype = {
       printSettings.headerStrCenter = "";
       printSettings.headerStrLeft = "";
       printSettings.headerStrRight = "";
-      printSettings.footerStrCenter = "";
+      printSettings.footerStrCenter = "www.chinesebrowser.com";
       printSettings.footerStrLeft = "";
       printSettings.footerStrRight = "";
 

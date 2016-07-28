@@ -32,7 +32,7 @@
 # be parenthesized thus to clarify that the logical AND operator has precedence:
 #   !defined(MOZILLA_OFFICIAL) || (defined(NIGHTLY_BUILD) && defined(MOZ_DEBUG))
 #if !defined(MOZILLA_OFFICIAL) || defined(NIGHTLY_BUILD) && defined(MOZ_DEBUG)
-                 android:debuggable="true">
+                 android:debuggable="false">
 #else
                  android:debuggable="false">
 #endif
@@ -238,7 +238,9 @@
             </intent-filter>
         </receiver>
 
+#ifdef MOZ_MOZ_BUILD_ORIG
 #include ../services/manifests/FxAccountAndroidManifest_activities.xml.in
+#endif
 #ifdef MOZ_ANDROID_SEARCH_ACTIVITY
 #include ../search/manifests/SearchAndroidManifest_activities.xml.in
 #endif
@@ -352,7 +354,9 @@
           android:name="org.mozilla.gecko.telemetry.TelemetryUploadService"
           android:exported="false"/>
 
+#ifdef MOZ_MOZ_BUILD_ORIG
 #include ../services/manifests/FxAccountAndroidManifest_services.xml.in
+#endif
 
         <service
             android:name="org.mozilla.gecko.tabqueue.TabReceivedService"

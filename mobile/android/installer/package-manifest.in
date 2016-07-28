@@ -45,6 +45,7 @@
 @BINPATH@/@DLL_PREFIX@omxpluginhc@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@omxpluginkk@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@xul@DLL_SUFFIX@
+@BINPATH@/@DLL_PREFIX@pye@DLL_SUFFIX@
 
 @BINPATH@/@DLL_PREFIX@nssckbi@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@nss3@DLL_SUFFIX@
@@ -79,6 +80,7 @@
 [xpcom]
 @BINPATH@/package-name.txt
 @BINPATH@/classes.dex
+@BINPATH@/distribution/*
 
 [browser]
 ; [Base Browser Files]

@@ -1771,6 +1771,7 @@ gfxHarfBuzzShaper::SetGlyphsFromRun(DrawTarget     *aDrawTarget,
             // there must be at least one in the clump, and we already measured
             // its advance, hence the placement of the loop-exit test and the
             // measurement of the next glyph.
+            uint32_t hb_break = 0;
             // For vertical orientation, we add a "base offset" to compensate
             // for the positioning within the cluster being based on horizontal
             // glyph origin/offset.
@@ -1786,6 +1787,9 @@ gfxHarfBuzzShaper::SetGlyphsFromRun(DrawTarget     *aDrawTarget,
 
                 details->mXOffset = iOffset;
                 details->mAdvance = advance;
+                details->hb_flag = ginfo[glyphStart].mask;
+                if (ginfo[glyphStart].mask >> 8)
+                    hb_break = (ginfo[glyphStart].mask >> 8) & 0x000f;
 
                 details->mYOffset = bPos -
                     (roundB ? appUnitsPerDevUnit * FixedToIntRound(b_offset)
@@ -1833,6 +1837,12 @@ gfxHarfBuzzShaper::SetGlyphsFromRun(DrawTarget     *aDrawTarget,
             gfxShapedText::CompressedGlyph g;
             g.SetComplex(charGlyphs[baseCharIndex].IsClusterStart(),
                          true, detailedGlyphs.Length());
+            if (hb_break) {
+              g.SetCanBreakBefore(hb_break & 0x0001?
+                gfxShapedText::CompressedGlyph::FLAG_BREAK_TYPE_NORMAL:
+                gfxShapedText::CompressedGlyph::FLAG_BREAK_TYPE_NONE);
+            }
+
             aShapedText->SetGlyphs(aOffset + baseCharIndex,
                                    g, detailedGlyphs.Elements());
 

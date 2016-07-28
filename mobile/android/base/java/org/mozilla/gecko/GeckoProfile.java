@@ -1121,7 +1121,7 @@ public final class GeckoProfile {
                     // the favicon IDs won't overlap.
                     final LocalBrowserDB db = new LocalBrowserDB(getName());
                     final int offset = distribution == null ? 0 : db.addDistributionBookmarks(cr, distribution, 0);
-                    db.addDefaultBookmarks(context, cr, offset);
+                    //db.addDefaultBookmarks(context, cr, offset);
 
                     Log.d(LOGTAG, "Running post-distribution task: android preferences.");
                     DistroSharedPrefsImport.importPreferences(context, distribution);

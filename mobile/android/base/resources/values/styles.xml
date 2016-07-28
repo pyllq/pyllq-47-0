@@ -279,6 +279,16 @@
         <item name="android:gravity">center</item>
     </style>
 
+    <style name="Widget.Firstrun.RadioGroup" parent="@android:style/Widget.CompoundButton">
+        <item name="android:paddingLeft">32dip</item>
+        <item name="android:paddingRight">32dip</item>        
+    </style>
+
+    <style name="Widget.Firstrun.RadioButton" parent="@android:style/Widget.CompoundButton.RadioButton">
+        <item name="android:textColor">#000000</item>
+        <item name="android:textSize">16sp</item>
+    </style>
+
     <style name="Widget.Firstrun.Button" parent="Widget.BaseButton">
         <item name="android:layout_width">@dimen/firstrun_content_width</item>
         <item name="android:layout_height">60dp</item>

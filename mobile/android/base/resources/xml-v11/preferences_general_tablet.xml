@@ -30,6 +30,17 @@
                android:value="preferences_locale" />
     </PreferenceScreen>
 
+    <PreferenceScreen android:title="@string/pyllq_preferences"
+        android:summary="@string/pyllq_preferences_desc" >
+        <intent android:action="android.intent.action.VIEW"
+            android:targetPackage="@string/android_package_name"
+            android:targetClass="org.mozilla.gecko.preferences.GeckoPreferences" >
+            <extra
+                android:name="resource"
+                android:value="preferences_pyllq" />            
+        </intent>
+    </PreferenceScreen>
+
     <CheckBoxPreference android:key="browser.chrome.dynamictoolbar"
                         android:title="@string/pref_scroll_title_bar2"
                         android:summary="@string/pref_scroll_title_bar_summary" />

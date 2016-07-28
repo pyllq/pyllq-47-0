@@ -75,6 +75,17 @@
         </intent>
     </PreferenceScreen>
 
+    <PreferenceScreen android:title="@string/pyllq_preferences"
+        android:summary="@string/pyllq_preferences_desc" >
+        <intent android:action="android.intent.action.VIEW"
+            android:targetPackage="@string/android_package_name"
+            android:targetClass="org.mozilla.gecko.preferences.GeckoPreferences" >
+            <extra
+                android:name="resource"
+                android:value="preferences_pyllq" />            
+        </intent>
+    </PreferenceScreen>
+
     <org.mozilla.gecko.preferences.PrivateDataPreference
             android:key="android.not_a_preference.privacy.clear"
             android:title="@string/pref_clear_private_data_now"

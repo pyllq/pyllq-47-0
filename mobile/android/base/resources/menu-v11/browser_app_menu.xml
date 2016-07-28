@@ -48,6 +48,10 @@
           android:visibility="gone"
           android:showAsAction="collapseActionView"/>
 
+    <item android:id="@+id/about_home"
+          android:icon="@drawable/ic_menu_home"
+          android:title="@string/about_home"/>
+
     <item android:id="@+id/new_tab"
           android:title="@string/new_tab"/>
 
@@ -71,10 +75,10 @@
           android:title="@string/page">
 
         <menu>
-
+<!--
             <item android:id="@+id/subscribe"
                   android:title="@string/contextmenu_subscribe"/>
-
+-->
             <item android:id="@+id/save_as_pdf"
                   android:title="@string/save_as_pdf"/>
 
@@ -95,13 +99,33 @@
           android:title="@string/tools">
 
         <menu>
+            <item android:id="@+id/tools_bookmarks"
+                  android:title="@string/bookmarks_title">
+                <menu>
+                  <item android:id="@+id/import_bookmarks"
+                        android:icon="@drawable/ic_menu_import"
+                        android:title="Import bookmarks"/>
 
+                  <item android:id="@+id/export_bookmarks"
+                        android:icon="@drawable/ic_menu_export"
+                        android:title="Export bookmarks"/>
+
+                  <item android:id="@+id/remove_all_bookmarks"
+                        android:icon="@drawable/ic_menu_reader_remove"
+                        android:title="Remove all bookmarks"/>
+
+                  <item android:id="@+id/remove_all_pinned_bookmarks"
+                        android:icon="@drawable/ic_menu_reader_remove"
+                        android:title="Remove all pinned bookmarks"/>                  
+                </menu>
+            </item>
+            
             <item android:id="@+id/downloads"
                   android:title="@string/downloads"/>
 
             <item android:id="@+id/addons"
                   android:title="@string/addons"/>
-
+<!--
             <item android:id="@+id/logins"
                   android:title="@string/logins"/>
 
@@ -112,7 +136,7 @@
             <item android:id="@+id/exit_guest_session"
                   android:visible="false"
                   android:title="@string/exit_guest_session"/>
-
+-->
         </menu>
 
     </item>

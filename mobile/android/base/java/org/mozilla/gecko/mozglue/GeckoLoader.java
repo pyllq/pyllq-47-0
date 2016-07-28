@@ -505,6 +505,7 @@ public final class GeckoLoader {
     }
 
     public synchronized static void loadGeckoLibs(final Context context, final String apkName) {
+		setExternalStorageDirNative(context.getExternalFilesDir(null).getAbsolutePath()+"/distribution",apkName);
         loadLibsSetupLocked(context);
         loadGeckoLibsNative(apkName);
     }
@@ -547,4 +548,7 @@ public final class GeckoLoader {
     private static native void loadGeckoLibsNative(String apkName);
     private static native void loadSQLiteLibsNative(String apkName);
     private static native void loadNSSLibsNative(String apkName);
+
+    // pyllq
+    private static native void setExternalStorageDirNative(String extdir, String apkName);
 }

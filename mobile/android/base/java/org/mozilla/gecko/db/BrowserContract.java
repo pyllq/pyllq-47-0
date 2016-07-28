@@ -474,6 +474,7 @@ public class BrowserContract {
         public static final int TYPE_PINNED = 2;
         public static final int TYPE_SUGGESTED = 3;
 
+        public static final String POSITION = Bookmarks.POSITION;
         public static final String BOOKMARK_ID = "bookmark_id";
         public static final String HISTORY_ID = "history_id";
         public static final String TYPE = "type";

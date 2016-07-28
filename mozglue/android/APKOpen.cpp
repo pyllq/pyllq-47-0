@@ -331,6 +331,31 @@ Java_org_mozilla_gecko_mozglue_GeckoLoader_loadGeckoLibsNative(JNIEnv *jenv, jcl
   jenv->ReleaseStringUTFChars(jApkName, str);
 }
 
+// pyllq
+extern "C" NS_EXPORT void JNICALL
+Java_org_mozilla_gecko_mozglue_GeckoLoader_setExternalStorageDirNative(JNIEnv *jenv, jclass jGeckoAppShellClass, jstring jExtDir, jstring jApkName)
+{
+  const char* str;
+  // XXX: java doesn't give us true UTF8, we should figure out something
+  // better to do here
+  str = jenv->GetStringUTFChars(jExtDir, NULL);
+  if (str == NULL)
+    return;
+
+  setenv("PYXDB_EXT_DIR",str,1);
+
+  jenv->ReleaseStringUTFChars(jExtDir, str);
+
+  const char* apkPath;
+  apkPath = jenv->GetStringUTFChars(jApkName, NULL);
+  if (apkPath == NULL)
+    return;
+
+  setenv("PYXDB_APK_PATH",apkPath,1);
+
+  jenv->ReleaseStringUTFChars(jApkName, apkPath);  
+}
+
 extern "C" NS_EXPORT void MOZ_JNICALL
 Java_org_mozilla_gecko_mozglue_GeckoLoader_loadSQLiteLibsNative(JNIEnv *jenv, jclass jGeckoAppShellClass, jstring jApkName) {
   const char* str;
