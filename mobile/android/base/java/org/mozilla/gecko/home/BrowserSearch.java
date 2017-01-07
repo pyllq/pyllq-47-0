@@ -186,7 +186,7 @@ public class BrowserSearch extends HomeFragment
     private View mSuggestionsOptInPrompt;
 
     public interface OnSearchListener {
-        public void onSearch(SearchEngine engine, String text);
+        void onSearch(SearchEngine engine, String text, TelemetryContract.Method method);
     }
 
     public interface OnEditSuggestionListener {
@@ -262,7 +262,7 @@ public class BrowserSearch extends HomeFragment
                 getLoaderManager().destroyLoader(LOADER_ID_SUGGESTION);
             }
 
-            GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("SearchEngines:GetVisible", null));
+            GeckoAppShell.notifyObservers("SearchEngines:GetVisible", null);
         }
         super.onHiddenChanged(hidden);
     }
@@ -276,7 +276,7 @@ public class BrowserSearch extends HomeFragment
 
         // Fetch engines if we need to.
         if (mSearchEngines.isEmpty() || !Locale.getDefault().equals(mLastLocale)) {
-            GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("SearchEngines:GetVisible", null));
+            GeckoAppShell.notifyObservers("SearchEngines:GetVisible", null);
         } else {
             updateSearchEngineBar();
         }
@@ -435,7 +435,7 @@ public class BrowserSearch extends HomeFragment
         }
 
         // Prefetch auto-completed domain since it's a likely target
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Session:Prefetch", "http://" + autocompletion));
+        GeckoAppShell.notifyObservers("Session:Prefetch", "http://" + autocompletion);
 
         mAutocompleteHandler.onAutocomplete(autocompletion);
         mAutocompleteHandler = null;
@@ -534,7 +534,7 @@ public class BrowserSearch extends HomeFragment
 
             if (searchCount == 0) {
                 // Prefetch the first item in the list since it's weighted the highest
-                GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Session:Prefetch", url));
+                GeckoAppShell.notifyObservers("Session:Prefetch", url);
             }
 
             // Does the completion match against the whole URL? This will match
@@ -729,10 +729,9 @@ public class BrowserSearch extends HomeFragment
 
     @Override
     public void onSearchBarClickListener(final SearchEngine searchEngine) {
-        Telemetry.sendUIEvent(TelemetryContract.Event.LOAD_URL, TelemetryContract.Method.LIST_ITEM,
-                "searchenginebar");
-
-        mSearchListener.onSearch(searchEngine, mSearchTerm);
+        final TelemetryContract.Method method = TelemetryContract.Method.LIST_ITEM;
+        Telemetry.sendUIEvent(TelemetryContract.Event.LOAD_URL, method, "searchenginebar");
+        mSearchListener.onSearch(searchEngine, mSearchTerm, method);
     }
 
     private void ensureSuggestClientIsSet(final String suggestTemplate) {
@@ -991,7 +990,7 @@ public class BrowserSearch extends HomeFragment
             // search term  can occur if the user has previously searched for the same thing.
             final int maxSavedSuggestions = NETWORK_SUGGESTION_MAX + 1 + getContext().getResources().getInteger(R.integer.max_saved_suggestions);
 
-            final String sortOrderAndLimit = BrowserContract.SearchHistory.DATE +" DESC LIMIT " + maxSavedSuggestions;
+            final String sortOrderAndLimit = BrowserContract.SearchHistory.DATE + " DESC LIMIT " + maxSavedSuggestions;
             final Cursor result =  cr.query(BrowserContract.SearchHistory.CONTENT_URI, columns, actualQuery, queryArgs, sortOrderAndLimit);
 
             if (result == null) {

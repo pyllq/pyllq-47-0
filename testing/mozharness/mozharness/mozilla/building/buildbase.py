@@ -43,6 +43,7 @@ from mozharness.mozilla.buildbot import (
 )
 from mozharness.mozilla.purge import PurgeMixin
 from mozharness.mozilla.mock import MockMixin
+from mozharness.mozilla.secrets import SecretsMixin
 from mozharness.mozilla.signing import SigningMixin
 from mozharness.mozilla.mock import ERROR_MSGS as MOCK_ERROR_MSGS
 from mozharness.mozilla.testing.errors import TinderBoxPrintRe
@@ -97,8 +98,6 @@ class MakeUploadOutputParser(OutputParser):
         ('symbolsUrl', "m.endswith('crashreporter-symbols.zip') or "
                        "m.endswith('crashreporter-symbols-full.zip')"),
         ('testsUrl', "m.endswith(('tests.tar.bz2', 'tests.zip'))"),
-        ('unsignedApkUrl', "m.endswith('apk') and "
-                           "'unsigned-unaligned' in m"),
         ('robocopApkUrl', "m.endswith('apk') and 'robocop' in m"),
         ('jsshellUrl', "'jsshell-' in m and m.endswith('.zip')"),
         ('partialMarUrl', "m.endswith('.mar') and '.partial.' in m"),
@@ -342,31 +341,31 @@ class BuildOptionParser(object):
     # *It will warn and fail if there is not a config for the current
     # platform/bits
     build_variants = {
+        'add-on-devel': 'builds/releng_sub_%s_configs/%s_add-on-devel.py',
         'asan': 'builds/releng_sub_%s_configs/%s_asan.py',
+        'asan-tc': 'builds/releng_sub_%s_configs/%s_asan_tc.py',
         'tsan': 'builds/releng_sub_%s_configs/%s_tsan.py',
         'b2g-debug': 'b2g/releng_sub_%s_configs/%s_debug.py',
         'cross-debug': 'builds/releng_sub_%s_configs/%s_cross_debug.py',
         'cross-opt': 'builds/releng_sub_%s_configs/%s_cross_opt.py',
         'debug': 'builds/releng_sub_%s_configs/%s_debug.py',
         'asan-and-debug': 'builds/releng_sub_%s_configs/%s_asan_and_debug.py',
+        'asan-tc-and-debug': 'builds/releng_sub_%s_configs/%s_asan_tc_and_debug.py',
         'stat-and-debug': 'builds/releng_sub_%s_configs/%s_stat_and_debug.py',
         'mulet': 'builds/releng_sub_%s_configs/%s_mulet.py',
         'code-coverage': 'builds/releng_sub_%s_configs/%s_code_coverage.py',
         'graphene': 'builds/releng_sub_%s_configs/%s_graphene.py',
         'horizon': 'builds/releng_sub_%s_configs/%s_horizon.py',
         'source': 'builds/releng_sub_%s_configs/%s_source.py',
-        'api-9': 'builds/releng_sub_%s_configs/%s_api_9.py',
-        'api-11': 'builds/releng_sub_%s_configs/%s_api_11.py',
-        'api-15-frontend': 'builds/releng_sub_%s_configs/%s_api_15_frontend.py',
+        'api-15-gradle-dependencies': 'builds/releng_sub_%s_configs/%s_api_15_gradle_dependencies.py',
         'api-15': 'builds/releng_sub_%s_configs/%s_api_15.py',
-        'api-9-debug': 'builds/releng_sub_%s_configs/%s_api_9_debug.py',
-        'api-11-debug': 'builds/releng_sub_%s_configs/%s_api_11_debug.py',
         'api-15-debug': 'builds/releng_sub_%s_configs/%s_api_15_debug.py',
         'x86': 'builds/releng_sub_%s_configs/%s_x86.py',
-        'api-11-partner-sample1': 'builds/releng_sub_%s_configs/%s_api_11_partner_sample1.py',
         'api-15-partner-sample1': 'builds/releng_sub_%s_configs/%s_api_15_partner_sample1.py',
-        'api-11-b2gdroid': 'builds/releng_sub_%s_configs/%s_api_11_b2gdroid.py',
-        'api-15-b2gdroid': 'builds/releng_sub_%s_configs/%s_api_15_b2gdroid.py',
+        'android-test': 'builds/releng_sub_%s_configs/%s_test.py',
+        'android-checkstyle': 'builds/releng_sub_%s_configs/%s_checkstyle.py',
+        'android-lint': 'builds/releng_sub_%s_configs/%s_lint.py',
+        'valgrind' : 'builds/releng_sub_%s_configs/%s_valgrind.py'
     }
     build_pool_cfg_file = 'builds/build_pool_specifics.py'
     branch_cfg_file = 'builds/branch_specifics.py'
@@ -544,6 +543,14 @@ BUILD_BASE_CONFIG_OPTIONS = [
                 " %s for possibilites" % (
                     BuildOptionParser.branch_cfg_file,
                 )}],
+    [['--scm-level'], {
+        "action": "store",
+        "type": "int",
+        "dest": "scm_level",
+        "default": 1,
+        "help": "This sets the SCM level for the branch being built."
+                " See https://www.mozilla.org/en-US/about/"
+                "governance/policies/commit/access-policy/"}],
     [['--enable-pgo'], {
         "action": "store_true",
         "dest": "pgo_build",
@@ -577,7 +584,7 @@ def generate_build_UID():
 
 class BuildScript(BuildbotMixin, PurgeMixin, MockMixin, BalrogMixin,
                   SigningMixin, VirtualenvMixin, MercurialScript,
-                  InfluxRecordingMixin):
+                  InfluxRecordingMixin, SecretsMixin):
     def __init__(self, **kwargs):
         # objdir is referenced in _query_abs_dirs() so let's make sure we
         # have that attribute before calling BaseScript.__init__
@@ -608,8 +615,8 @@ class BuildScript(BuildbotMixin, PurgeMixin, MockMixin, BalrogMixin,
         self.client_id = None
         self.access_token = None
 
-        # Call this before creating the virtualenv so that we have things like
-        # symbol_server_host in the config
+        # Call this before creating the virtualenv so that we can support
+        # substituting config values with other config values.
         self.query_build_env()
 
         # We need to create the virtualenv directly (without using an action) in
@@ -829,24 +836,24 @@ or run without that action (ie: --no-{action})"
         branch_enabled = self.branch in self.config.get('nightly_promotion_branches')
         return platform_enabled and branch_enabled
 
-    def query_build_env(self, replace_dict=None, **kwargs):
+    def query_build_env(self, **kwargs):
         c = self.config
-
-        if not replace_dict:
-            replace_dict = {}
-        # now let's grab the right host based off staging/production
-        # symbol_server_host is defined in build_pool_specifics.py
-        replace_dict.update({"symbol_server_host": c['symbol_server_host']})
 
         # let's evoke the base query_env and make a copy of it
         # as we don't always want every key below added to the same dict
         env = copy.deepcopy(
-            super(BuildScript, self).query_env(replace_dict=replace_dict,
-                                               **kwargs)
+            super(BuildScript, self).query_env(**kwargs)
         )
 
         # first grab the buildid
         env['MOZ_BUILD_DATE'] = self.query_buildid()
+
+        # Set the source repository to what we're building from since
+        # the default is to query `hg paths` which isn't reliable with pooled
+        # storage
+        repo_path = self._query_repo()
+        assert repo_path
+        env['MOZ_SOURCE_REPO'] = repo_path
 
         if self.query_is_nightly() or self.query_is_nightly_promotion():
             if self.query_is_nightly():
@@ -912,8 +919,9 @@ or run without that action (ie: --no-{action})"
 
         # _query_post_upload_cmd returns a list (a cmd list), for env sake here
         # let's make it a string
-        pst_up_cmd = ' '.join([str(i) for i in self._query_post_upload_cmd(multiLocale)])
-        mach_env['POST_UPLOAD_CMD'] = pst_up_cmd
+        if c.get('is_automation'):
+            pst_up_cmd = ' '.join([str(i) for i in self._query_post_upload_cmd(multiLocale)])
+            mach_env['POST_UPLOAD_CMD'] = pst_up_cmd
 
         return mach_env
 
@@ -942,57 +950,13 @@ or run without that action (ie: --no-{action})"
                 check_test_env[env_var] = env_value % dirs
         return check_test_env
 
-    def _query_moz_symbols_buildid(self):
-        # this is a bit confusing but every platform that make
-        # uploadsymbols may or may not include a
-        # MOZ_SYMBOLS_EXTRA_BUILDID in the env and the value of this
-        # varies.
-        # logic goes:
-        #   If it's the release branch, we only include it for
-        # 64bit platforms and we use just the platform as value.
-        #   If it's a project branch off m-c, we include only the branch
-        # for the value on 32 bit platforms and we include both the
-        # platform and branch for 64 bit platforms
-        c = self.config
-        moz_symbols_extra_buildid = ''
-        if c.get('use_platform_in_symbols_extra_buildid'):
-            moz_symbols_extra_buildid += self.stage_platform
-        if c.get('use_branch_in_symbols_extra_buildid'):
-            if moz_symbols_extra_buildid:
-                moz_symbols_extra_buildid += '-%s' % (self.branch,)
-            else:
-                moz_symbols_extra_buildid = self.branch
-        return moz_symbols_extra_buildid
-
-    def _query_who(self):
-        """ looks for who triggered the build with a change.
-
-        This is used for things like try builds where the upload dir is
-        associated with who pushed to try. First it will look in self.config
-        and failing that, will poll buildbot_config
-        If nothing is found, it will default to returning "nobody@example.com"
-        """
-        _who = "nobody@example.com"
-        if self.config.get('who'):
-            _who = self.config['who']
-        else:
-            try:
-                if self.buildbot_config:
-                    _who = self.buildbot_config['sourcestamp']['changes'][0]['who']
-            except (KeyError, IndexError):
-                # KeyError: "sourcestamp" or "changes" or "who" not in buildbot_config
-                # IndexError: buildbot_config['sourcestamp']['changes'] is empty
-                # "who" is not available, using the default value
-                pass
-        return _who
-
     def _query_post_upload_cmd(self, multiLocale):
         c = self.config
         post_upload_cmd = ["post_upload.py"]
         buildid = self.query_buildid()
         revision = self.query_revision()
         platform = self.stage_platform
-        who = self._query_who()
+        who = self.query_who()
         if c.get('pgo_build'):
             platform += '-pgo'
 
@@ -1139,7 +1103,9 @@ or run without that action (ie: --no-{action})"
         if not c.get('tooltool_manifest_src'):
             return self.warning(ERROR_MSGS['tooltool_manifest_undetermined'])
         fetch_script_path = os.path.join(dirs['abs_tools_dir'],
-                                         'scripts/tooltool/tooltool_wrapper.sh')
+                                         'scripts',
+                                         'tooltool',
+                                         'tooltool_wrapper.sh')
         tooltool_manifest_path = os.path.join(dirs['abs_src_dir'],
                                               c['tooltool_manifest_src'])
         cmd = [
@@ -1153,6 +1119,9 @@ or run without that action (ie: --no-{action})"
         auth_file = self._get_tooltool_auth_file()
         if auth_file:
             cmd.extend(['--authentication-file', auth_file])
+        cache = c['env'].get('TOOLTOOL_CACHE')
+        if cache:
+            cmd.extend(['-c', cache])
         self.info(str(cmd))
         self.run_command_m(cmd, cwd=dirs['abs_src_dir'], halt_on_failure=True)
 
@@ -1206,6 +1175,7 @@ or run without that action (ie: --no-{action})"
 
         if c.get('clone_with_purge'):
             vcs_checkout_kwargs['clone_with_purge'] = True
+        vcs_checkout_kwargs['clone_upstream_url'] = c.get('clone_upstream_url')
         rev = self.vcs_checkout(**vcs_checkout_kwargs)
         if c.get('is_automation'):
             changes = self.buildbot_config['sourcestamp']['changes']
@@ -1373,7 +1343,10 @@ or run without that action (ie: --no-{action})"
         self.activate_virtualenv()
 
         routes_file = os.path.join(dirs['abs_src_dir'],
-                                   'testing/taskcluster/routes.json')
+                                   'taskcluster',
+                                   'ci',
+                                   'legacy',
+                                   'routes.json')
         with open(routes_file) as f:
             self.routes_json = json.load(f)
 
@@ -1512,8 +1485,6 @@ or run without that action (ie: --no-{action})"
             ('symbolsUrl', lambda m: m.endswith('crashreporter-symbols.zip') or
                            m.endswith('crashreporter-symbols-full.zip')),
             ('testsUrl', lambda m: m.endswith(('tests.tar.bz2', 'tests.zip'))),
-            ('unsignedApkUrl', lambda m: m.endswith('apk') and
-                               'unsigned-unaligned' in m),
             ('robocopApkUrl', lambda m: m.endswith('apk') and 'robocop' in m),
             ('jsshellUrl', lambda m: 'jsshell-' in m and m.endswith('.zip')),
             # Temporarily use "TC" in MarUrl parameters. We don't want to
@@ -1536,71 +1507,6 @@ or run without that action (ie: --no-{action})"
 
         self._taskcluster_upload(files, templates,
                                  property_conditions=property_conditions)
-
-        # Report some important file sizes for display in treeherder
-        dirs = self.query_abs_dirs()
-        paths = [
-            (packageName, os.path.join(dirs['abs_obj_dir'], 'dist', packageName)),
-            ('omni.ja', os.path.join(dirs['abs_obj_dir'], 'dist', 'fennec', 'assets', 'omni.ja')),
-            ('classes.dex', os.path.join(dirs['abs_obj_dir'], 'dist', 'fennec', 'classes.dex'))
-        ]
-
-        # Find a stripped version of libxul if possible
-        def find_file(rootPath, fileName):
-            for root, dirs, files in os.walk(rootPath):
-                for file in files:
-                    if file == fileName:
-                        return (fileName, os.path.join(root, file))
-            return None
-
-        # Check in the firefox and fennec dist dirs
-        libxul = None
-        dist_root = os.path.join(dirs['abs_obj_dir'], 'dist')
-        for dist in ('firefox', 'fennec', 'b2g'):
-            libxul = find_file(os.path.join(dist_root, dist), 'libxul.so')
-            if libxul:
-                break
-
-        if libxul:
-            paths.append(libxul)
-        else:
-            paths.append( ('libxul.so', os.path.join(dirs['abs_obj_dir'], 'dist', 'bin', 'libxul.so')) )
-
-        size_measurements = []
-        installer_size = 0
-        for (name, path) in paths:
-            # FIXME: Remove the tinderboxprints when bug 1161249 is fixed and
-            # we're displaying perfherder data for each job automatically
-            if os.path.exists(path):
-                filesize = self.query_filesize(path)
-                self.info('TinderboxPrint: Size of %s<br/>%s bytes\n' % (
-                    name, filesize))
-                if any(name.endswith(extension) for extension in ['apk',
-                                                                  'dmg',
-                                                                  'bz2',
-                                                                  'zip']):
-                    installer_size = filesize
-                else:
-                    size_measurements.append({'name': name, 'value': filesize})
-
-        perfherder_data = {
-            "framework": {
-                "name": "build_metrics"
-            },
-            "suites": [],
-        }
-        if installer_size or size_measurements:
-            perfherder_data["suites"].append({
-                "name": "installer size",
-                "value": installer_size,
-                "subtests": size_measurements
-            })
-        if (hasattr(self, "build_metrics_summary") and
-            self.build_metrics_summary):
-            perfherder_data["suites"].append(self.build_metrics_summary)
-
-        if perfherder_data["suites"]:
-            self.info('PERFHERDER_DATA: %s' % json.dumps(perfherder_data))
 
     def _set_file_properties(self, file_name, find_dir, prop_type,
                              error_level=ERROR):
@@ -1689,23 +1595,28 @@ or run without that action (ie: --no-{action})"
         """builds application."""
         env = self.query_build_env()
         env.update(self.query_mach_build_env())
-        symbols_extra_buildid = self._query_moz_symbols_buildid()
-        if symbols_extra_buildid:
-            env['MOZ_SYMBOLS_EXTRA_BUILDID'] = symbols_extra_buildid
 
         # XXX Bug 1037883 - mozconfigs can not find buildprops.json when builds
         # are through mozharness. This is not pretty but it is a stopgap
         # until an alternative solution is made or all builds that touch
         # mozconfig.cache are converted to mozharness.
         dirs = self.query_abs_dirs()
-        self.copyfile(os.path.join(dirs['base_work_dir'], 'buildprops.json'),
-                      os.path.join(dirs['abs_work_dir'], 'buildprops.json'))
+        buildprops = os.path.join(dirs['base_work_dir'], 'buildprops.json')
+        # not finding buildprops is not an error outside of buildbot
+        if os.path.exists(buildprops):
+            self.copyfile(
+                buildprops,
+                os.path.join(dirs['abs_work_dir'], 'buildprops.json'))
 
+        # use mh config override for mach build wrapper, if it exists
         python = self.query_exe('python2.7')
+        default_mach_build = [python, 'mach', '--log-no-times', 'build', '-v']
+        mach_build = self.query_exe('mach-build', default=default_mach_build)
         return_code = self.run_command_m(
-            command=[python, 'mach', '--log-no-times', 'build', '-v'],
-            cwd=self.query_abs_dirs()['abs_src_dir'],
-            env=env, output_timeout=self.config.get('max_build_output_timeout', 60 * 40)
+            command=mach_build,
+            cwd=dirs['abs_src_dir'],
+            env=env,
+            output_timeout=self.config.get('max_build_output_timeout', 60 * 40)
         )
         if return_code:
             self.return_code = self.worst_level(
@@ -1715,22 +1626,12 @@ or run without that action (ie: --no-{action})"
             self.fatal("'mach build' did not run successfully. Please check "
                        "log for errors.")
 
-    def _checkout_compare_locales(self):
-        dirs = self.query_abs_dirs()
-        dest = dirs['compare_locales_dir']
-        repo = self.config['compare_locales_repo']
-        rev = self.config['compare_locales_rev']
-        vcs = self.config['compare_locales_vcs']
-        abs_rev = self.vcs_checkout(repo=repo, dest=dest, revision=rev, vcs=vcs)
-        self.set_buildbot_property('compare_locales_revision', abs_rev, write_to_file=True)
-
     def multi_l10n(self):
         if not self.query_is_nightly():
             self.info("Not a nightly build, skipping multi l10n.")
             return
         self._initialize_taskcluster()
 
-        self._checkout_compare_locales()
         dirs = self.query_abs_dirs()
         base_work_dir = dirs['base_work_dir']
         objdir = dirs['abs_obj_dir']
@@ -1920,15 +1821,98 @@ or run without that action (ie: --no-{action})"
         and then posts to graph server the results.
         We only post to graph server for non nightly build
         """
+        import tarfile
+        import zipfile
         c = self.config
 
         if c.get('enable_count_ctors'):
-            if c.get('enable_count_ctors'):
-                self.info("counting ctors...")
-                self._count_ctors()
+            self.info("counting ctors...")
+            self._count_ctors()
         else:
-            self.info("Nothing to do for this action since ctors "
-                      "counts are disabled for this build.")
+            self.info("ctors counts are disabled for this build.")
+
+        # Report some important file sizes for display in treeherder
+
+        dirs = self.query_abs_dirs()
+        packageName = self.query_buildbot_property('packageFilename')
+
+        # if packageName is not set because we are not running in Buildbot,
+        # then assume we are using MOZ_SIMPLE_PACKAGE_NAME, which means the
+        # package is named one of target.{tar.bz2,zip,dmg}.
+        if not packageName:
+            dist_dir = os.path.join(dirs['abs_obj_dir'], 'dist')
+            for ext in ['apk', 'dmg', 'tar.bz2', 'zip']:
+                name = 'target.' + ext
+                if os.path.exists(os.path.join(dist_dir, name)):
+                    packageName = name
+                    break
+            else:
+                self.fatal("could not determine packageName")
+
+        interests = ['libxul.so', 'classes.dex', 'omni.ja']
+        installer = os.path.join(dirs['abs_obj_dir'], 'dist', packageName)
+        installer_size = 0
+        size_measurements = []
+
+        if os.path.exists(installer):
+            installer_size = self.query_filesize(installer)
+            self.info('TinderboxPrint: Size of %s<br/>%s bytes\n' % (
+                packageName, installer_size))
+            try:
+                subtests = {}
+                if zipfile.is_zipfile(installer):
+                    with zipfile.ZipFile(installer, 'r') as zf:
+                        for zi in zf.infolist():
+                            name = os.path.basename(zi.filename)
+                            size = zi.file_size
+                            if name in interests:
+                                if name in subtests:
+                                    # File seen twice in same archive;
+                                    # ignore to avoid confusion.
+                                    subtests[name] = None
+                                else:
+                                    subtests[name] = size
+                elif tarfile.is_tarfile(installer):
+                    with tarfile.open(installer, 'r:*') as tf:
+                        for ti in tf:
+                            name = os.path.basename(ti.name)
+                            size = ti.size
+                            if name in interests:
+                                if name in subtests:
+                                    # File seen twice in same archive;
+                                    # ignore to avoid confusion.
+                                    subtests[name] = None
+                                else:
+                                    subtests[name] = size
+                for name in subtests:
+                    if subtests[name] is not None:
+                        self.info('TinderboxPrint: Size of %s<br/>%s bytes\n' % (
+                            name, subtests[name]))
+                        size_measurements.append({'name': name, 'value': subtests[name]})
+            except:
+                self.info('Unable to search %s for component sizes.' % installer)
+                size_measurements = []
+
+        perfherder_data = {
+            "framework": {
+                "name": "build_metrics"
+            },
+            "suites": [],
+        }
+        if installer_size or size_measurements:
+            perfherder_data["suites"].append({
+                "name": "installer size",
+                "value": installer_size,
+                "alertThreshold": 0.25,
+                "subtests": size_measurements
+            })
+        if (hasattr(self, "build_metrics_summary") and
+            self.build_metrics_summary):
+            perfherder_data["suites"].append(self.build_metrics_summary)
+
+        if perfherder_data["suites"]:
+            self.info('PERFHERDER_DATA: %s' % json.dumps(perfherder_data))
+
 
     def sendchange(self):
         if self.config.get('enable_talos_sendchange'):
@@ -2041,6 +2025,27 @@ or run without that action (ie: --no-{action})"
                 EXIT_STATUS_DICT[TBPL_WARNING], self.return_code,
                 AUTOMATION_EXIT_CODES[::-1]
             )
+
+    def valgrind_test(self):
+        '''Execute mach's valgrind-test for memory leaks'''
+        env = self.query_build_env()
+        env.update(self.query_mach_build_env())
+
+        python = self.query_exe('python2.7')
+        return_code = self.run_command_m(
+            command=[python, 'mach', 'valgrind-test'],
+            cwd=self.query_abs_dirs()['abs_src_dir'],
+            env=env, output_timeout=self.config.get('max_build_output_timeout', 60 * 40)
+        )
+        if return_code:
+            self.return_code = self.worst_level(
+                EXIT_STATUS_DICT[TBPL_FAILURE],  self.return_code,
+                AUTOMATION_EXIT_CODES[::-1]
+            )
+            self.fatal("'mach valgrind-test' did not run successfully. Please check "
+                       "log for errors.")
+
+
 
     def _post_fatal(self, message=None, exit_code=None):
         if not self.return_code:  # only overwrite return_code if it's 0

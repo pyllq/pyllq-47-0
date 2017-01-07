@@ -9,8 +9,9 @@
 #include "mozilla/dom/Animation.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/KeyframeEffect.h" // For KeyframeEffectReadOnly
-#include "mozilla/AnimationUtils.h"
 #include "mozilla/AnimationPerformanceWarning.h"
+#include "mozilla/AnimationTarget.h"
+#include "mozilla/AnimationUtils.h"
 #include "mozilla/EffectSet.h"
 #include "mozilla/InitializerList.h"
 #include "mozilla/LayerAnimationInfo.h"
@@ -19,7 +20,6 @@
 #include "nsComputedDOMStyle.h" // nsComputedDOMStyle::GetPresShellForContent
 #include "nsCSSPropertySet.h"
 #include "nsCSSProps.h"
-#include "nsCSSPseudoElements.h"
 #include "nsIPresShell.h"
 #include "nsLayoutUtils.h"
 #include "nsRuleNode.h" // For nsRuleNode::ComputePropertiesOverridingAnimation
@@ -83,11 +83,11 @@ FindAnimationsForCompositor(const nsIFrame* aFrame,
   // Those cases are probably not important but just to be safe, let's make
   // sure the cascade is up to date since if it *is* up to date, this is
   // basically a no-op.
-  Maybe<Pair<dom::Element*, CSSPseudoElementType>> pseudoElement =
+  Maybe<NonOwningAnimationTarget> pseudoElement =
     EffectCompositor::GetAnimationElementAndPseudoForFrame(aFrame);
   if (pseudoElement) {
-    EffectCompositor::MaybeUpdateCascadeResults(pseudoElement->first(),
-                                                pseudoElement->second(),
+    EffectCompositor::MaybeUpdateCascadeResults(pseudoElement->mElement,
+                                                pseudoElement->mPseudoType,
                                                 aFrame->StyleContext());
   }
 
@@ -101,6 +101,21 @@ FindAnimationsForCompositor(const nsIFrame* aFrame,
     return false;
   }
 
+  // Disable async animations if we have a rendering observer that
+  // depends on our content (svg masking, -moz-element etc) so that
+  // it gets updated correctly.
+  nsIContent* content = aFrame->GetContent();
+  while (content) {
+    if (content->HasRenderingObservers()) {
+      EffectCompositor::SetPerformanceWarning(
+        aFrame, aProperty,
+        AnimationPerformanceWarning(
+          AnimationPerformanceWarning::Type::HasRenderingObserver));
+      return false;
+    }
+    content = content->GetParent();
+  }
+
   bool foundSome = false;
   for (KeyframeEffectReadOnly* effect : *effects) {
     MOZ_ASSERT(effect && effect->GetAnimation());
@@ -111,13 +126,15 @@ FindAnimationsForCompositor(const nsIFrame* aFrame,
     }
 
     AnimationPerformanceWarning::Type warningType;
-    if (effect->ShouldBlockCompositorAnimations(aFrame,
-                                                warningType)) {
+    if (aProperty == eCSSProperty_transform &&
+        effect->ShouldBlockAsyncTransformAnimations(aFrame,
+                                                    warningType)) {
       if (aMatches) {
         aMatches->Clear();
       }
-      effect->SetPerformanceWarning(
-        aProperty, AnimationPerformanceWarning(warningType));
+      EffectCompositor::SetPerformanceWarning(
+        aFrame, aProperty,
+        AnimationPerformanceWarning(warningType));
       return false;
     }
 
@@ -148,7 +165,7 @@ EffectCompositor::RequestRestyle(dom::Element* aElement,
   }
 
   auto& elementsToRestyle = mElementsToRestyle[aCascadeLevel];
-  PseudoElementHashKey key = { aElement, aPseudoType };
+  PseudoElementHashEntry::KeyType key = { aElement, aPseudoType };
 
   if (aRestyleType == RestyleType::Throttled) {
     if (!elementsToRestyle.Contains(key)) {
@@ -221,16 +238,36 @@ EffectCompositor::PostRestyleForThrottledAnimations()
 }
 
 void
+EffectCompositor::UpdateEffectProperties(nsStyleContext* aStyleContext,
+                                         dom::Element* aElement,
+                                         CSSPseudoElementType aPseudoType)
+{
+  EffectSet* effectSet = EffectSet::GetEffectSet(aElement, aPseudoType);
+  if (!effectSet) {
+    return;
+  }
+
+  // Style context change might cause CSS cascade level,
+  // e.g removing !important, so we should update the cascading result.
+  effectSet->MarkCascadeNeedsUpdate();
+
+  for (KeyframeEffectReadOnly* effect : *effectSet) {
+    effect->UpdateProperties(aStyleContext);
+  }
+}
+
+void
 EffectCompositor::MaybeUpdateAnimationRule(dom::Element* aElement,
                                            CSSPseudoElementType aPseudoType,
-                                           CascadeLevel aCascadeLevel)
+                                           CascadeLevel aCascadeLevel,
+                                           nsStyleContext* aStyleContext)
 {
   // First update cascade results since that may cause some elements to
   // be marked as needing a restyle.
-  MaybeUpdateCascadeResults(aElement, aPseudoType);
+  MaybeUpdateCascadeResults(aElement, aPseudoType, aStyleContext);
 
   auto& elementsToRestyle = mElementsToRestyle[aCascadeLevel];
-  PseudoElementHashKey key = { aElement, aPseudoType };
+  PseudoElementHashEntry::KeyType key = { aElement, aPseudoType };
 
   if (!mPresContext || !elementsToRestyle.Contains(key)) {
     return;
@@ -245,7 +282,8 @@ EffectCompositor::MaybeUpdateAnimationRule(dom::Element* aElement,
 nsIStyleRule*
 EffectCompositor::GetAnimationRule(dom::Element* aElement,
                                    CSSPseudoElementType aPseudoType,
-                                   CascadeLevel aCascadeLevel)
+                                   CascadeLevel aCascadeLevel,
+                                   nsStyleContext* aStyleContext)
 {
   // NOTE: We need to be careful about early returns in this method where
   // we *don't* update mElementsToRestyle. When we get a call to
@@ -271,12 +309,12 @@ EffectCompositor::GetAnimationRule(dom::Element* aElement,
     return nullptr;
   }
 
-  MaybeUpdateAnimationRule(aElement, aPseudoType, aCascadeLevel);
+  MaybeUpdateAnimationRule(aElement, aPseudoType, aCascadeLevel, aStyleContext);
 
 #ifdef DEBUG
   {
     auto& elementsToRestyle = mElementsToRestyle[aCascadeLevel];
-    PseudoElementHashKey key = { aElement, aPseudoType };
+    PseudoElementHashEntry::KeyType key = { aElement, aPseudoType };
     MOZ_ASSERT(!elementsToRestyle.Contains(key),
                "Element should no longer require a restyle after its "
                "animation rule has been updated");
@@ -362,13 +400,16 @@ EffectCompositor::AddStyleUpdatesTo(RestyleTracker& aTracker)
     // it will only mutate the bool value associated with each element in the
     // set but even doing that will cause assertions in PLDHashTable to fail
     // if we are iterating over the hashtable at the same time.
-    nsTArray<PseudoElementHashKey> elementsToRestyle(elementSet.Count());
+    nsTArray<PseudoElementHashEntry::KeyType> elementsToRestyle(
+      elementSet.Count());
     for (auto iter = elementSet.Iter(); !iter.Done(); iter.Next()) {
       elementsToRestyle.AppendElement(iter.Key());
     }
 
     for (auto& pseudoElem : elementsToRestyle) {
-      MaybeUpdateCascadeResults(pseudoElem.mElement, pseudoElem.mPseudoType);
+      MaybeUpdateCascadeResults(pseudoElem.mElement,
+                                pseudoElem.mPseudoType,
+                                nullptr);
 
       ComposeAnimationRule(pseudoElem.mElement,
                            pseudoElem.mPseudoType,
@@ -437,17 +478,8 @@ EffectCompositor::MaybeUpdateCascadeResults(Element* aElement,
     return;
   }
 
-  UpdateCascadeResults(*effects, aElement, aPseudoType, aStyleContext);
-
-  MOZ_ASSERT(!effects->CascadeNeedsUpdate(), "Failed to update cascade state");
-}
-
-/* static */ void
-EffectCompositor::MaybeUpdateCascadeResults(Element* aElement,
-                                            CSSPseudoElementType aPseudoType)
-{
-  nsStyleContext* styleContext = nullptr;
-  {
+  nsStyleContext* styleContext = aStyleContext;
+  if (!styleContext) {
     dom::Element* elementToRestyle = GetElementToRestyle(aElement, aPseudoType);
     if (elementToRestyle) {
       nsIFrame* frame = elementToRestyle->GetPrimaryFrame();
@@ -456,8 +488,9 @@ EffectCompositor::MaybeUpdateCascadeResults(Element* aElement,
       }
     }
   }
+  UpdateCascadeResults(*effects, aElement, aPseudoType, styleContext);
 
-  MaybeUpdateCascadeResults(aElement, aPseudoType, styleContext);
+  MOZ_ASSERT(!effects->CascadeNeedsUpdate(), "Failed to update cascade state");
 }
 
 namespace {
@@ -495,39 +528,30 @@ EffectCompositor::UpdateCascadeResults(Element* aElement,
   UpdateCascadeResults(*effects, aElement, aPseudoType, aStyleContext);
 }
 
-/* static */ Maybe<Pair<Element*, CSSPseudoElementType>>
+/* static */ Maybe<NonOwningAnimationTarget>
 EffectCompositor::GetAnimationElementAndPseudoForFrame(const nsIFrame* aFrame)
 {
   // Always return the same object to benefit from return-value optimization.
-  Maybe<Pair<Element*, CSSPseudoElementType>> result;
+  Maybe<NonOwningAnimationTarget> result;
+
+  CSSPseudoElementType pseudoType =
+    aFrame->StyleContext()->GetPseudoType();
+
+  if (pseudoType != CSSPseudoElementType::NotPseudo &&
+      pseudoType != CSSPseudoElementType::before &&
+      pseudoType != CSSPseudoElementType::after) {
+    return result;
+  }
 
   nsIContent* content = aFrame->GetContent();
   if (!content) {
     return result;
   }
 
-  CSSPseudoElementType pseudoType = CSSPseudoElementType::NotPseudo;
-
-  if (aFrame->IsGeneratedContentFrame()) {
-    nsIFrame* parent = aFrame->GetParent();
-    if (parent->IsGeneratedContentFrame()) {
-      return result;
-    }
-    nsIAtom* name = content->NodeInfo()->NameAtom();
-    if (name == nsGkAtoms::mozgeneratedcontentbefore) {
-      pseudoType = CSSPseudoElementType::before;
-    } else if (name == nsGkAtoms::mozgeneratedcontentafter) {
-      pseudoType = CSSPseudoElementType::after;
-    } else {
-      return result;
-    }
+  if (pseudoType == CSSPseudoElementType::before ||
+      pseudoType == CSSPseudoElementType::after) {
     content = content->GetParent();
     if (!content) {
-      return result;
-    }
-  } else {
-    if (nsLayoutUtils::GetStyleFrame(content) != aFrame) {
-      // The effects associated with an element are for its primary frame.
       return result;
     }
   }
@@ -536,7 +560,7 @@ EffectCompositor::GetAnimationElementAndPseudoForFrame(const nsIFrame* aFrame)
     return result;
   }
 
-  result = Some(MakePair(content->AsElement(), pseudoType));
+  result.emplace(content->AsElement(), pseudoType);
 
   return result;
 }
@@ -789,7 +813,8 @@ EffectCompositor::AnimationStyleRuleProcessor::RulesMatching(
   nsIStyleRule *rule =
     mCompositor->GetAnimationRule(aData->mElement,
                                   CSSPseudoElementType::NotPseudo,
-                                  mCascadeLevel);
+                                  mCascadeLevel,
+                                  nullptr);
   if (rule) {
     aData->mRuleWalker->Forward(rule);
     aData->mRuleWalker->CurrentNode()->SetIsAnimationRule();
@@ -808,7 +833,8 @@ EffectCompositor::AnimationStyleRuleProcessor::RulesMatching(
   nsIStyleRule *rule =
     mCompositor->GetAnimationRule(aData->mElement,
                                   aData->mPseudoType,
-                                  mCascadeLevel);
+                                  mCascadeLevel,
+                                  nullptr);
   if (rule) {
     aData->mRuleWalker->Forward(rule);
     aData->mRuleWalker->CurrentNode()->SetIsAnimationRule();

@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 # ***** BEGIN LICENSE BLOCK *****
 # This Source Code Form is subject to the terms of the Mozilla Public
@@ -12,6 +13,7 @@ mozharness.
 
 import codecs
 from contextlib import contextmanager
+import datetime
 import errno
 import gzip
 import inspect
@@ -1722,6 +1724,9 @@ class BaseScript(ScriptMixin, LogMixin, object):
                     self.error("Exception during post-action for %s: %s" % (
                         action, traceback.format_exc()))
 
+            step_result = 'success' if success else 'failed'
+            self.action_message("Finished %s step (%s)" % (action, step_result))
+
             if not post_success:
                 self.fatal("Aborting due to failure in post-action listener.")
 
@@ -1863,9 +1868,8 @@ class BaseScript(ScriptMixin, LogMixin, object):
             self.log_obj = SimpleFileLogger(**log_config)
 
     def action_message(self, message):
-        self.info("#####")
-        self.info("##### %s" % message)
-        self.info("#####")
+        self.info("[mozharness: %sZ] %s" % (
+            datetime.datetime.utcnow().isoformat(' '), message))
 
     def summary(self):
         """Print out all the summary lines added via add_summary()

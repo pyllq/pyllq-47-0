@@ -8,7 +8,6 @@
 #define nsDocShellTreeOwner_h__
 
 // Helper Classes
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 
@@ -171,7 +170,8 @@ private:
   NS_IMETHOD RemoveTooltipListener();
 
   NS_IMETHOD ShowTooltip(int32_t aInXCoords, int32_t aInYCoords,
-                         const nsAString& aInTipText);
+                         const nsAString& aInTipText,
+                         const nsAString& aDirText);
   NS_IMETHOD HideTooltip();
 
   nsWebBrowser* mWebBrowser;

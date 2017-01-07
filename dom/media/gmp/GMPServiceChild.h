@@ -15,8 +15,6 @@
 namespace mozilla {
 namespace gmp {
 
-#define GMP_DEFAULT_ASYNC_SHUTDONW_TIMEOUT 3000
-
 class GMPContentParent;
 class GMPServiceChild;
 
@@ -62,7 +60,8 @@ protected:
   {
     // Nothing to do here.
   }
-  bool GetContentParentFrom(const nsACString& aNodeId,
+  bool GetContentParentFrom(GMPCrashHelper* aHelper,
+                            const nsACString& aNodeId,
                             const nsCString& aAPI,
                             const nsTArray<nsCString>& aTags,
                             UniquePtr<GetGMPContentParentCallback>&& aCallback)

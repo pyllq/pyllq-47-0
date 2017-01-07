@@ -85,6 +85,8 @@ public:
     case eCSSProperty_margin_right: return ACTIVITY_MARGIN_RIGHT;
     case eCSSProperty_margin_bottom: return ACTIVITY_MARGIN_BOTTOM;
     case eCSSProperty_background_position: return ACTIVITY_BACKGROUND_POSITION;
+    case eCSSProperty_background_position_x: return ACTIVITY_BACKGROUND_POSITION;
+    case eCSSProperty_background_position_y: return ACTIVITY_BACKGROUND_POSITION;
     default: MOZ_ASSERT(false); return ACTIVITY_OPACITY;
     }
   }
@@ -384,6 +386,14 @@ ActiveLayerTracker::IsStyleMaybeAnimated(nsIFrame* aFrame, nsCSSProperty aProper
   return IsStyleAnimated(nullptr, aFrame, aProperty);
 }
 
+/* static */ bool
+ActiveLayerTracker::IsBackgroundPositionAnimated(nsDisplayListBuilder* aBuilder,
+                                                 nsIFrame* aFrame)
+{
+  return IsStyleAnimated(aBuilder, aFrame, eCSSProperty_background_position_x) ||
+         IsStyleAnimated(aBuilder, aFrame, eCSSProperty_background_position_y);
+}
+
 static bool
 CheckScrollInducedActivity(LayerActivity* aLayerActivity,
                            LayerActivity::ActivityIndex aActivityIndex,
@@ -436,7 +446,7 @@ ActiveLayerTracker::IsStyleAnimated(nsDisplayListBuilder* aBuilder,
   if (aProperty == eCSSProperty_transform && aFrame->Combines3DTransformWithAncestors()) {
     return IsStyleAnimated(aBuilder, aFrame->GetParent(), aProperty);
   }
-  return nsLayoutUtils::HasCurrentAnimationsForProperties(aFrame, &aProperty, 1);
+  return nsLayoutUtils::HasCurrentAnimationOfProperty(aFrame, aProperty);
 }
 
 /* static */ bool

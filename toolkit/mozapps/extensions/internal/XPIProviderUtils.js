@@ -8,7 +8,7 @@
 /*globals ADDON_SIGNING, SIGNED_TYPES, BOOTSTRAP_REASONS, DB_SCHEMA,
           AddonInternal, XPIProvider, XPIStates, syncLoadManifestFromFile,
           isUsableAddon, recordAddonTelemetry, applyBlocklistChanges,
-          flushStartupCache, canRunInSafeMode*/
+          flushChromeCaches, canRunInSafeMode*/
 
 var Cc = Components.classes;
 var Ci = Components.interfaces;
@@ -56,6 +56,7 @@ const PREF_EM_ENABLED_ADDONS          = "extensions.enabledAddons";
 const PREF_EM_DSS_ENABLED             = "extensions.dss.enabled";
 const PREF_EM_AUTO_DISABLED_SCOPES    = "extensions.autoDisableScopes";
 const PREF_E10S_BLOCKED_BY_ADDONS     = "extensions.e10sBlockedByAddons";
+const PREF_E10S_HAS_NONEXEMPT_ADDON   = "extensions.e10s.rollout.hasAddon";
 
 const KEY_APP_PROFILE                 = "app-profile";
 const KEY_APP_SYSTEM_ADDONS           = "app-system-addons";
@@ -1408,6 +1409,8 @@ this.XPIDatabase = {
 
   updateAddonsBlockingE10s: function() {
     let blockE10s = false;
+
+    Preferences.set(PREF_E10S_HAS_NONEXEMPT_ADDON, false);
     for (let [, addon] of this.addonDB) {
       let active = (addon.visible && !addon.disabled && !addon.pendingUninstall);
 
@@ -2031,14 +2034,10 @@ this.XPIDatabaseReconcile = {
     let addons = currentAddons.get(KEY_APP_SYSTEM_ADDONS) || new Map();
 
     let hideLocation;
-    if (systemAddonLocation.isActive() && systemAddonLocation.isValid(addons)) {
-      // Hide the system add-on defaults
-      logger.info("Hiding the default system add-ons.");
-      hideLocation = KEY_APP_SYSTEM_DEFAULTS;
-    }
-    else {
-      // Hide the system add-on updates
-      logger.info("Hiding the updated system add-ons.");
+
+    if (!systemAddonLocation.isValid(addons)) {
+      // Hide the system add-on updates if any are invalid.
+      logger.info("One or more updated system add-ons invalid, falling back to defaults.");
       hideLocation = KEY_APP_SYSTEM_ADDONS;
     }
 
@@ -2089,6 +2088,7 @@ this.XPIDatabaseReconcile = {
             AddonManagerPrivate.addStartupChange(AddonManager.STARTUP_CHANGE_INSTALLED, id);
 
           if (currentAddon.bootstrap) {
+            AddonManagerPrivate.addStartupChange(AddonManager.STARTUP_CHANGE_INSTALLED, id);
             // Visible bootstrapped add-ons need to have their install method called
             XPIProvider.callBootstrapMethod(currentAddon, currentAddon._sourceBundle,
                                             "install", BOOTSTRAP_REASONS.ADDON_INSTALL);
@@ -2120,7 +2120,7 @@ this.XPIDatabaseReconcile = {
           }
 
           // Make sure to flush the cache when an old add-on has gone away
-          flushStartupCache();
+          flushChromeCaches();
 
           if (currentAddon.bootstrap) {
             // Visible bootstrapped add-ons need to have their install method called
@@ -2177,7 +2177,7 @@ this.XPIDatabaseReconcile = {
       AddonManagerPrivate.addStartupChange(AddonManager.STARTUP_CHANGE_UNINSTALLED, id);
 
       // Make sure to flush the cache when an old add-on has gone away
-      flushStartupCache();
+      flushChromeCaches();
     }
 
     // Make sure add-ons from hidden locations are marked invisible and inactive

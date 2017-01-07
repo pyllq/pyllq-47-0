@@ -26,7 +26,7 @@ localStorage.setItem("ls1", "foobar");
 localStorage.setItem("ls2", "foobar-2");
 // ... and finally some session storage items too
 sessionStorage.setItem("ss1", "foobar-3");
-dump("added cookies and stuff from main page\n");
+dump("added cookies and storage from main page\n");
 
 let idbGenerator = function*() {
   let request = indexedDB.open("idb1", 1);
@@ -87,7 +87,7 @@ let idbGenerator = function*() {
   });
   db2.close();
 
-  dump("added cookies and stuff from main page\n");
+  dump("added indexedDB from main page\n");
 };
 
 function deleteDB(dbName) {
@@ -114,23 +114,12 @@ window.setup = function*() {
 };
 
 window.clear = function*() {
-  document.cookie = "c1=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/browser";
-  document.cookie =
-    "c3=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; secure=true";
-  document.cookie =
-    "cs2=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=" +
-    partialHostname;
-
-  localStorage.clear();
-  sessionStorage.clear();
-
   yield deleteDB("idb1");
   yield deleteDB("idb2");
 
   yield caches.delete("plop");
 
-  dump("removed cookies, localStorage, sessionStorage and indexedDB data " +
-       "from " + document.location + "\n");
+  dump("removed indexedDB and cache data from " + document.location + "\n");
 };
 </script>
 </body>

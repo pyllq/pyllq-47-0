@@ -150,12 +150,21 @@ var inputTests = [
             '", 2: "a shorter string", 3: 100 }',
     printOutput: "[object Object]",
     inspectable: false,
+  },
+
+  // 15
+  {
+    input: "new Proxy({a:1},[1,2,3])",
+    output: 'Proxy { <target>: Object, <handler>: Array[3] }',
+    printOutput: "[object Object]",
+    inspectable: true,
+    variablesViewLabel: "Proxy"
   }
 ];
 
 function test() {
   requestLongerTimeout(2);
-  Task.spawn(function*() {
+  Task.spawn(function* () {
     let {tab} = yield loadTab(TEST_URI);
     let hud = yield openConsole(tab);
     return checkOutputForInputs(hud, inputTests);

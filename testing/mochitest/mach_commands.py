@@ -125,27 +125,13 @@ ALL_FLAVORS = {
             'a11y': True,
         }
     },
-    'webapprt-chrome': {
-        'suite': 'webapprt-chrome',
-        'aliases': ('webapprt-chrome', 'mochitest-webapprt-chrome'),
-        'enabled_apps': ('firefox',),
-        'extra_args': {
-            'webapprtChrome': True,
-        }
-    },
-    'webapprt-content': {
-        'suite': 'webapprt-content',
-        'aliases': ('webapprt-content', 'mochitest-webapprt-content'),
-        'enabled_apps': ('firefox',),
-        'extra_args': {
-            'webapprtContent': True,
-        }
-    },
 }
 
 SUPPORTED_APPS = ['firefox', 'b2g', 'android', 'mulet']
 SUPPORTED_FLAVORS = list(chain.from_iterable([f['aliases'] for f in ALL_FLAVORS.values()]))
 CANONICAL_FLAVORS = sorted([f['aliases'][0] for f in ALL_FLAVORS.values()])
+
+parser = None
 
 
 class MochitestRunner(MozbuildObject):
@@ -155,44 +141,6 @@ class MochitestRunner(MozbuildObject):
     This currently contains just the basics for running mochitests. We may want
     to hook up result parsing, etc.
     """
-
-    def get_webapp_runtime_path(self):
-        import mozinfo
-        app_name = 'webapprt-stub' + mozinfo.info.get('bin_suffix', '')
-        app_path = os.path.join(self.distdir, 'bin', app_name)
-        if sys.platform.startswith('darwin'):
-            # On Mac, we copy the stub from the dist dir to the test app bundle,
-            # since we have to run it from a bundle for its windows to appear.
-            # Ideally, the build system would do this for us, and we should find
-            # a way for it to do that.
-            mac_dir_name = os.path.join(
-                self.mochitest_dir,
-                'webapprtChrome',
-                'webapprt',
-                'test',
-                'chrome',
-                'TestApp.app',
-                'Contents',
-                'MacOS')
-            mac_app_name = 'webapprt' + mozinfo.info.get('bin_suffix', '')
-            mac_app_path = os.path.join(mac_dir_name, mac_app_name)
-            shutil.copy(app_path, mac_app_path)
-            return mac_app_path
-        return app_path
-
-    # On Mac, the app invoked by runtests.py is in a different app bundle
-    # (as determined by get_webapp_runtime_path above), but the XRE path should
-    # still point to the browser's app bundle, so we set it here explicitly.
-    def get_webapp_runtime_xre_path(self):
-        if sys.platform.startswith('darwin'):
-            xre_path = os.path.join(
-                self.distdir,
-                self.substs['MOZ_MACBUNDLE_NAME'],
-                'Contents',
-                'Resources')
-        else:
-            xre_path = os.path.join(self.distdir, 'bin')
-        return xre_path
 
     def __init__(self, *args, **kwargs):
         MozbuildObject.__init__(self, *args, **kwargs)
@@ -251,14 +199,13 @@ class MochitestRunner(MozbuildObject):
             manifest.tests.extend(tests)
             options.manifestFile = manifest
 
-        return mochitest.run_test_harness(options)
+        return mochitest.run_test_harness(parser, options)
 
     def run_desktop_test(self, context, tests=None, suite=None, **kwargs):
         """Runs a mochitest.
 
         suite is the type of mochitest to run. It can be one of ('plain',
-        'chrome', 'browser', 'a11y', 'jetpack-package', 'jetpack-addon',
-        'webapprt-chrome', 'webapprt-content').
+        'chrome', 'browser', 'a11y', 'jetpack-package', 'jetpack-addon').
         """
         # runtests.py is ambiguous, so we load the file/module manually.
         if 'mochitest' not in sys.modules:
@@ -282,16 +229,6 @@ class MochitestRunner(MozbuildObject):
 
         options = Namespace(**kwargs)
 
-        if suite == 'webapprt-content':
-            if not options.app or options.app == self.get_binary_path():
-                options.app = self.get_webapp_runtime_path()
-            options.xrePath = self.get_webapp_runtime_xre_path()
-        elif suite == 'webapprt-chrome':
-            options.browserArgs.append("-test-mode")
-            if not options.app or options.app == self.get_binary_path():
-                options.app = self.get_webapp_runtime_path()
-            options.xrePath = self.get_webapp_runtime_xre_path()
-
         from manifestparser import TestManifest
         if tests:
             manifest = TestManifest()
@@ -307,7 +244,7 @@ class MochitestRunner(MozbuildObject):
 
         # We need this to enable colorization of output.
         self.log_manager.enable_unstructured()
-        result = mochitest.run_test_harness(options)
+        result = mochitest.run_test_harness(parser, options)
         self.log_manager.disable_unstructured()
         return result
 
@@ -331,7 +268,7 @@ class MochitestRunner(MozbuildObject):
             manifest.tests.extend(tests)
             options.manifestFile = manifest
 
-        return runtestsremote.run_test_harness(options)
+        return runtestsremote.run_test_harness(parser, options)
 
     def run_robocop_test(self, context, tests, suite=None, **kwargs):
         host_ret = verify_host_bin()
@@ -353,7 +290,7 @@ class MochitestRunner(MozbuildObject):
             manifest.tests.extend(tests)
             options.manifestFile = manifest
 
-        return runrobocop.run_test_harness(options)
+        return runrobocop.run_test_harness(parser, options)
 
 # parser
 
@@ -386,7 +323,9 @@ def setup_argument_parser():
         from mozrunner.devices.android_device import verify_android_device
         verify_android_device(build_obj, install=True, xre=True)
 
-    return MochitestArgumentParser()
+    global parser
+    parser = MochitestArgumentParser()
+    return parser
 
 
 # condition filters
@@ -450,9 +389,6 @@ class MachCommands(MachCommandBase):
         from mozbuild.controller.building import BuildDriver
         self._ensure_state_subdir_exists('.')
 
-        driver = self._spawn(BuildDriver)
-        driver.install_tests(remove=False)
-
         test_paths = kwargs['test_paths']
         kwargs['test_paths'] = []
 
@@ -474,6 +410,9 @@ class MachCommands(MachCommandBase):
         tests = []
         if resolve_tests:
             tests = mochitest.resolve_tests(test_paths, test_objects, cwd=self._mach_context.cwd)
+
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(tests)
 
         subsuite = kwargs.get('subsuite')
         if subsuite == 'default':
@@ -594,9 +533,6 @@ class RobocopCommands(MachCommandBase):
         from mozbuild.controller.building import BuildDriver
         self._ensure_state_subdir_exists('.')
 
-        driver = self._spawn(BuildDriver)
-        driver.install_tests(remove=False)
-
         test_paths = kwargs['test_paths']
         kwargs['test_paths'] = []
 
@@ -604,6 +540,8 @@ class RobocopCommands(MachCommandBase):
         resolver = self._spawn(TestResolver)
         tests = list(resolver.resolve_tests(paths=test_paths, cwd=self._mach_context.cwd,
                                             flavor='instrumentation', subsuite='robocop'))
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(tests)
 
         if len(tests) < 1:
             print(ROBOCOP_TESTS_NOT_FOUND.format('\n'.join(
@@ -665,12 +603,4 @@ class DeprecatedCommands(MachCommandBase):
 
     @Command('jetpack-package', category='testing', conditions=[REMOVED])
     def jetpack_package(self):
-        pass
-
-    @Command('webapprt-test-chrome', category='testing', conditions=[REMOVED])
-    def webapprt_chrome(self):
-        pass
-
-    @Command('webapprt-test-content', category='testing', conditions=[REMOVED])
-    def webapprt_content(self):
         pass

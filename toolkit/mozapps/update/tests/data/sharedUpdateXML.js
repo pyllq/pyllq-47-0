@@ -35,12 +35,33 @@ const STATE_SUCCEEDED       = "succeeded";
 const STATE_DOWNLOAD_FAILED = "download-failed";
 const STATE_FAILED          = "failed";
 
-const STATE_FAILED_LOADSOURCE_ERROR_WRONG_SIZE = STATE_FAILED + ": 2";
-const STATE_FAILED_READ_ERROR                  = STATE_FAILED + ": 6";
-const STATE_FAILED_WRITE_ERROR                 = STATE_FAILED + ": 7";
-const STATE_FAILED_CHANNEL_MISMATCH_ERROR      = STATE_FAILED + ": 22";
-const STATE_FAILED_VERSION_DOWNGRADE_ERROR     = STATE_FAILED + ": 23";
-const STATE_FAILED_WRITE_ERROR_FILE_COPY       = STATE_FAILED + ": 61";
+const LOADSOURCE_ERROR_WRONG_SIZE      = 2;
+const CRC_ERROR                        = 4;
+const READ_ERROR                       = 6;
+const WRITE_ERROR                      = 7;
+const MAR_CHANNEL_MISMATCH_ERROR       = 22;
+const VERSION_DOWNGRADE_ERROR          = 23;
+const INVALID_APPLYTO_DIR_STAGED_ERROR = 72;
+const INVALID_APPLYTO_DIR_ERROR        = 74;
+
+const STATE_FAILED_DELIMETER = ": ";
+
+const STATE_FAILED_LOADSOURCE_ERROR_WRONG_SIZE =
+  STATE_FAILED + STATE_FAILED_DELIMETER + LOADSOURCE_ERROR_WRONG_SIZE;
+const STATE_FAILED_CRC_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + CRC_ERROR;
+const STATE_FAILED_READ_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + READ_ERROR;
+const STATE_FAILED_WRITE_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + WRITE_ERROR;
+const STATE_FAILED_MAR_CHANNEL_MISMATCH_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + MAR_CHANNEL_MISMATCH_ERROR;
+const STATE_FAILED_VERSION_DOWNGRADE_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + VERSION_DOWNGRADE_ERROR;
+const STATE_FAILED_INVALID_APPLYTO_DIR_STAGED_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + INVALID_APPLYTO_DIR_STAGED_ERROR;
+const STATE_FAILED_INVALID_APPLYTO_DIR_ERROR =
+  STATE_FAILED + STATE_FAILED_DELIMETER + INVALID_APPLYTO_DIR_ERROR;
 
 /**
  * Constructs a string representing a remote update xml file.
@@ -66,15 +87,16 @@ function getRemoteUpdatesXMLString(aUpdates) {
  */
 function getRemoteUpdateString(aPatches, aType, aName, aDisplayVersion,
                                aAppVersion, aPlatformVersion, aBuildID,
-                               aDetailsURL, aBillboardURL, aLicenseURL,
-                               aShowPrompt, aShowNeverForVersion, aPromptWaitTime,
-                               aShowSurvey, aVersion, aExtensionVersion, aCustom1,
-                               aCustom2) {
+                               aDetailsURL, aBillboardURL, aShowPrompt,
+                               aShowNeverForVersion, aPromptWaitTime,
+                               aShowSurvey, aVersion, aExtensionVersion,
+                               aBackgroundInterval, aCustom1, aCustom2) {
   return getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
                          aPlatformVersion, aBuildID, aDetailsURL,
-                         aBillboardURL, aLicenseURL, aShowPrompt,
-                         aShowNeverForVersion, aPromptWaitTime, aShowSurvey,
-                         aVersion, aExtensionVersion, aCustom1, aCustom2) + ">\n" +
+                         aBillboardURL, aShowPrompt, aShowNeverForVersion,
+                         aPromptWaitTime, aShowSurvey, aVersion,
+                         aExtensionVersion, aBackgroundInterval,
+                         aCustom1, aCustom2) + ">\n" +
               aPatches +
          "  </update>\n";
 }
@@ -134,12 +156,13 @@ function getLocalUpdatesXMLString(aUpdates) {
  */
 function getLocalUpdateString(aPatches, aType, aName, aDisplayVersion,
                               aAppVersion, aPlatformVersion, aBuildID,
-                              aDetailsURL, aBillboardURL, aLicenseURL,
-                              aServiceURL, aInstallDate, aStatusText,
-                              aIsCompleteUpdate, aChannel, aForegroundDownload,
-                              aShowPrompt, aShowNeverForVersion, aPromptWaitTime,
+                              aDetailsURL, aBillboardURL, aServiceURL,
+                              aInstallDate, aStatusText, aIsCompleteUpdate,
+                              aChannel, aForegroundDownload, aShowPrompt,
+                              aShowNeverForVersion, aPromptWaitTime,
                               aShowSurvey, aVersion, aExtensionVersion,
-                              aPreviousAppVersion, aCustom1, aCustom2) {
+                              aPreviousAppVersion, aBackgroundInterval,
+                              aCustom1, aCustom2) {
   let serviceURL = aServiceURL ? aServiceURL : "http://test_service/";
   let installDate = aInstallDate ? aInstallDate : "1238441400314";
   let statusText = aStatusText ? aStatusText : "Install Pending";
@@ -154,9 +177,9 @@ function getLocalUpdateString(aPatches, aType, aName, aDisplayVersion,
                                                : "";
   return getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
                          aPlatformVersion, aBuildID, aDetailsURL, aBillboardURL,
-                         aLicenseURL, aShowPrompt, aShowNeverForVersion,
-                         aPromptWaitTime, aShowSurvey, aVersion, aExtensionVersion,
-                         aCustom1, aCustom2) +
+                         aShowPrompt, aShowNeverForVersion, aPromptWaitTime,
+                         aShowSurvey, aVersion, aExtensionVersion,
+                         aBackgroundInterval, aCustom1, aCustom2) +
                    " " +
                    previousAppVersion +
                    "serviceURL=\"" + serviceURL + "\" " +
@@ -223,9 +246,6 @@ function getLocalPatchString(aType, aURL, aHashFunction, aHashValue, aSize,
  * @param  aBillboardURL (optional)
  *         The update's billboard url.
  *         If not specified it will not be present.
- * @param  aLicenseURL (optional)
- *         The update's license url.
- *         If not specified it will not be present.
  * @param  aShowPrompt (optional)
  *         Whether to show the prompt for the update when auto update is
  *         enabled.
@@ -237,6 +257,8 @@ function getLocalPatchString(aType, aURL, aHashFunction, aHashValue, aSize,
  *         default to false.
  * @param  aPromptWaitTime (optional)
  *         Override for the app.update.promptWaitTime preference.
+ * @param  aBackgroundInterval (optional)
+ *         Override for the app.update.download.backgroundInterval preference.
  * @param  aShowSurvey (optional)
  *         Whether to show the 'No Thanks' button in the update prompt.
  *         If not specified it will not be present and the update service will
@@ -259,9 +281,9 @@ function getLocalPatchString(aType, aURL, aHashFunction, aHashValue, aSize,
  */
 function getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
                          aPlatformVersion, aBuildID, aDetailsURL, aBillboardURL,
-                         aLicenseURL, aShowPrompt, aShowNeverForVersion,
-                         aPromptWaitTime, aShowSurvey, aVersion, aExtensionVersion,
-                         aCustom1, aCustom2) {
+                         aShowPrompt, aShowNeverForVersion, aPromptWaitTime,
+                         aShowSurvey, aVersion, aExtensionVersion,
+                         aBackgroundInterval, aCustom1, aCustom2) {
   let type = aType ? aType : "major";
   let name = aName ? aName : "App Update Test";
   let displayVersion = "";
@@ -299,7 +321,6 @@ function getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
                                 : "http://test_details/") + "\" ";
   let billboardURL = aBillboardURL ? "billboardURL=\"" + aBillboardURL + "\" "
                                    : "";
-  let licenseURL = aLicenseURL ? "licenseURL=\"" + aLicenseURL + "\" " : "";
   let showPrompt = aShowPrompt ? "showPrompt=\"" + aShowPrompt + "\" " : "";
   let showNeverForVersion = aShowNeverForVersion ? "showNeverForVersion=\"" +
                                                    aShowNeverForVersion + "\" "
@@ -307,6 +328,9 @@ function getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
   let promptWaitTime = aPromptWaitTime ? "promptWaitTime=\"" + aPromptWaitTime +
                                          "\" "
                                        : "";
+  let backgroundInterval = aBackgroundInterval ? "backgroundInterval=\"" +
+                                                 aBackgroundInterval + "\" "
+                                               : "";
   let custom1 = aCustom1 ? aCustom1 + " " : "";
   let custom2 = aCustom2 ? aCustom2 + " " : "";
   return "  <update type=\"" + type + "\" " +
@@ -318,10 +342,10 @@ function getUpdateString(aType, aName, aDisplayVersion, aAppVersion,
                     platformVersion +
                     detailsURL +
                     billboardURL +
-                    licenseURL +
                     showPrompt +
                     showNeverForVersion +
                     promptWaitTime +
+                    backgroundInterval +
                     custom1 +
                     custom2 +
                    "buildID=\"" + buildID + "\"";

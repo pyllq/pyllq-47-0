@@ -16,6 +16,9 @@ typedef int64_t WebGLintptr;
 typedef bool WebGLboolean;
 
 namespace mozilla {
+namespace gl {
+class GLContext; // This is going to be needed a lot.
+} // namespace gl
 
 /*
  * WebGLTextureFakeBlackStatus is an enum to track what needs to use a dummy 1x1 black
@@ -139,6 +142,7 @@ enum class WebGLTexDimensions : uint8_t {
 enum class WebGLExtensionID : uint8_t {
     ANGLE_instanced_arrays,
     EXT_blend_minmax,
+    EXT_color_buffer_float,
     EXT_color_buffer_half_float,
     EXT_frag_depth,
     EXT_sRGB,
@@ -154,7 +158,7 @@ enum class WebGLExtensionID : uint8_t {
     OES_vertex_array_object,
     WEBGL_color_buffer_float,
     WEBGL_compressed_texture_atc,
-    WEBGL_compressed_texture_es3,
+    WEBGL_compressed_texture_es3_0,
     WEBGL_compressed_texture_etc1,
     WEBGL_compressed_texture_pvrtc,
     WEBGL_compressed_texture_s3tc,

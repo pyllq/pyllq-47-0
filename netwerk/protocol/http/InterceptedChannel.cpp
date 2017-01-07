@@ -13,6 +13,7 @@
 #include "nsHttpChannel.h"
 #include "HttpChannelChild.h"
 #include "nsHttpResponseHead.h"
+#include "nsNetUtil.h"
 #include "mozilla/ConsoleReportCollector.h"
 #include "mozilla/dom/ChannelInfo.h"
 #include "nsIChannelEventSink.h"
@@ -93,7 +94,7 @@ InterceptedChannelBase::DoSynthesizeStatus(uint16_t aStatus, const nsACString& a
     statusLine.AppendLiteral(" ");
     statusLine.Append(aReason);
 
-    (*mSynthesizedResponseHead)->ParseStatusLine(statusLine.get());
+    (*mSynthesizedResponseHead)->ParseStatusLine(statusLine);
     return NS_OK;
 }
 
@@ -104,7 +105,7 @@ InterceptedChannelBase::DoSynthesizeHeader(const nsACString& aName, const nsACSt
 
     nsAutoCString header = aName + NS_LITERAL_CSTRING(": ") + aValue;
     // Overwrite any existing header.
-    nsresult rv = (*mSynthesizedResponseHead)->ParseHeaderLine(header.get());
+    nsresult rv = (*mSynthesizedResponseHead)->ParseHeaderLine(header);
     NS_ENSURE_SUCCESS(rv, rv);
     return NS_OK;
 }
@@ -137,7 +138,7 @@ InterceptedChannelBase::SecureUpgradeChannelURI(nsIChannel* aChannel)
   NS_ENSURE_SUCCESS(rv, nullptr);
 
   nsCOMPtr<nsIURI> upgradedURI;
-  rv = HttpBaseChannel::GetSecureUpgradedURI(uri, getter_AddRefs(upgradedURI));
+  rv = NS_GetSecureUpgradedURI(uri, getter_AddRefs(upgradedURI));
   NS_ENSURE_SUCCESS(rv, nullptr);
 
   return upgradedURI.forget();
@@ -159,8 +160,6 @@ InterceptedChannelChrome::InterceptedChannelChrome(nsHttpChannel* aChannel,
 void
 InterceptedChannelChrome::NotifyController()
 {
-  nsCOMPtr<nsIOutputStream> out;
-
   // Intercepted responses should already be decoded.
   mChannel->SetApplyConversion(false);
 
@@ -272,7 +271,7 @@ InterceptedChannelChrome::FinishSynthesizedResponse(const nsACString& aFinalURLS
 
   nsCOMPtr<nsIURI> responseURI;
   if (!aFinalURLSpec.IsEmpty()) {
-    nsresult rv = NS_NewURI(getter_AddRefs(responseURI), aFinalURLSpec);
+    rv = NS_NewURI(getter_AddRefs(responseURI), aFinalURLSpec);
     NS_ENSURE_SUCCESS(rv, rv);
   } else {
     responseURI = originalURI;
@@ -281,7 +280,7 @@ InterceptedChannelChrome::FinishSynthesizedResponse(const nsACString& aFinalURLS
   bool equal = false;
   originalURI->Equals(responseURI, &equal);
   if (!equal) {
-    nsresult rv =
+    rv =
         mChannel->StartRedirectChannelToURI(responseURI, nsIChannelEventSink::REDIRECT_INTERNAL);
     NS_ENSURE_SUCCESS(rv, rv);
   } else {
@@ -443,8 +442,8 @@ InterceptedChannelContent::FinishSynthesizedResponse(const nsACString& aFinalURL
     nsresult rv = NS_NewURI(getter_AddRefs(responseURI), aFinalURLSpec);
     NS_ENSURE_SUCCESS(rv, rv);
   } else if (mSecureUpgrade) {
-    nsresult rv = HttpBaseChannel::GetSecureUpgradedURI(originalURI,
-                                                        getter_AddRefs(responseURI));
+    nsresult rv = NS_GetSecureUpgradedURI(originalURI,
+                                          getter_AddRefs(responseURI));
     NS_ENSURE_SUCCESS(rv, rv);
   } else {
     responseURI = originalURI;

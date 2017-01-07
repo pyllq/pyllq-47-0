@@ -12,23 +12,28 @@ const Cu = Components.utils;
 
 const {require, loader} = Cu.import("resource://devtools/shared/Loader.jsm", {});
 const Services = require("Services");
-const {NetUtil} = Cu.import("resource://gre/modules/NetUtil.jsm", {});
-const {OS} = Cu.import("resource://gre/modules/osfile.jsm", {});
-const {Task} = Cu.import("resource://gre/modules/Task.jsm", {});
+const {NetUtil} = require("resource://gre/modules/NetUtil.jsm");
+const {OS} = require("resource://gre/modules/osfile.jsm");
+const {Task} = require("devtools/shared/task");
 const EventEmitter = require("devtools/shared/event-emitter");
 const {gDevTools} = require("devtools/client/framework/devtools");
-/* import-globals-from StyleEditorUtil.jsm */
-Cu.import("resource://devtools/client/styleeditor/StyleEditorUtil.jsm");
-const {SplitView} = Cu.import("resource://devtools/client/shared/SplitView.jsm", {});
-const {StyleSheetEditor} = Cu.import("resource://devtools/client/styleeditor/StyleSheetEditor.jsm");
+const {
+  getString,
+  text,
+  wire,
+  showFilePicker,
+} = require("resource://devtools/client/styleeditor/StyleEditorUtil.jsm");
+const {SplitView} = require("resource://devtools/client/shared/SplitView.jsm");
+const {StyleSheetEditor} = require("resource://devtools/client/styleeditor/StyleSheetEditor.jsm");
 loader.lazyImporter(this, "PluralForm", "resource://gre/modules/PluralForm.jsm");
 const {PrefObserver, PREF_ORIG_SOURCES} =
       require("devtools/client/styleeditor/utils");
-const csscoverage = require("devtools/server/actors/csscoverage");
+const csscoverage = require("devtools/shared/fronts/csscoverage");
 const {console} = require("resource://gre/modules/Console.jsm");
 const promise = require("promise");
+const defer = require("devtools/shared/defer");
 const {ResponsiveUIManager} =
-  Cu.import("resource://devtools/client/responsivedesign/responsivedesign.jsm", {});
+  require("resource://devtools/client/responsivedesign/responsivedesign.jsm");
 
 const LOAD_ERROR = "error-load";
 const STYLE_EDITOR_TEMPLATE = "stylesheet";
@@ -152,7 +157,7 @@ StyleEditorUI.prototype = {
   /**
    * Build the initial UI and wire buttons with event handlers.
    */
-  createUI: function() {
+  createUI: function () {
     let viewRoot = this._root.parentNode.querySelector(".splitview-root");
 
     this._view = new SplitView(viewRoot);
@@ -202,7 +207,7 @@ StyleEditorUI.prototype = {
    * Listener handling the 'gear menu' popup showing event.
    * Update options menu items to reflect current preference settings.
    */
-  _onOptionsPopupShowing: function() {
+  _onOptionsPopupShowing: function () {
     this._optionsButton.setAttribute("open", "true");
     this._sourcesItem.setAttribute("checked",
       Services.prefs.getBoolPref(PREF_ORIG_SOURCES));
@@ -213,7 +218,7 @@ StyleEditorUI.prototype = {
   /**
    * Listener handling the 'gear menu' popup hiding event.
    */
-  _onOptionsPopupHiding: function() {
+  _onOptionsPopupHiding: function () {
     this._optionsButton.removeAttribute("open");
   },
 
@@ -225,10 +230,10 @@ StyleEditorUI.prototype = {
    * @param {StyleSheet} styleSheet
    *        StyleSheet object for new sheet
    */
-  _onNewDocument: function() {
+  _onNewDocument: function () {
     this._debuggee.getStyleSheets().then((styleSheets) => {
       return this._resetStyleSheetList(styleSheets);
-    }).then(null, Cu.reportError);
+    }).then(null, e => console.error(e));
   },
 
   /**
@@ -256,7 +261,7 @@ StyleEditorUI.prototype = {
   /**
    * Remove all editors and add loading indicator.
    */
-  _clear: function() {
+  _clear: function () {
     // remember selected sheet and line number for next load
     if (this.selectedEditor && this.selectedEditor.sourceEditor) {
       let href = this.selectedEditor.styleSheet.href;
@@ -301,13 +306,14 @@ StyleEditorUI.prototype = {
 
     let sources = yield styleSheet.getOriginalSources();
     if (sources && sources.length) {
+      let parentEditorName = editor.friendlyName;
       this._removeStyleSheetEditor(editor);
 
       for (let source of sources) {
         // set so the first sheet will be selected, even if it's a source
         source.styleSheetIndex = styleSheet.styleSheetIndex;
         source.relatedStyleSheet = styleSheet;
-
+        source.relatedEditorName = parentEditorName;
         yield this._addStyleSheetEditor(source);
       }
     }
@@ -360,7 +366,7 @@ StyleEditorUI.prototype = {
    * @param {nsIWindow} parentWindow
    *        Optional parent window for the file picker.
    */
-  _importFromFile: function(file, parentWindow) {
+  _importFromFile: function (file, parentWindow) {
     let onFileSelected = (selectedFile) => {
       if (!selectedFile) {
         // nothing selected
@@ -369,6 +375,7 @@ StyleEditorUI.prototype = {
       NetUtil.asyncFetch({
         uri: NetUtil.newURI(selectedFile),
         loadingNode: this._window.document,
+        securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
         contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER
       }, (stream, status) => {
         if (!Components.isSuccessCode(status)) {
@@ -392,7 +399,7 @@ StyleEditorUI.prototype = {
    * When a new or imported stylesheet has been added to the document.
    * Add an editor for it.
    */
-  _onStyleSheetCreated: function(styleSheet, file) {
+  _onStyleSheetCreated: function (styleSheet, file) {
     this._addStyleSheetEditor(styleSheet, file, true);
   },
 
@@ -404,14 +411,14 @@ StyleEditorUI.prototype = {
    * @param  {data} data
    *         The event data
    */
-  _onError: function(event, data) {
+  _onError: function (event, data) {
     this.emit("error", data);
   },
 
   /**
    * Toggle the original sources pref.
    */
-  _toggleOrigSources: function() {
+  _toggleOrigSources: function () {
     let isEnabled = Services.prefs.getBoolPref(PREF_ORIG_SOURCES);
     Services.prefs.setBoolPref(PREF_ORIG_SOURCES, !isEnabled);
   },
@@ -419,7 +426,7 @@ StyleEditorUI.prototype = {
   /**
    * Toggle the pref for showing a @media rules sidebar in each editor.
    */
-  _toggleMediaSidebar: function() {
+  _toggleMediaSidebar: function () {
     let isEnabled = Services.prefs.getBoolPref(PREF_MEDIA_SIDEBAR);
     Services.prefs.setBoolPref(PREF_MEDIA_SIDEBAR, !isEnabled);
   },
@@ -427,7 +434,7 @@ StyleEditorUI.prototype = {
   /**
    * Toggle the @media sidebar in each editor depending on the setting.
    */
-  _onMediaPrefChanged: function() {
+  _onMediaPrefChanged: function () {
     this.editors.forEach(this._updateMediaList);
   },
 
@@ -442,7 +449,7 @@ StyleEditorUI.prototype = {
    * 3) There was no stylesheet clicked on (the right click happened
    * below the list): hide the context menu
    */
-  _updateOpenLinkItem: function() {
+  _updateOpenLinkItem: function () {
     this._openLinkNewTabItem.setAttribute("hidden",
                                           !this._contextMenuStyleSheet);
     if (this._contextMenuStyleSheet) {
@@ -454,7 +461,7 @@ StyleEditorUI.prototype = {
   /**
    * Open a particular stylesheet in a new tab.
    */
-  _openLinkNewTab: function() {
+  _openLinkNewTab: function () {
     if (this._contextMenuStyleSheet) {
       this._window.openUILinkIn(this._contextMenuStyleSheet.href, "tab");
     }
@@ -466,7 +473,7 @@ StyleEditorUI.prototype = {
    * @param {StyleSheetEditor}  editor
    *        The editor to remove.
    */
-  _removeStyleSheetEditor: function(editor) {
+  _removeStyleSheetEditor: function (editor) {
     if (editor.summary) {
       this._view.removeItem(editor.summary);
     } else {
@@ -486,7 +493,7 @@ StyleEditorUI.prototype = {
   /**
    * Clear all the editors from the UI.
    */
-  _clearStyleSheetEditors: function() {
+  _clearStyleSheetEditors: function () {
     for (let editor of this.editors) {
       editor.destroy();
     }
@@ -500,7 +507,7 @@ StyleEditorUI.prototype = {
    * @param  {StyleSheetEditor} editor
    *         Editor to create UI for.
    */
-  _sourceLoaded: function(editor) {
+  _sourceLoaded: function (editor) {
     let ordinal = editor.styleSheet.styleSheetIndex;
     ordinal = ordinal == -1 ? Number.MAX_SAFE_INTEGER : ordinal;
     // add new sidebar item and editor to the UI
@@ -510,7 +517,7 @@ StyleEditorUI.prototype = {
       },
       disableAnimations: this._alwaysDisableAnimations,
       ordinal: ordinal,
-      onCreate: function(summary, details, data) {
+      onCreate: function (summary, details, data) {
         let createdEditor = data.editor;
         createdEditor.summary = summary;
         createdEditor.details = details;
@@ -587,7 +594,7 @@ StyleEditorUI.prototype = {
         this.emit("editor-added", createdEditor);
       }.bind(this),
 
-      onShow: function(summary, details, data) {
+      onShow: function (summary, details, data) {
         let showEditor = data.editor;
         this.selectedEditor = showEditor;
 
@@ -609,24 +616,24 @@ StyleEditorUI.prototype = {
             return;
           }
 
-          let href = csscoverage.sheetToUrl(showEditor.styleSheet);
-          let reportData = yield usage.createEditorReport(href);
+          let sheet = showEditor.styleSheet;
+          let {reports} = yield usage.createEditorReportForSheet(sheet);
 
           showEditor.removeAllUnusedRegions();
 
-          if (reportData.reports.length > 0) {
+          if (reports.length > 0) {
             // Only apply if this file isn't compressed. We detect a
             // compressed file if there are more rules than lines.
-            let text = showEditor.sourceEditor.getText();
-            let lineCount = text.split("\n").length;
+            let editorText = showEditor.sourceEditor.getText();
+            let lineCount = editorText.split("\n").length;
             let ruleCount = showEditor.styleSheet.ruleCount;
             if (lineCount >= ruleCount) {
-              showEditor.addUnusedRegions(reportData.reports);
+              showEditor.addUnusedRegions(reports);
             } else {
               this.emit("error", { key: "error-compressed", level: "info" });
             }
           }
-        }.bind(this)).then(null, Cu.reportError);
+        }.bind(this)).then(null, e => console.error(e));
       }.bind(this)
     });
   },
@@ -637,7 +644,7 @@ StyleEditorUI.prototype = {
    * @return {Promise}
    *         Promise that will resolve when the editor is selected.
    */
-  switchToSelectedSheet: function() {
+  switchToSelectedSheet: function () {
     let toSelect = this._styleSheetToSelect;
 
     for (let editor of this.editors) {
@@ -662,7 +669,7 @@ StyleEditorUI.prototype = {
    * @param {StyleSheetEditor} editor
    *        The editor to test.
    */
-  _isEditorToSelect: function(editor) {
+  _isEditorToSelect: function (editor) {
     let toSelect = this._styleSheetToSelect;
     if (!toSelect) {
       return false;
@@ -687,7 +694,7 @@ StyleEditorUI.prototype = {
    *         Promise that will resolve when the editor is selected and ready
    *         to be used.
    */
-  _selectEditor: function(editor, line, col) {
+  _selectEditor: function (editor, line, col) {
     line = line || 0;
     col = col || 0;
 
@@ -703,12 +710,12 @@ StyleEditorUI.prototype = {
     return promise.all([editorPromise, summaryPromise]);
   },
 
-  getEditorSummary: function(editor) {
+  getEditorSummary: function (editor) {
     if (editor.summary) {
       return promise.resolve(editor.summary);
     }
 
-    let deferred = promise.defer();
+    let deferred = defer();
     let self = this;
 
     this.on("editor-added", function onAdd(e, selected) {
@@ -721,12 +728,12 @@ StyleEditorUI.prototype = {
     return deferred.promise;
   },
 
-  getEditorDetails: function(editor) {
+  getEditorDetails: function (editor) {
     if (editor.details) {
       return promise.resolve(editor.details);
     }
 
-    let deferred = promise.defer();
+    let deferred = defer();
     let self = this;
 
     this.on("editor-added", function onAdd(e, selected) {
@@ -745,7 +752,7 @@ StyleEditorUI.prototype = {
    * @param {StyleSheet} styleSheet
    *        The style sheet to be identified.
    */
-  getStyleSheetIdentifier: function(styleSheet) {
+  getStyleSheetIdentifier: function (styleSheet) {
     // Identify inline style sheets by their host page URI and index
     // at the page.
     return styleSheet.href ? styleSheet.href :
@@ -765,7 +772,7 @@ StyleEditorUI.prototype = {
    *         Promise that will resolve when the editor is selected and ready
    *         to be used.
    */
-  selectStyleSheet: function(stylesheet, line, col) {
+  selectStyleSheet: function (stylesheet, line, col) {
     this._styleSheetToSelect = {
       stylesheet: stylesheet,
       line: line,
@@ -784,7 +791,7 @@ StyleEditorUI.prototype = {
    * @param  {StyleSheetEditor} editor
    *         Editor for which a property has changed
    */
-  _summaryChange: function(editor) {
+  _summaryChange: function (editor) {
     this._updateSummaryForEditor(editor);
   },
 
@@ -796,14 +803,14 @@ StyleEditorUI.prototype = {
    *        Optional item's summary element to update. If none, item
    *        corresponding to passed editor is used.
    */
-  _updateSummaryForEditor: function(editor, summary) {
+  _updateSummaryForEditor: function (editor, summary) {
     summary = summary || editor.summary;
     if (!summary) {
       return;
     }
 
     let ruleCount = editor.styleSheet.ruleCount;
-    if (editor.styleSheet.relatedStyleSheet && editor.linkedCSSFile) {
+    if (editor.styleSheet.relatedStyleSheet) {
       ruleCount = editor.styleSheet.relatedStyleSheet.ruleCount;
     }
     if (ruleCount === undefined) {
@@ -828,14 +835,17 @@ StyleEditorUI.prototype = {
       label.setAttribute("tooltiptext", editor.styleSheet.href);
     }
 
-    let linkedCSSFile = "";
+    let linkedCSSSource = "";
     if (editor.linkedCSSFile) {
-      linkedCSSFile = OS.Path.basename(editor.linkedCSSFile);
+      linkedCSSSource = OS.Path.basename(editor.linkedCSSFile);
+    } else if (editor.styleSheet.relatedEditorName) {
+      linkedCSSSource = editor.styleSheet.relatedEditorName;
     }
-    text(summary, ".stylesheet-linked-file", linkedCSSFile);
+    text(summary, ".stylesheet-linked-file", linkedCSSSource);
     text(summary, ".stylesheet-title", editor.styleSheet.title || "");
     text(summary, ".stylesheet-rule-count",
-      PluralForm.get(ruleCount, _("ruleCount.label")).replace("#1", ruleCount));
+      PluralForm.get(ruleCount,
+                     getString("ruleCount.label")).replace("#1", ruleCount));
   },
 
   /**
@@ -846,7 +856,7 @@ StyleEditorUI.prototype = {
    * @param  {StyleSheetEditor} editor
    *         Editor to update @media sidebar of
    */
-  _updateMediaList: function(editor) {
+  _updateMediaList: function (editor) {
     Task.spawn(function* () {
       let details = yield this.getEditorDetails(editor);
       let list = details.querySelector(".stylesheet-media-list");
@@ -915,7 +925,7 @@ StyleEditorUI.prototype = {
       sidebar.hidden = !showSidebar || !inSource;
 
       this.emit("media-list-changed", editor);
-    }.bind(this)).then(null, Cu.reportError);
+    }.bind(this)).then(null, e => console.error(e));
   },
 
   /**
@@ -925,7 +935,7 @@ StyleEditorUI.prototype = {
     * @param {object} e
     *        Event object
     */
-  _onMediaConditionClick: function(e) {
+  _onMediaConditionClick: function (e) {
     if (!e.target.matches(".media-responsive-mode-toggle")) {
       return;
     }
@@ -945,9 +955,9 @@ StyleEditorUI.prototype = {
    * @param  {object} options
    *         Object with width or/and height properties.
    */
-  _launchResponsiveMode: Task.async(function*(options = {}) {
+  _launchResponsiveMode: Task.async(function* (options = {}) {
     let tab = this._target.tab;
-    let win = this._target.tab.ownerGlobal;
+    let win = this._target.tab.ownerDocument.defaultView;
 
     yield ResponsiveUIManager.runIfNeeded(win, tab);
     if (options.width && options.height) {
@@ -966,12 +976,12 @@ StyleEditorUI.prototype = {
    * @param  {object} location
    *         Location object with 'line', 'column', and 'source' properties.
    */
-  _jumpToLocation: function(location) {
+  _jumpToLocation: function (location) {
     let source = location.styleSheet || location.source;
     this.selectStyleSheet(source, location.line - 1, location.column - 1);
   },
 
-  destroy: function() {
+  destroy: function () {
     if (this._highlighter) {
       this._highlighter.finalize();
       this._highlighter = null;

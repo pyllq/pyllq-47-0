@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -49,8 +49,10 @@ DEFINES['SQLITE_MAX_SCHEMA_RETRY'] = 25
 # -DSQLITE_WIN32_GETVERSIONEX=0 avoids using deprecated functions.
 # SQLite will just assume we are running on NT kinds of Windows. That's fine
 # because we don't support Win9x.
+# -DSQLITE_ALLOW_URI_AUTHORITY=1 enables uri authorities. See bug 879133.
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
     DEFINES['SQLITE_WIN32_GETVERSIONEX'] = 0
+    DEFINES['SQLITE_ALLOW_URI_AUTHORITY'] = 1
 
 # -DSQLITE_ENABLE_LOCKING_STYLE=1 to help with AFP folders
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
@@ -77,10 +79,6 @@ if CONFIG['OS_TARGET'] == 'Android':
 if CONFIG['OS_ARCH'] == 'WINNT' and CONFIG['MOZ_MEMORY']:
     DEFINES['HAVE_MALLOC_USABLE_SIZE'] = True
     DEFINES['SQLITE_WITHOUT_MSIZE'] = True
-
-# disable PGO for Sun Studio
-if CONFIG['SOLARIS_SUNPRO_CC']:
-    NO_PGO = True
 
 # Suppress warnings in third-party code.
 if CONFIG['GNU_CC']:

@@ -85,7 +85,7 @@ GetTempDir(nsIFile** aTempDir)
 
 namespace {
 
-class nsRemoteAnonymousTemporaryFileRunnable : public nsRunnable
+class nsRemoteAnonymousTemporaryFileRunnable : public Runnable
 {
 public:
   dom::FileDescOrError *mResultPtr;
@@ -126,8 +126,8 @@ NS_OpenAnonymousTemporaryFile(PRFileDesc** aOutFileDesc)
       MOZ_ASSERT(NS_FAILED(rv));
       return rv;
     }
-    *aOutFileDesc =
-      PR_ImportFile(PROsfd(fd.get_FileDescriptor().PlatformHandle()));
+    auto rawFD = fd.get_FileDescriptor().ClonePlatformHandle();
+    *aOutFileDesc = PR_ImportFile(PROsfd(rawFD.release()));
     return NS_OK;
   }
 

@@ -84,7 +84,7 @@ public class SearchEngineManager implements SharedPreferences.OnSharedPreference
     private String distributionLocale;
 
     public static interface SearchEngineCallback {
-        public void execute(SearchEngine engine);
+        public void execute(@Nullable SearchEngine engine);
     }
 
     public SearchEngineManager(Context context, Distribution distribution) {
@@ -301,7 +301,7 @@ public class SearchEngineManager implements SharedPreferences.OnSharedPreference
         }
 
         try {
-            final JSONObject all = new JSONObject(FileUtils.getFileContents(prefFile));
+            final JSONObject all = FileUtils.readJSONObjectFromFile(prefFile);
 
             // First, look for a default locale specified by the distribution.
             if (all.has("Preferences")) {
@@ -568,6 +568,9 @@ public class SearchEngineManager implements SharedPreferences.OnSharedPreference
      */
     private SearchEngine createEngineFromLocale(String name) {
         final InputStream in = getInputStreamFromSearchPluginsJar("list.txt");
+        if (in == null) {
+            return null;
+        }
         final BufferedReader br = getBufferedReader(in);
 
         try {
@@ -711,6 +714,9 @@ public class SearchEngineManager implements SharedPreferences.OnSharedPreference
 
         final InputStream in = GeckoJarReader.getStream(
                 context, GeckoJarReader.getJarURL(context, "chrome/chrome.manifest"));
+        if (in == null) {
+            return null;
+        }
         final BufferedReader br = getBufferedReader(in);
 
         try {

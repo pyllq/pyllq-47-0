@@ -7,7 +7,6 @@
 #ifndef gc_Statistics_h
 #define gc_Statistics_h
 
-#include "mozilla/DebugOnly.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/PodOperations.h"
 
@@ -87,6 +86,8 @@ enum Phase : uint8_t {
 
     PHASE_LIMIT,
     PHASE_NONE = PHASE_LIMIT,
+    PHASE_EXPLICIT_SUSPENSION = PHASE_LIMIT,
+    PHASE_IMPLICIT_SUSPENSION,
     PHASE_MULTI_PARENTS
 };
 
@@ -113,16 +114,23 @@ struct ZoneGCStats
     /* Total number of zones in the Runtime at the start of this GC. */
     int zoneCount;
 
-    /* Total number of comaprtments in all zones collected. */
+    /* Number of zones swept in this GC. */
+    int sweptZoneCount;
+
+    /* Total number of compartments in all zones collected. */
     int collectedCompartmentCount;
 
     /* Total number of compartments in the Runtime at the start of this GC. */
     int compartmentCount;
 
+    /* Total number of compartments swept by this GC. */
+    int sweptCompartmentCount;
+
     bool isCollectingAllZones() const { return collectedZoneCount == zoneCount; }
 
     ZoneGCStats()
-      : collectedZoneCount(0), zoneCount(0), collectedCompartmentCount(0), compartmentCount(0)
+      : collectedZoneCount(0), zoneCount(0), sweptZoneCount(0),
+        collectedCompartmentCount(0), compartmentCount(0), sweptCompartmentCount(0)
     {}
 };
 
@@ -161,7 +169,7 @@ struct Statistics
     /* Create a convenient type for referring to tables of phase times. */
     using PhaseTimeTable = int64_t[NumTimingArrays][PHASE_LIMIT];
 
-    static bool initialize();
+    static MOZ_MUST_USE bool initialize();
 
     explicit Statistics(JSRuntime* rt);
     ~Statistics();
@@ -170,12 +178,32 @@ struct Statistics
     void endPhase(Phase phase);
     void endParallelPhase(Phase phase, const GCParallelTask* task);
 
+    // Occasionally, we may be in the middle of something that is tracked by
+    // this class, and we need to do something unusual (eg evict the nursery)
+    // that doesn't normally nest within the current phase. Suspend the
+    // currently tracked phase stack, at which time the caller is free to do
+    // other tracked operations.
+    //
+    // This also happens internally with PHASE_GC_BEGIN and other "non-GC"
+    // phases. While in these phases, any beginPhase will automatically suspend
+    // the non-GC phase, until that inner stack is complete, at which time it
+    // will automatically resume the non-GC phase. Explicit suspensions do not
+    // get auto-resumed.
+    void suspendPhases(Phase suspension = PHASE_EXPLICIT_SUSPENSION);
+
+    // Resume a suspended stack of phases.
+    void resumePhases();
+
     void beginSlice(const ZoneGCStats& zoneStats, JSGCInvocationKind gckind,
                     SliceBudget budget, JS::gcreason::Reason reason);
     void endSlice();
 
-    bool startTimingMutator();
-    bool stopTimingMutator(double& mutator_ms, double& gc_ms);
+    MOZ_MUST_USE bool startTimingMutator();
+    MOZ_MUST_USE bool stopTimingMutator(double& mutator_ms, double& gc_ms);
+
+    // Note when we sweep a zone or compartment.
+    void sweptZone() { ++zoneStats.sweptZoneCount; }
+    void sweptCompartment() { ++zoneStats.sweptCompartmentCount; }
 
     void reset(const char* reason) {
         if (!aborted)
@@ -191,22 +219,8 @@ struct Statistics
         counts[s]++;
     }
 
-    void beginNurseryCollection(JS::gcreason::Reason reason) {
-        count(STAT_MINOR_GC);
-        if (nurseryCollectionCallback) {
-            (*nurseryCollectionCallback)(runtime,
-                                         JS::GCNurseryProgress::GC_NURSERY_COLLECTION_START,
-                                         reason);
-        }
-    }
-
-    void endNurseryCollection(JS::gcreason::Reason reason) {
-        if (nurseryCollectionCallback) {
-            (*nurseryCollectionCallback)(runtime,
-                                         JS::GCNurseryProgress::GC_NURSERY_COLLECTION_END,
-                                         reason);
-        }
-    }
+    void beginNurseryCollection(JS::gcreason::Reason reason);
+    void endNurseryCollection(JS::gcreason::Reason reason);
 
     int64_t beginSCC();
     void endSCC(unsigned scc, int64_t start);
@@ -236,8 +250,10 @@ struct Statistics
 
     struct SliceData {
         SliceData(SliceBudget budget, JS::gcreason::Reason reason, int64_t start,
-                  double startTimestamp, size_t startFaults)
+                  double startTimestamp, size_t startFaults, gc::State initialState)
           : budget(budget), reason(reason),
+            initialState(initialState),
+            finalState(gc::State::NotActive),
             resetReason(nullptr),
             start(start), startTimestamp(startTimestamp),
             startFaults(startFaults)
@@ -248,6 +264,7 @@ struct Statistics
 
         SliceBudget budget;
         JS::gcreason::Reason reason;
+        gc::State initialState, finalState;
         const char* resetReason;
         int64_t start, end;
         double startTimestamp, endTimestamp;
@@ -313,13 +330,14 @@ struct Statistics
     size_t activeDagSlot;
 
     /*
-     * To avoid recursive nesting, we discontinue a callback phase when any
-     * other phases are started. Remember what phase to resume when the inner
-     * phases are complete. (And because GCs can nest within the callbacks any
-     * number of times, we need a whole stack of of phases to resume.)
+     * Certain phases can interrupt the phase stack, eg callback phases. When
+     * this happens, we move the suspended phases over to a sepearate list,
+     * terminated by a dummy PHASE_SUSPENSION phase (so that we can nest
+     * suspensions by suspending multiple stacks with a PHASE_SUSPENSION in
+     * between).
      */
-    Phase suspendedPhases[MAX_NESTING];
-    size_t suspendedPhaseNestingDepth;
+    Phase suspendedPhases[MAX_NESTING * 3];
+    size_t suspended;
 
     /* Sweep times for SCCs of compartments. */
     Vector<int64_t, 0, SystemAllocPolicy> sccTimes;

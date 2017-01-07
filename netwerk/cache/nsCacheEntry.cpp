@@ -439,10 +439,8 @@ nsCacheEntryHashTable::AddEntry( nsCacheEntry *cacheEntry)
 
     if (!hashEntry)
         return NS_ERROR_FAILURE;
-#ifndef DEBUG_dougt
     NS_ASSERTION(((nsCacheEntryHashTableEntry *)hashEntry)->cacheEntry == 0,
                  "### nsCacheEntryHashTable::AddEntry - entry already used");
-#endif
     ((nsCacheEntryHashTableEntry *)hashEntry)->cacheEntry = cacheEntry;
 
     return NS_OK;
@@ -476,14 +474,13 @@ nsCacheEntryHashTable::Iter()
  */
 
 PLDHashNumber
-nsCacheEntryHashTable::HashKey( PLDHashTable *table, const void *key)
+nsCacheEntryHashTable::HashKey(const void *key)
 {
     return HashString(*static_cast<const nsCString *>(key));
 }
 
 bool
-nsCacheEntryHashTable::MatchEntry(PLDHashTable *       /* table */,
-                                  const PLDHashEntryHdr * hashEntry,
+nsCacheEntryHashTable::MatchEntry(const PLDHashEntryHdr * hashEntry,
                                   const void *            key)
 {
     NS_ASSERTION(key !=  nullptr, "### nsCacheEntryHashTable::MatchEntry : null key");

@@ -17,13 +17,13 @@ const TEST_URL = "data:text/html;charset=utf-8," + encodeURIComponent(HTML);
 
 var highlightedNodeFront, highlighterOptions;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab(TEST_URL);
   let {toolbox, inspector, view} = yield openLayoutView();
   yield selectNode("div", inspector);
 
   // Mock the highlighter by replacing the showBoxModel method.
-  toolbox.highlighter.showBoxModel = function(nodeFront, options) {
+  toolbox.highlighter.showBoxModel = function (nodeFront, options) {
     highlightedNodeFront = nodeFront;
     highlighterOptions = options;
   };

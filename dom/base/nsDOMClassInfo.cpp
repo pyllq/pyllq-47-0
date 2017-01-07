@@ -70,17 +70,16 @@
 // CSS related includes
 #include "nsCSSRules.h"
 #include "nsIDOMCSSRule.h"
-#include "nsAutoPtr.h"
 #include "nsMemory.h"
 
 // includes needed for the prototype chain interfaces
+#include "nsIDOMCSSKeyframeRule.h"
+#include "nsIDOMCSSKeyframesRule.h"
 #include "nsIDOMCSSImportRule.h"
 #include "nsIDOMCSSMediaRule.h"
 #include "nsIDOMCSSFontFaceRule.h"
 #include "nsIDOMCSSMozDocumentRule.h"
 #include "nsIDOMCSSSupportsRule.h"
-#include "nsIDOMMozCSSKeyframeRule.h"
-#include "nsIDOMMozCSSKeyframesRule.h"
 #include "nsIDOMCSSCounterStyleRule.h"
 #include "nsIDOMCSSPageRule.h"
 #include "nsIDOMCSSStyleRule.h"
@@ -248,9 +247,9 @@ static nsDOMClassInfoData sClassInfoData[] = {
                                        DOM_DEFAULT_SCRIPTABLE_FLAGS)
 
 
-  NS_DEFINE_CLASSINFO_DATA(MozCSSKeyframeRule, nsDOMGenericSH,
+  NS_DEFINE_CLASSINFO_DATA(CSSKeyframeRule, nsDOMGenericSH,
                            DOM_DEFAULT_SCRIPTABLE_FLAGS)
-  NS_DEFINE_CLASSINFO_DATA(MozCSSKeyframesRule, nsDOMGenericSH,
+  NS_DEFINE_CLASSINFO_DATA(CSSKeyframesRule, nsDOMGenericSH,
                            DOM_DEFAULT_SCRIPTABLE_FLAGS)
 
   NS_DEFINE_CLASSINFO_DATA(CSSCounterStyleRule, nsDOMGenericSH,
@@ -325,9 +324,15 @@ nsDOMClassInfo::GetNative(nsIXPConnectWrappedNative *wrapper, JSObject *obj)
 }
 
 nsresult
-nsDOMClassInfo::DefineStaticJSVals(JSContext *cx)
+nsDOMClassInfo::DefineStaticJSVals()
 {
-#define SET_JSID_TO_STRING(_id, _cx, _str)                                    \
+  AutoJSAPI jsapi;
+  if (!jsapi.Init(xpc::UnprivilegedJunkScope())) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  JSContext* cx = jsapi.cx();
+
+#define SET_JSID_TO_STRING(_id, _cx, _str)                              \
   if (JSString *str = ::JS_AtomizeAndPinString(_cx, _str))                             \
       _id = INTERNED_STRING_TO_JSID(_cx, str);                                \
   else                                                                        \
@@ -500,8 +505,6 @@ nsDOMClassInfo::Init()
   nsCOMPtr<nsIXPCFunctionThisTranslator> elt = new nsEventListenerThisTranslator();
   sXPConnect->SetFunctionThisTranslator(NS_GET_IID(nsIDOMEventListener), elt);
 
-  AutoSafeJSContext cx;
-
   DOM_CLASSINFO_MAP_BEGIN_NO_CLASS_IF(DOMPrototype, nsIDOMDOMConstructor)
     DOM_CLASSINFO_MAP_ENTRY(nsIDOMDOMConstructor)
   DOM_CLASSINFO_MAP_END
@@ -602,12 +605,12 @@ nsDOMClassInfo::Init()
     DOM_CLASSINFO_MAP_ENTRY(nsIMessageSender)
   DOM_CLASSINFO_MAP_END
 
-  DOM_CLASSINFO_MAP_BEGIN(MozCSSKeyframeRule, nsIDOMMozCSSKeyframeRule)
-    DOM_CLASSINFO_MAP_ENTRY(nsIDOMMozCSSKeyframeRule)
+  DOM_CLASSINFO_MAP_BEGIN(CSSKeyframeRule, nsIDOMCSSKeyframeRule)
+    DOM_CLASSINFO_MAP_ENTRY(nsIDOMCSSKeyframeRule)
   DOM_CLASSINFO_MAP_END
 
-  DOM_CLASSINFO_MAP_BEGIN(MozCSSKeyframesRule, nsIDOMMozCSSKeyframesRule)
-    DOM_CLASSINFO_MAP_ENTRY(nsIDOMMozCSSKeyframesRule)
+  DOM_CLASSINFO_MAP_BEGIN(CSSKeyframesRule, nsIDOMCSSKeyframesRule)
+    DOM_CLASSINFO_MAP_ENTRY(nsIDOMCSSKeyframesRule)
   DOM_CLASSINFO_MAP_END
 
   DOM_CLASSINFO_MAP_BEGIN(CSSCounterStyleRule, nsIDOMCSSCounterStyleRule)
@@ -665,7 +668,7 @@ nsDOMClassInfo::Init()
 #endif
 
   // Initialize static JSString's
-  DefineStaticJSVals(cx);
+  DefineStaticJSVals();
 
   int32_t i;
 
@@ -1763,98 +1766,6 @@ nsWindowSH::GlobalResolve(nsGlobalWindow *aWin, JSContext *cx,
   NS_ENSURE_TRUE(class_name, NS_ERROR_UNEXPECTED);
 
   nsresult rv = NS_OK;
-
-  if (name_struct->mType == nsGlobalNameStruct::eTypeNewDOMBinding ||
-      name_struct->mType == nsGlobalNameStruct::eTypeClassProto ||
-      name_struct->mType == nsGlobalNameStruct::eTypeClassConstructor) {
-    // Lookup new DOM bindings.
-    DefineInterface getOrCreateInterfaceObject =
-      name_struct->mDefineDOMInterface;
-    if (getOrCreateInterfaceObject) {
-      if (name_struct->mType == nsGlobalNameStruct::eTypeClassConstructor &&
-          !OldBindingConstructorEnabled(name_struct, aWin, cx)) {
-        return NS_OK;
-      }
-
-      ConstructorEnabled* checkEnabledForScope = name_struct->mConstructorEnabled;
-      // We do the enabled check on the current compartment of cx, but for the
-      // actual object we pass in the underlying object in the Xray case.  That
-      // way the callee can decide whether to allow access based on the caller
-      // or the window being touched.
-      JS::Rooted<JSObject*> global(cx,
-        js::CheckedUnwrap(obj, /* stopAtWindowProxy = */ false));
-      if (!global) {
-        return NS_ERROR_DOM_SECURITY_ERR;
-      }
-      if (checkEnabledForScope && !checkEnabledForScope(cx, global)) {
-        return NS_OK;
-      }
-
-      // The DOM constructor resolve machinery interacts with Xrays in tricky
-      // ways, and there are some asymmetries that are important to understand.
-      //
-      // In the regular (non-Xray) case, we only want to resolve constructors
-      // once (so that if they're deleted, they don't reappear). We do this by
-      // stashing the constructor in a slot on the global, such that we can see
-      // during resolve whether we've created it already. This is rather
-      // memory-intensive, so we don't try to maintain these semantics when
-      // manipulating a global over Xray (so the properties just re-resolve if
-      // they've been deleted).
-      //
-      // Unfortunately, there's a bit of an impedance-mismatch between the Xray
-      // and non-Xray machinery. The Xray machinery wants an API that returns a
-      // JS::PropertyDescriptor, so that the resolve hook doesn't have to get
-      // snared up with trying to define a property on the Xray holder. At the
-      // same time, the DefineInterface callbacks are set up to define things
-      // directly on the global.  And re-jiggering them to return property
-      // descriptors is tricky, because some DefineInterface callbacks define
-      // multiple things (like the Image() alias for HTMLImageElement).
-      //
-      // So the setup is as-follows:
-      //
-      // * The resolve function takes a JS::PropertyDescriptor, but in the
-      //   non-Xray case, callees may define things directly on the global, and
-      //   set the value on the property descriptor to |undefined| to indicate
-      //   that there's nothing more for the caller to do. We assert against
-      //   this behavior in the Xray case.
-      //
-      // * We make sure that we do a non-Xray resolve first, so that all the
-      //   slots are set up. In the Xray case, this means unwrapping and doing
-      //   a non-Xray resolve before doing the Xray resolve.
-      //
-      // This all could use some grand refactoring, but for now we just limp
-      // along.
-      if (xpc::WrapperFactory::IsXrayWrapper(obj)) {
-        JS::Rooted<JSObject*> interfaceObject(cx);
-        {
-          JSAutoCompartment ac(cx, global);
-          interfaceObject = getOrCreateInterfaceObject(cx, global, id, false);
-        }
-        if (NS_WARN_IF(!interfaceObject)) {
-          return NS_ERROR_FAILURE;
-        }
-        if (!JS_WrapObject(cx, &interfaceObject)) {
-          return NS_ERROR_FAILURE;
-        }
-
-        FillPropertyDescriptor(desc, obj, 0, JS::ObjectValue(*interfaceObject));
-      } else {
-        JS::Rooted<JSObject*> interfaceObject(cx,
-          getOrCreateInterfaceObject(cx, obj, id, true));
-        if (NS_WARN_IF(!interfaceObject)) {
-          return NS_ERROR_FAILURE;
-        }
-        // We've already defined the property.  We indicate this to the caller
-        // by filling a property descriptor with JS::UndefinedValue() as the
-        // value.  We still have to fill in a property descriptor, though, so
-        // that the caller knows the property is in fact on this object.  It
-        // doesn't matter what we pass for the "readonly" argument here.
-        FillPropertyDescriptor(desc, obj, JS::UndefinedValue(), false);
-      }
-
-      return NS_OK;
-    }
-  }
 
   if (name_struct->mType == nsGlobalNameStruct::eTypeClassConstructor) {
     if (!OldBindingConstructorEnabled(name_struct, aWin, cx)) {

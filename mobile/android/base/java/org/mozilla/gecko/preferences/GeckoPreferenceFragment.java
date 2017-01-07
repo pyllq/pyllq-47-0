@@ -9,6 +9,7 @@ import java.util.Locale;
 
 import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.BrowserLocaleManager;
+import org.mozilla.gecko.GeckoApplication;
 import org.mozilla.gecko.GeckoSharedPrefs;
 import org.mozilla.gecko.LocaleManager;
 import org.mozilla.gecko.PrefsHelper;
@@ -16,7 +17,7 @@ import org.mozilla.gecko.R;
 import org.mozilla.gecko.Telemetry;
 import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.TelemetryContract.Method;
-import org.mozilla.gecko.fxa.AccountLoaderNative;
+import org.mozilla.gecko.fxa.AccountLoader;
 import org.mozilla.gecko.fxa.authenticator.AndroidFxAccount;
 
 import android.accounts.Account;
@@ -34,6 +35,8 @@ import android.preference.PreferenceScreen;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
+
+import com.squareup.leakcanary.RefWatcher;
 
 /* A simple implementation of PreferenceFragment for large screen devices
  * This will strip category headers (so that they aren't shown to the user twice)
@@ -115,6 +118,11 @@ public class GeckoPreferenceFragment extends PreferenceFragment {
             return getString(R.string.pref_category_search);
         }
 
+        // Launched as action from content notifications.
+        if (res == R.xml.preferences_notifications) {
+            return getString(R.string.pref_category_notifications);
+        }
+
         return null;
     }
 
@@ -140,6 +148,11 @@ public class GeckoPreferenceFragment extends PreferenceFragment {
         // We can launch this category from the the magnifying glass in the quick search bar.
         if (res == R.xml.preferences_search) {
             return R.id.pref_header_search;
+        }
+
+        // Launched as action from content notifications.
+        if (res == R.xml.preferences_notifications) {
+            return R.id.pref_header_notifications;
         }
 
         return -1;
@@ -250,12 +263,14 @@ public class GeckoPreferenceFragment extends PreferenceFragment {
         if (res == R.xml.preferences) {
             Telemetry.stopUISession(TelemetryContract.Session.SETTINGS);
         }
+
+        GeckoApplication.watchReference(getActivity(), this);
     }
 
     private class AccountLoaderCallbacks implements LoaderManager.LoaderCallbacks<Account> {
         @Override
         public Loader<Account> onCreateLoader(int id, Bundle args) {
-            return new AccountLoaderNative(getActivity());
+            return new AccountLoader(getActivity());
         }
 
         @Override

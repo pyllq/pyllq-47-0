@@ -26,6 +26,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Deprecated",
                                   "resource://gre/modules/Deprecated.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AppConstants",
                                   "resource://gre/modules/AppConstants.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
+                                  "resource://gre/modules/NetUtil.jsm");
 
 var ContentAreaUtils = {
 
@@ -834,7 +836,9 @@ function DownloadURL(aURL, aFileName, aInitiatingDocument) {
       target: { path: file.path, partFilePath: file.path + ".part" }
     });
     download.tryToKeepPartialData = true;
-    download.start();
+
+    // Ignore errors because failures are reported through the download list.
+    download.start().catch(() => {});
 
     // Add the download to the list, allowing it to be managed.
     let list = yield Downloads.getList(Downloads.ALL);
@@ -1314,12 +1318,11 @@ function openURL(aURL)
       }
     }
 
-    var channel = Services.io.newChannelFromURI2(uri,
-                                                 null,      // aLoadingNode
-                                                 Services.scriptSecurityManager.getSystemPrincipal(),
-                                                 null,      // aTriggeringPrincipal
-                                                 Components.interfaces.nsILoadInfo.SEC_NORMAL,
-                                                 Components.interfaces.nsIContentPolicy.TYPE_OTHER);
+    var channel = NetUtil.newChannel({
+      uri: uri,
+      loadUsingSystemPrincipal: true
+    });
+
     var uriLoader = Components.classes["@mozilla.org/uriloader;1"]
                               .getService(Components.interfaces.nsIURILoader);
     uriLoader.openURI(channel,

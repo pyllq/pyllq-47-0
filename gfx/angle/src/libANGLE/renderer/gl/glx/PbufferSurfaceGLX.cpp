@@ -15,14 +15,15 @@
 namespace rx
 {
 
-PbufferSurfaceGLX::PbufferSurfaceGLX(RendererGL *renderer,
+PbufferSurfaceGLX::PbufferSurfaceGLX(const egl::SurfaceState &state,
+                                     RendererGL *renderer,
                                      EGLint width,
                                      EGLint height,
                                      bool largest,
                                      const FunctionsGLX &glx,
                                      glx::Context context,
                                      glx::FBConfig fbConfig)
-    : SurfaceGL(renderer),
+    : SurfaceGLX(state, renderer),
       mWidth(width),
       mHeight(height),
       mLargest(largest),
@@ -134,4 +135,9 @@ EGLint PbufferSurfaceGLX::getSwapBehavior() const
     return EGL_BUFFER_PRESERVED;
 }
 
+egl::Error PbufferSurfaceGLX::checkForResize()
+{
+    // The size of pbuffers never change
+    return egl::Error(EGL_SUCCESS);
+}
 }

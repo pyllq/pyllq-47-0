@@ -21,11 +21,65 @@ Cu.import("resource://gre/modules/AsyncShutdown.jsm");
 var Path = OS.Path;
 var profileDir = OS.Constants.Path.profileDir;
 
+function jsonReplacer(key, value) {
+  switch (typeof(value)) {
+    // Serialize primitive types as-is.
+    case "string":
+    case "number":
+    case "boolean":
+      return value;
+
+    case "object":
+      if (value === null) {
+        return value;
+      }
+
+      switch (Cu.getClassName(value, true)) {
+        // Serialize arrays and ordinary objects as-is.
+        case "Array":
+        case "Object":
+          return value;
+
+        // Serialize Date objects and regular expressions as their
+        // string representations.
+        case "Date":
+        case "RegExp":
+          return String(value);
+      }
+      break;
+  }
+
+  if (!key) {
+    // If this is the root object, and we can't serialize it, serialize
+    // the value to an empty object.
+    return {};
+  }
+
+  // Everything else, omit entirely.
+  return undefined;
+}
+
 this.ExtensionStorage = {
   cache: new Map(),
   listeners: new Map(),
 
   extensionDir: Path.join(profileDir, "browser-extension-data"),
+
+  /**
+   * Sanitizes the given value, and returns a JSON-compatible
+   * representation of it, based on the privileges of the given global.
+   *
+   * @param {value} value
+   *        The value to sanitize.
+   * @param {Context} context
+   *        The extension context in which to sanitize the value
+   * @returns {value}
+   *        The sanitized value.
+   */
+  sanitize(value, context) {
+    let json = context.jsonStringify(value, jsonReplacer);
+    return JSON.parse(json);
+  },
 
   getExtensionDir(extensionId) {
     return Path.join(this.extensionDir, extensionId);
@@ -45,8 +99,10 @@ this.ExtensionStorage = {
     let promise = OS.File.read(path);
     promise = promise.then(array => {
       return JSON.parse(decoder.decode(array));
-    }).catch(() => {
-      Cu.reportError("Unable to parse JSON data for extension storage.");
+    }).catch((error) => {
+      if (!error.becauseNoSuchFile) {
+        Cu.reportError("Unable to parse JSON data for extension storage.");
+      }
       return {};
     });
     this.cache.set(extensionId, promise);
@@ -75,12 +131,13 @@ this.ExtensionStorage = {
     });
   },
 
-  set(extensionId, items) {
+  set(extensionId, items, context) {
     return this.read(extensionId).then(extData => {
       let changes = {};
       for (let prop in items) {
-        changes[prop] = {oldValue: extData[prop], newValue: items[prop]};
-        extData[prop] = items[prop];
+        let item = this.sanitize(items[prop], context);
+        changes[prop] = {oldValue: extData[prop], newValue: item};
+        extData[prop] = item;
       }
 
       this.notifyListeners(extensionId, changes);
@@ -92,13 +149,7 @@ this.ExtensionStorage = {
   remove(extensionId, items) {
     return this.read(extensionId).then(extData => {
       let changes = {};
-      if (Array.isArray(items)) {
-        for (let prop of items) {
-          changes[prop] = {oldValue: extData[prop]};
-          delete extData[prop];
-        }
-      } else {
-        let prop = items;
+      for (let prop of [].concat(items)) {
         changes[prop] = {oldValue: extData[prop]};
         delete extData[prop];
       }
@@ -112,11 +163,9 @@ this.ExtensionStorage = {
   clear(extensionId) {
     return this.read(extensionId).then(extData => {
       let changes = {};
-      if (extData) {
-        for (let prop of Object.keys(extData)) {
-          changes[prop] = {oldValue: extData[prop]};
-          delete extData[prop];
-        }
+      for (let prop of Object.keys(extData)) {
+        changes[prop] = {oldValue: extData[prop]};
+        delete extData[prop];
       }
 
       this.notifyListeners(extensionId, changes);
@@ -138,13 +187,8 @@ this.ExtensionStorage = {
             result[prop] = keys[prop];
           }
         }
-      } else if (typeof(keys) == "string") {
-        let prop = keys;
-        if (prop in extData) {
-          result[prop] = extData[prop];
-        }
       } else {
-        for (let prop of keys) {
+        for (let prop of [].concat(keys)) {
           if (prop in extData) {
             result[prop] = extData[prop];
           }

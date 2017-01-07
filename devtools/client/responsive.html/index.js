@@ -9,19 +9,25 @@
 const { utils: Cu } = Components;
 const { BrowserLoader } =
   Cu.import("resource://devtools/client/shared/browser-loader.js", {});
-const { require } =
-  BrowserLoader("resource://devtools/client/responsive.html/", this);
+const { require } = BrowserLoader({
+  baseURI: "resource://devtools/client/responsive.html/",
+  window: this
+});
+const { Task } = require("devtools/shared/task");
 const Telemetry = require("devtools/client/shared/telemetry");
+const { loadSheet } = require("sdk/stylesheet/utils");
 
 const { createFactory, createElement } =
   require("devtools/client/shared/vendor/react");
 const ReactDOM = require("devtools/client/shared/vendor/react-dom");
 const { Provider } = require("devtools/client/shared/vendor/react-redux");
 
+const message = require("./utils/message");
 const App = createFactory(require("./app"));
 const Store = require("./store");
 const { changeLocation } = require("./actions/location");
-const { addViewport } = require("./actions/viewports");
+const { addViewport, resizeViewport } = require("./actions/viewports");
+const { loadDevices } = require("./actions/devices");
 
 let bootstrap = {
 
@@ -29,15 +35,19 @@ let bootstrap = {
 
   store: null,
 
-  init() {
+  init: Task.async(function* () {
+    // Load a special UA stylesheet to reset certain styles such as dropdown
+    // lists.
+    loadSheet(window,
+              "resource://devtools/client/responsive.html/responsive-ua.css",
+              "agent");
     this.telemetry.toolOpened("responsive");
     let store = this.store = Store();
-    let app = App({
-      onExit: () => window.postMessage({type: "exit"}, "*"),
-    });
-    let provider = createElement(Provider, { store }, app);
+    this.dispatch(loadDevices());
+    let provider = createElement(Provider, { store }, App());
     ReactDOM.render(provider, document.querySelector("#root"));
-  },
+    message.post(window, "init:done");
+  }),
 
   destroy() {
     this.store = null;
@@ -51,15 +61,19 @@ let bootstrap = {
    * to dispatch.  They can do so here.
    */
   dispatch(action) {
+    if (!this.store) {
+      // If actions are dispatched after store is destroyed, ignore them.  This
+      // can happen in tests that close the tool quickly while async tasks like
+      // initDevices() below are still pending.
+      return;
+    }
     this.store.dispatch(action);
   },
 
 };
 
-window.addEventListener("load", function onLoad() {
-  window.removeEventListener("load", onLoad);
-  bootstrap.init();
-});
+// manager.js sends a message to signal init
+message.wait(window, "init").then(() => bootstrap.init());
 
 window.addEventListener("unload", function onUnload() {
   window.removeEventListener("unload", onUnload);
@@ -85,4 +99,43 @@ window.addInitialViewport = contentURI => {
   } catch (e) {
     console.error(e);
   }
+};
+
+/**
+ * Called by manager.js when tests want to check the viewport size.
+ */
+window.getViewportSize = () => {
+  let { width, height } = bootstrap.store.getState().viewports[0];
+  return { width, height };
+};
+
+/**
+ * Called by manager.js to set viewport size from GCLI.
+ */
+window.setViewportSize = (width, height) => {
+  try {
+    bootstrap.dispatch(resizeViewport(0, width, height));
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+/**
+ * Called by manager.js to access the viewport's browser, either for testing
+ * purposes or to reload it when touch simulation is enabled.
+ * A messageManager getter is added on the object to provide an easy access
+ * to the message manager without pulling the frame loader.
+ */
+window.getViewportBrowser = () => {
+  let browser = document.querySelector("iframe.browser");
+  if (!browser.messageManager) {
+    Object.defineProperty(browser, "messageManager", {
+      get() {
+        return this.frameLoader.messageManager;
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+  return browser;
 };

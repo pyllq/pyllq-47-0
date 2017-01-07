@@ -9,7 +9,7 @@
 "use strict";
 
 this.EXPORTED_SYMBOLS = [
-  "_",
+  "getString",
   "assert",
   "log",
   "text",
@@ -36,7 +36,7 @@ const gStringBundle = Services.strings.createBundle(PROPERTIES_URL);
  *        Optional arguments to format in the string.
  * @return string
  */
-function _(name) {
+function getString(name) {
   try {
     if (arguments.length == 1) {
       return gStringBundle.GetStringFromName(name);
@@ -157,7 +157,7 @@ function wire(root, selectorOrElement, descriptor) {
 
   for (let i = 0; i < matches.length; i++) {
     let element = matches[i];
-    forEach(descriptor.events, function(name, handler) {
+    forEach(descriptor.events, function (name, handler) {
       element.addEventListener(name, handler, false);
     });
     forEach(descriptor.attributes, element.setAttribute);
@@ -214,7 +214,7 @@ function showFilePicker(path, toSave, parentWindow, callback,
   let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
   let mode = toSave ? fp.modeSave : fp.modeOpen;
   let key = toSave ? "saveStyleSheet" : "importStyleSheet";
-  let fpCallback = function(result) {
+  let fpCallback = function (result) {
     if (result == Ci.nsIFilePicker.returnCancel) {
       callback(null);
     } else {
@@ -226,8 +226,8 @@ function showFilePicker(path, toSave, parentWindow, callback,
     fp.defaultString = suggestedFilename;
   }
 
-  fp.init(parentWindow, _(key + ".title"), mode);
-  fp.appendFilters(_(key + ".filter"), "*.css");
+  fp.init(parentWindow, getString(key + ".title"), mode);
+  fp.appendFilter(getString(key + ".filter"), "*.css");
   fp.appendFilters(fp.filterAll);
   fp.open(fpCallback);
   return;

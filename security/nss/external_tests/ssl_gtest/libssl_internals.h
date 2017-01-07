@@ -7,6 +7,8 @@
 #ifndef libssl_internals_h_
 #define libssl_internals_h_
 
+#include <stdint.h>
+
 #include "prio.h"
 #include "seccomon.h"
 #include "sslt.h"
@@ -16,6 +18,18 @@ SECStatus SSLInt_IncrementClientHandshakeVersion(PRFileDesc *fd);
 PRUint32 SSLInt_DetermineKEABits(PRUint16 serverKeyBits,
                                  SSLAuthType authAlgorithm);
 
-#endif
+SECStatus SSLInt_UpdateSSLv2ClientRandom(PRFileDesc *fd,
+                                         uint8_t *rnd, size_t rnd_len,
+                                         uint8_t *msg, size_t msg_len);
 
+PRBool SSLInt_ExtensionNegotiated(PRFileDesc *fd, PRUint16 ext);
+void SSLInt_ClearSessionTicketKey();
+PRInt32 SSLInt_CountTls13CipherSpecs(PRFileDesc *fd);
+void SSLInt_ForceTimerExpiry(PRFileDesc *fd);
+SECStatus SSLInt_SetMTU(PRFileDesc *fd, PRUint16 mtu);
+PRBool SSLInt_CheckSecretsDestroyed(PRFileDesc *fd);
+PRBool SSLInt_DamageHsTrafficSecret(PRFileDesc *fd);
+PRBool SSLInt_DamageEarlyTrafficSecret(PRFileDesc *fd);
+SECStatus SSLInt_Set0RttAlpn(PRFileDesc *fd, PRUint8 *data, unsigned int len);
 
+#endif // ndef libssl_internals_h_

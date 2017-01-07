@@ -112,6 +112,9 @@
         if ([self frame].size.width != texture.width || [self frame].size.height != texture.height)
         {
             [self setFrame:CGRectMake(0, 0, texture.width, texture.height)];
+
+            // Without this, the OSX compositor / window system doesn't see the resize.
+            [self setNeedsDisplay];
         }
 
         // TODO(cwallez) support 2.1 contexts too that don't have blitFramebuffer nor the
@@ -139,11 +142,12 @@
     namespace rx
     {
 
-    WindowSurfaceCGL::WindowSurfaceCGL(RendererGL *renderer,
+    WindowSurfaceCGL::WindowSurfaceCGL(const egl::SurfaceState &state,
+                                       RendererGL *renderer,
                                        CALayer *layer,
                                        const FunctionsGL *functions,
                                        CGLContextObj context)
-        : SurfaceGL(renderer),
+        : SurfaceGL(state, renderer),
           mSwapLayer(nil),
           mCurrentSwapId(0),
           mLayer(layer),
@@ -174,6 +178,7 @@ WindowSurfaceCGL::~WindowSurfaceCGL()
 
     if (mSwapLayer != nil)
     {
+        [mSwapLayer removeFromSuperlayer];
         [mSwapLayer release];
         mSwapLayer = nil;
     }
@@ -246,11 +251,15 @@ egl::Error WindowSurfaceCGL::swap()
     unsigned height = getHeight();
     auto &texture   = *mSwapState.beingRendered;
 
-    if (texture.width != width || texture.height != texture.height)
+    if (texture.width != width || texture.height != height)
     {
         mStateManager->bindTexture(GL_TEXTURE_2D, texture.texture);
         mFunctions->texImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
                                GL_UNSIGNED_BYTE, nullptr);
+
+        mStateManager->bindRenderbuffer(GL_RENDERBUFFER, mDSRenderbuffer);
+        mFunctions->renderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+
         texture.width  = width;
         texture.height = height;
     }
@@ -312,10 +321,10 @@ EGLint WindowSurfaceCGL::getSwapBehavior() const
     return EGL_BUFFER_DESTROYED;
 }
 
-FramebufferImpl *WindowSurfaceCGL::createDefaultFramebuffer(const gl::Framebuffer::Data &data)
+FramebufferImpl *WindowSurfaceCGL::createDefaultFramebuffer(const gl::FramebufferState &state)
 {
     // TODO(cwallez) assert it happens only once?
-    return new FramebufferGL(mFramebuffer, data, mFunctions, mWorkarounds, mStateManager);
+    return new FramebufferGL(mFramebuffer, state, mFunctions, mWorkarounds, mStateManager);
 }
 
 }

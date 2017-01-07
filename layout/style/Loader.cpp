@@ -52,6 +52,7 @@
 #include "nsINetworkPredictor.h"
 #include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/URL.h"
+#include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/StyleSheetHandle.h"
 #include "mozilla/StyleSheetHandleInlines.h"
 
@@ -463,7 +464,7 @@ SheetLoadData::AfterProcessNextEvent(nsIThreadInternal* aThread,
 void
 SheetLoadData::FireLoadEvent(nsIThreadInternal* aThread)
 {
-  
+
   // First remove ourselves as a thread observer.  But we need to keep
   // ourselves alive while doing that!
   RefPtr<SheetLoadData> kungFuDeathGrip(this);
@@ -483,7 +484,7 @@ SheetLoadData::FireLoadEvent(nsIThreadInternal* aThread)
   // And unblock onload
   if (mLoader->mDocument) {
     mLoader->mDocument->UnblockOnload(true);
-  }  
+  }
 }
 
 void
@@ -956,15 +957,38 @@ SheetLoadData::OnStreamComplete(nsIUnicharStreamLoader* aLoader,
 
   SRIMetadata sriMetadata;
   mSheet->GetIntegrity(sriMetadata);
-  if (!sriMetadata.IsEmpty() &&
-      NS_FAILED(SRICheck::VerifyIntegrity(sriMetadata, aLoader,
-                                          mSheet->GetCORSMode(), aBuffer,
-                                          mLoader->mDocument))) {
-    LOG(("  Load was blocked by SRI"));
-    MOZ_LOG(gSriPRLog, mozilla::LogLevel::Debug,
-            ("css::Loader::OnStreamComplete, bad metadata"));
-    mLoader->SheetComplete(this, NS_ERROR_SRI_CORRUPT);
-    return NS_OK;
+  if (sriMetadata.IsEmpty()) {
+    nsCOMPtr<nsILoadInfo> loadInfo = channel->GetLoadInfo();
+    bool enforceSRI = false;
+    loadInfo->GetEnforceSRI(&enforceSRI);
+    if (enforceSRI) {
+      LOG(("  Load was blocked by SRI"));
+      MOZ_LOG(gSriPRLog, mozilla::LogLevel::Debug,
+              ("css::Loader::OnStreamComplete, required SRI not found"));
+      mLoader->SheetComplete(this, NS_ERROR_SRI_CORRUPT);
+      // log the failed load to web console
+      nsCOMPtr<nsIContentSecurityPolicy> csp;
+      loadInfo->LoadingPrincipal()->GetCsp(getter_AddRefs(csp));
+      nsAutoCString spec;
+      mLoader->mDocument->GetDocumentURI()->GetAsciiSpec(spec);
+      // line number unknown. mRequestingNode doesn't bear this info.
+      csp->LogViolationDetails(
+        nsIContentSecurityPolicy::VIOLATION_TYPE_REQUIRE_SRI_FOR_STYLE,
+        NS_ConvertUTF8toUTF16(spec), EmptyString(),
+        0, EmptyString(), EmptyString());
+      return NS_OK;
+    }
+  } else {
+    nsresult rv = SRICheck::VerifyIntegrity(sriMetadata, aLoader,
+                                            mSheet->GetCORSMode(), aBuffer,
+                                            mLoader->mDocument);
+    if (NS_FAILED(rv)) {
+      LOG(("  Load was blocked by SRI"));
+      MOZ_LOG(gSriPRLog, mozilla::LogLevel::Debug,
+              ("css::Loader::OnStreamComplete, bad metadata"));
+      mLoader->SheetComplete(this, NS_ERROR_SRI_CORRUPT);
+      return NS_OK;
+    }
   }
 
   // Enough to set the URIs on mSheet, since any sibling datas we have share
@@ -1270,7 +1294,7 @@ Loader::PrepareSheet(StyleSheetHandle aSheet,
 
   // XXXheycam Need to set media, title, etc. on ServoStyleSheets.
   if (aSheet->IsServo()) {
-    NS_ERROR("stylo: should set metadata on ServoStyleSheets");
+    NS_WARNING("stylo: should set metadata on ServoStyleSheets. See bug 1290209.");
     return;
   }
 
@@ -1878,7 +1902,7 @@ Loader::DoSheetComplete(SheetLoadData* aLoadData, nsresult aStatus,
       MOZ_ASSERT(!(data->mSheet->IsGecko() &&
                    data->mSheet->AsGecko()->IsModified()),
                  "should not get marked modified during parsing");
-      data->mSheet->SetComplete();
+      data->mSheet->AsStyleSheet()->SetComplete();
       data->ScheduleLoadEventIfNeeded(aStatus);
     }
     if (data->mMustNotify && (data->mObserver || !mObservers.IsEmpty())) {
@@ -1952,7 +1976,7 @@ Loader::DoSheetComplete(SheetLoadData* aLoadData, nsresult aStatus,
       }
 #endif
     } else {
-      NS_ERROR("stylo: not caching ServoStyleSheet");
+      NS_WARNING("stylo: Stylesheet caching not yet supported - see bug 1290218.");
     }
   }
 
@@ -2069,7 +2093,22 @@ Loader::LoadStyleLink(nsIContent* aElement,
   }
 
   nsresult rv = CheckContentPolicy(principal, aURL, context, false);
-  NS_ENSURE_SUCCESS(rv, rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    // Don't fire the error event if our document is loaded as data.  We're
+    // supposed to not even try to do loads in that case... Unfortunately, we
+    // implement that via nsDataDocumentContentPolicy, which doesn't have a good
+    // way to communicate back to us that _it_ is the thing that blocked the
+    // load.
+    if (aElement && !mDocument->IsLoadedAsData()) {
+      // Fire an async error event on it.
+      RefPtr<AsyncEventDispatcher> loadBlockingAsyncDispatcher =
+        new LoadBlockingAsyncEventDispatcher(aElement,
+                                             NS_LITERAL_STRING("error"),
+                                             false, false);
+      loadBlockingAsyncDispatcher->PostDOMEvent();
+    }
+    return rv;
+  }
 
   StyleSheetState state;
   StyleSheetHandle::RefPtr sheet;

@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include <hardware/gps.h>
 
+#include "base/task.h"
 #include "GeolocationUtil.h"
 #include "mozstumbler/MozStumbler.h"
 #include "mozilla/Preferences.h"
@@ -105,7 +106,7 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
     return;
   }
 
-  class UpdateLocationEvent : public nsRunnable {
+  class UpdateLocationEvent : public Runnable {
   public:
     UpdateLocationEvent(nsGeoPosition* aPosition)
       : mPosition(aPosition)
@@ -160,7 +161,7 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
 #endif
 }
 
-class NotifyObserversGPSTask final : public nsRunnable
+class NotifyObserversGPSTask final : public Runnable
 {
 public:
   explicit NotifyObserversGPSTask(const char16_t* aData)
@@ -176,8 +177,6 @@ public:
 private:
   const char16_t* mData;
 };
-
-
 
 void
 GonkGPSGeolocationProvider::StatusCallback(GpsStatus* status)
@@ -195,11 +194,11 @@ GonkGPSGeolocationProvider::StatusCallback(GpsStatus* status)
       break;
     case GPS_STATUS_ENGINE_ON:
       msgStream = "geo: GPS_STATUS_ENGINE_ON\n";
-      NS_DispatchToMainThread(new NotifyObserversGPSTask( MOZ_UTF16("GPSStarting")));
+      NS_DispatchToMainThread(new NotifyObserversGPSTask(u"GPSStarting"));
       break;
     case GPS_STATUS_ENGINE_OFF:
       msgStream = "geo: GPS_STATUS_ENGINE_OFF\n";
-      NS_DispatchToMainThread(new NotifyObserversGPSTask( MOZ_UTF16("GPSShutdown")));
+      NS_DispatchToMainThread(new NotifyObserversGPSTask(u"GPSShutdown"));
       break;
     default:
       msgStream = "geo: Unknown GPS status\n";
@@ -271,7 +270,7 @@ GonkGPSGeolocationProvider::NmeaCallback(GpsUtcTime timestamp, const char* nmea,
 void
 GonkGPSGeolocationProvider::SetCapabilitiesCallback(uint32_t capabilities)
 {
-  class UpdateCapabilitiesEvent : public nsRunnable {
+  class UpdateCapabilitiesEvent : public Runnable {
   public:
     UpdateCapabilitiesEvent(uint32_t aCapabilities)
       : mCapabilities(aCapabilities)
@@ -339,7 +338,7 @@ GonkGPSGeolocationProvider::AGPSStatusCallback(AGpsStatus* status)
 {
   MOZ_ASSERT(status);
 
-  class AGPSStatusEvent : public nsRunnable {
+  class AGPSStatusEvent : public Runnable {
   public:
     AGPSStatusEvent(AGpsStatusValue aStatus)
       : mStatus(aStatus)
@@ -368,7 +367,7 @@ GonkGPSGeolocationProvider::AGPSStatusCallback(AGpsStatus* status)
 void
 GonkGPSGeolocationProvider::AGPSRILSetIDCallback(uint32_t flags)
 {
-  class RequestSetIDEvent : public nsRunnable {
+  class RequestSetIDEvent : public Runnable {
   public:
     RequestSetIDEvent(uint32_t flags)
       : mFlags(flags)
@@ -389,7 +388,7 @@ GonkGPSGeolocationProvider::AGPSRILSetIDCallback(uint32_t flags)
 void
 GonkGPSGeolocationProvider::AGPSRILRefLocCallback(uint32_t flags)
 {
-  class RequestRefLocEvent : public nsRunnable {
+  class RequestRefLocEvent : public Runnable {
   public:
     RequestRefLocEvent()
     {}
@@ -813,7 +812,7 @@ GonkGPSGeolocationProvider::Init()
   }
 #endif
 
-  NS_DispatchToMainThread(NS_NewRunnableMethod(this, &GonkGPSGeolocationProvider::StartGPS));
+  NS_DispatchToMainThread(NewRunnableMethod(this, &GonkGPSGeolocationProvider::StartGPS));
 }
 
 void
@@ -1001,7 +1000,7 @@ GonkGPSGeolocationProvider::Startup()
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  mInitThread->Dispatch(NS_NewRunnableMethod(this, &GonkGPSGeolocationProvider::Init),
+  mInitThread->Dispatch(NewRunnableMethod(this, &GonkGPSGeolocationProvider::Init),
                         NS_DISPATCH_NORMAL);
 
   mNetworkLocationProvider = do_CreateInstance("@mozilla.org/geolocation/mls-provider;1");
@@ -1063,7 +1062,7 @@ GonkGPSGeolocationProvider::Shutdown()
     }
   }
 
-  mInitThread->Dispatch(NS_NewRunnableMethod(this, &GonkGPSGeolocationProvider::ShutdownGPS),
+  mInitThread->Dispatch(NewRunnableMethod(this, &GonkGPSGeolocationProvider::ShutdownGPS),
                         NS_DISPATCH_NORMAL);
 
   return NS_OK;

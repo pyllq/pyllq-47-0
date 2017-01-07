@@ -7,9 +7,13 @@
 package org.mozilla.gecko.util;
 
 import android.content.Context;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.text.TextUtils;
 
 public class ContextUtils {
+    private static final String INSTALLER_GOOGLE_PLAY = "com.android.vending";
+
     private ContextUtils() {}
 
     /**
@@ -17,11 +21,21 @@ public class ContextUtils {
      * @throws PackageManager.NameNotFoundException Unexpected - we get the package name from the context so
      *         it's expected to be found.
      */
-    public static long getPackageInstallTime(final Context context) {
+    public static PackageInfo getCurrentPackageInfo(final Context context) {
         try {
-            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).firstInstallTime;
-        } catch (final PackageManager.NameNotFoundException e) {
-            throw new AssertionError("Should not happen: could not get package info for own package");
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+        } catch (PackageManager.NameNotFoundException e) {
+            throw new AssertionError("Should not happen: Can't get package info of own package");
         }
+    }
+
+    public static boolean isInstalledFromGooglePlay(final Context context) {
+        final String installerPackageName = context.getPackageManager().getInstallerPackageName(context.getPackageName());
+
+        if (TextUtils.isEmpty(installerPackageName)) {
+            return false;
+        }
+
+        return INSTALLER_GOOGLE_PLAY.equals(installerPackageName);
     }
 }

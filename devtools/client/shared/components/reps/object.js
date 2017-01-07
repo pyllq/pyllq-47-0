@@ -5,18 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
-
 // Make this available to both AMD and CJS environments
-define(function(require, exports, module) {
+define(function (require, exports, module) {
   // Dependencies
   const React = require("devtools/client/shared/vendor/react");
   const { createFactories } = require("./rep-utils");
-  const { ObjectBox } = createFactories(require("./object-box"));
   const { Caption } = createFactories(require("./caption"));
-
+  const { PropRep } = createFactories(require("./prop-rep"));
   // Shortcuts
-  const DOM = React.DOM;
-
+  const { span } = React.DOM;
   /**
    * Renders an object. An object is represented by a list of its
    * properties enclosed in curly brackets.
@@ -24,47 +21,35 @@ define(function(require, exports, module) {
   const Obj = React.createClass({
     displayName: "Obj",
 
-    render: function() {
-      let object = this.props.object;
-      let props = this.shortPropIterator(object);
-
-      return (
-        ObjectBox({className: "object"},
-          DOM.span({className: "objectTitle"}, this.getTitle(object)),
-          DOM.span({className: "objectLeftBrace", role: "presentation"}, "{"),
-          props,
-          DOM.span({className: "objectRightBrace"}, "}")
-        )
-      );
+    propTypes: {
+      object: React.PropTypes.object,
+      mode: React.PropTypes.string,
     },
 
-    getTitle: function() {
-      return "";
+    getTitle: function (object) {
+      if (this.props.objectLink) {
+        return this.props.objectLink({
+          object: object
+        }, object.class);
+      }
+      return "Object";
     },
 
-    longPropIterator: function(object) {
+    safePropIterator: function (object, max) {
+      max = (typeof max === "undefined") ? 3 : max;
       try {
-        return this.propIterator(object, 100);
+        return this.propIterator(object, max);
       } catch (err) {
         console.error(err);
       }
       return [];
     },
 
-    shortPropIterator: function(object) {
-      try {
-        return this.propIterator(object, 3);
-      } catch (err) {
-        console.error(err);
-      }
-      return [];
-    },
-
-    propIterator: function(object, max) {
-      function isInterestingProp(t, value) {
-        return (t == "boolean" || t == "number" || (t == "string" && value) ||
-          (t == "object" && value && value.toString));
-      }
+    propIterator: function (object, max) {
+      let isInterestingProp = (t, value) => {
+        // Do not pick objects, it could cause recursion.
+        return (t == "boolean" || t == "number" || (t == "string" && value));
+      };
 
       // Work around https://bugzilla.mozilla.org/show_bug.cgi?id=945377
       if (Object.prototype.toString.call(object) === "[object Generator]") {
@@ -73,23 +58,26 @@ define(function(require, exports, module) {
 
       // Object members with non-empty values are preferred since it gives the
       // user a better overview of the object.
-      let props = [];
-      this.getProps(props, object, max, isInterestingProp);
+      let props = this.getProps(object, max, isInterestingProp);
 
       if (props.length <= max) {
         // There are not enough props yet (or at least, not enough props to
-        // be able to know whether we should print "more..." or not).
+        // be able to know whether we should print "more…" or not).
         // Let's display also empty members and functions.
-        this.getProps(props, object, max, function(t, value) {
+        props = props.concat(this.getProps(object, max, (t, value) => {
           return !isInterestingProp(t, value);
-        });
+        }));
       }
 
       if (props.length > max) {
         props.pop();
+        let objectLink = this.props.objectLink || span;
+
         props.push(Caption({
           key: "more",
-          object: "more...",
+          object: objectLink({
+            object: object
+          }, (Object.keys(object).length - max) + " more…")
         }));
       } else if (props.length > 0) {
         // Remove the last comma.
@@ -100,10 +88,12 @@ define(function(require, exports, module) {
       return props;
     },
 
-    getProps: function(props, object, max, filter) {
+    getProps: function (object, max, filter) {
+      let props = [];
+
       max = max || 3;
       if (!object) {
-        return [];
+        return props;
       }
 
       let mode = this.props.mode;
@@ -111,7 +101,7 @@ define(function(require, exports, module) {
       try {
         for (let name in object) {
           if (props.length > max) {
-            return [];
+            return props;
           }
 
           let value;
@@ -137,52 +127,45 @@ define(function(require, exports, module) {
         console.error(err);
       }
 
-      return [];
+      return props;
     },
-  });
 
-  /**
-   * Renders object property, name-value pair.
-   */
-  let PropRep = React.createFactory(React.createClass({
-    displayName: "PropRep",
-
-    render: function() {
-      let { Rep } = createFactories(require("./rep"));
+    render: function () {
       let object = this.props.object;
-      let mode = this.props.mode;
+      let props = this.safePropIterator(object);
+      let objectLink = this.props.objectLink || span;
+
+      if (this.props.mode == "tiny" || !props.length) {
+        return (
+          span({className: "objectBox objectBox-object"},
+            objectLink({className: "objectTitle"}, this.getTitle())
+          )
+        );
+      }
 
       return (
-        DOM.span({},
-          DOM.span({
-            "className": "nodeName"},
-            this.props.name
-          ),
-          DOM.span({
-            "className": "objectEqual",
-            role: "presentation"},
-            this.props.equal
-          ),
-          Rep({
-            object: object,
-            mode: mode
-          }),
-          DOM.span({
-            "className": "objectComma",
-            role: "presentation"},
-            this.props.delim
-          )
+        span({className: "objectBox objectBox-object"},
+          this.getTitle(object),
+          objectLink({
+            className: "objectLeftBrace",
+            role: "presentation",
+            object: object
+          }, "{"),
+          props,
+          objectLink({
+            className: "objectRightBrace",
+            role: "presentation",
+            object: object
+          }, "}")
         )
       );
-    }
-  }));
-
+    },
+  });
   function supportsObject(object, type) {
     return true;
   }
 
   // Exports from this module
-
   exports.Obj = {
     rep: Obj,
     supportsObject: supportsObject

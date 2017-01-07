@@ -24,7 +24,6 @@
 #include "nsTHashtable.h"                // for member
 #include "mozilla/net/ReferrerPolicy.h"  // for member
 #include "nsWeakReference.h"
-#include "mozilla/dom/DocumentBinding.h"
 #include "mozilla/UseCounter.h"
 #include "mozilla/WeakPtr.h"
 #include "Units.h"
@@ -34,9 +33,20 @@
 #include "prclist.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/CORSMode.h"
+#include "mozilla/LinkedList.h"
 #include "mozilla/StyleBackendType.h"
 #include "mozilla/StyleSheetHandle.h"
 #include <bitset>                        // for member
+
+#ifdef MOZILLA_INTERNAL_API
+#include "mozilla/dom/DocumentBinding.h"
+#else
+namespace mozilla {
+namespace dom {
+class ElementCreationOptionsOrString;
+} // namespace dom
+} // namespace mozilla
+#endif // MOZILLA_INTERNAL_API
 
 class gfxUserFontSet;
 class imgIRequest;
@@ -118,6 +128,7 @@ class DocumentType;
 class DOMImplementation;
 class DOMStringList;
 class Element;
+struct ElementCreationOptions;
 struct ElementRegistrationOptions;
 class Event;
 class EventTarget;
@@ -317,6 +328,19 @@ public:
   }
 
   /**
+   * If true, this flag indicates that all mixed content subresource
+   * loads for this document (and also embeded browsing contexts) will
+   * be blocked.
+   */
+  bool GetBlockAllMixedContent(bool aPreload) const
+  {
+    if (aPreload) {
+      return mBlockAllMixedContentPreloads;
+    }
+    return mBlockAllMixedContent;
+  }
+
+  /**
    * If true, this flag indicates that all subresource loads for this
    * document need to be upgraded from http to https.
    * This flag becomes true if the CSP of the document itself, or any
@@ -329,6 +353,10 @@ public:
       return mUpgradeInsecurePreloads;
     }
     return mUpgradeInsecureRequests;
+  }
+
+  void SetReferrer(const nsACString& aReferrer) {
+    mReferrer = aReferrer;
   }
 
   /**
@@ -375,7 +403,7 @@ public:
   }
   virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const override;
 
-  virtual nsresult SetBaseURI(nsIURI* aURI) = 0;
+  virtual void SetBaseURI(nsIURI* aURI) = 0;
 
   /**
    * Get/Set the base target of a link in a document.
@@ -619,6 +647,30 @@ public:
   }
 
   /**
+   * Set CSP flag for this document.
+   */
+  void SetHasCSP(bool aHasCSP)
+  {
+    mHasCSP = aHasCSP;
+  }
+
+  /**
+   * Set unsafe-inline CSP flag for this document.
+   */
+  void SetHasUnsafeInlineCSP(bool aHasUnsafeInlineCSP)
+  {
+    mHasUnsafeInlineCSP = aHasUnsafeInlineCSP;
+  }
+
+  /**
+   * Set unsafe-eval CSP flag for this document.
+   */
+  void SetHasUnsafeEvalCSP(bool aHasUnsafeEvalCSP)
+  {
+    mHasUnsafeEvalCSP = aHasUnsafeEvalCSP;
+  }
+
+  /**
    * Get tracking content blocked flag for this document.
    */
   bool GetHasTrackingContentBlocked()
@@ -658,6 +710,11 @@ public:
   {
     return mSandboxFlags;
   }
+
+  /**
+   * Get string representation of sandbox flags (null if no flags are set)
+   */
+  void GetSandboxFlagsAsString(nsAString& aFlags);
 
   /**
    * Set the sandbox flags for this document.
@@ -820,6 +877,13 @@ public:
                          mozilla::ErrorResult& aError);
   void RemoveAnonymousContent(mozilla::dom::AnonymousContent& aContent,
                               mozilla::ErrorResult& aError);
+  /**
+   * If aNode is a descendant of anonymous content inserted by
+   * InsertAnonymousContent, this method returns the root element of the
+   * inserted anonymous content (in other words, the clone of the aElement
+   * that was passed to InsertAnonymousContent).
+   */
+  Element* GetAnonRootIfInAnonymousContentContainer(nsINode* aNode) const;
   nsTArray<RefPtr<mozilla::dom::AnonymousContent>>& GetAnonymousContents() {
     return mAnonymousContents;
   }
@@ -1010,13 +1074,36 @@ public:
   virtual mozilla::StyleSheetHandle GetFirstAdditionalAuthorSheet() = 0;
 
   /**
+   * Assuming that aDocSheets is an array of document-level style
+   * sheets for this document, returns the index that aSheet should
+   * be inserted at to maintain document ordering.
+   *
+   * Defined in nsIDocumentInlines.h.
+   */
+  template<typename T>
+  size_t FindDocStyleSheetInsertionPoint(const nsTArray<RefPtr<T>>& aDocSheets,
+                                         T* aSheet);
+
+  /**
    * Get this document's CSSLoader.  This is guaranteed to not return null.
    */
   mozilla::css::Loader* CSSLoader() const {
     return mCSSLoader;
   }
 
-  mozilla::StyleBackendType GetStyleBackendType() const;
+  mozilla::StyleBackendType GetStyleBackendType() const {
+    if (mStyleBackendType == mozilla::StyleBackendType(0)) {
+      const_cast<nsIDocument*>(this)->UpdateStyleBackendType();
+    }
+    MOZ_ASSERT(mStyleBackendType != mozilla::StyleBackendType(0));
+    return mStyleBackendType;
+  }
+
+  void UpdateStyleBackendType();
+
+  bool IsStyledByServo() const {
+    return GetStyleBackendType() == mozilla::StyleBackendType::Servo;
+  }
 
   /**
    * Get this document's StyleImageLoader.  This is guaranteed to not return null.
@@ -1432,7 +1519,8 @@ public:
    */
   virtual already_AddRefed<Element> CreateElem(const nsAString& aName,
                                                nsIAtom* aPrefix,
-                                               int32_t aNamespaceID) = 0;
+                                               int32_t aNamespaceID,
+                                               const nsAString* aIs = nullptr) = 0;
 
   /**
    * Get the security info (i.e. SSL state etc) that the document got
@@ -2008,13 +2096,25 @@ public:
   virtual nsIDocument* GetTemplateContentsOwner() = 0;
 
   /**
-   * true when this document is a static clone of a normal document.
-   * For example print preview and printing use static documents.
+   * Returns true if this document is a static clone of a normal document.
+   *
+   * We create static clones for print preview and printing (possibly other
+   * things in future).
+   *
+   * Note that static documents are also "loaded as data" (if this method
+   * returns true, IsLoadedAsData() will also return true).
    */
   bool IsStaticDocument() { return mIsStaticDocument; }
 
   /**
-   * Clones the document and subdocuments and stylesheet etc.
+   * Clones the document along with any subdocuments, stylesheet, etc.
+   *
+   * The resulting document and everything it contains (including any
+   * sub-documents) are created purely via cloning.  The returned documents and
+   * any sub-documents are "loaded as data" documents to preserve the state as
+   * it was during the clone process (we don't want external resources to load
+   * and replace the cloned resources).
+   *
    * @param aCloneContainer The container for the clone document.
    */
   virtual already_AddRefed<nsIDocument>
@@ -2183,6 +2283,7 @@ public:
   virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() = 0;
 
   virtual mozilla::dom::DocumentTimeline* Timeline() = 0;
+  virtual mozilla::LinkedList<mozilla::dom::DocumentTimeline>& Timelines() = 0;
 
   virtual void GetAnimations(
       nsTArray<RefPtr<mozilla::dom::Animation>>& aAnimations) = 0;
@@ -2267,6 +2368,9 @@ public:
 #undef DEPRECATED_OPERATION
   bool HasWarnedAbout(DeprecatedOperations aOperation) const;
   void WarnOnceAbout(DeprecatedOperations aOperation,
+                     bool asError = false) const;
+  void WarnOnceAbout(DeprecatedOperations aOperation,
+                     const nsAString& aErrorText,
                      bool asError = false) const;
 
 #define DOCUMENT_WARNING(_op) e##_op,
@@ -2430,18 +2534,15 @@ public:
   already_AddRefed<nsContentList>
     GetElementsByClassName(const nsAString& aClasses);
   // GetElementById defined above
-  already_AddRefed<Element> CreateElement(const nsAString& aTagName,
-                                          mozilla::ErrorResult& rv);
-  already_AddRefed<Element> CreateElementNS(const nsAString& aNamespaceURI,
-                                            const nsAString& aQualifiedName,
-                                            mozilla::ErrorResult& rv);
-  virtual already_AddRefed<Element> CreateElement(const nsAString& aTagName,
-                                                  const nsAString& aTypeExtension,
-                                                  mozilla::ErrorResult& rv) = 0;
-  virtual already_AddRefed<Element> CreateElementNS(const nsAString& aNamespaceURI,
-                                                    const nsAString& aQualifiedName,
-                                                    const nsAString& aTypeExtension,
-                                                    mozilla::ErrorResult& rv) = 0;
+  virtual already_AddRefed<Element>
+    CreateElement(const nsAString& aTagName,
+                  const mozilla::dom::ElementCreationOptionsOrString& aOptions,
+                  mozilla::ErrorResult& rv) = 0;
+  virtual already_AddRefed<Element>
+    CreateElementNS(const nsAString& aNamespaceURI,
+                    const nsAString& aQualifiedName,
+                    const mozilla::dom::ElementCreationOptions& aOptions,
+                    mozilla::ErrorResult& rv) = 0;
   already_AddRefed<mozilla::dom::DocumentFragment>
     CreateDocumentFragment() const;
   already_AddRefed<nsTextNode> CreateTextNode(const nsAString& aData) const;
@@ -2462,14 +2563,14 @@ public:
                        mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::NodeIterator>
     CreateNodeIterator(nsINode& aRoot, uint32_t aWhatToShow,
-                       const mozilla::dom::NodeFilterHolder& aFilter,
+                       mozilla::dom::NodeFilterHolder aFilter,
                        mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::TreeWalker>
     CreateTreeWalker(nsINode& aRoot, uint32_t aWhatToShow,
                      mozilla::dom::NodeFilter* aFilter, mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::TreeWalker>
     CreateTreeWalker(nsINode& aRoot, uint32_t aWhatToShow,
-                     const mozilla::dom::NodeFilterHolder& aFilter,
+                     mozilla::dom::NodeFilterHolder aFilter,
                      mozilla::ErrorResult& rv) const;
 
   // Deprecated WebIDL bits
@@ -2512,16 +2613,17 @@ public:
   // Not const because all the full-screen goop is not const
   virtual bool FullscreenEnabled() = 0;
   virtual Element* GetFullscreenElement() = 0;
-  bool MozFullScreen()
+  bool Fullscreen()
   {
     return !!GetFullscreenElement();
   }
   void ExitFullscreen();
-  Element* GetMozPointerLockElement();
-  void MozExitPointerLock()
+  Element* GetPointerLockElement();
+  void ExitPointerLock()
   {
     UnlockPointer(this);
   }
+#ifdef MOZILLA_INTERNAL_API
   bool Hidden() const
   {
     return mVisibilityState != mozilla::dom::VisibilityState::Visible;
@@ -2540,6 +2642,7 @@ public:
     WarnOnceAbout(ePrefixedVisibilityAPI);
     return VisibilityState();
   }
+#endif
   virtual mozilla::dom::StyleSheetList* StyleSheets() = 0;
   void GetSelectedStyleSheetSet(nsAString& aSheetSet);
   virtual void SetSelectedStyleSheetSet(const nsAString& aSheetSet) = 0;
@@ -2686,7 +2789,15 @@ public:
     return mUserHasInteracted;
   }
 
+  bool HasScriptsBlockedBySandbox();
+
+  bool InlineScriptAllowedByCSP();
+
   void ReportHasScrollLinkedEffect();
+  bool HasScrollLinkedEffect() const
+  {
+    return mHasScrollLinkedEffect;
+  }
 
 protected:
   bool GetUseCounter(mozilla::UseCounter aUseCounter)
@@ -2771,6 +2882,8 @@ protected:
   bool mReferrerPolicySet;
   ReferrerPolicyEnum mReferrerPolicy;
 
+  bool mBlockAllMixedContent;
+  bool mBlockAllMixedContentPreloads;
   bool mUpgradeInsecureRequests;
   bool mUpgradeInsecurePreloads;
 
@@ -2825,8 +2938,17 @@ protected:
   // Our readyState
   ReadyState mReadyState;
 
+#ifdef MOZILLA_INTERNAL_API
   // Our visibility state
   mozilla::dom::VisibilityState mVisibilityState;
+  static_assert(sizeof(mozilla::dom::VisibilityState) == sizeof(uint32_t), "Error size of mVisibilityState and mDummy");
+#else
+  uint32_t mDummy;
+#endif
+
+  // Whether this document has (or will have, once we have a pres shell) a
+  // Gecko- or Servo-backed style system.
+  mozilla::StyleBackendType mStyleBackendType;
 
   // True if BIDI is enabled.
   bool mBidiEnabled : 1;
@@ -2923,6 +3045,15 @@ protected:
 
   // True if a document loads a plugin object that attempts to load mixed content subresources through necko(see nsMixedContentBlocker.cpp)
   bool mHasMixedContentObjectSubrequest : 1;
+
+  // True if a document load has a CSP attached.
+  bool mHasCSP : 1;
+
+  // True if a document load has a CSP with unsafe-eval attached.
+  bool mHasUnsafeEvalCSP : 1;
+
+  // True if a document load has a CSP with unsafe-inline attached.
+  bool mHasUnsafeInlineCSP : 1;
 
   // True if a document has blocked Tracking Content
   bool mHasTrackingContentBlocked : 1;

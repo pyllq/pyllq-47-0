@@ -43,8 +43,10 @@ class CompileRuntime
     // rt->runtime()->jitStackLimit;
     const void* addressOfJitStackLimit();
 
-    // &runtime()->jitJSContext
-    const void* addressOfJSContext();
+#ifdef DEBUG
+    // rt->runtime()->addressOfIonBailAfter;
+    const void* addressOfIonBailAfter();
+#endif
 
     // &runtime()->activation_
     const void* addressOfActivation();
@@ -58,12 +60,15 @@ class CompileRuntime
 
     const void* addressOfInterruptUint32();
 
+    // We have to bake JSContext* into JIT code, but this pointer shouldn't be
+    // used/dereferenced on the background thread so we return it as void*.
+    const void* getJSContext();
+
     const JitRuntime* jitRuntime();
 
     // Compilation does not occur off thread when the SPS profiler is enabled.
     SPSProfiler& spsProfiler();
 
-    bool canUseSignalHandlers();
     bool jitSupportsFloatingPoint();
     bool hadOutOfMemory();
     bool profilingScripts();
@@ -82,10 +87,10 @@ class CompileRuntime
     // DOM callbacks must be threadsafe (and will hopefully be removed soon).
     const DOMCallbacks* DOMcallbacks();
 
-    const MathCache* maybeGetMathCache();
-
     const Nursery& gcNursery();
     void setMinorGCShouldCancelIonCompilations();
+
+    bool runtimeMatches(JSRuntime* rt);
 };
 
 class CompileZone
@@ -117,7 +122,9 @@ class CompileCompartment
 
     const JitCompartment* jitCompartment();
 
-    bool hasObjectMetadataCallback();
+    const GlobalObject* maybeGlobal();
+
+    bool hasAllocationMetadataBuilder();
 
     // Mirror CompartmentOptions.
     void setSingletonsAsValues();

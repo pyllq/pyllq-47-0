@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <array>
 
 namespace gl
 {
@@ -76,15 +77,18 @@ struct Extensions
     // GL_OES_packed_depth_stencil
     // GL_OES_rgb8_rgba8
     // GL_EXT_texture_format_BGRA8888
+    // GL_EXT_color_buffer_half_float,
     // GL_OES_texture_half_float, GL_OES_texture_half_float_linear
     // GL_OES_texture_float, GL_OES_texture_float_linear
     // GL_EXT_texture_rg
-    // GL_EXT_texture_compression_dxt1, GL_ANGLE_texture_compression_dxt3, GL_ANGLE_texture_compression_dxt5
+    // GL_EXT_texture_compression_dxt1, GL_ANGLE_texture_compression_dxt3,
+    // GL_ANGLE_texture_compression_dxt5
     // GL_KHR_texture_compression_astc_hdr, GL_KHR_texture_compression_astc_ldr
     // GL_OES_compressed_ETC1_RGB8_texture
     // GL_EXT_sRGB
     // GL_ANGLE_depth_texture, GL_OES_depth32
     // GL_EXT_color_buffer_float
+    // GL_EXT_texture_norm16
     void setTextureExtensionSupport(const TextureCapsMap &textureCaps);
 
     // ES2 Extension support
@@ -115,6 +119,11 @@ struct Extensions
     // GL_OES_mapbuffer and GL_EXT_map_buffer_range
     bool mapBuffer;
     bool mapBufferRange;
+
+    // GL_EXT_color_buffer_half_float
+    // Together with GL_OES_texture_half_float in a GLES 2.0 context, implies that half-float
+    // textures are renderable.
+    bool colorBufferHalfFloat;
 
     // GL_OES_texture_half_float and GL_OES_texture_half_float_linear
     // Implies that TextureCaps for GL_RGB16F, GL_RGBA16F, GL_ALPHA32F_EXT, GL_LUMINANCE32F_EXT and
@@ -184,6 +193,11 @@ struct Extensions
     // GL_ANGLE_timer_query
     bool timerQuery;
 
+    // GL_EXT_disjoint_timer_query
+    bool disjointTimerQuery;
+    GLuint queryCounterBitsTimeElapsed;
+    GLuint queryCounterBitsTimestamp;
+
     // GL_EXT_robustness
     bool robustness;
 
@@ -244,6 +258,9 @@ struct Extensions
     // GL_OES_EGL_image_external_essl3
     bool eglImageExternalEssl3;
 
+    // NV_EGL_stream_consumer_external
+    bool eglStreamConsumerExternal;
+
     // EXT_unpack_subimage
     bool unpackSubimage;
 
@@ -253,10 +270,46 @@ struct Extensions
     // GL_OES_vertex_array_object
     bool vertexArrayObject;
 
+    // GL_KHR_debug
+    bool debug;
+    GLuint maxDebugMessageLength;
+    GLuint maxDebugLoggedMessages;
+    GLuint maxDebugGroupStackDepth;
+    GLuint maxLabelLength;
+
+    // KHR_no_error
+    bool noError;
+
+    // GL_ANGLE_lossy_etc_decode
+    bool lossyETCDecode;
+
+    // GL_CHROMIUM_bind_uniform_location
+    bool bindUniformLocation;
+
+    // GL_CHROMIUM_sync_query
+    bool syncQuery;
+
+    // GL_CHROMIUM_copy_texture
+    bool copyTexture;
+
     // ES3 Extension support
 
     // GL_EXT_color_buffer_float
     bool colorBufferFloat;
+
+    // GL_EXT_multisample_compatibility.
+    // written against ES 3.1 but can apply to earlier versions.
+    bool multisampleCompatibility;
+
+    // GL_CHROMIUM_framebuffer_mixed_samples
+    bool framebufferMixedSamples;
+
+    // GL_EXT_texture_norm16
+    // written against ES 3.1 but can apply to ES 3.0 as well.
+    bool textureNorm16;
+
+    // GL_CHROMIUM_path_rendering
+    bool pathRendering;
 };
 
 struct Limitations
@@ -301,7 +354,7 @@ struct Caps
 {
     Caps();
 
-    // Table 6.28, implementation dependent values
+    // ES 3.1 (April 29, 2015) 20.39: implementation dependent values
     GLuint64 maxElementIndex;
     GLuint max3DTextureSize;
     GLuint max2DTextureSize;
@@ -309,16 +362,29 @@ struct Caps
     GLfloat maxLODBias;
     GLuint maxCubeMapTextureSize;
     GLuint maxRenderbufferSize;
-    GLuint maxDrawBuffers;
-    GLuint maxColorAttachments;
-    GLuint maxViewportWidth;
-    GLuint maxViewportHeight;
     GLfloat minAliasedPointSize;
     GLfloat maxAliasedPointSize;
     GLfloat minAliasedLineWidth;
     GLfloat maxAliasedLineWidth;
 
-    // Table 6.29, implementation dependent values (cont.)
+    // ES 3.1 (April 29, 2015) 20.40: implementation dependent values (cont.)
+    GLuint maxDrawBuffers;
+    GLuint maxFramebufferWidth;
+    GLuint maxFramebufferHeight;
+    GLuint maxFramebufferSamples;
+    GLuint maxColorAttachments;
+    GLuint maxViewportWidth;
+    GLuint maxViewportHeight;
+    GLuint maxSampleMaskWords;
+    GLuint maxColorTextureSamples;
+    GLuint maxDepthTextureSamples;
+    GLuint maxIntegerSamples;
+    GLuint64 maxServerWaitTimeout;
+
+    // ES 3.1 (April 29, 2015) Table 20.41: Implementation dependent values (cont.)
+    GLint maxVertexAttribRelativeOffset;
+    GLint maxVertexAttribBindings;
+    GLint maxVertexAttribStride;
     GLuint maxElementsIndices;
     GLuint maxElementsVertices;
     std::vector<GLenum> compressedTextureFormats;
@@ -336,26 +402,49 @@ struct Caps
     TypePrecision fragmentHighpInt;
     TypePrecision fragmentMediumpInt;
     TypePrecision fragmentLowpInt;
-    GLuint64 maxServerWaitTimeout;
 
-    // Table 6.31, implementation dependent vertex shader limits
+    // ES 3.1 (April 29, 2015) Table 20.43: Implementation dependent Vertex shader limits
     GLuint maxVertexAttributes;
     GLuint maxVertexUniformComponents;
     GLuint maxVertexUniformVectors;
     GLuint maxVertexUniformBlocks;
     GLuint maxVertexOutputComponents;
     GLuint maxVertexTextureImageUnits;
+    GLuint maxVertexAtomicCounterBuffers;
+    GLuint maxVertexAtomicCounters;
+    GLuint maxVertexImageUniforms;
+    GLuint maxVertexShaderStorageBlocks;
 
-    // Table 6.32, implementation dependent fragment shader limits
+    // ES 3.1 (April 29, 2015) Table 20.44: Implementation dependent Fragment shader limits
     GLuint maxFragmentUniformComponents;
     GLuint maxFragmentUniformVectors;
     GLuint maxFragmentUniformBlocks;
     GLuint maxFragmentInputComponents;
     GLuint maxTextureImageUnits;
+    GLuint maxFragmentAtomicCounterBuffers;
+    GLuint maxFragmentAtomicCounters;
+    GLuint maxFragmentImageUniforms;
+    GLuint maxFragmentShaderStorageBlocks;
+    GLint minProgramTextureGatherOffset;
+    GLuint maxProgramTextureGatherOffset;
     GLint minProgramTexelOffset;
     GLint maxProgramTexelOffset;
 
-    // Table 6.33, implementation dependent aggregate shader limits
+    // ES 3.1 (April 29, 2015) Table 20.45: implementation dependent compute shader limits
+    std::array<GLuint, 3> maxComputeWorkGroupCount;
+    std::array<GLuint, 3> maxComputeWorkGroupSize;
+    GLuint maxComputeWorkGroupInvocations;
+    GLuint maxComputeUniformBlocks;
+    GLuint maxComputeTextureImageUnits;
+    GLuint maxComputeSharedMemorySize;
+    GLuint maxComputeUniformComponents;
+    GLuint maxComputeAtomicCounterBuffers;
+    GLuint maxComputeAtomicCounters;
+    GLuint maxComputeImageUniforms;
+    GLuint maxCombinedComputeUniformComponents;
+    GLuint maxComputeShaderStorageBlocks;
+
+    // ES 3.1 (April 29, 2015) Table 20.46: implementation dependent aggregate shader limits
     GLuint maxUniformBufferBindings;
     GLuint64 maxUniformBlockSize;
     GLuint uniformBufferOffsetAlignment;
@@ -365,13 +454,27 @@ struct Caps
     GLuint maxVaryingComponents;
     GLuint maxVaryingVectors;
     GLuint maxCombinedTextureImageUnits;
+    GLuint maxCombinedShaderOutputResources;
 
-    // Table 6.34, implementation dependent transform feedback limits
+    // ES 3.1 (April 29, 2015) Table 20.47: implementation dependent aggregate shader limits (cont.)
+    GLuint maxUniformLocations;
+    GLuint maxAtomicCounterBufferBindings;
+    GLuint maxAtomicCounterBufferSize;
+    GLuint maxCombinedAtomicCounterBuffers;
+    GLuint maxCombinedAtomicCounters;
+    GLuint maxImageUnits;
+    GLuint maxCombinedImageUniforms;
+    GLuint maxShaderStorageBufferBindings;
+    GLuint64 maxShaderStorageBlockSize;
+    GLuint maxCombinedShaderStorageBlocks;
+    GLuint shaderStorageBufferOffsetAlignment;
+
+    // ES 3.1 (April 29, 2015) Table 20.48: implementation dependent transform feedback limits
     GLuint maxTransformFeedbackInterleavedComponents;
     GLuint maxTransformFeedbackSeparateAttributes;
     GLuint maxTransformFeedbackSeparateComponents;
 
-    // Table 6.35, Framebuffer Dependent Values
+    // ES 3.1 (April 29, 2015) Table 20.49: Framebuffer Dependent Values
     GLuint maxSamples;
 };
 
@@ -413,6 +516,9 @@ struct DisplayExtensions
     // EGL_ANGLE_keyed_mutex
     bool keyedMutex;
 
+    // EGL_ANGLE_surface_orientation
+    bool surfaceOrientation;
+
     // EGL_NV_post_sub_buffer
     bool postSubBuffer;
 
@@ -445,6 +551,27 @@ struct DisplayExtensions
 
     // EGL_KHR_get_all_proc_addresses
     bool getAllProcAddresses;
+
+    // EGL_ANGLE_flexible_surface_compatibility
+    bool flexibleSurfaceCompatibility;
+
+    // EGL_ANGLE_direct_composition
+    bool directComposition;
+
+    // KHR_create_context_no_error
+    bool createContextNoError;
+
+    // EGL_KHR_stream
+    bool stream;
+
+    // EGL_KHR_stream_consumer_gltexture
+    bool streamConsumerGLTexture;
+
+    // EGL_NV_stream_consumer_gltexture_yuv
+    bool streamConsumerGLTextureYUV;
+
+    // EGL_ANGLE_stream_producer_d3d_texture_nv12
+    bool streamProducerD3DTextureNV12;
 };
 
 struct DeviceExtensions
@@ -491,6 +618,9 @@ struct ClientExtensions
 
     // EGL_ANGLE_x11_visual
     bool x11Visual;
+
+    // EGL_ANGLE_experimental_present_path
+    bool experimentalPresentPath;
 
     // EGL_KHR_client_get_all_proc_addresses
     bool clientGetAllProcAddresses;

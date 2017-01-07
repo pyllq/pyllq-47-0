@@ -6,12 +6,13 @@
 
 "use strict";
 
-const {Cu} = require("chrome");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+const EventEmitter = require("devtools/shared/event-emitter");
 const {createNode, TimeScale} = require("devtools/client/animationinspector/utils");
 
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
+
 const STRINGS_URI = "chrome://devtools/locale/animationinspector.properties";
-const L10N = new ViewHelpers.L10N(STRINGS_URI);
+const L10N = new LocalizationHelper(STRINGS_URI);
 
 /**
  * UI component responsible for displaying a single animation timeline, which
@@ -25,25 +26,25 @@ function AnimationTimeBlock() {
 exports.AnimationTimeBlock = AnimationTimeBlock;
 
 AnimationTimeBlock.prototype = {
-  init: function(containerEl) {
+  init: function (containerEl) {
     this.containerEl = containerEl;
     this.containerEl.addEventListener("click", this.onClick);
   },
 
-  destroy: function() {
+  destroy: function () {
     this.containerEl.removeEventListener("click", this.onClick);
     this.unrender();
     this.containerEl = null;
     this.animation = null;
   },
 
-  unrender: function() {
+  unrender: function () {
     while (this.containerEl.firstChild) {
       this.containerEl.firstChild.remove();
     }
   },
 
-  render: function(animation) {
+  render: function (animation) {
     this.unrender();
 
     this.animation = animation;
@@ -52,8 +53,11 @@ AnimationTimeBlock.prototype = {
     // Create a container element to hold the delay and iterations.
     // It is positioned according to its delay (divided by the playbackrate),
     // and its width is according to its duration (divided by the playbackrate).
-    let {x, iterationW, delayX, delayW, negativeDelayW} =
+    let {x, iterationW, delayX, delayW, negativeDelayW, endDelayX, endDelayW} =
       TimeScale.getAnimationDimensions(animation);
+
+    // background properties for .iterations element
+    let backgroundIterations = TimeScale.getIterationsBackgroundData(animation);
 
     createNode({
       parent: this.containerEl,
@@ -61,9 +65,13 @@ AnimationTimeBlock.prototype = {
         "class": "iterations" + (state.iterationCount ? "" : " infinite"),
         // Individual iterations are represented by setting the size of the
         // repeating linear-gradient.
+        // The background-size, background-position, background-repeat represent
+        // iterationCount and iterationStart.
         "style": `left:${x}%;
                   width:${iterationW}%;
-                  background-size:${100 / (state.iterationCount || 1)}% 100%;`
+                  background-size:${backgroundIterations.size}% 100%;
+                  background-position:${backgroundIterations.position}% 0;
+                  background-repeat:${backgroundIterations.repeat};`
       }
     });
 
@@ -97,9 +105,21 @@ AnimationTimeBlock.prototype = {
         }
       });
     }
+
+    // endDelay
+    if (state.endDelay) {
+      createNode({
+        parent: this.containerEl,
+        attributes: {
+          "class": "end-delay" + (state.endDelay < 0 ? " negative" : ""),
+          "style": `left:${endDelayX}%;
+                    width:${endDelayW}%;`
+        }
+      });
+    }
   },
 
-  getTooltipText: function(state) {
+  getTooltipText: function (state) {
     let getTime = time => L10N.getFormatStr("player.timeLabel",
                             L10N.numberWithDecimals(time / 1000, 2));
 
@@ -110,20 +130,38 @@ AnimationTimeBlock.prototype = {
     text += "\n";
 
     // Adding the delay.
-    text += L10N.getStr("player.animationDelayLabel") + " ";
-    text += getTime(state.delay);
-    text += "\n";
+    if (state.delay) {
+      text += L10N.getStr("player.animationDelayLabel") + " ";
+      text += getTime(state.delay);
+      text += "\n";
+    }
 
     // Adding the duration.
     text += L10N.getStr("player.animationDurationLabel") + " ";
     text += getTime(state.duration);
     text += "\n";
 
+    // Adding the endDelay.
+    if (state.endDelay) {
+      text += L10N.getStr("player.animationEndDelayLabel") + " ";
+      text += getTime(state.endDelay);
+      text += "\n";
+    }
+
     // Adding the iteration count (the infinite symbol, or an integer).
     if (state.iterationCount !== 1) {
       text += L10N.getStr("player.animationIterationCountLabel") + " ";
       text += state.iterationCount ||
               L10N.getStr("player.infiniteIterationCountText");
+      text += "\n";
+    }
+
+    // Adding the iteration start.
+    if (state.iterationStart !== 0) {
+      let iterationStartTime = state.iterationStart * state.duration / 1000;
+      text += L10N.getFormatStr("player.animationIterationStartLabel",
+                                state.iterationStart,
+                                L10N.numberWithDecimals(iterationStartTime, 2));
       text += "\n";
     }
 
@@ -136,14 +174,22 @@ AnimationTimeBlock.prototype = {
 
     // Adding a note that the animation is running on the compositor thread if
     // needed.
-    if (state.isRunningOnCompositor) {
+    if (state.propertyState) {
+      if (state.propertyState
+          .every(propState => propState.runningOnCompositor)) {
+        text += L10N.getStr("player.allPropertiesOnCompositorTooltip");
+      } else if (state.propertyState
+                 .some(propState => propState.runningOnCompositor)) {
+        text += L10N.getStr("player.somePropertiesOnCompositorTooltip");
+      }
+    } else if (state.isRunningOnCompositor) {
       text += L10N.getStr("player.runningOnCompositorTooltip");
     }
 
     return text;
   },
 
-  onClick: function(e) {
+  onClick: function (e) {
     e.stopPropagation();
     this.emit("selected", this.animation);
   }

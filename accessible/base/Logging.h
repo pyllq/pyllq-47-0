@@ -34,18 +34,19 @@ enum EModules {
   eDocLifeCycle = eDocLoad | eDocCreate | eDocDestroy,
 
   eEvents = 1 << 3,
-  ePlatforms = 1 << 4,
-  eText = 1 << 5,
-  eTree = 1 << 6,
+  eEventTree = 1 << 4,
+  ePlatforms = 1 << 5,
+  eText = 1 << 6,
+  eTree = 1 << 7,
 
-  eDOMEvents = 1 << 7,
-  eFocus = 1 << 8,
-  eSelection = 1 << 9,
+  eDOMEvents = 1 << 8,
+  eFocus = 1 << 9,
+  eSelection = 1 << 10,
   eNotifications = eDOMEvents | eSelection | eFocus,
 
   // extras
-  eStack = 1 << 10,
-  eVerbose = 1 << 11
+  eStack = 1 << 11,
+  eVerbose = 1 << 12
 };
 
 /**
@@ -137,6 +138,14 @@ void TreeInfo(const char* aMsg, uint32_t aExtraFlags,
               const char* aMsg1, Accessible* aAcc,
               const char* aMsg2, nsINode* aNode);
 void TreeInfo(const char* aMsg, uint32_t aExtraFlags, Accessible* aParent);
+
+/**
+ * Log the accessible/DOM tree.
+ */
+typedef const char* (*GetTreePrefix)(void* aData, Accessible*);
+void Tree(const char* aTitle, const char* aMsgText, DocAccessible* aDoc,
+          GetTreePrefix aPrefixFunc = nullptr, void* aGetTreePrefixData = nullptr);
+void DOMTree(const char* aTitle, const char* aMsgText, DocAccessible* aDoc);
 
 /**
  * Log the message ('title: text' format) on new line. Print the start and end

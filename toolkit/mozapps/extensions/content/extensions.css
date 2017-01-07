@@ -132,8 +132,8 @@ setting[type="menulist"] {
 }
 
 #show-disabled-unsigned-extensions .button-text {
-  -moz-margin-start: 3px !important;
-  -moz-margin-end: 2px !important;
+  margin-inline-start: 3px !important;
+  margin-inline-end: 2px !important;
 }
 
 #header-searching:not([active]) {
@@ -195,10 +195,6 @@ setting[type="menulist"] {
    so don't show that warning when viewing plugins. */
 #addons-page[warning="safemode"] .view-pane[type="plugin"] .global-warning-container,
 #addons-page[warning="safemode"] #detail-view[loading="true"] .global-warning {
-  display: none;
-}
-
-#addons-page .view-pane:not([type="plugin"]) .plugin-info-container {
   display: none;
 }
 

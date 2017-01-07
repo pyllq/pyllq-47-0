@@ -41,7 +41,7 @@ function doSearch(ctx, rev, query) {
     return;
   }
 
-  cm.operation(function() {
+  cm.operation(function () {
     if (state.query) {
       return;
     }
@@ -57,7 +57,7 @@ function doSearch(ctx, rev, query) {
  */
 function searchNext(ctx, rev) {
   let { cm, ed } = ctx;
-  cm.operation(function() {
+  cm.operation(function () {
     let state = getSearchState(cm);
     let cursor = getSearchCursor(cm, state.query,
                                  rev ? state.posFrom : state.posTo);
@@ -119,7 +119,7 @@ function hasBreakpoint(ctx, line) {
   let markers = cm.lineInfo(line).wrapClass;
 
   return markers != null &&
-         markers.contains("breakpoint");
+         markers.includes("breakpoint");
 }
 
 /**
@@ -174,8 +174,36 @@ function addBreakpoint(ctx, line, cond) {
 }
 
 /**
+ * Helps reset the debugger's breakpoint state
+ * - removes the breakpoints in the editor
+ * - cleares the debugger's breakpoint state
+ *
+ * Note, does not *actually* remove a source's breakpoints.
+ * The canonical state is kept in the app state.
+ *
+ */
+function removeBreakpoints(ctx) {
+  let { ed, cm } = ctx;
+
+  let meta = dbginfo.get(ed);
+  if (meta.breakpoints != null) {
+    meta.breakpoints = {};
+  }
+
+  cm.doc.iter((line) => {
+    // The hasBreakpoint is a slow operation: checks the line type, whether cm
+    // is initialized and creates several new objects. Inlining the line's
+    // wrapClass property check directly.
+    if (line.wrapClass == null || !line.wrapClass.includes("breakpoint")) {
+      return;
+    }
+    removeBreakpoint(ctx, line);
+  });
+}
+
+/**
  * Removes a visual breakpoint from a specified line and
- * makes Editor to emit a breakpointRemoved event.
+ * makes Editor emit a breakpointRemoved event.
  */
 function removeBreakpoint(ctx, line) {
   if (!hasBreakpoint(ctx, line)) {
@@ -303,7 +331,7 @@ function findPrev(ctx, query) {
 
 [
   initialize, hasBreakpoint, addBreakpoint, removeBreakpoint, moveBreakpoint,
-  setBreakpointCondition, removeBreakpointCondition, getBreakpoints,
+  setBreakpointCondition, removeBreakpointCondition, getBreakpoints, removeBreakpoints,
   setDebugLocation, getDebugLocation, clearDebugLocation, find, findNext,
   findPrev
 ].forEach(func => module.exports[func.name] = func);

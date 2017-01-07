@@ -3,14 +3,14 @@
 
 "use strict";
 
-add_task(function*() {
+add_task(function* () {
   let tab = yield addTab("data:text/html,mop");
 
   let {rdm, manager} = yield openRDM(tab, "menu");
   let container = gBrowser.getBrowserContainer();
   is(container.getAttribute("responsivemode"), "true",
      "Should be in responsive mode.");
-  is(document.getElementById("Tools:ResponsiveUI").getAttribute("checked"),
+  is(document.getElementById("menu_responsiveUI").getAttribute("checked"),
      "true", "Menu item should be checked");
 
   ok(rdm, "An instance of the RDM should be attached to the tab.");
@@ -60,7 +60,7 @@ add_task(function*() {
 
   container = gBrowser.getBrowserContainer();
   is(container.getAttribute("responsivemode"), "true", "In responsive mode.");
-  is(document.getElementById("Tools:ResponsiveUI").getAttribute("checked"),
+  is(document.getElementById("menu_responsiveUI").getAttribute("checked"),
      "true", "menu item should be checked");
 
   let isWinXP = navigator.userAgent.indexOf("Windows NT 5.1") != -1;
@@ -69,7 +69,7 @@ add_task(function*() {
   }
 
   yield closeRDM(rdm);
-  is(document.getElementById("Tools:ResponsiveUI").getAttribute("checked"),
+  is(document.getElementById("menu_responsiveUI").getAttribute("checked"),
      "false", "menu item should be unchecked");
 });
 
@@ -226,7 +226,7 @@ function* testScreenshot(rdm) {
 
 function* getSizing() {
   let browser = gBrowser.selectedBrowser;
-  let sizing = yield ContentTask.spawn(browser, {}, function*() {
+  let sizing = yield ContentTask.spawn(browser, {}, function* () {
     return {
       width: content.innerWidth,
       height: content.innerHeight

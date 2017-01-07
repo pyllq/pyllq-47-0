@@ -34,7 +34,6 @@ config = {
         "repo_path": 'mozilla-central',
         "update_channel": "nightly",
         "graph_server_branch_name": "Firefox",
-        'use_branch_in_symbols_extra_buildid': False,
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
     },
     'mozilla-release': {
@@ -42,7 +41,6 @@ config = {
         'repo_path': 'releases/mozilla-release',
         'update_channel': 'release',
         'branch_uses_per_checkin_strategy': True,
-        'use_branch_in_symbols_extra_buildid': False,
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
         'platform_overrides': {
             'linux': {
@@ -89,6 +87,9 @@ config = {
             'linux64-tsan': {
                 'update_channel': 'default',
             },
+            'linux64-add-on-devel': {
+                'update_channel': 'default',
+            },
             'macosx64-debug': {
                 'update_channel': 'default',
             },
@@ -101,13 +102,22 @@ config = {
             'macosx64-st-an-debug': {
                 'update_channel': 'default',
             },
+            'macosx64-add-on-devel': {
+                'update_channel': 'default',
+            },
             'win32-debug': {
                 'update_channel': 'default',
             },
             'win32-mulet': {
                 'update_channel': 'default',
             },
+            'win32-add-on-devel': {
+                'update_channel': 'default',
+            },
             'win64-debug': {
+                'update_channel': 'default',
+            },
+            'win64-add-on-devel': {
                 'update_channel': 'default',
             },
         },
@@ -117,7 +127,6 @@ config = {
         'repo_path': 'releases/mozilla-beta',
         'update_channel': 'beta',
         'branch_uses_per_checkin_strategy': True,
-        'use_branch_in_symbols_extra_buildid': False,
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
         'platform_overrides': {
             'linux': {
@@ -164,6 +173,9 @@ config = {
             'linux64-tsan': {
                 'update_channel': 'default',
             },
+            'linux64-add-on-devel': {
+                'update_channel': 'default',
+            },
             'macosx64-debug': {
                 'update_channel': 'default',
             },
@@ -176,13 +188,22 @@ config = {
             'macosx64-st-an-debug': {
                 'update_channel': 'default',
             },
+            'macosx64-add-on-devel': {
+                'update_channel': 'default',
+            },
             'win32-debug': {
                 'update_channel': 'default',
             },
             'win32-mulet': {
                 'update_channel': 'default',
             },
+            'win32-add-on-devel': {
+                'update_channel': 'default',
+            },
             'win64-debug': {
+                'update_channel': 'default',
+            },
+            'win64-add-on-devel': {
                 'update_channel': 'default',
             },
         },
@@ -266,18 +287,19 @@ config = {
         'repo_path': 'releases/mozilla-aurora',
         'update_channel': 'aurora',
         'branch_uses_per_checkin_strategy': True,
-        'use_branch_in_symbols_extra_buildid': False,
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
     },
     'try': {
         'repo_path': 'try',
         'clone_by_revision': True,
         'clone_with_purge': True,
+        # FUTURE this should be a unified repo because Try pushes may e.g.
+        # be on Aurora or Beta revisions.
+        'clone_upstream_url': 'https://hg.mozilla.org/mozilla-central',
         'tinderbox_build_dir': '%(who)s-%(got_revision)s',
         'to_tinderbox_dated': False,
         'include_post_upload_builddir': True,
         'release_to_try_builds': True,
-        'use_branch_in_symbols_extra_buildid': False,
         'stage_server': 'upload.trybld.productdelivery.prod.mozaws.net',
         'stage_username': 'trybld',
         'stage_ssh_key': 'trybld_dsa',
@@ -286,10 +308,6 @@ config = {
     },
 
     ### project branches
-    'b2g-inbound': {
-        'repo_path': 'integration/b2g-inbound',
-        'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
-    },
     'fx-team': {
         'repo_path': 'integration/fx-team',
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
@@ -302,8 +320,8 @@ config = {
         'repo_path': 'integration/mozilla-inbound',
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
     },
-    'services-central': {
-        'repo_path': 'services/services-central',
+    'autoland': {
+        'repo_path': 'integration/autoland',
         'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
     },
     'ux': {

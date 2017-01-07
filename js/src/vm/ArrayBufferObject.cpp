@@ -34,7 +34,7 @@
 #endif
 #include "jswrapper.h"
 
-#include "asmjs/Wasm.h"
+#include "asmjs/WasmTypes.h"
 #include "gc/Barrier.h"
 #include "gc/Marking.h"
 #include "gc/Memory.h"
@@ -96,30 +96,35 @@ const Class ArrayBufferObject::protoClass = {
     JSCLASS_HAS_CACHED_PROTO(JSProto_ArrayBuffer)
 };
 
-const Class ArrayBufferObject::class_ = {
-    "ArrayBuffer",
-    JSCLASS_DELAY_METADATA_CALLBACK |
-    JSCLASS_HAS_RESERVED_SLOTS(RESERVED_SLOTS) |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_ArrayBuffer) |
-    JSCLASS_BACKGROUND_FINALIZE,
-    nullptr,                 /* addProperty */
-    nullptr,                 /* delProperty */
-    nullptr,                 /* getProperty */
-    nullptr,                 /* setProperty */
-    nullptr,                 /* enumerate */
-    nullptr,                 /* resolve */
-    nullptr,                 /* mayResolve */
+const ClassOps ArrayBufferObject::classOps_ = {
+    nullptr,        /* addProperty */
+    nullptr,        /* delProperty */
+    nullptr,        /* getProperty */
+    nullptr,        /* setProperty */
+    nullptr,        /* enumerate */
+    nullptr,        /* resolve */
+    nullptr,        /* mayResolve */
     ArrayBufferObject::finalize,
     nullptr,        /* call        */
     nullptr,        /* hasInstance */
     nullptr,        /* construct   */
     ArrayBufferObject::trace,
+};
+
+static const ClassExtension ArrayBufferObjectClassExtension = {
+    nullptr,    /* weakmapKeyDelegateOp */
+    ArrayBufferObject::objectMoved
+};
+
+const Class ArrayBufferObject::class_ = {
+    "ArrayBuffer",
+    JSCLASS_DELAY_METADATA_BUILDER |
+    JSCLASS_HAS_RESERVED_SLOTS(RESERVED_SLOTS) |
+    JSCLASS_HAS_CACHED_PROTO(JSProto_ArrayBuffer) |
+    JSCLASS_BACKGROUND_FINALIZE,
+    &ArrayBufferObject::classOps_,
     JS_NULL_CLASS_SPEC,
-    {
-        false,      /* isWrappedNative */
-        nullptr,    /* weakmapKeyDelegateOp */
-        ArrayBufferObject::objectMoved
-    }
+    &ArrayBufferObjectClassExtension
 };
 
 const JSFunctionSpec ArrayBufferObject::jsfuncs[] = {
@@ -131,6 +136,11 @@ const JSFunctionSpec ArrayBufferObject::jsstaticfuncs[] = {
     JS_FN("isView", ArrayBufferObject::fun_isView, 1, 0),
     JS_SELF_HOSTED_FN("slice", "ArrayBufferStaticSlice", 3,0),
     JS_FS_END
+};
+
+const JSPropertySpec ArrayBufferObject::jsstaticprops[] = {
+    JS_SELF_HOSTED_SYM_GET(species, "ArrayBufferSpecies", 0),
+    JS_PS_END
 };
 
 bool
@@ -254,6 +264,8 @@ NoteViewBufferWasDetached(ArrayBufferViewObject* view,
 ArrayBufferObject::detach(JSContext* cx, Handle<ArrayBufferObject*> buffer,
                           BufferContents newContents)
 {
+    assertSameCompartment(cx, buffer);
+
     if (buffer->isWasm()) {
         JS_ReportErrorNumber(cx, GetErrorMessage, nullptr, JSMSG_OUT_OF_MEMORY);
         return false;
@@ -282,10 +294,11 @@ ArrayBufferObject::detach(JSContext* cx, Handle<ArrayBufferObject*> buffer,
     // Update all views of the buffer to account for the buffer having been
     // detached, and clear the buffer's data and list of views.
 
-    if (InnerViewTable::ViewVector* views = cx->compartment()->innerViews.maybeViewsUnbarriered(buffer)) {
+    auto& innerViews = cx->compartment()->innerViews;
+    if (InnerViewTable::ViewVector* views = innerViews.maybeViewsUnbarriered(buffer)) {
         for (size_t i = 0; i < views->length(); i++)
             NoteViewBufferWasDetached((*views)[i], newContents, cx);
-        cx->compartment()->innerViews.removeViews(buffer);
+        innerViews.removeViews(buffer);
     }
     if (buffer->firstView()) {
         if (buffer->forInlineTypedObject()) {
@@ -354,7 +367,8 @@ ArrayBufferObject::changeContents(JSContext* cx, BufferContents newContents)
     setNewOwnedData(cx->runtime()->defaultFreeOp(), newContents);
 
     // Update all views.
-    if (InnerViewTable::ViewVector* views = cx->compartment()->innerViews.maybeViewsUnbarriered(this)) {
+    auto& innerViews = cx->compartment()->innerViews;
+    if (InnerViewTable::ViewVector* views = innerViews.maybeViewsUnbarriered(this)) {
         for (size_t i = 0; i < views->length(); i++)
             changeViewContents(cx, (*views)[i], oldDataPointer, newContents);
     }
@@ -452,7 +466,7 @@ ArrayBufferObject::createForWasm(JSContext* cx, uint32_t numBytes, bool signalsF
 #endif
     }
 
-    auto buffer = ArrayBufferObject::create(cx, numBytes);
+    auto* buffer = ArrayBufferObject::create(cx, numBytes);
     if (!buffer)
         return nullptr;
 
@@ -623,6 +637,10 @@ ArrayBufferObject::create(JSContext* cx, uint32_t nbytes, BufferContents content
             size_t nAllocated = nbytes;
             if (contents.kind() == MAPPED)
                 nAllocated = JS_ROUNDUP(nbytes, js::gc::SystemPageSize());
+#ifdef ASMJS_MAY_USE_SIGNAL_HANDLERS_FOR_OOB
+            else if (contents.kind() == WASM_MAPPED)
+                nAllocated = wasm::MappedSize;
+#endif
             cx->zone()->updateMallocCounter(nAllocated);
         }
     } else {
@@ -716,6 +734,7 @@ ArrayBufferObject::stealContents(JSContext* cx, Handle<ArrayBufferObject*> buffe
                                  bool hasStealableContents)
 {
     MOZ_ASSERT_IF(hasStealableContents, buffer->hasStealableContents());
+    assertSameCompartment(cx, buffer);
 
     BufferContents oldContents(buffer->dataPointer(), buffer->bufferKind());
     BufferContents newContents = AllocateArrayBufferContents(cx, buffer->byteLength());
@@ -845,7 +864,7 @@ ArrayBufferObject::addView(JSContext* cx, JSObject* viewArg)
         setFirstView(view);
         return true;
     }
-    return cx->compartment()->innerViews.addView(cx, this, view);
+    return cx->compartment()->innerViews.get().addView(cx, this, view);
 }
 
 /*
@@ -1017,6 +1036,7 @@ ArrayBufferViewObject::trace(JSTracer* trc, JSObject* objArg)
             ArrayBufferObject& buf = AsArrayBuffer(MaybeForwarded(&bufSlot.toObject()));
             uint32_t offset = uint32_t(obj->getFixedSlot(TypedArrayObject::BYTEOFFSET_SLOT).toInt32());
             MOZ_ASSERT(buf.dataPointer() != nullptr);
+            MOZ_ASSERT(offset <= INT32_MAX);
 
             if (buf.forInlineTypedObject()) {
                 // The data is inline with an InlineTypedObject associated with the
@@ -1214,6 +1234,16 @@ JS_NewArrayBufferWithContents(JSContext* cx, size_t nbytes, void* data)
     ArrayBufferObject::BufferContents contents =
         ArrayBufferObject::BufferContents::create<ArrayBufferObject::PLAIN>(data);
     return ArrayBufferObject::create(cx, nbytes, contents, ArrayBufferObject::OwnsData,
+                                     /* proto = */ nullptr, TenuredObject);
+}
+
+JS_PUBLIC_API(JSObject*)
+JS_NewArrayBufferWithExternalContents(JSContext* cx, size_t nbytes, void* data)
+{
+    MOZ_ASSERT_IF(!data, nbytes == 0);
+    ArrayBufferObject::BufferContents contents =
+        ArrayBufferObject::BufferContents::create<ArrayBufferObject::PLAIN>(data);
+    return ArrayBufferObject::create(cx, nbytes, contents, ArrayBufferObject::DoesntOwnData,
                                      /* proto = */ nullptr, TenuredObject);
 }
 
@@ -1417,12 +1447,6 @@ js::InitArrayBufferClass(JSContext* cx, HandleObject obj)
     if (!ctor)
         return nullptr;
 
-    if (!GlobalObject::initBuiltinConstructor(cx, global, JSProto_ArrayBuffer,
-                                              ctor, arrayBufferProto))
-    {
-        return nullptr;
-    }
-
     if (!LinkConstructorAndPrototype(cx, ctor, arrayBufferProto))
         return nullptr;
 
@@ -1443,8 +1467,17 @@ js::InitArrayBufferClass(JSContext* cx, HandleObject obj)
     if (!JS_DefineFunctions(cx, ctor, ArrayBufferObject::jsstaticfuncs))
         return nullptr;
 
+    if (!JS_DefineProperties(cx, ctor, ArrayBufferObject::jsstaticprops))
+        return nullptr;
+
     if (!JS_DefineFunctions(cx, arrayBufferProto, ArrayBufferObject::jsfuncs))
         return nullptr;
+
+    if (!GlobalObject::initBuiltinConstructor(cx, global, JSProto_ArrayBuffer,
+                                              ctor, arrayBufferProto))
+    {
+        return nullptr;
+    }
 
     return arrayBufferProto;
 }

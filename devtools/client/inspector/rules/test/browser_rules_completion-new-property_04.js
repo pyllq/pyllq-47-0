@@ -13,7 +13,7 @@
 const TEST_URI = "<style>.title {color: red;}</style>" +
                  "<h1 class=title>Header</h1>";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let { inspector, view} = yield openRuleView();
 
@@ -38,10 +38,10 @@ add_task(function*() {
   editor.popup.selectedIndex = itemIndex;
 
   info("Select the background-color suggestion with a mouse click.");
-  let onInputFocus = once(editor.input, "focus", true);
-  let node = editor.popup._list.childNodes[itemIndex];
-  EventUtils.synthesizeMouseAtCenter(node, {}, view.styleWindow);
-  yield onInputFocus;
+  let onSuggest = editor.once("after-suggest");
+  let node = editor.popup.elements.get(bgcItem);
+  EventUtils.synthesizeMouseAtCenter(node, {}, editor.popup._window);
+  yield onSuggest;
   is(editor.input.value, "background-color", "Correct value is autocompleted");
 
   info("Press RETURN to move the focus to a property value editor.");

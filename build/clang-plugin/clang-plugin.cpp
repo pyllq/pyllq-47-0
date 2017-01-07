@@ -39,6 +39,32 @@ typedef ASTConsumer *ASTConsumerPtr;
 #define cxxRecordDecl recordDecl
 #endif
 
+// Check if the given expression contains an assignment expression.
+// This can either take the form of a Binary Operator or a
+// Overloaded Operator Call.
+bool HasSideEffectAssignment(const Expr *expr) {
+  if (auto opCallExpr = dyn_cast_or_null<CXXOperatorCallExpr>(expr)) {
+    auto binOp = opCallExpr->getOperator();
+    if (binOp == OO_Equal || (binOp >= OO_PlusEqual && binOp <= OO_PipeEqual)) {
+      return true;
+    }
+  } else if (auto binOpExpr = dyn_cast_or_null<BinaryOperator>(expr)) {
+    if (binOpExpr->isAssignmentOp()) {
+      return true;
+    }
+  }
+
+  // Recurse to children.
+  for (const Stmt *SubStmt : expr->children()) {
+    auto childExpr = dyn_cast_or_null<Expr>(SubStmt);
+    if (childExpr && HasSideEffectAssignment(childExpr)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 namespace {
 
 using namespace clang::ast_matchers;
@@ -94,7 +120,12 @@ private:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
 
-  class NonMemMovableChecker : public MatchFinder::MatchCallback {
+  class NonMemMovableTemplateArgChecker : public MatchFinder::MatchCallback {
+  public:
+    virtual void run(const MatchFinder::MatchResult &Result);
+  };
+
+  class NonMemMovableMemberChecker : public MatchFinder::MatchCallback {
   public:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
@@ -119,6 +150,16 @@ private:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
 
+  class AssertAssignmentChecker : public MatchFinder::MatchCallback {
+  public:
+    virtual void run(const MatchFinder::MatchResult &Result);
+  };
+
+  class KungFuDeathGripChecker : public MatchFinder::MatchCallback {
+  public:
+    virtual void run(const MatchFinder::MatchResult &Result);
+  };
+
   ScopeChecker scopeChecker;
   ArithmeticArgChecker arithmeticArgChecker;
   TrivialCtorDtorChecker trivialCtorDtorChecker;
@@ -128,11 +169,14 @@ private:
   ExplicitOperatorBoolChecker explicitOperatorBoolChecker;
   NoDuplicateRefCntMemberChecker noDuplicateRefCntMemberChecker;
   NeedsNoVTableTypeChecker needsNoVTableTypeChecker;
-  NonMemMovableChecker nonMemMovableChecker;
+  NonMemMovableTemplateArgChecker nonMemMovableTemplateArgChecker;
+  NonMemMovableMemberChecker nonMemMovableMemberChecker;
   ExplicitImplicitChecker explicitImplicitChecker;
   NoAutoTypeChecker noAutoTypeChecker;
   NoExplicitMoveConstructorChecker noExplicitMoveConstructorChecker;
   RefCountedCopyConstructorChecker refCountedCopyConstructorChecker;
+  AssertAssignmentChecker assertAttributionChecker;
+  KungFuDeathGripChecker kungFuDeathGripChecker;
   MatchFinder astMatcher;
 };
 
@@ -263,6 +307,49 @@ bool isIgnoredExprForMustUse(const Expr *E) {
 
   return false;
 }
+
+template<typename T>
+StringRef getNameChecked(const T& D) {
+  return D->getIdentifier() ? D->getName() : "";
+}
+
+bool typeIsRefPtr(QualType Q) {
+  CXXRecordDecl *D = Q->getAsCXXRecordDecl();
+  if (!D || !D->getIdentifier()) {
+    return false;
+  }
+
+  StringRef name = D->getName();
+  if (name == "RefPtr" || name == "nsCOMPtr") {
+    return true;
+  }
+  return false;
+}
+
+// The method defined in clang for ignoring implicit nodes doesn't work with
+// some AST trees. To get around this, we define our own implementation of
+// IgnoreImplicit.
+const Stmt *IgnoreImplicit(const Stmt *s) {
+  while (true) {
+    if (auto *ewc = dyn_cast<ExprWithCleanups>(s)) {
+      s = ewc->getSubExpr();
+    } else if (auto *mte = dyn_cast<MaterializeTemporaryExpr>(s)) {
+      s = mte->GetTemporaryExpr();
+    } else if (auto *bte = dyn_cast<CXXBindTemporaryExpr>(s)) {
+      s = bte->getSubExpr();
+    } else if (auto *ice = dyn_cast<ImplicitCastExpr>(s)) {
+      s = ice->getSubExpr();
+    } else {
+      break;
+    }
+  }
+
+  return s;
+}
+
+const Expr *IgnoreImplicit(const Expr *e) {
+  return cast<Expr>(IgnoreImplicit(static_cast<const Stmt *>(e)));
+}
 }
 
 class CustomTypeAnnotation {
@@ -313,6 +400,7 @@ public:
 private:
   bool hasLiteralAnnotation(QualType T) const;
   AnnotationReason directAnnotationReason(QualType T);
+  AnnotationReason tmplArgAnnotationReason(ArrayRef<TemplateArgument> Args);
 
 protected:
   // Allow subclasses to apply annotations to external code:
@@ -330,7 +418,7 @@ static CustomTypeAnnotation HeapClass =
 static CustomTypeAnnotation NonTemporaryClass =
     CustomTypeAnnotation("moz_non_temporary_class", "non-temporary");
 static CustomTypeAnnotation MustUse =
-    CustomTypeAnnotation("moz_must_use", "must-use");
+    CustomTypeAnnotation("moz_must_use_type", "must-use");
 
 class MemMoveAnnotation final : public CustomTypeAnnotation {
 public:
@@ -388,6 +476,7 @@ public:
   void HandleUnusedExprResult(const Stmt *stmt) {
     const Expr *E = dyn_cast_or_null<Expr>(stmt);
     if (E) {
+      E = E->IgnoreImplicit(); // Ignore ExprWithCleanup etc. implicit wrappers
       QualType T = E->getType();
       if (MustUse.hasEffectiveAnnotation(T) && !isIgnoredExprForMustUse(E)) {
         unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
@@ -545,7 +634,7 @@ bool isClassRefCounted(const CXXRecordDecl *D) {
 }
 
 bool isClassRefCounted(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *clazz = T->getAsCXXRecordDecl();
   return clazz ? isClassRefCounted(clazz) : false;
@@ -590,14 +679,14 @@ const FieldDecl *getBaseRefCntMember(const CXXRecordDecl *D) {
 }
 
 const FieldDecl *getBaseRefCntMember(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *clazz = T->getAsCXXRecordDecl();
   return clazz ? getBaseRefCntMember(clazz) : 0;
 }
 
 bool typeHasVTable(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *offender = T->getAsCXXRecordDecl();
   return offender && offender->hasDefinition() && offender->isDynamicClass();
@@ -706,8 +795,13 @@ AST_MATCHER(QualType, isNonMemMovable) {
 }
 
 /// This matcher will select classes which require a memmovable template arg
-AST_MATCHER(CXXRecordDecl, needsMemMovable) {
+AST_MATCHER(CXXRecordDecl, needsMemMovableTemplateArg) {
   return MozChecker::hasCustomAnnotation(&Node, "moz_needs_memmovable_type");
+}
+
+/// This matcher will select classes which require all members to be memmovable
+AST_MATCHER(CXXRecordDecl, needsMemMovableMembers) {
+  return MozChecker::hasCustomAnnotation(&Node, "moz_needs_memmovable_members");
 }
 
 AST_MATCHER(CXXConstructorDecl, isInterestingImplicitCtor) {
@@ -748,6 +842,19 @@ AST_MATCHER(CXXConstructorDecl, isExplicitMoveConstructor) {
 
 AST_MATCHER(CXXConstructorDecl, isCompilerProvidedCopyConstructor) {
   return !Node.isUserProvided() && Node.isCopyConstructor();
+}
+
+AST_MATCHER(CallExpr, isAssertAssignmentTestFunc) {
+  static const std::string assertName = "MOZ_AssertAssignmentTest";
+  const FunctionDecl *method = Node.getDirectCallee();
+
+  return method
+      && method->getDeclName().isIdentifier()
+      && method->getName() == assertName;
+}
+
+AST_MATCHER(QualType, isRefPtr) {
+  return typeIsRefPtr(Node);
 }
 }
 }
@@ -830,7 +937,7 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
   }
 
   // Check if we have a type which we can recurse into
-  if (const ArrayType *Array = T->getAsArrayTypeUnsafe()) {
+  if (const clang::ArrayType *Array = T->getAsArrayTypeUnsafe()) {
     if (hasEffectiveAnnotation(Array->getElementType())) {
       AnnotationReason Reason = {Array->getElementType(), RK_ArrayElement,
                                  nullptr};
@@ -870,16 +977,10 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
         if (Spec) {
           const TemplateArgumentList &Args = Spec->getTemplateArgs();
 
-          for (const TemplateArgument &Arg : Args.asArray()) {
-            if (Arg.getKind() == TemplateArgument::Type) {
-              QualType Type = Arg.getAsType();
-
-              if (hasEffectiveAnnotation(Type)) {
-                AnnotationReason Reason = {Type, RK_TemplateInherited, nullptr};
-                Cache[Key] = Reason;
-                return Reason;
-              }
-            }
+          AnnotationReason Reason = tmplArgAnnotationReason(Args.asArray());
+          if (Reason.Kind != RK_None) {
+            Cache[Key] = Reason;
+            return Reason;
           }
         }
       }
@@ -888,6 +989,27 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
 
   AnnotationReason Reason = {QualType(), RK_None, nullptr};
   Cache[Key] = Reason;
+  return Reason;
+}
+
+CustomTypeAnnotation::AnnotationReason
+CustomTypeAnnotation::tmplArgAnnotationReason(ArrayRef<TemplateArgument> Args) {
+  for (const TemplateArgument &Arg : Args) {
+    if (Arg.getKind() == TemplateArgument::Type) {
+      QualType Type = Arg.getAsType();
+      if (hasEffectiveAnnotation(Type)) {
+        AnnotationReason Reason = {Type, RK_TemplateInherited, nullptr};
+        return Reason;
+      }
+    } else if (Arg.getKind() == TemplateArgument::Pack) {
+      AnnotationReason Reason = tmplArgAnnotationReason(Arg.getPackAsArray());
+      if (Reason.Kind != RK_None) {
+        return Reason;
+      }
+    }
+  }
+
+  AnnotationReason Reason = {QualType(), RK_None, nullptr};
   return Reason;
 }
 
@@ -1011,10 +1133,16 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
   // Handle non-mem-movable template specializations
   astMatcher.addMatcher(
       classTemplateSpecializationDecl(
-          allOf(needsMemMovable(),
+          allOf(needsMemMovableTemplateArg(),
                 hasAnyTemplateArgument(refersToType(isNonMemMovable()))))
           .bind("specialization"),
-      &nonMemMovableChecker);
+      &nonMemMovableTemplateArgChecker);
+
+  // Handle non-mem-movable members
+  astMatcher.addMatcher(
+      cxxRecordDecl(needsMemMovableMembers())
+          .bind("decl"),
+      &nonMemMovableMemberChecker);
 
   astMatcher.addMatcher(cxxConstructorDecl(isInterestingImplicitCtor(),
                                            ofClass(allOf(isConcreteClass(),
@@ -1036,6 +1164,13 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
                                             ofClass(hasRefCntMember()))))
           .bind("node"),
       &refCountedCopyConstructorChecker);
+
+  astMatcher.addMatcher(
+      callExpr(isAssertAssignmentTestFunc()).bind("funcCall"),
+      &assertAttributionChecker);
+
+  astMatcher.addMatcher(varDecl(hasType(isRefPtr())).bind("decl"),
+                        &kungFuDeathGripChecker);
 }
 
 // These enum variants determine whether an allocation has occured in the code.
@@ -1381,7 +1516,7 @@ void DiagnosticsMatcher::NeedsNoVTableTypeChecker::run(
       << specialization;
 }
 
-void DiagnosticsMatcher::NonMemMovableChecker::run(
+void DiagnosticsMatcher::NonMemMovableTemplateArgChecker::run(
     const MatchFinder::MatchResult &Result) {
   DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
   unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
@@ -1400,7 +1535,7 @@ void DiagnosticsMatcher::NonMemMovableChecker::run(
       specialization->getTemplateInstantiationArgs();
   for (unsigned i = 0; i < args.size(); ++i) {
     QualType argType = args[i].getAsType();
-    if (NonMemMovable.hasEffectiveAnnotation(args[i].getAsType())) {
+    if (NonMemMovable.hasEffectiveAnnotation(argType)) {
       Diag.Report(specialization->getLocation(), errorID) << specialization
                                                           << argType;
       // XXX It would be really nice if we could get the instantiation stack
@@ -1414,6 +1549,29 @@ void DiagnosticsMatcher::NonMemMovableChecker::run(
       // be useful)
       Diag.Report(requestLoc, note1ID) << specialization;
       NonMemMovable.dumpAnnotationReason(Diag, argType, requestLoc);
+    }
+  }
+}
+
+void DiagnosticsMatcher::NonMemMovableMemberChecker::run(
+    const MatchFinder::MatchResult &Result) {
+  DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
+  unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Error,
+      "class %0 cannot have non-memmovable member %1 of type %2");
+
+  // Get the specialization
+  const CXXRecordDecl* Decl =
+      Result.Nodes.getNodeAs<CXXRecordDecl>("decl");
+
+  // Report an error for every member which is non-memmovable
+  for (const FieldDecl *Field : Decl->fields()) {
+    QualType Type = Field->getType();
+    if (NonMemMovable.hasEffectiveAnnotation(Type)) {
+      Diag.Report(Field->getLocation(), errorID) << Decl
+                                                 << Field
+                                                 << Type;
+      NonMemMovable.dumpAnnotationReason(Diag, Type, Decl->getLocation());
     }
   }
 }
@@ -1486,6 +1644,109 @@ void DiagnosticsMatcher::RefCountedCopyConstructorChecker::run(
 
   Diag.Report(E->getLocation(), ErrorID);
   Diag.Report(E->getLocation(), NoteID);
+}
+
+void DiagnosticsMatcher::AssertAssignmentChecker::run(
+    const MatchFinder::MatchResult &Result) {
+  DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
+  unsigned assignInsteadOfComp = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Error, "Forbidden assignment in assert expression");
+  const CallExpr *funcCall = Result.Nodes.getNodeAs<CallExpr>("funcCall");
+
+  if (funcCall && HasSideEffectAssignment(funcCall)) {
+    Diag.Report(funcCall->getLocStart(), assignInsteadOfComp);
+  }
+}
+
+void DiagnosticsMatcher::KungFuDeathGripChecker::run(
+    const MatchFinder::MatchResult &Result) {
+  DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
+  unsigned ErrorID = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Error,
+      "Unused \"kungFuDeathGrip\" %0 objects constructed from %1 are prohibited");
+
+  unsigned NoteID = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Note,
+      "Please switch all accesses to this %0 to go through '%1', or explicitly pass '%1' to `mozilla::Unused`");
+
+  const VarDecl *D = Result.Nodes.getNodeAs<VarDecl>("decl");
+  if (D->isReferenced() || !D->hasLocalStorage() || !D->hasInit()) {
+    return;
+  }
+
+  // Not interested in parameters.
+  if (isa<ImplicitParamDecl>(D) || isa<ParmVarDecl>(D)) {
+    return;
+  }
+
+  const Expr *E = IgnoreImplicit(D->getInit());
+  const CXXConstructExpr *CE = dyn_cast<CXXConstructExpr>(E);
+  if (CE && CE->getNumArgs() == 0) {
+    // We don't report an error when we construct and don't use a nsCOMPtr /
+    // nsRefPtr with no arguments. We don't report it because the error is not
+    // related to the current check. In the future it may be reported through a
+    // more generic mechanism.
+    return;
+  }
+
+  // We don't want to look at the single argument conversion constructors
+  // which are inbetween the declaration and the actual object which we are
+  // assigning into the nsCOMPtr/RefPtr. To do this, we repeatedly
+  // IgnoreImplicit, then look at the expression. If it is one of these
+  // conversion constructors, we ignore it and continue to dig.
+  while ((CE = dyn_cast<CXXConstructExpr>(E)) && CE->getNumArgs() == 1) {
+    E = IgnoreImplicit(CE->getArg(0));
+  }
+
+  // We allow taking a kungFuDeathGrip of `this` because it cannot change
+  // beneath us, so calling directly through `this` is OK. This is the same
+  // for local variable declarations.
+  //
+  // We also don't complain about unused RefPtrs which are constructed from
+  // the return value of a new expression, as these are required in order to
+  // immediately destroy the value created (which was presumably created for
+  // its side effects), and are not used as a death grip.
+  if (isa<CXXThisExpr>(E) || isa<DeclRefExpr>(E) || isa<CXXNewExpr>(E)) {
+    return;
+  }
+
+  // These types are assigned into nsCOMPtr and RefPtr for their side effects,
+  // and not as a kungFuDeathGrip. We don't want to consider RefPtr and nsCOMPtr
+  // types which are initialized with these types as errors.
+  const TagDecl *TD = E->getType()->getAsTagDecl();
+  if (TD && TD->getIdentifier()) {
+    static const char *IgnoreTypes[] = {
+      "already_AddRefed",
+      "nsGetServiceByCID",
+      "nsGetServiceByCIDWithError",
+      "nsGetServiceByContractID",
+      "nsGetServiceByContractIDWithError",
+      "nsCreateInstanceByCID",
+      "nsCreateInstanceByContractID",
+      "nsCreateInstanceFromFactory",
+    };
+
+    for (uint32_t i = 0; i < sizeof(IgnoreTypes) / sizeof(IgnoreTypes[0]); ++i) {
+      if (TD->getName() == IgnoreTypes[i]) {
+        return;
+      }
+    }
+  }
+
+  // Report the error
+  const char *ErrThing;
+  const char *NoteThing;
+  if (isa<MemberExpr>(E)) {
+    ErrThing  = "members";
+    NoteThing = "member";
+  } else {
+    ErrThing = "temporary values";
+    NoteThing = "value";
+  }
+
+  // We cannot provide the note if we don't have an initializer
+  Diag.Report(D->getLocStart(), ErrorID) << D->getType() << ErrThing;
+  Diag.Report(E->getLocStart(), NoteID) << NoteThing << getNameChecked(D);
 }
 
 class MozCheckAction : public PluginASTAction {

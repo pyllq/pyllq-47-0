@@ -17,9 +17,11 @@ const EventEmitter = require("devtools/shared/event-emitter");
  * @param {Object} options
  *        - emptyText {string}: text to display when no entries in the table.
  *        - defaultType {string}: The default type of the tree items. For ex.
- *        'js'
+ *          'js'
  *        - sorted {boolean}: Defaults to true. If true, tree items are kept in
- *        lexical order. If false, items will be kept in insertion order.
+ *          lexical order. If false, items will be kept in insertion order.
+ *        - contextMenuId {string}: ID of context menu to be displayed on
+ *          tree items.
  */
 function TreeWidget(node, options = {}) {
   EventEmitter.decorate(this);
@@ -31,6 +33,7 @@ function TreeWidget(node, options = {}) {
   this.emptyText = options.emptyText || "";
   this.defaultType = options.defaultType;
   this.sorted = options.sorted !== false;
+  this.contextMenuId = options.contextMenuId;
 
   this.setupRoot();
 
@@ -53,30 +56,31 @@ TreeWidget.prototype = {
   /**
    * Select any node in the tree.
    *
-   * @param {array} id
+   * @param {array} ids
    *        An array of ids leading upto the selected item
    */
-  set selectedItem(id) {
+  set selectedItem(ids) {
     if (this._selectedLabel) {
       this._selectedLabel.classList.remove("theme-selected");
     }
     let currentSelected = this._selectedLabel;
-    if (id == -1) {
+    if (ids == -1) {
       this._selectedLabel = this._selectedItem = null;
       return;
     }
-    if (!Array.isArray(id)) {
+    if (!Array.isArray(ids)) {
       return;
     }
-    this._selectedLabel = this.root.setSelectedItem(id);
+    this._selectedLabel = this.root.setSelectedItem(ids);
     if (!this._selectedLabel) {
       this._selectedItem = null;
     } else {
       if (currentSelected != this._selectedLabel) {
         this.ensureSelectedVisible();
       }
-      this._selectedItem =
-      JSON.parse(this._selectedLabel.parentNode.getAttribute("data-id"));
+      this._selectedItem = ids;
+      this.emit("select", this._selectedItem,
+        this.attachments.get(JSON.stringify(ids)));
     }
   },
 
@@ -96,7 +100,7 @@ TreeWidget.prototype = {
    * @return {array}
    *        An array of ids leading upto the requested item
    */
-  isSelected: function(item) {
+  isSelected: function (item) {
     if (!this._selectedItem || this._selectedItem.length != item.length) {
       return false;
     }
@@ -110,7 +114,7 @@ TreeWidget.prototype = {
     return true;
   },
 
-  destroy: function() {
+  destroy: function () {
     this.root.remove();
     this.root = null;
   },
@@ -118,18 +122,25 @@ TreeWidget.prototype = {
   /**
    * Sets up the root container of the TreeWidget.
    */
-  setupRoot: function() {
+  setupRoot: function () {
     this.root = new TreeItem(this.document);
+    if (this.contextMenuId) {
+      this.root.children.addEventListener("contextmenu", (event) => {
+        let menu = this.document.getElementById(this.contextMenuId);
+        menu.openPopupAtScreen(event.screenX, event.screenY, true);
+      });
+    }
+
     this._parent.appendChild(this.root.children);
 
-    this.root.children.addEventListener("click", e => this.onClick(e));
+    this.root.children.addEventListener("mousedown", e => this.onClick(e));
     this.root.children.addEventListener("keypress", e => this.onKeypress(e));
   },
 
   /**
    * Sets the text to be shown when no node is present in the tree
    */
-  setPlaceholderText: function(text) {
+  setPlaceholderText: function (text) {
     this.placeholder.textContent = text;
   },
 
@@ -139,14 +150,14 @@ TreeWidget.prototype = {
    * @param {array} id
    *        An array of ids leading upto the selected item
    */
-  selectItem: function(id) {
+  selectItem: function (id) {
     this.selectedItem = id;
   },
 
   /**
    * Selects the next visible item in the tree.
    */
-  selectNextItem: function() {
+  selectNextItem: function () {
     let next = this.getNextVisibleItem();
     if (next) {
       this.selectedItem = next;
@@ -156,7 +167,7 @@ TreeWidget.prototype = {
   /**
    * Selects the previos visible item in the tree
    */
-  selectPreviousItem: function() {
+  selectPreviousItem: function () {
     let prev = this.getPreviousVisibleItem();
     if (prev) {
       this.selectedItem = prev;
@@ -166,7 +177,7 @@ TreeWidget.prototype = {
   /**
    * Returns the next visible item in the tree
    */
-  getNextVisibleItem: function() {
+  getNextVisibleItem: function () {
     let node = this._selectedLabel;
     if (node.hasAttribute("expanded") && node.nextSibling.firstChild) {
       return JSON.parse(node.nextSibling.firstChild.getAttribute("data-id"));
@@ -188,7 +199,7 @@ TreeWidget.prototype = {
   /**
    * Returns the previous visible item in the tree
    */
-  getPreviousVisibleItem: function() {
+  getPreviousVisibleItem: function () {
     let node = this._selectedLabel.parentNode;
     if (node.previousSibling) {
       node = node.previousSibling.firstChild;
@@ -214,7 +225,7 @@ TreeWidget.prototype = {
     return null;
   },
 
-  clearSelection: function() {
+  clearSelection: function () {
     this.selectedItem = -1;
   },
 
@@ -247,7 +258,7 @@ TreeWidget.prototype = {
    *        are simply adding children to an already existing node and you know
    *        its id.
    */
-  add: function(items) {
+  add: function (items) {
     this.root.add(items, this.defaultType, this.sorted);
     for (let i = 0; i < items.length; i++) {
       if (items[i].attachment) {
@@ -266,7 +277,7 @@ TreeWidget.prototype = {
    * @param {array} item
    *        The array of ids leading up to the item.
    */
-  remove: function(item) {
+  remove: function (item) {
     this.root.remove(item);
     this.attachments.delete(JSON.stringify(item));
     // Display the empty tree text
@@ -278,7 +289,7 @@ TreeWidget.prototype = {
   /**
    * Removes all of the child nodes from this tree.
    */
-  clear: function() {
+  clear: function () {
     this.root.remove();
     this.setupRoot();
     this.attachments.clear();
@@ -290,21 +301,21 @@ TreeWidget.prototype = {
   /**
    * Expands the tree completely
    */
-  expandAll: function() {
+  expandAll: function () {
     this.root.expandAll();
   },
 
   /**
    * Collapses the tree completely
    */
-  collapseAll: function() {
+  collapseAll: function () {
     this.root.collapseAll();
   },
 
   /**
    * Click handler for the tree. Used to select, open and close the tree nodes.
    */
-  onClick: function(event) {
+  onClick: function (event) {
     let target = event.originalTarget;
     while (target && !target.classList.contains("tree-widget-item")) {
       if (target == this.root.children) {
@@ -315,29 +326,24 @@ TreeWidget.prototype = {
     if (!target) {
       return;
     }
+
     if (target.hasAttribute("expanded")) {
       target.removeAttribute("expanded");
     } else {
       target.setAttribute("expanded", "true");
     }
-    if (this._selectedLabel) {
-      this._selectedLabel.classList.remove("theme-selected");
-    }
+
     if (this._selectedLabel != target) {
       let ids = target.parentNode.getAttribute("data-id");
-      this._selectedItem = JSON.parse(ids);
-      this.emit("select", this._selectedItem, this.attachments.get(ids));
-      this._selectedLabel = target;
+      this.selectedItem = JSON.parse(ids);
     }
-    target.classList.add("theme-selected");
   },
 
   /**
    * Keypress handler for this tree. Used to select next and previous visible
    * items, as well as collapsing and expanding any item.
    */
-  onKeypress: function(event) {
-    let currentSelected = this._selectedLabel;
+  onKeypress: function (event) {
     switch (event.keyCode) {
       case event.DOM_VK_UP:
         this.selectPreviousItem();
@@ -367,18 +373,13 @@ TreeWidget.prototype = {
       default: return;
     }
     event.preventDefault();
-    if (this._selectedLabel != currentSelected) {
-      let ids = JSON.stringify(this._selectedItem);
-      this.emit("select", this._selectedItem, this.attachments.get(ids));
-      this.ensureSelectedVisible();
-    }
   },
 
   /**
    * Scrolls the viewport of the tree so that the selected item is always
    * visible.
    */
-  ensureSelectedVisible: function() {
+  ensureSelectedVisible: function () {
     let {top, bottom} = this._selectedLabel.getBoundingClientRect();
     let height = this.root.children.parentNode.clientHeight;
     if (top < 0) {
@@ -466,7 +467,7 @@ TreeItem.prototype = {
    *        true if the tree items are inserted in a lexically sorted manner.
    *        Otherwise, false if the item are to be appended to their parent.
    */
-  add: function(items, defaultType, sorted) {
+  add: function (items, defaultType, sorted) {
     if (items.length == this.level) {
       // This is the exit condition of recursive TreeItem.add calls
       return;
@@ -530,12 +531,15 @@ TreeItem.prototype = {
    * @param {array} items
    *        Ids of items leading up to the item to be removed.
    */
-  remove: function(items = []) {
+  remove: function (items = []) {
     let id = items.shift();
     if (id && this.items.has(id)) {
       let deleted = this.items.get(id);
       if (!items.length) {
         this.items.delete(id);
+      }
+      if (this.items.size == 0) {
+        this.label.setAttribute("empty", "true");
       }
       deleted.remove(items);
     } else if (!id) {
@@ -550,7 +554,7 @@ TreeItem.prototype = {
    * @param {array} items
    *        Ids of items leading up to the item to be selected.
    */
-  setSelectedItem: function(items) {
+  setSelectedItem: function (items) {
     if (!items[this.level]) {
       this.label.classList.add("theme-selected");
       this.label.setAttribute("expanded", "true");
@@ -569,7 +573,7 @@ TreeItem.prototype = {
   /**
    * Collapses this item and all of its sub tree items
    */
-  collapseAll: function() {
+  collapseAll: function () {
     if (this.label) {
       this.label.removeAttribute("expanded");
     }
@@ -581,7 +585,7 @@ TreeItem.prototype = {
   /**
    * Expands this item and all of its sub tree items
    */
-  expandAll: function() {
+  expandAll: function () {
     if (this.label) {
       this.label.setAttribute("expanded", "true");
     }
@@ -590,7 +594,7 @@ TreeItem.prototype = {
     }
   },
 
-  destroy: function() {
+  destroy: function () {
     this.children.remove();
     this.node.remove();
     this.label = null;

@@ -19,6 +19,7 @@
 #include "nsHttp.h"
 #include "nsNetUtil.h"
 #include "nsIURI.h"
+#include "nsHttpHeaderArray.h"
 
 //
 // Helper function for determining the length of data bytes up to
@@ -420,7 +421,8 @@ nsPartChannel::VisitResponseHeaders(nsIHttpHeaderVisitor *visitor)
 {
     if (!mResponseHead)
         return NS_ERROR_NOT_AVAILABLE;
-    return mResponseHead->Headers().VisitHeaders(visitor);
+    return mResponseHead->VisitHeaders(visitor,
+        mozilla::net::nsHttpHeaderArray::eFilterResponse);
 }
 
 //
@@ -1213,9 +1215,8 @@ nsMultiMixedConv::ParseHeaders(nsIChannel *aChannel, char *&aPtr,
         *newLine = '\0'; // cursor is now null terminated
 
         if (mResponseHead) {
-            // ParseHeaderLine is destructive. We create a copy
             nsAutoCString tmpHeader(cursor);
-            mResponseHead->ParseHeaderLine(tmpHeader.get());
+            mResponseHead->ParseHeaderLine(tmpHeader);
         }
 
         char *colon = (char *) strchr(cursor, ':');
@@ -1348,4 +1349,3 @@ NS_NewMultiMixedConv(nsMultiMixedConv** aMultiMixedConv)
     NS_ADDREF(*aMultiMixedConv);
     return NS_OK;
 }
-

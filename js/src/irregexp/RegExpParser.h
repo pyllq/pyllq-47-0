@@ -44,7 +44,7 @@ namespace irregexp {
 bool
 ParsePattern(frontend::TokenStream& ts, LifoAlloc& alloc, JSAtom* str,
              bool multiline, bool match_only, bool unicode, bool ignore_case,
-             RegExpCompileData* data);
+             bool global, bool sticky, RegExpCompileData* data);
 
 bool
 ParsePatternSyntax(frontend::TokenStream& ts, LifoAlloc& alloc, JSAtom* str,
@@ -164,7 +164,9 @@ class RegExpBuilder
     enum LastAdded {
         ADD_NONE, ADD_CHAR, ADD_TERM, ADD_ASSERT, ADD_ATOM
     };
-    mozilla::DebugOnly<LastAdded> last_added_;
+#ifdef DEBUG
+    LastAdded last_added_;
+#endif
 };
 
 // Characters parsed by RegExpParser can be either char16_t or kEndMarker.

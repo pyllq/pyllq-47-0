@@ -185,7 +185,6 @@ var dataProviders = {
     let data = {
       name: Services.appinfo.name,
       osVersion: sysInfo.getProperty("name") + " " + sysInfo.getProperty("version"),
-      arch: sysInfo.getProperty("arch"),
       version: AppConstants.MOZ_APP_VERSION_DISPLAY,
       buildID: Services.appinfo.appBuildID,
       userAgent: Cc["@mozilla.org/network/protocol;1?name=http"].
@@ -210,7 +209,7 @@ var dataProviders = {
 
     data.numTotalWindows = 0;
     data.numRemoteWindows = 0;
-    let winEnumer = Services.ww.getWindowEnumerator("navigator:browser");
+    let winEnumer = Services.wm.getEnumerator("navigator:browser");
     while (winEnumer.hasMoreElements()) {
       data.numTotalWindows++;
       let remote = winEnumer.getNext().
@@ -243,7 +242,11 @@ var dataProviders = {
       extensions.sort(function (a, b) {
         if (a.isActive != b.isActive)
           return b.isActive ? 1 : -1;
-        let lc = a.name.localeCompare(b.name);
+
+        // In some unfortunate cases addon names can be null.
+        let aname = a.name || null;
+        let bname = b.name || null;
+        let lc = aname.localeCompare(bname);
         if (lc != 0)
           return lc;
         if (a.version != b.version)
@@ -364,6 +367,8 @@ var dataProviders = {
     });
     promises.push(promise);
 
+    data.currentAudioBackend = winUtils.currentAudioBackend;
+
     if (!data.numAcceleratedWindows && gfxInfo) {
       let win = AppConstants.platform == "win";
       let feature = win ? gfxInfo.FEATURE_DIRECT3D_9_LAYERS :
@@ -417,43 +422,55 @@ var dataProviders = {
       data.direct2DEnabledMessage =
         statusMsgForFeature(Ci.nsIGfxInfo.FEATURE_DIRECT2D);
 
+
     let doc =
       Cc["@mozilla.org/xmlextras/domparser;1"]
       .createInstance(Ci.nsIDOMParser)
       .parseFromString("<html/>", "text/html");
 
-    let canvas = doc.createElement("canvas");
-    canvas.width = 1;
-    canvas.height = 1;
+    function GetWebGLInfo(contextType) {
+        let canvas = doc.createElement("canvas");
+        canvas.width = 1;
+        canvas.height = 1;
 
-    let gl;
-    try {
-      gl = canvas.getContext("experimental-webgl");
-    } catch(e) {}
 
-    if (gl) {
-      let ext = gl.getExtension("WEBGL_debug_renderer_info");
-      // this extension is unconditionally available to chrome. No need to check.
-      data.webglRenderer = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)
-                           + " -- "
-                           + gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
-    } else {
-      let feature;
-      if (AppConstants.platform == "win") {
-        // If ANGLE is not available but OpenGL is, we want to report on the
-        // OpenGL feature, because that's what's going to get used.  In all
-        // other cases we want to report on the ANGLE feature.
-        let angle = gfxInfo.getFeatureStatus(gfxInfo.FEATURE_WEBGL_ANGLE) ==
-                    gfxInfo.FEATURE_STATUS_OK;
-        let opengl = gfxInfo.getFeatureStatus(gfxInfo.FEATURE_WEBGL_OPENGL) ==
-                     gfxInfo.FEATURE_STATUS_OK;
-        feature = !angle && opengl ? gfxInfo.FEATURE_WEBGL_OPENGL :
-                                     gfxInfo.FEATURE_WEBGL_ANGLE;
-      } else {
-        feature = gfxInfo.FEATURE_WEBGL_OPENGL;
-      }
-      data.webglRendererMessage = statusMsgForFeature(feature);
+        let creationError = "(no info)";
+
+        canvas.addEventListener(
+            "webglcontextcreationerror",
+
+            function(e) {
+                creationError = e.statusMessage;
+            },
+
+            false
+        );
+
+        let gl = canvas.getContext(contextType);
+        if (!gl)
+            return creationError;
+
+
+        let infoExt = gl.getExtension("WEBGL_debug_renderer_info");
+        // This extension is unconditionally available to chrome. No need to check.
+        let vendor = gl.getParameter(infoExt.UNMASKED_VENDOR_WEBGL);
+        let renderer = gl.getParameter(infoExt.UNMASKED_RENDERER_WEBGL);
+
+        let contextInfo = vendor + " -- " + renderer;
+
+
+        // Eagerly free resources.
+        let loseExt = gl.getExtension("WEBGL_lose_context");
+        loseExt.loseContext();
+
+
+        return contextInfo;
     }
+
+
+    data.webglRenderer = GetWebGLInfo("webgl");
+    data.webgl2Renderer = GetWebGLInfo("webgl2");
+
 
     let infoInfo = gfxInfo.getInfo();
     if (infoInfo)
@@ -469,6 +486,9 @@ var dataProviders = {
         data.indices = failureIndices.value;
       }
     }
+
+    data.featureLog = gfxInfo.getFeatureLog();
+    data.crashGuards = gfxInfo.getActiveCrashGuards();
 
     completed();
   },
@@ -540,20 +560,28 @@ if (AppConstants.MOZ_CRASHREPORTER) {
   }
 }
 
-if (AppConstants.platform == "linux" && AppConstants.MOZ_SANDBOX) {
+if (AppConstants.MOZ_SANDBOX) {
   dataProviders.sandbox = function sandbox(done) {
-    const keys = ["hasSeccompBPF", "hasSeccompTSync",
-                  "hasPrivilegedUserNamespaces", "hasUserNamespaces",
-                  "canSandboxContent", "canSandboxMedia"];
-
-    let sysInfo = Cc["@mozilla.org/system-info;1"].
-                  getService(Ci.nsIPropertyBag2);
     let data = {};
-    for (let key of keys) {
-      if (sysInfo.hasKey(key)) {
-        data[key] = sysInfo.getPropertyAsBool(key);
+    if (AppConstants.platform == "linux") {
+      const keys = ["hasSeccompBPF", "hasSeccompTSync",
+                    "hasPrivilegedUserNamespaces", "hasUserNamespaces",
+                    "canSandboxContent", "canSandboxMedia"];
+
+      let sysInfo = Cc["@mozilla.org/system-info;1"].
+                    getService(Ci.nsIPropertyBag2);
+      for (let key of keys) {
+        if (sysInfo.hasKey(key)) {
+          data[key] = sysInfo.getPropertyAsBool(key);
+        }
       }
     }
+
+    if (AppConstants.MOZ_CONTENT_SANDBOX) {
+      data.contentSandboxLevel =
+        Services.prefs.getIntPref("security.sandbox.content.level");
+    }
+
     done(data);
   }
 }

@@ -9,7 +9,7 @@
 
 const TEST_URL = URL_ROOT + "doc_markup_links.html";
 
-add_task(function*() {
+add_task(function* () {
   let {inspector} = yield openInspectorForURL(TEST_URL);
 
   info("Select a node with a URI attribute");
@@ -58,19 +58,6 @@ add_task(function*() {
   yield followLinkNoNewNode(linkEl, true, inspector);
 });
 
-function waitForTabLoad(tab) {
-  let def = promise.defer();
-  tab.addEventListener("load", function onLoad() {
-    // Skip load event for about:blank
-    if (tab.linkedBrowser.currentURI.spec === "about:blank") {
-      return;
-    }
-    tab.removeEventListener("load", onLoad);
-    def.resolve();
-  });
-  return def.promise;
-}
-
 function performMouseDown(linkEl, metactrl) {
   let evt = linkEl.ownerDocument.createEvent("MouseEvents");
 
@@ -95,7 +82,7 @@ function* followLinkWaitForTab(linkEl, isMetaClick, expectedTabURI) {
   let onTabOpened = once(gBrowser.tabContainer, "TabOpen");
   performMouseDown(linkEl, isMetaClick);
   let {target} = yield onTabOpened;
-  yield waitForTabLoad(target);
+  yield BrowserTestUtils.browserLoaded(target.linkedBrowser);
   ok(true, "A new tab opened");
   is(target.linkedBrowser.currentURI.spec, expectedTabURI,
      "The URL for the new tab is correct");

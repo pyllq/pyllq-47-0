@@ -9,8 +9,9 @@
 #include "VRManagerParent.h"
 #include "VRDeviceProxy.h"
 #include "VRDeviceProxyOrientationFallBack.h"
+#include "nsGlobalWindow.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/layers/CompositorParent.h" // for CompositorParent
+#include "mozilla/layers/CompositorThread.h" // for CompositorThread
 #include "mozilla/dom/Navigator.h"
 
 namespace mozilla {
@@ -34,13 +35,6 @@ VRManagerChild::~VRManagerChild()
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_COUNT_DTOR(VRManagerChild);
-
-  Transport* trans = GetTransport();
-  if (trans) {
-    MOZ_ASSERT(XRE_GetIOMessageLoop());
-    XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                     new DeleteTask<Transport>(trans));
-  }
 }
 
 /*static*/ VRManagerChild*
@@ -50,35 +44,50 @@ VRManagerChild::Get()
   return sVRManagerChildSingleton;
 }
 
-/*static*/ VRManagerChild*
-VRManagerChild::StartUpInChildProcess(Transport* aTransport, ProcessId aOtherPid)
+/* static */ bool
+VRManagerChild::IsCreated()
+{
+  return !!sVRManagerChildSingleton;
+}
+
+/* static */ bool
+VRManagerChild::InitForContent(Endpoint<PVRManagerChild>&& aEndpoint)
 {
   MOZ_ASSERT(NS_IsMainThread());
-
-  // There's only one VRManager per child process.
   MOZ_ASSERT(!sVRManagerChildSingleton);
 
   RefPtr<VRManagerChild> child(new VRManagerChild());
-  if (!child->Open(aTransport, aOtherPid, XRE_GetIOMessageLoop(), ipc::ChildSide)) {
+  if (!aEndpoint.Bind(child, nullptr)) {
     NS_RUNTIMEABORT("Couldn't Open() Compositor channel.");
-    return nullptr;
+    return false;
   }
-
   sVRManagerChildSingleton = child;
-
-  return sVRManagerChildSingleton;
+  return true;
 }
 
 /*static*/ void
-VRManagerChild::StartUpSameProcess()
+VRManagerChild::InitSameProcess()
 {
-  NS_ASSERTION(NS_IsMainThread(), "Should be on the main Thread!");
-  if (sVRManagerChildSingleton == nullptr) {
-    sVRManagerChildSingleton = new VRManagerChild();
-    sVRManagerParentSingleton = VRManagerParent::CreateSameProcess();
-    sVRManagerChildSingleton->Open(sVRManagerParentSingleton->GetIPCChannel(),
-                                   mozilla::layers::CompositorParent::CompositorLoop(),
-                                   mozilla::ipc::ChildSide);
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!sVRManagerChildSingleton);
+
+  sVRManagerChildSingleton = new VRManagerChild();
+  sVRManagerParentSingleton = VRManagerParent::CreateSameProcess();
+  sVRManagerChildSingleton->Open(sVRManagerParentSingleton->GetIPCChannel(),
+                                 mozilla::layers::CompositorThreadHolder::Loop(),
+                                 mozilla::ipc::ChildSide);
+}
+
+/* static */ void
+VRManagerChild::InitWithGPUProcess(Endpoint<PVRManagerChild>&& aEndpoint)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!sVRManagerChildSingleton);
+
+  sVRManagerChildSingleton = new VRManagerChild();
+  if (!aEndpoint.Bind(sVRManagerChildSingleton, nullptr)) {
+    NS_RUNTIMEABORT("Couldn't Open() Compositor channel.");
+    return;
   }
 }
 
@@ -109,7 +118,7 @@ VRManagerChild::Destroy()
 
   // The DeferredDestroyVRManager task takes ownership of
   // the VRManagerChild and will release it when it runs.
-  MessageLoop::current()->PostTask(FROM_HERE,
+  MessageLoop::current()->PostTask(
              NewRunnableFunction(DeferredDestroy, selfRef));
 }
 
@@ -141,7 +150,16 @@ VRManagerChild::RecvUpdateDeviceInfo(nsTArray<VRDeviceUpdate>&& aDeviceUpdates)
   mDevices = devices;
 
 
-  for (auto& nav: mNavigatorCallbacks) {
+  for (auto& windowId : mNavigatorCallbacks) {
+    nsGlobalWindow* window = nsGlobalWindow::GetInnerWindowWithId(windowId);
+    if (!window) {
+      continue;
+    }
+    ErrorResult result;
+    dom::Navigator* nav = window->GetNavigator(result);
+    if (NS_WARN_IF(result.Failed())) {
+      continue;
+    }
     nav->NotifyVRDevicesUpdated();
   }
   mNavigatorCallbacks.Clear();
@@ -175,11 +193,11 @@ VRManagerChild::GetVRDevices(nsTArray<RefPtr<VRDeviceProxy> >& aDevices)
 }
 
 bool
-VRManagerChild::RefreshVRDevicesWithCallback(dom::Navigator* aNavigator)
+VRManagerChild::RefreshVRDevicesWithCallback(uint64_t aWindowId)
 {
   bool success = SendRefreshDevices();
   if (success) {
-    mNavigatorCallbacks.AppendElement(aNavigator);
+    mNavigatorCallbacks.AppendElement(aWindowId);
   }
   return success;
 }

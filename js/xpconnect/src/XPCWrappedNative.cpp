@@ -625,8 +625,8 @@ XPCWrappedNative::UpdateScriptableInfo(XPCNativeScriptableInfo* si)
     MOZ_ASSERT(mScriptableInfo, "UpdateScriptableInfo expects an existing scriptable info");
 
     // Write barrier for incremental GC.
-    JSRuntime* rt = GetRuntime()->Runtime();
-    if (IsIncrementalBarrierNeeded(rt))
+    JSContext* cx = GetRuntime()->Context();
+    if (IsIncrementalBarrierNeeded(cx))
         mScriptableInfo->Mark();
 
     mScriptableInfo = si;
@@ -640,8 +640,8 @@ XPCWrappedNative::SetProto(XPCWrappedNativeProto* p)
     MOZ_ASSERT(HasProto());
 
     // Write barrier for incremental GC.
-    JSRuntime* rt = GetRuntime()->Runtime();
-    GetProto()->WriteBarrierPre(rt);
+    JSContext* cx = GetRuntime()->Context();
+    GetProto()->WriteBarrierPre(cx);
 
     mMaybeProto = p;
 }
@@ -767,7 +767,7 @@ XPCWrappedNative::Init(const XPCNativeScriptableCreateInfo* sci)
 
     // create our flatJSObject
 
-    const JSClass* jsclazz = si ? si->GetJSClass() : Jsvalify(&XPC_WN_NoHelper_JSClass.base);
+    const JSClass* jsclazz = si ? si->GetJSClass() : Jsvalify(&XPC_WN_NoHelper_JSClass);
 
     // We should have the global jsclass flag if and only if we're a global.
     MOZ_ASSERT_IF(si, !!si->GetFlags().IsGlobalObject() == !!(jsclazz->flags & JSCLASS_IS_GLOBAL));
@@ -775,8 +775,8 @@ XPCWrappedNative::Init(const XPCNativeScriptableCreateInfo* sci)
     MOZ_ASSERT(jsclazz &&
                jsclazz->name &&
                jsclazz->flags &&
-               jsclazz->resolve &&
-               jsclazz->finalize, "bad class");
+               jsclazz->getResolve() &&
+               jsclazz->hasFinalize(), "bad class");
 
     // XXXbz JS_GetObjectPrototype wants an object, even though it then asserts
     // that this object is same-compartment with cx, which means it could just
@@ -1262,9 +1262,6 @@ static bool Throw(nsresult errNum, XPCCallContext& ccx)
 class MOZ_STACK_CLASS CallMethodHelper
 {
     XPCCallContext& mCallContext;
-    // We wait to call SetLastResult(mInvokeResult) until ~CallMethodHelper(),
-    // so that XPCWN-implemented functions like XPCComponents::GetLastResult()
-    // can still access the previous result.
     nsresult mInvokeResult;
     nsIInterfaceInfo* const mIFaceInfo;
     const nsXPTMethodInfo* mMethodInfo;
@@ -1356,9 +1353,6 @@ bool
 XPCWrappedNative::CallMethod(XPCCallContext& ccx,
                              CallMode mode /*= CALL_METHOD */)
 {
-    MOZ_ASSERT(ccx.GetXPCContext()->CallerTypeIsJavaScript(),
-               "Native caller for XPCWrappedNative::CallMethod?");
-
     nsresult rv = ccx.CanCallNow();
     if (NS_FAILED(rv)) {
         return Throw(rv, ccx);
@@ -1457,8 +1451,6 @@ CallMethodHelper::~CallMethodHelper()
             }
         }
     }
-
-    mCallContext.GetXPCContext()->SetLastResult(mInvokeResult);
 }
 
 bool

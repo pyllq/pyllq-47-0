@@ -527,22 +527,6 @@ nsBrowserContentHandler.prototype = {
     if (overridePage == "about:blank")
       overridePage = "";
 
-    // Temporary override page for users who are running Firefox on Windows 10 for their first time.
-    let platformVersion = Services.sysinfo.getProperty("version");
-    if (AppConstants.platform == "win" &&
-        Services.vc.compare(platformVersion, "10") == 0 &&
-        !Services.prefs.getBoolPref("browser.usedOnWindows10")) {
-      Services.prefs.setBoolPref("browser.usedOnWindows10", true);
-      let firstUseOnWindows10URL = Services.urlFormatter.formatURLPref("browser.usedOnWindows10.introURL");
-
-      if (firstUseOnWindows10URL && firstUseOnWindows10URL.length) {
-        additionalPage = firstUseOnWindows10URL;
-        if (override == OVERRIDE_NEW_PROFILE) {
-          additionalPage += "&utm_content=firstrun";
-        }
-      }
-    }
-
     if (!additionalPage) {
       additionalPage = LaterRun.getURL() || "";
     }
@@ -710,6 +694,18 @@ nsDefaultCommandLineHandler.prototype = {
 
   /* nsICommandLineHandler */
   handle : function dch_handle(cmdLine) {
+    // The -url flag is inserted by the operating system when the default
+    // application handler is used. We check for default browser to remove
+    // instances where users explicitly decide to "open with" the browser.
+    // Note that users who launch firefox manually with the -url flag will
+    // get erroneously counted.
+    try {
+      if (cmdLine.findFlag("url", false) &&
+          ShellService.isDefaultBrowser(false, false)) {
+        Services.telemetry.getHistogramById("FX_STARTUP_EXTERNAL_CONTENT_HANDLER").add();
+      }
+    } catch (e) {}
+
     var urilist = [];
 
     if (AppConstants.platform == "win") {

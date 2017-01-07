@@ -577,7 +577,7 @@ function sendWheelAndPaint(aTarget, aOffsetX, aOffsetY, aEvent, aCallback, aWind
   }
 
   var onwheel = function() {
-    window.removeEventListener("wheel", onwheel);
+    SpecialPowers.removeSystemEventListener(window, "wheel", onwheel);
 
     // Wait one frame since the wheel event has not caused a refresh observer
     // to be added yet.
@@ -604,7 +604,9 @@ function sendWheelAndPaint(aTarget, aOffsetX, aOffsetY, aEvent, aCallback, aWind
     }, 0);
   };
 
-  aWindow.addEventListener("wheel", onwheel);
+  // Listen for the system wheel event, because it happens after all of
+  // the other wheel events, including legacy events.
+  SpecialPowers.addSystemEventListener(aWindow, "wheel", onwheel);
   synthesizeWheel(aTarget, aOffsetX, aOffsetY, aEvent, aWindow);
 }
 
@@ -842,6 +844,8 @@ function _parseNativeModifiers(aModifiers, aWindow = window)
 
 const KEYBOARD_LAYOUT_ARABIC =
   { name: "Arabic",             Mac: 6,    Win: 0x00000401 };
+const KEYBOARD_LAYOUT_ARABIC_PC =
+  { name: "Arabic - PC",        Mac: 7,    Win: null       };
 const KEYBOARD_LAYOUT_BRAZILIAN_ABNT =
   { name: "Brazilian ABNT",     Mac: null, Win: 0x00000416 };
 const KEYBOARD_LAYOUT_DVORAK_QWERTY =
@@ -849,21 +853,21 @@ const KEYBOARD_LAYOUT_DVORAK_QWERTY =
 const KEYBOARD_LAYOUT_EN_US =
   { name: "US",                 Mac: 0,    Win: 0x00000409 };
 const KEYBOARD_LAYOUT_FRENCH =
-  { name: "French",             Mac: 7,    Win: 0x0000040C };
+  { name: "French",             Mac: 8,    Win: 0x0000040C };
 const KEYBOARD_LAYOUT_GREEK =
   { name: "Greek",              Mac: 1,    Win: 0x00000408 };
 const KEYBOARD_LAYOUT_GERMAN =
   { name: "German",             Mac: 2,    Win: 0x00000407 };
 const KEYBOARD_LAYOUT_HEBREW =
-  { name: "Hebrew",             Mac: 8,    Win: 0x0000040D };
+  { name: "Hebrew",             Mac: 9,    Win: 0x0000040D };
 const KEYBOARD_LAYOUT_JAPANESE =
   { name: "Japanese",           Mac: null, Win: 0x00000411 };
 const KEYBOARD_LAYOUT_LITHUANIAN =
-  { name: "Lithuanian",         Mac: 9,    Win: 0x00010427 };
+  { name: "Lithuanian",         Mac: 10,   Win: 0x00010427 };
 const KEYBOARD_LAYOUT_NORWEGIAN =
-  { name: "Norwegian",          Mac: 10,   Win: 0x00000414 };
+  { name: "Norwegian",          Mac: 11,   Win: 0x00000414 };
 const KEYBOARD_LAYOUT_SPANISH =
-  { name: "Spanish",            Mac: 11,   Win: 0x0000040A };
+  { name: "Spanish",            Mac: 12,   Win: 0x0000040A };
 const KEYBOARD_LAYOUT_SWEDISH =
   { name: "Swedish",            Mac: 3,    Win: 0x0000041D };
 const KEYBOARD_LAYOUT_THAI =
@@ -1238,11 +1242,11 @@ function _guessKeyNameFromKeyCode(aKeyCode, aWindow = window)
     case KeyboardEvent.DOM_VK_SCROLL_LOCK:
       return "ScrollLock";
     case KeyboardEvent.DOM_VK_VOLUME_MUTE:
-      return "VolumeMute";
+      return "AudioVolumeMute";
     case KeyboardEvent.DOM_VK_VOLUME_DOWN:
-      return "VolumeDown";
+      return "AudioVolumeDown";
     case KeyboardEvent.DOM_VK_VOLUME_UP:
-      return "VolumeUp";
+      return "AudioVolumeUp";
     case KeyboardEvent.DOM_VK_META:
       return "Meta";
     case KeyboardEvent.DOM_VK_ALTGR:
@@ -1556,26 +1560,74 @@ function synthesizeCompositionChange(aEvent, aWindow = window, aCallback)
 const QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
 const QUERY_CONTENT_FLAG_USE_XP_LINE_BREAK              = 0x0001;
 
+const QUERY_CONTENT_FLAG_SELECTION_NORMAL                    = 0x0000;
+const QUERY_CONTENT_FLAG_SELECTION_SPELLCHECK                = 0x0002;
+const QUERY_CONTENT_FLAG_SELECTION_IME_RAWINPUT              = 0x0004;
+const QUERY_CONTENT_FLAG_SELECTION_IME_SELECTEDRAWTEXT       = 0x0008;
+const QUERY_CONTENT_FLAG_SELECTION_IME_CONVERTEDTEXT         = 0x0010;
+const QUERY_CONTENT_FLAG_SELECTION_IME_SELECTEDCONVERTEDTEXT = 0x0020;
+const QUERY_CONTENT_FLAG_SELECTION_ACCESSIBILITY             = 0x0040;
+const QUERY_CONTENT_FLAG_SELECTION_FIND                      = 0x0080;
+const QUERY_CONTENT_FLAG_SELECTION_URLSECONDARY              = 0x0100;
+const QUERY_CONTENT_FLAG_SELECTION_URLSTRIKEOUT              = 0x0200;
+
+const QUERY_CONTENT_FLAG_OFFSET_RELATIVE_TO_INSERTION_POINT  = 0x0400;
+
 const SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
 const SELECTION_SET_FLAG_USE_XP_LINE_BREAK              = 0x0001;
 const SELECTION_SET_FLAG_REVERSE                        = 0x0002;
 
 /**
- * Synthesize a query selected text event.
+ * Synthesize a query text content event.
  *
+ * @param aOffset  The character offset.  0 means the first character in the
+ *                 selection root.
+ * @param aLength  The length of getting text.  If the length is too long,
+ *                 the extra length is ignored.
+ * @param aIsRelative   Optional (If true, aOffset is relative to start of
+ *                      composition if there is, or start of selection.)
  * @param aWindow  Optional (If null, current |window| will be used)
  * @return         An nsIQueryContentEventResult object.  If this failed,
  *                 the result might be null.
  */
-function synthesizeQuerySelectedText(aWindow)
+function synthesizeQueryTextContent(aOffset, aLength, aIsRelative, aWindow)
+{
+  var utils = _getDOMWindowUtils(aWindow);
+  if (!utils) {
+    return nullptr;
+  }
+  var flags = QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK;
+  if (aIsRelative === true) {
+    flags |= QUERY_CONTENT_FLAG_OFFSET_RELATIVE_TO_INSERTION_POINT;
+  }
+  return utils.sendQueryContentEvent(utils.QUERY_TEXT_CONTENT,
+                                     aOffset, aLength, 0, 0, flags);
+}
+
+/**
+ * Synthesize a query selected text event.
+ *
+ * @param aSelectionType    Optional, one of QUERY_CONTENT_FLAG_SELECTION_*.
+ *                          If null, QUERY_CONTENT_FLAG_SELECTION_NORMAL will
+ *                          be used.
+ * @param aWindow  Optional (If null, current |window| will be used)
+ * @return         An nsIQueryContentEventResult object.  If this failed,
+ *                 the result might be null.
+ */
+function synthesizeQuerySelectedText(aSelectionType, aWindow)
 {
   var utils = _getDOMWindowUtils(aWindow);
   if (!utils) {
     return null;
   }
 
+  var flags = QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK;
+  if (aSelectionType) {
+    flags |= aSelectionType;
+  }
+
   return utils.sendQueryContentEvent(utils.QUERY_SELECTED_TEXT, 0, 0, 0, 0,
-                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
+                                     flags);
 }
 
 /**
@@ -1716,4 +1768,75 @@ function synthesizeNativeOSXClick(x, y)
 
   CoreFoundation.close();
   CoreGraphics.close();
+}
+
+/**
+ * Emulate a dragstart event.
+ *  element - element to fire the dragstart event on
+ *  expectedDragData - the data you expect the data transfer to contain afterwards
+ *                      This data is in the format:
+ *                         [ [ {type: value, data: value, test: function}, ... ], ... ]
+ *                     can be null
+ *  aWindow - optional; defaults to the current window object.
+ *  x - optional; initial x coordinate
+ *  y - optional; initial y coordinate
+ * Returns null if data matches.
+ * Returns the event.dataTransfer if data does not match
+ *
+ * eqTest is an optional function if comparison can't be done with x == y;
+ *   function (actualData, expectedData) {return boolean}
+ *   @param actualData from dataTransfer
+ *   @param expectedData from expectedDragData
+ * see bug 462172 for example of use
+ *
+ */
+function synthesizeDragStart(element, expectedDragData, aWindow, x, y)
+{
+  if (!aWindow)
+    aWindow = window;
+  x = x || 2;
+  y = y || 2;
+  const step = 9;
+
+  var result = "trapDrag was not called";
+  var trapDrag = function(event) {
+    try {
+      var dataTransfer = event.dataTransfer;
+      result = null;
+      if (!dataTransfer)
+        throw "no dataTransfer";
+      if (expectedDragData == null ||
+          dataTransfer.mozItemCount != expectedDragData.length)
+        throw dataTransfer;
+      for (var i = 0; i < dataTransfer.mozItemCount; i++) {
+        var dtTypes = dataTransfer.mozTypesAt(i);
+        if (dtTypes.length != expectedDragData[i].length)
+          throw dataTransfer;
+        for (var j = 0; j < dtTypes.length; j++) {
+          if (dtTypes[j] != expectedDragData[i][j].type)
+            throw dataTransfer;
+          var dtData = dataTransfer.mozGetDataAt(dtTypes[j],i);
+          if (expectedDragData[i][j].eqTest) {
+            if (!expectedDragData[i][j].eqTest(dtData, expectedDragData[i][j].data))
+              throw dataTransfer;
+          }
+          else if (expectedDragData[i][j].data != dtData)
+            throw dataTransfer;
+        }
+      }
+    } catch(ex) {
+      result = ex;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  aWindow.addEventListener("dragstart", trapDrag, false);
+  synthesizeMouse(element, x, y, { type: "mousedown" }, aWindow);
+  x += step; y += step;
+  synthesizeMouse(element, x, y, { type: "mousemove" }, aWindow);
+  x += step; y += step;
+  synthesizeMouse(element, x, y, { type: "mousemove" }, aWindow);
+  aWindow.removeEventListener("dragstart", trapDrag, false);
+  synthesizeMouse(element, x, y, { type: "mouseup" }, aWindow);
+  return result;
 }

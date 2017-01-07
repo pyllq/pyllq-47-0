@@ -6,6 +6,8 @@
 
 const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
+const { AppConstants } =
+  Cu.import("resource://gre/modules/AppConstants.jsm", {});
 const { ctypes } = Cu.import("resource://gre/modules/ctypes.jsm", {});
 const { FileUtils } = Cu.import("resource://gre/modules/FileUtils.jsm", {});
 const { HttpServer } = Cu.import("resource://testing-common/httpd.js", {});
@@ -89,6 +91,20 @@ const certificateUsageEmailRecipient         = 0x0020;
 const certificateUsageObjectSigner           = 0x0040;
 const certificateUsageVerifyCA               = 0x0100;
 const certificateUsageStatusResponder        = 0x0400;
+
+// A map from the name of a certificate usage to the value of the usage.
+// Useful for printing debugging information and for enumerating all supported
+// usages.
+const allCertificateUsages = {
+  certificateUsageSSLClient,
+  certificateUsageSSLServer,
+  certificateUsageSSLCA,
+  certificateUsageEmailSigner,
+  certificateUsageEmailRecipient,
+  certificateUsageObjectSigner,
+  certificateUsageVerifyCA,
+  certificateUsageStatusResponder
+};
 
 const NO_FLAGS = 0;
 
@@ -642,7 +658,13 @@ FakeSSLStatus.prototype = {
 
 // Helper function for add_cert_override_test. Probably doesn't need to be
 // called directly.
-function add_cert_override(aHost, aExpectedBits, aSecurityInfo) {
+function add_cert_override(aHost, aExpectedBits, aExpectedErrorRegexp,
+                           aSecurityInfo) {
+  if (aExpectedErrorRegexp) {
+    do_print(aSecurityInfo.errorMessage);
+    Assert.ok(aExpectedErrorRegexp.test(aSecurityInfo.errorMessage),
+              "Actual error message should match expected error regexp");
+  }
   let sslstatus = aSecurityInfo.QueryInterface(Ci.nsISSLStatusProvider)
                                .SSLStatus;
   let bits =
@@ -658,13 +680,16 @@ function add_cert_override(aHost, aExpectedBits, aSecurityInfo) {
                                                true);
 }
 
-// Given a host, expected error bits (see nsICertOverrideService.idl), and
-// an expected error code, tests that an initial connection to the host fails
+// Given a host, expected error bits (see nsICertOverrideService.idl), an
+// expected error code, and optionally a regular expression that the resulting
+// error message must match, tests that an initial connection to the host fails
 // with the expected errors and that adding an override results in a subsequent
 // connection succeeding.
-function add_cert_override_test(aHost, aExpectedBits, aExpectedError) {
+function add_cert_override_test(aHost, aExpectedBits, aExpectedError,
+                                aExpectedErrorRegexp = undefined) {
   add_connection_test(aHost, aExpectedError, null,
-                      add_cert_override.bind(this, aHost, aExpectedBits));
+                      add_cert_override.bind(this, aHost, aExpectedBits,
+                                             aExpectedErrorRegexp));
   add_connection_test(aHost, PRErrorCodeSuccess, null, aSecurityInfo => {
     Assert.ok(aSecurityInfo.securityState &
               Ci.nsIWebProgressListener.STATE_CERT_USER_OVERRIDDEN,
@@ -704,4 +729,67 @@ function add_prevented_cert_override_test(aHost, aExpectedBits, aExpectedError) 
   add_connection_test(aHost, aExpectedError, null,
                       attempt_adding_cert_override.bind(this, aHost, aExpectedBits));
   add_connection_test(aHost, aExpectedError);
+}
+
+function loginToDBWithDefaultPassword() {
+  let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"]
+                  .getService(Ci.nsIPK11TokenDB);
+  let token = tokenDB.getInternalKeyToken();
+  token.initPassword("");
+  token.login(/*force*/ false);
+}
+
+// Helper for asyncTestCertificateUsages.
+class CertVerificationResult {
+  constructor(certName, usageString, successExpected, resolve) {
+    this.certName = certName;
+    this.usageString = usageString;
+    this.successExpected = successExpected;
+    this.resolve = resolve;
+  }
+
+  verifyCertFinished(aPRErrorCode, aVerifiedChain, aHasEVPolicy) {
+    if (this.successExpected) {
+      equal(aPRErrorCode, PRErrorCodeSuccess,
+            `verifying ${this.certName} for ${this.usageString} should succeed`);
+    } else {
+      notEqual(aPRErrorCode, PRErrorCodeSuccess,
+               `verifying ${this.certName} for ${this.usageString} should fail`);
+    }
+    this.resolve();
+  }
+}
+
+/**
+ * Asynchronously attempts to verify the given certificate for all supported
+ * usages (see allCertificateUsages). Verifies that the results match the
+ * expected successful usages. Returns a promise that will resolve when all
+ * verifications have been performed.
+ * Verification happens "now" with no specified flags or hostname.
+ *
+ * @param {nsIX509CertDB} certdb
+ *   The certificate database to use to verify the certificate.
+ * @param {nsIX509Cert} cert
+ *   The certificate to be verified.
+ * @param {Number[]} expectedUsages
+ *   A list of usages (as their integer values) that are expected to verify
+ *   successfully.
+ * @return {Promise}
+ *   A promise that will resolve with no value when all asynchronous operations
+ *   have completed.
+ */
+function asyncTestCertificateUsages(certdb, cert, expectedUsages) {
+  let now = (new Date()).getTime() / 1000;
+  let promises = [];
+  Object.keys(allCertificateUsages).forEach(usageString => {
+    let promise = new Promise((resolve, reject) => {
+      let usage = allCertificateUsages[usageString];
+      let successExpected = expectedUsages.includes(usage);
+      let result = new CertVerificationResult(cert.commonName, usageString,
+                                              successExpected, resolve);
+      certdb.asyncVerifyCertAtTime(cert, usage, 0, null, now, result);
+    });
+    promises.push(promise);
+  });
+  return Promise.all(promises);
 }

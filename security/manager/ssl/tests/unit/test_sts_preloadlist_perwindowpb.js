@@ -3,6 +3,7 @@
 // and login.persona.org because they are Mozilla properties and we are
 // invested in HSTS. Additionally, www.torproject.org was deemed likely to
 // continue to use HSTS.
+"use strict";
 
 var gSSService = Cc["@mozilla.org/ssservice;1"]
                    .getService(Ci.nsISiteSecurityService);
@@ -69,7 +70,7 @@ function test_part1() {
 
   // check that processing a header with max-age: 0 will remove a preloaded
   // site from the list
-  var uri = Services.io.newURI("http://bugzilla.mozilla.org", null, null);
+  let uri = Services.io.newURI("http://bugzilla.mozilla.org", null, null);
   gSSService.processHeader(Ci.nsISiteSecurityService.HEADER_HSTS, uri,
                            "max-age=0", sslStatus, 0);
   ok(!gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HSTS,
@@ -160,7 +161,7 @@ function test_private_browsing1() {
   ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HSTS,
                              "a.b.c.subdomain.bugzilla.mozilla.org", IS_PRIVATE));
 
-  var uri = Services.io.newURI("http://bugzilla.mozilla.org", null, null);
+  let uri = Services.io.newURI("http://bugzilla.mozilla.org", null, null);
   gSSService.processHeader(Ci.nsISiteSecurityService.HEADER_HSTS, uri,
                            "max-age=0", sslStatus, IS_PRIVATE);
   ok(!gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HSTS,

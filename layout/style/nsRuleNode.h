@@ -456,12 +456,10 @@ private:
   };
 
   static PLDHashNumber
-  ChildrenHashHashKey(PLDHashTable *aTable, const void *aKey);
+  ChildrenHashHashKey(const void *aKey);
 
   static bool
-  ChildrenHashMatchEntry(PLDHashTable *aTable,
-                         const PLDHashEntryHdr *aHdr,
-                         const void *aKey);
+  ChildrenHashMatchEntry(const PLDHashEntryHdr *aHdr, const void *aKey);
 
   static const PLDHashTableOps ChildrenHashOps;
 
@@ -685,13 +683,6 @@ protected:
                        const mozilla::RuleNodeCacheConditions aConditions);
 
   const void*
-    ComputeQuotesData(void* aStartStruct,
-                      const nsRuleData* aRuleData,
-                      nsStyleContext* aContext, nsRuleNode* aHighestNode,
-                      RuleDetail aRuleDetail,
-                      const mozilla::RuleNodeCacheConditions aConditions);
-
-  const void*
     ComputeTextData(void* aStartStruct,
                     const nsRuleData* aRuleData,
                     nsStyleContext* aContext, nsRuleNode* aHighestNode,
@@ -755,8 +746,16 @@ protected:
                          RuleDetail aRuleDetail,
                          const mozilla::RuleNodeCacheConditions aConditions);
 
+  const void*
+    ComputeEffectsData(void* aStartStruct,
+                       const nsRuleData* aRuleData,
+                       nsStyleContext* aContext, nsRuleNode* aHighestNode,
+                       RuleDetail aRuleDetail,
+                       const mozilla::RuleNodeCacheConditions aConditions);
+
   // helpers for |ComputeFontData| that need access to |mNoneBits|:
   static void SetFontSize(nsPresContext* aPresContext,
+                          nsStyleContext* aContext,
                           const nsRuleData* aRuleData,
                           const nsStyleFont* aFont,
                           const nsStyleFont* aParentFont,
@@ -784,22 +783,6 @@ protected:
 
   inline RuleDetail CheckSpecifiedProperties(const nsStyleStructID aSID,
                                              const nsRuleData* aRuleData);
-
-  already_AddRefed<nsCSSShadowArray>
-              GetShadowData(const nsCSSValueList* aList,
-                            nsStyleContext* aContext,
-                            bool aIsBoxShadow,
-                            mozilla::RuleNodeCacheConditions& aConditions);
-  bool SetStyleFilterToCSSValue(nsStyleFilter* aStyleFilter,
-                                const nsCSSValue& aValue,
-                                nsStyleContext* aStyleContext,
-                                nsPresContext* aPresContext,
-                                mozilla::RuleNodeCacheConditions& aConditions);
-  void SetStyleClipPathToCSSValue(nsStyleClipPath* aStyleClipPath,
-                                  const nsCSSValue* aValue,
-                                  nsStyleContext* aStyleContext,
-                                  nsPresContext* aPresContext,
-                                  mozilla::RuleNodeCacheConditions& aConditions);
 
 private:
   nsRuleNode(nsPresContext* aPresContext, nsRuleNode* aParent,
@@ -940,6 +923,14 @@ public:
     if (!(HasAnimationData() && ParentHasPseudoElementData(aContext))) {      \
       data = mStyleData.GetStyle##name_(aContext, aComputeData);              \
       if (MOZ_LIKELY(data != nullptr)) {                                      \
+        if (HasAnimationData()) {                                             \
+          /* If we have animation data, the struct should be cached on the */ \
+          /* style context so that we can peek the struct. */                 \
+          /* See comment in AnimValuesStyleRule::MapRuleInfoInto. */          \
+          StoreStyleOnContext(aContext,                                       \
+                              eStyleStruct_##name_,                           \
+                              const_cast<nsStyle##name_*>(data));             \
+        }                                                                     \
         return data;                                                          \
       }                                                                       \
     }                                                                         \
@@ -1026,15 +1017,15 @@ public:
   static void ComputeFontFeatures(const nsCSSValuePairList *aFeaturesList,
                                   nsTArray<gfxFontFeature>& aFeatureSettings);
 
-  static nscoord CalcFontPointSize(int32_t aHTMLSize, int32_t aBasePointSize, 
+  static nscoord CalcFontPointSize(int32_t aHTMLSize, int32_t aBasePointSize,
                                    nsPresContext* aPresContext,
                                    nsFontSizeType aFontSizeType = eFontSize_HTML);
 
-  static nscoord FindNextSmallerFontSize(nscoord aFontSize, int32_t aBasePointSize, 
+  static nscoord FindNextSmallerFontSize(nscoord aFontSize, int32_t aBasePointSize,
                                          nsPresContext* aPresContext,
                                          nsFontSizeType aFontSizeType = eFontSize_HTML);
 
-  static nscoord FindNextLargerFontSize(nscoord aFontSize, int32_t aBasePointSize, 
+  static nscoord FindNextLargerFontSize(nscoord aFontSize, int32_t aBasePointSize,
                                         nsPresContext* aPresContext,
                                         nsFontSizeType aFontSizeType = eFontSize_HTML);
 
@@ -1068,6 +1059,11 @@ private:
   bool ContextHasCachedData(nsStyleContext* aContext, nsStyleStructID aSID);
 #endif
 
+  // Store style struct on the style context and tell the style context
+  // that it doesn't own the data
+  static void StoreStyleOnContext(nsStyleContext* aContext,
+                                  nsStyleStructID aSID,
+                                  void* aStruct);
 };
 
 #endif

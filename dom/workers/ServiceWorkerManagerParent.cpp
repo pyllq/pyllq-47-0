@@ -25,13 +25,7 @@ namespace {
 
 uint64_t sServiceWorkerManagerParentID = 0;
 
-void
-AssertIsInMainProcess()
-{
-  MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_Default);
-}
-
-class RegisterServiceWorkerCallback final : public nsRunnable
+class RegisterServiceWorkerCallback final : public Runnable
 {
 public:
   RegisterServiceWorkerCallback(const ServiceWorkerRegistrationData& aData,
@@ -69,7 +63,7 @@ private:
   const uint64_t mParentID;
 };
 
-class UnregisterServiceWorkerCallback final : public nsRunnable
+class UnregisterServiceWorkerCallback final : public Runnable
 {
 public:
   UnregisterServiceWorkerCallback(const PrincipalInfo& aPrincipalInfo,
@@ -112,12 +106,12 @@ private:
   uint64_t mParentID;
 };
 
-class CheckPrincipalWithCallbackRunnable final : public nsRunnable
+class CheckPrincipalWithCallbackRunnable final : public Runnable
 {
 public:
   CheckPrincipalWithCallbackRunnable(already_AddRefed<ContentParent> aParent,
                                      const PrincipalInfo& aPrincipalInfo,
-                                     nsRunnable* aCallback)
+                                     Runnable* aCallback)
     : mContentParent(aParent)
     , mPrincipalInfo(aPrincipalInfo)
     , mCallback(aCallback)
@@ -152,7 +146,7 @@ public:
 private:
   RefPtr<ContentParent> mContentParent;
   PrincipalInfo mPrincipalInfo;
-  RefPtr<nsRunnable> mCallback;
+  RefPtr<Runnable> mCallback;
   nsCOMPtr<nsIThread> mBackgroundThread;
 };
 
@@ -212,8 +206,7 @@ ServiceWorkerManagerParent::RecvRegister(
   RefPtr<CheckPrincipalWithCallbackRunnable> runnable =
     new CheckPrincipalWithCallbackRunnable(parent.forget(), aData.principal(),
                                            callback);
-  nsresult rv = NS_DispatchToMainThread(runnable);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(rv));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(runnable));
 
   return true;
 }
@@ -247,8 +240,7 @@ ServiceWorkerManagerParent::RecvUnregister(const PrincipalInfo& aPrincipalInfo,
   RefPtr<CheckPrincipalWithCallbackRunnable> runnable =
     new CheckPrincipalWithCallbackRunnable(parent.forget(), aPrincipalInfo,
                                            callback);
-  nsresult rv = NS_DispatchToMainThread(runnable);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(rv));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(runnable));
 
   return true;
 }

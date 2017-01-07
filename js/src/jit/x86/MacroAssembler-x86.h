@@ -150,6 +150,16 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     void storeValue(ValueOperand val, BaseIndex dest) {
         storeValue(val, Operand(dest));
     }
+    void storeValue(const Address& src, const Address& dest, Register temp) {
+        MOZ_ASSERT(src.base != temp);
+        MOZ_ASSERT(dest.base != temp);
+
+        load32(ToType(src), temp);
+        store32(temp, ToType(dest));
+
+        load32(ToPayload(src), temp);
+        store32(temp, ToPayload(dest));
+    }
     void loadValue(Operand src, ValueOperand val) {
         Operand payload = ToPayload(src);
         Operand type = ToType(src);
@@ -158,6 +168,16 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         // Value in memory or the index.
         Register baseReg = Register::FromCode(src.base());
         Register indexReg = (src.kind() == Operand::MEM_SCALE) ? Register::FromCode(src.index()) : InvalidReg;
+
+        // If we have a BaseIndex that uses both result registers, first compute
+        // the address and then load the Value from there.
+        if ((baseReg == val.payloadReg() && indexReg == val.typeReg()) ||
+            (baseReg == val.typeReg() && indexReg == val.payloadReg()))
+        {
+            computeEffectiveAddress(src, val.scratchReg());
+            loadValue(Address(val.scratchReg(), 0), val);
+            return;
+        }
 
         if (baseReg == val.payloadReg() || indexReg == val.payloadReg()) {
             MOZ_ASSERT(baseReg != val.typeReg());
@@ -640,8 +660,12 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         movw(src, Operand(address));
     }
     void store64(Register64 src, Address address) {
-        movl(src.low, Operand(address));
-        movl(src.high, Operand(Address(address.base, address.offset + 4)));
+        movl(src.low, Operand(Address(address.base, address.offset + INT64LOW_OFFSET)));
+        movl(src.high, Operand(Address(address.base, address.offset + INT64HIGH_OFFSET)));
+    }
+    void store64(Imm64 imm, Address address) {
+        movl(imm.low(), Operand(Address(address.base, address.offset + INT64LOW_OFFSET)));
+        movl(imm.hi(), Operand(Address(address.base, address.offset + INT64HIGH_OFFSET)));
     }
 
     void setStackArg(Register reg, uint32_t arg) {
@@ -765,8 +789,8 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
 
     void loadConstantDouble(double d, FloatRegister dest);
     void loadConstantFloat32(float f, FloatRegister dest);
-    void loadConstantInt32x4(const SimdConstant& v, FloatRegister dest);
-    void loadConstantFloat32x4(const SimdConstant& v, FloatRegister dest);
+    void loadConstantSimd128Int(const SimdConstant& v, FloatRegister dest);
+    void loadConstantSimd128Float(const SimdConstant& v, FloatRegister dest);
 
     Condition testInt32Truthy(bool truthy, const ValueOperand& operand) {
         test32(operand.payloadReg(), operand.payloadReg());
@@ -783,10 +807,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
 
     template <typename T>
     inline void loadUnboxedValue(const T& src, MIRType type, AnyRegister dest);
-
-    template <typename T>
-    void storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T& dest,
-                           MIRType slotType);
 
     template <typename T>
     void storeUnboxedPayload(ValueOperand value, T address, size_t nbytes) {

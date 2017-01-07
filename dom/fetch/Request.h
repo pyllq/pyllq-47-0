@@ -36,8 +36,6 @@ public:
 
   static bool
   RequestContextEnabled(JSContext* aCx, JSObject* aObj);
-  static bool
-  RequestCacheEnabled(JSContext* aCx, JSObject* aObj);
 
   JSObject*
   WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override
@@ -48,7 +46,9 @@ public:
   void
   GetUrl(nsAString& aUrl) const
   {
-    CopyUTF8toUTF16(mRequest->mURL, aUrl);
+    nsAutoCString url;
+    mRequest->GetURL(url);
+    CopyUTF8toUTF16(url, aUrl);
   }
 
   void
@@ -88,9 +88,15 @@ public:
   }
 
   void
-  SetContentPolicyType(nsContentPolicyType aContentPolicyType)
+  OverrideContentPolicyType(nsContentPolicyType aContentPolicyType)
   {
-    mRequest->SetContentPolicyType(aContentPolicyType);
+    mRequest->OverrideContentPolicyType(aContentPolicyType);
+  }
+
+  bool
+  IsContentPolicyTypeOverridden() const
+  {
+    return mRequest->IsContentPolicyTypeOverridden();
   }
 
   void

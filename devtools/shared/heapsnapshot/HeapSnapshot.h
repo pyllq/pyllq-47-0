@@ -46,7 +46,7 @@ class HeapSnapshot final : public nsISupports
   friend struct DeserializedNode;
   friend struct DeserializedEdge;
   friend struct DeserializedStackFrame;
-  friend struct JS::ubi::Concrete<JS::ubi::DeserializedNode>;
+  friend class JS::ubi::Concrete<JS::ubi::DeserializedNode>;
 
   explicit HeapSnapshot(JSContext* cx, nsISupports* aParent)
     : timestamp(Nothing())
@@ -212,7 +212,7 @@ WriteHeapGraph(JSContext* cx,
                const JS::ubi::Node& node,
                CoreDumpWriter& writer,
                bool wantNames,
-               JS::ZoneSet* zones,
+               JS::CompartmentSet* compartments,
                JS::AutoCheckCannotGC& noGC,
                uint32_t& outNodeCount,
                uint32_t& outEdgeCount);
@@ -221,12 +221,12 @@ WriteHeapGraph(JSContext* cx,
                const JS::ubi::Node& node,
                CoreDumpWriter& writer,
                bool wantNames,
-               JS::ZoneSet* zones,
+               JS::CompartmentSet* compartments,
                JS::AutoCheckCannotGC& noGC)
 {
   uint32_t ignoreNodeCount;
   uint32_t ignoreEdgeCount;
-  return WriteHeapGraph(cx, node, writer, wantNames, zones, noGC,
+  return WriteHeapGraph(cx, node, writer, wantNames, compartments, noGC,
                         ignoreNodeCount, ignoreEdgeCount);
 }
 

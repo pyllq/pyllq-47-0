@@ -6,6 +6,7 @@
 #include "CrashReporterParent.h"
 #include "mozilla/Snprintf.h"
 #include "mozilla/dom/ContentParent.h"
+#include "nsAutoPtr.h"
 #include "nsXULAppAPI.h"
 #include <time.h>
 
@@ -168,7 +169,7 @@ CrashReporterParent::FinalizeChildData()
   }
 
   nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
-  class NotifyOnMainThread : public nsRunnable
+  class NotifyOnMainThread : public Runnable
   {
   public:
     explicit NotifyOnMainThread(CrashReporterParent* aCR)

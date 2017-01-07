@@ -22,6 +22,7 @@
     ", last_visit_date INTEGER " \
     ", guid TEXT" \
     ", foreign_count INTEGER DEFAULT 0 NOT NULL" \
+    ", url_hash INTEGER DEFAULT 0 NOT NULL " \
   ")" \
 )
 
@@ -106,13 +107,6 @@
     ", dateAdded INTEGER" \
     ", lastModified INTEGER" \
     ", guid TEXT" \
-  ")" \
-)
-
-#define CREATE_MOZ_BOOKMARKS_ROOTS NS_LITERAL_CSTRING( \
-  "CREATE TABLE moz_bookmarks_roots (" \
-    "  root_name VARCHAR(16) UNIQUE" \
-    ", folder_id INTEGER" \
   ")" \
 )
 

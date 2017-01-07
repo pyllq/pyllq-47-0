@@ -261,6 +261,51 @@ this.PlacesUtils = {
   },
 
   /**
+   * Is a string a valid GUID?
+   *
+   * @param guid: (String)
+   * @return (Boolean)
+   */
+  isValidGuid(guid) {
+    return (/^[a-zA-Z0-9\-_]{12}$/.test(guid));
+  },
+
+  /**
+   * Converts a string or n URL object to an nsIURI.
+   *
+   * @param url (URL) or (String)
+   *        the URL to convert.
+   * @return nsIURI for the given URL.
+   */
+  toURI(url) {
+    url = (url instanceof URL) ? url.href : url;
+
+    return NetUtil.newURI(url);
+  },
+
+  /**
+   * Convert a Date object to a PRTime (microseconds).
+   *
+   * @param date
+   *        the Date object to convert.
+   * @return microseconds from the epoch.
+   */
+  toPRTime(date) {
+    return date * 1000;
+  },
+
+  /**
+   * Convert a PRTime to a Date object.
+   *
+   * @param time
+   *        microseconds from the epoch.
+   * @return a Date object.
+   */
+  toDate(time) {
+    return new Date(parseInt(time / 1000));
+  },
+
+  /**
    * Wraps a string in a nsISupportsString wrapper.
    * @param   aString
    *          The string to wrap.
@@ -279,6 +324,23 @@ this.PlacesUtils = {
 
   getString: function PU_getString(key) {
     return bundle.GetStringFromName(key);
+  },
+
+  /**
+   * Makes a moz-action URI for the given action and set of parameters.
+   *
+   * @param   type
+   *          The action type.
+   * @param   params
+   *          A JS object of action params.
+   * @returns A moz-action URI as a string.
+   */
+  mozActionURI(type, params) {
+    let encodedParams = {};
+    for (let key in params) {
+      encodedParams[key] = encodeURIComponent(params[key]);
+    }
+    return "moz-action:" + type + "," + JSON.stringify(encodedParams);
   },
 
   /**
@@ -1184,207 +1246,6 @@ this.PlacesUtils = {
   },
 
   /**
-   * Serializes the given node (and all its descendents) as JSON
-   * and writes the serialization to the given output stream.
-   *
-   * @param   aNode
-   *          An nsINavHistoryResultNode
-   * @param   aStream
-   *          An nsIOutputStream. NOTE: it only uses the write(str, len)
-   *          method of nsIOutputStream. The caller is responsible for
-   *          closing the stream.
-   */
-  _serializeNodeAsJSONToOutputStream: function (aNode, aStream) {
-    function addGenericProperties(aPlacesNode, aJSNode) {
-      aJSNode.title = aPlacesNode.title;
-      aJSNode.id = aPlacesNode.itemId;
-      let guid = aPlacesNode.bookmarkGuid;
-      if (guid) {
-        aJSNode.itemGuid = guid;
-        var parent = aPlacesNode.parent;
-        if (parent)
-          aJSNode.parent = parent.itemId;
-
-        var dateAdded = aPlacesNode.dateAdded;
-        if (dateAdded)
-          aJSNode.dateAdded = dateAdded;
-        var lastModified = aPlacesNode.lastModified;
-        if (lastModified)
-          aJSNode.lastModified = lastModified;
-
-        // XXX need a hasAnnos api
-        var annos = [];
-        try {
-          annos = PlacesUtils.getAnnotationsForItem(aJSNode.id).filter(function(anno) {
-            // XXX should whitelist this instead, w/ a pref for
-            // backup/restore of non-whitelisted annos
-            // XXX causes JSON encoding errors, so utf-8 encode
-            //anno.value = unescape(encodeURIComponent(anno.value));
-            if (anno.name == PlacesUtils.LMANNO_FEEDURI)
-              aJSNode.livemark = 1;
-            return true;
-          });
-        } catch(ex) {}
-        if (annos.length != 0)
-          aJSNode.annos = annos;
-      }
-      // XXXdietrich - store annos for non-bookmark items
-    }
-
-    function addURIProperties(aPlacesNode, aJSNode) {
-      aJSNode.type = PlacesUtils.TYPE_X_MOZ_PLACE;
-      aJSNode.uri = aPlacesNode.uri;
-      if (aJSNode.id && aJSNode.id != -1) {
-        // harvest bookmark-specific properties
-        var keyword = PlacesUtils.bookmarks.getKeywordForBookmark(aJSNode.id);
-        if (keyword)
-          aJSNode.keyword = keyword;
-      }
-
-      if (aPlacesNode.tags)
-        aJSNode.tags = aPlacesNode.tags;
-
-      // last character-set
-      var uri = PlacesUtils._uri(aPlacesNode.uri);
-      try {
-        var lastCharset = PlacesUtils.annotations.getPageAnnotation(
-                            uri, PlacesUtils.CHARSET_ANNO);
-        aJSNode.charset = lastCharset;
-      } catch (e) {}
-    }
-
-    function addSeparatorProperties(aPlacesNode, aJSNode) {
-      aJSNode.type = PlacesUtils.TYPE_X_MOZ_PLACE_SEPARATOR;
-    }
-
-    function addContainerProperties(aPlacesNode, aJSNode) {
-      var concreteId = PlacesUtils.getConcreteItemId(aPlacesNode);
-      if (concreteId != -1) {
-        // This is a bookmark or a tag container.
-        if (PlacesUtils.nodeIsQuery(aPlacesNode) ||
-            concreteId != aPlacesNode.itemId) {
-          aJSNode.type = PlacesUtils.TYPE_X_MOZ_PLACE;
-          aJSNode.uri = aPlacesNode.uri;
-          // folder shortcut
-          aJSNode.concreteId = concreteId;
-        }
-        else { // Bookmark folder or a shortcut we should convert to folder.
-          aJSNode.type = PlacesUtils.TYPE_X_MOZ_PLACE_CONTAINER;
-
-          // Mark root folders.
-          if (aJSNode.id == PlacesUtils.placesRootId)
-            aJSNode.root = "placesRoot";
-          else if (aJSNode.id == PlacesUtils.bookmarksMenuFolderId)
-            aJSNode.root = "bookmarksMenuFolder";
-          else if (aJSNode.id == PlacesUtils.tagsFolderId)
-            aJSNode.root = "tagsFolder";
-          else if (aJSNode.id == PlacesUtils.unfiledBookmarksFolderId)
-            aJSNode.root = "unfiledBookmarksFolder";
-          else if (aJSNode.id == PlacesUtils.toolbarFolderId)
-            aJSNode.root = "toolbarFolder";
-        }
-      }
-      else {
-        // This is a grouped container query, generated on the fly.
-        aJSNode.type = PlacesUtils.TYPE_X_MOZ_PLACE;
-        aJSNode.uri = aPlacesNode.uri;
-      }
-    }
-
-    function appendConvertedComplexNode(aNode, aSourceNode, aArray) {
-      var repr = {};
-
-      for (let [name, value] in Iterator(aNode))
-        repr[name] = value;
-
-      // write child nodes
-      var children = repr.children = [];
-      if (!aNode.livemark) {
-        asContainer(aSourceNode);
-        var wasOpen = aSourceNode.containerOpen;
-        if (!wasOpen)
-          aSourceNode.containerOpen = true;
-        var cc = aSourceNode.childCount;
-        for (var i = 0; i < cc; ++i) {
-          var childNode = aSourceNode.getChild(i);
-          appendConvertedNode(aSourceNode.getChild(i), i, children);
-        }
-        if (!wasOpen)
-          aSourceNode.containerOpen = false;
-      }
-
-      aArray.push(repr);
-      return true;
-    }
-
-    function appendConvertedNode(bNode, aIndex, aArray) {
-      var node = {};
-
-      // set index in order received
-      // XXX handy shortcut, but are there cases where we don't want
-      // to export using the sorting provided by the query?
-      if (aIndex)
-        node.index = aIndex;
-
-      addGenericProperties(bNode, node);
-
-      var parent = bNode.parent;
-      var grandParent = parent ? parent.parent : null;
-      if (grandParent)
-        node.grandParentId = grandParent.itemId;
-
-      if (PlacesUtils.nodeIsURI(bNode)) {
-        // Tag root accept only folder nodes
-        if (parent && parent.itemId == PlacesUtils.tagsFolderId)
-          return false;
-
-        // Check for url validity, since we can't halt while writing a backup.
-        // This will throw if we try to serialize an invalid url and it does
-        // not make sense saving a wrong or corrupt uri node.
-        try {
-          PlacesUtils._uri(bNode.uri);
-        } catch (ex) {
-          return false;
-        }
-
-        addURIProperties(bNode, node);
-      }
-      else if (PlacesUtils.nodeIsContainer(bNode)) {
-        // Tag containers accept only uri nodes
-        if (grandParent && grandParent.itemId == PlacesUtils.tagsFolderId)
-          return false;
-
-        addContainerProperties(bNode, node);
-      }
-      else if (PlacesUtils.nodeIsSeparator(bNode)) {
-        // Tag root accept only folder nodes
-        // Tag containers accept only uri nodes
-        if ((parent && parent.itemId == PlacesUtils.tagsFolderId) ||
-            (grandParent && grandParent.itemId == PlacesUtils.tagsFolderId))
-          return false;
-
-        addSeparatorProperties(bNode, node);
-      }
-
-      if (!node.feedURI && node.type == PlacesUtils.TYPE_X_MOZ_PLACE_CONTAINER)
-        return appendConvertedComplexNode(node, bNode, aArray);
-
-      aArray.push(node);
-      return true;
-    }
-
-    // serialize to stream
-    var array = [];
-    if (appendConvertedNode(aNode, null, array)) {
-      var json = JSON.stringify(array[0]);
-      aStream.write(json, json.length);
-    }
-    else {
-      throw Cr.NS_ERROR_UNEXPECTED;
-    }
-  },
-
-  /**
    * Gets a shared Sqlite.jsm readonly connection to the Places database,
    * usable only for SELECT queries.
    *
@@ -1460,7 +1321,7 @@ this.PlacesUtils = {
       let conn = yield this.promiseDBConnection();
       const QUERY_STR = `SELECT b.id FROM moz_bookmarks b
                          JOIN moz_places h on h.id = b.fk
-                         WHERE h.url = :url`;
+                         WHERE h.url_hash = hash(:url) AND h.url = :url`;
       let spec = aURI instanceof Ci.nsIURI ? aURI.spec : aURI;
       yield conn.executeCached(QUERY_STR, { url: spec }, aRow => {
         if (abort)
@@ -1569,31 +1430,6 @@ this.PlacesUtils = {
 
       deferred.resolve(charset);
     }, Ci.nsIThread.DISPATCH_NORMAL);
-
-    return deferred.promise;
-  },
-
-  /**
-   * Promised wrapper for mozIAsyncHistory::updatePlaces for a single place.
-   *
-   * @param aPlaces
-   *        a single mozIPlaceInfo object
-   * @resolves {Promise}
-   */
-  promiseUpdatePlace: function PU_promiseUpdatePlaces(aPlace) {
-    let deferred = Promise.defer();
-    PlacesUtils.asyncHistory.updatePlaces(aPlace, {
-      _placeInfo: null,
-      handleResult: function handleResult(aPlaceInfo) {
-        this._placeInfo = aPlaceInfo;
-      },
-      handleError: function handleError(aResultCode, aPlaceInfo) {
-        deferred.reject(new Components.Exception("Error", aResultCode));
-      },
-      handleCompletion: function() {
-        deferred.resolve(this._placeInfo);
-      }
-    });
 
     return deferred.promise;
   },
@@ -1740,7 +1576,7 @@ this.PlacesUtils = {
    *  - guid (string): the item's GUID (same as aItemGuid for the top item).
    *  - [deprecated] id (number): the item's id. This is only if
    *    aOptions.includeItemIds is set.
-   *  - type (number):  the item's type.  @see PlacesUtils.TYPE_X_*
+   *  - type (string):  the item's type.  @see PlacesUtils.TYPE_X_*
    *  - title (string): the item's title. If it has no title, this property
    *    isn't set.
    *  - dateAdded (number, microseconds from the epoch): the date-added value of
@@ -1749,6 +1585,7 @@ this.PlacesUtils = {
    *    value of the item.
    *  - annos (see getAnnotationsForItem): the item's annotations.  This is not
    *    set if there are no annotations set for the item).
+   *  - index: the item's index under it's parent.
    *
    * The root object (i.e. the one for aItemGuid) also has the following
    * properties set:
@@ -2065,29 +1902,35 @@ XPCOMUtils.defineLazyGetter(this, "bundle", function() {
 function setupDbForShutdown(conn, name) {
   try {
     let state = "0. Not started.";
-    let promiseClosed = new Promise(resolve => {
+    let promiseClosed = new Promise((resolve, reject) => {
       // The service initiates shutdown.
       // Before it can safely close its connection, we need to make sure
       // that we have closed the high-level connection.
-      AsyncShutdown.placesClosingInternalConnection.addBlocker(`${name} closing as part of Places shutdown`,
-        Task.async(function*() {
-          state = "1. Service has initiated shutdown";
+      try {
+        AsyncShutdown.placesClosingInternalConnection.addBlocker(`${name} closing as part of Places shutdown`,
+          Task.async(function*() {
+            state = "1. Service has initiated shutdown";
 
-          // At this stage, all external clients have finished using the
-          // database. We just need to close the high-level connection.
-          yield conn.close();
-          state = "2. Closed Sqlite.jsm connection.";
+            // At this stage, all external clients have finished using the
+            // database. We just need to close the high-level connection.
+            yield conn.close();
+            state = "2. Closed Sqlite.jsm connection.";
 
-          resolve();
-        }),
-        () => state
-      );
+            resolve();
+          }),
+          () => state
+        );
+      } catch (ex) {
+        // It's too late to block shutdown, just close the connection.
+        conn.close();
+        reject(ex);
+      }
     });
 
     // Make sure that Sqlite.jsm doesn't close until we are done
     // with the high-level connection.
     Sqlite.shutdown.addBlocker(`${name} must be closed before Sqlite.jsm`,
-      () => promiseClosed,
+      () => promiseClosed.catch(Cu.reportError),
       () => state
     );
   } catch(ex) {
@@ -2104,7 +1947,7 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBConnPromised",
   }).then(conn => {
       setupDbForShutdown(conn, "PlacesUtils read-only connection");
       return conn;
-  })
+  }).catch(Cu.reportError)
 );
 
 XPCOMUtils.defineLazyGetter(this, "gAsyncDBWrapperPromised",
@@ -2113,7 +1956,7 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBWrapperPromised",
   }).then(conn => {
     setupDbForShutdown(conn, "PlacesUtils wrapped connection");
     return conn;
-  })
+  }).catch(Cu.reportError)
 );
 
 /**
@@ -2241,22 +2084,24 @@ var Keywords = {
         if (oldEntry) {
           yield db.executeCached(
             `UPDATE moz_keywords
-             SET place_id = (SELECT id FROM moz_places WHERE url = :url),
+             SET place_id = (SELECT id FROM moz_places WHERE url_hash = hash(:url) AND url = :url),
                  post_data = :post_data
              WHERE keyword = :keyword
             `, { url: url.href, keyword: keyword, post_data: postData });
           yield notifyKeywordChange(oldEntry.url.href, "");
         } else {
           // An entry for the given page could be missing, in such a case we need to
-          // create it.
+          // create it.  The IGNORE conflict can trigger on `guid`.
           yield db.executeCached(
-            `INSERT OR IGNORE INTO moz_places (url, rev_host, hidden, frecency, guid)
-             VALUES (:url, :rev_host, 0, :frecency, GENERATE_GUID())
+            `INSERT OR IGNORE INTO moz_places (url, url_hash, rev_host, hidden, frecency, guid)
+             VALUES (:url, hash(:url), :rev_host, 0, :frecency,
+                     IFNULL((SELECT guid FROM moz_places WHERE url_hash = hash(:url) AND url = :url),
+                            GENERATE_GUID()))
             `, { url: url.href, rev_host: PlacesUtils.getReversedHost(url),
                  frecency: url.protocol == "place:" ? 0 : -1 });
           yield db.executeCached(
             `INSERT INTO moz_keywords (keyword, place_id, post_data)
-             VALUES (:keyword, (SELECT id FROM moz_places WHERE url = :url), :post_data)
+             VALUES (:keyword, (SELECT id FROM moz_places WHERE url_hash = hash(:url) AND url = :url), :post_data)
             `, { url: url.href, keyword: keyword, post_data: postData });
         }
 

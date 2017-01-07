@@ -11,6 +11,7 @@ user_pref("dom.disable_open_during_load", false);
 user_pref("dom.experimental_forms", true); // on for testing
 user_pref("dom.forms.number", true); // on for testing
 user_pref("dom.forms.color", true); // on for testing
+user_pref("dom.forms.datetime", true); // on for testing
 user_pref("dom.max_script_run_time", 0); // no slow script dialogs
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("dom.max_chrome_script_run_time", 0);
@@ -23,11 +24,12 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("shell.checkDefaultClient", false);
 user_pref("browser.warnOnQuit", false);
 user_pref("accessibility.typeaheadfind.autostart", false);
+user_pref("findbar.highlightAll", false);
+user_pref("findbar.modalHighlight", false);
 user_pref("javascript.options.showInConsole", true);
 user_pref("devtools.browsertoolbox.panel", "jsdebugger");
 user_pref("devtools.debugger.remote-port", 6023);
 user_pref("devtools.devedition.promo.enabled", false);
-user_pref("devtools.errorconsole.enabled", true);
 user_pref("browser.EULA.override", true);
 user_pref("gfx.color_management.force_srgb", true);
 user_pref("network.manage-offline-status", false);
@@ -48,6 +50,7 @@ user_pref("media.gmp-manager.url.override", "http://%(server)s/dummy-gmp-manager
 user_pref("dom.w3c_touch_events.enabled", 1);
 user_pref("dom.undo_manager.enabled", true);
 user_pref("dom.webcomponents.enabled", true);
+user_pref("dom.webcomponents.customelements.enabled", true);
 user_pref("dom.htmlimports.enabled", true);
 // Existing tests assume there is no font size inflation.
 user_pref("font.size.inflation.emPerLine", 0);
@@ -58,6 +61,10 @@ user_pref("experiments.supported", true);
 // Point the manifest at something local so we don't risk it hitting production
 // data and installing experiments that may vary over time.
 user_pref("experiments.manifest.uri", "http://%(server)s/experiments-dummy/manifest");
+
+// Don't allow background tabs to be zombified, otherwise for tests that
+// open additional tabs, the test harness tab itself might get unloaded.
+user_pref("browser.tabs.disableBackgroundZombification", true);
 
 // Only load extensions from the application and user profile
 // AddonManager.SCOPE_PROFILE + AddonManager.SCOPE_APPLICATION
@@ -106,8 +113,8 @@ user_pref("extensions.getAddons.get.url", "http://%(server)s/extensions-dummy/re
 user_pref("extensions.getAddons.getWithPerformance.url", "http://%(server)s/extensions-dummy/repositoryGetWithPerformanceURL");
 user_pref("extensions.getAddons.search.browseURL", "http://%(server)s/extensions-dummy/repositoryBrowseURL");
 user_pref("extensions.getAddons.search.url", "http://%(server)s/extensions-dummy/repositorySearchURL");
-// Make sure that opening the plugins check page won't hit the network
-user_pref("plugins.update.url", "http://%(server)s/plugins-dummy/updateCheckURL");
+// Ensure blocklist updates don't hit the network
+user_pref("services.settings.server", "http://%(server)s/dummy-kinto/v1");
 // Make sure SNTP requests don't hit the network
 user_pref("network.sntp.pools", "%(server)s");
 // We know the SNTP request will fail, since localhost isn't listening on
@@ -132,6 +139,7 @@ user_pref("security.turn_off_all_security_so_that_viruses_can_take_over_this_com
 // use an additional pref here to allow automation to use the "normal" behavior.
 user_pref("dom.use_xbl_scopes_for_remote_xul", true);
 
+user_pref("captivedetect.canonicalURL", "http://%(server)s/captive-detect/success.txt");
 // Get network events.
 user_pref("network.activity.blipIntervalMilliseconds", 250);
 
@@ -154,6 +162,9 @@ user_pref("layout.css.grid-template-subgrid-value.enabled", true);
 
 // Enable CSS 'contain' for testing
 user_pref("layout.css.contain.enabled", true);
+
+// Enable CSS initial-letter for testing
+user_pref("layout.css.initial-letter.enabled", true);
 
 // Enable CSS object-fit & object-position for testing
 user_pref("layout.css.object-fit-and-position.enabled", true);
@@ -276,13 +287,6 @@ user_pref("dom.apps.customization.enabled", true);
 user_pref("browser.newtabpage.directory.source", 'data:application/json,{"testing":1}');
 user_pref("browser.newtabpage.directory.ping", "");
 
-// Enable Loop
-user_pref("loop.debug.loglevel", "All");
-user_pref("loop.enabled", true);
-user_pref("loop.throttled", false);
-user_pref("loop.server", "http://%(server)s/browser/browser/extensions/loop/chrome/test/mochitest/loop_fxa.sjs?");
-user_pref("loop.CSP","default-src 'self' about: file: chrome: data: wss://* http://* https://*");
-
 // Ensure UITour won't hit the network
 user_pref("browser.uitour.pinnedTabUrl", "http://%(server)s/uitour-dummy/pinnedTab");
 user_pref("browser.uitour.url", "http://%(server)s/uitour-dummy/tour");
@@ -305,8 +309,6 @@ user_pref("media.autoplay.enabled", true);
 user_pref("media.decoder.heuristic.dormant.timeout", 0);
 #endif
 
-// Don't prompt about e10s
-user_pref("browser.displayedE10SPrompt.1", 5);
 // Don't use auto-enabled e10s
 user_pref("browser.tabs.remote.autostart.1", false);
 user_pref("browser.tabs.remote.autostart.2", false);
@@ -343,4 +345,7 @@ user_pref("dom.audiochannel.mutedByDefault", false);
 user_pref("webextensions.tests", true);
 user_pref("startup.homepage_welcome_url", "about:blank");
 user_pref("startup.homepage_welcome_url.additional", "");
-user_pref("browser.usedOnWindows10.introURL", "");
+
+// Don't block old libavcodec libraries when testing, because our test systems
+// cannot easily be upgraded.
+user_pref("media.libavcodec.allow-obsolete", true);

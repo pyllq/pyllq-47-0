@@ -12,6 +12,8 @@
 #include "gfxMatrix.h"
 #include "gfxRect.h"
 #include "gfxSVGGlyphs.h"
+#include "gfxTextRun.h"
+#include "nsAutoPtr.h"
 #include "nsIContent.h" // for GetContent
 #include "nsStubMutationObserver.h"
 #include "nsSVGPaintServerFrame.h"
@@ -20,8 +22,6 @@ class gfxContext;
 class nsDisplaySVGText;
 class SVGTextFrame;
 class nsTextFrame;
-
-typedef nsSVGDisplayContainerFrame SVGTextFrameBase;
 
 namespace mozilla {
 
@@ -128,7 +128,7 @@ private:
  * A runnable to mark glyph positions as needing to be recomputed
  * and to invalid the bounds of the SVGTextFrame frame.
  */
-class GlyphMetricsUpdater : public nsRunnable {
+class GlyphMetricsUpdater : public Runnable {
 public:
   NS_DECL_NSIRUNNABLE
   explicit GlyphMetricsUpdater(SVGTextFrame* aFrame) : mFrame(aFrame) { }
@@ -244,7 +244,7 @@ public:
  * itself do the painting.  Otherwise, a DrawPathCallback is passed to
  * PaintText so that we can fill the text geometry with SVG paint servers.
  */
-class SVGTextFrame final : public SVGTextFrameBase
+class SVGTextFrame final : public nsSVGDisplayContainerFrame
 {
   friend nsIFrame*
   NS_NewSVGTextFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
@@ -258,17 +258,19 @@ class SVGTextFrame final : public SVGTextFrameBase
   friend class MutationObserver;
   friend class nsDisplaySVGText;
 
+  typedef gfxTextRun::Range Range;
   typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::Path Path;
   typedef mozilla::gfx::Point Point;
   typedef mozilla::SVGTextContextPaint SVGTextContextPaint;
+  typedef mozilla::image::DrawResult DrawResult;
 
 protected:
   explicit SVGTextFrame(nsStyleContext* aContext)
-    : SVGTextFrameBase(aContext),
-      mFontSizeScaleFactor(1.0f),
-      mLastContextScale(1.0f),
-      mLengthAdjustScaleFactor(1.0f)
+    : nsSVGDisplayContainerFrame(aContext)
+    , mFontSizeScaleFactor(1.0f)
+    , mLastContextScale(1.0f)
+    , mLengthAdjustScaleFactor(1.0f)
   {
     AddStateBits(NS_STATE_SVG_POSITIONING_DIRTY);
   }
@@ -324,9 +326,9 @@ public:
 
   // nsISVGChildFrame interface:
   virtual void NotifySVGChanged(uint32_t aFlags) override;
-  virtual nsresult PaintSVG(gfxContext& aContext,
-                            const gfxMatrix& aTransform,
-                            const nsIntRect* aDirtyRect = nullptr) override;
+  virtual DrawResult PaintSVG(gfxContext& aContext,
+                              const gfxMatrix& aTransform,
+                              const nsIntRect* aDirtyRect = nullptr) override;
   virtual nsIFrame* GetFrameForPoint(const gfxPoint& aPoint) override;
   virtual void ReflowSVG() override;
   virtual nsRect GetCoveredRegion() override;
@@ -398,8 +400,8 @@ public:
    * it.
    *
    * The only case where we have to do this is in response to a style change on
-   * a non-display <text>; the only caller of ScheduleReflowSVGNonDisplayText
-   * currently is SVGTextFrame::DidSetStyleContext.
+   * a non-display <text>. It is done in response to glyphs changes on
+   * non-display <text> (i.e., animated SVG-in-OpenType glyphs).
    */
   void ScheduleReflowSVGNonDisplayText();
 
@@ -607,12 +609,6 @@ private:
   already_AddRefed<Path> GetTextPath(nsIFrame* aTextPathFrame);
   gfxFloat GetOffsetScale(nsIFrame* aTextPathFrame);
   gfxFloat GetStartOffset(nsIFrame* aTextPathFrame);
-
-  DrawMode SetupContextPaint(const DrawTarget* aDrawTarget,
-                             const gfxMatrix& aContextMatrix,
-                             nsIFrame* aFrame,
-                             gfxTextContextPaint* aOuterContextPaint,
-                             SVGTextContextPaint* aThisContextPaint);
 
   /**
    * The MutationObserver we have registered for the <text> element subtree.

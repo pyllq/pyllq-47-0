@@ -14,7 +14,7 @@ const KEY_CODE_RIGHT = 39;
 
 var {FlameGraph} = require("devtools/client/shared/widgets/FlameGraph");
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("about:blank");
   yield performTest();
   gBrowser.removeCurrentTab();
@@ -78,7 +78,7 @@ function* testGraph(host, graph) {
 }
 
 function pressKeyForTime(graph, keyCode, ms) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   graph._onKeyDown({ keyCode });
 

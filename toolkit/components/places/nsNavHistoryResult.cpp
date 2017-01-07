@@ -100,6 +100,8 @@ nsNavHistoryResultNode::nsNavHistoryResultNode(
   mBookmarkIndex(-1),
   mItemId(-1),
   mFolderId(-1),
+  mVisitId(-1),
+  mFromVisitId(-1),
   mDateAdded(0),
   mLastModified(0),
   mIndentLevel(-1),
@@ -189,7 +191,7 @@ nsNavHistoryResultNode::GetTags(nsAString& aTags) {
       "SELECT t.title AS tag_title "
       "FROM moz_bookmarks b "
       "JOIN moz_bookmarks t ON t.id = +b.parent "
-      "WHERE b.fk = (SELECT id FROM moz_places WHERE url = :page_url) "
+      "WHERE b.fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url) "
         "AND t.parent = :tags_folder "
       "ORDER BY t.title COLLATE NOCASE ASC "
     ") "
@@ -236,6 +238,27 @@ nsNavHistoryResultNode::GetPageGuid(nsACString& aPageGuid) {
 NS_IMETHODIMP
 nsNavHistoryResultNode::GetBookmarkGuid(nsACString& aBookmarkGuid) {
   aBookmarkGuid = mBookmarkGuid;
+  return NS_OK;
+}
+
+
+NS_IMETHODIMP
+nsNavHistoryResultNode::GetVisitId(int64_t* aVisitId) {
+  *aVisitId = mVisitId;
+  return NS_OK;
+}
+
+
+NS_IMETHODIMP
+nsNavHistoryResultNode::GetFromVisitId(int64_t* aFromVisitId) {
+  *aFromVisitId = mFromVisitId;
+  return NS_OK;
+}
+
+
+NS_IMETHODIMP
+nsNavHistoryResultNode::GetVisitType(uint32_t* aVisitType) {
+  *aVisitType = mTransitionType;
   return NS_OK;
 }
 
@@ -1080,7 +1103,7 @@ int32_t nsNavHistoryContainerResultNode::SortComparison_AnnotationLess(
   } else {
     nsAutoCString spec;
     if (NS_SUCCEEDED(a->GetUri(spec))){
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_NewURI(getter_AddRefs(a_uri), spec)));
+      MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(a_uri), spec));
     }
     NS_ENSURE_TRUE(a_uri, 0);
   }
@@ -1090,7 +1113,7 @@ int32_t nsNavHistoryContainerResultNode::SortComparison_AnnotationLess(
   } else {
     nsAutoCString spec;
     if (NS_SUCCEEDED(b->GetUri(spec))) {
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_NewURI(getter_AddRefs(b_uri), spec)));
+      MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(b_uri), spec));
     }
     NS_ENSURE_TRUE(b_uri, 0);
   }
@@ -2981,7 +3004,8 @@ nsNavHistoryQueryResultNode::OnItemMoved(int64_t aFolder,
  */
 NS_IMPL_ISUPPORTS_INHERITED(nsNavHistoryFolderResultNode,
                             nsNavHistoryContainerResultNode,
-                            nsINavHistoryQueryResultNode)
+                            nsINavHistoryQueryResultNode,
+                            mozIStorageStatementCallback)
 
 nsNavHistoryFolderResultNode::nsNavHistoryFolderResultNode(
     const nsACString& aTitle, nsNavHistoryQueryOptions* aOptions,
@@ -4574,9 +4598,14 @@ NS_IMETHODIMP
 nsNavHistoryResult::OnVisit(nsIURI* aURI, int64_t aVisitId, PRTime aTime,
                             int64_t aSessionId, int64_t aReferringId,
                             uint32_t aTransitionType, const nsACString& aGUID,
-                            bool aHidden)
+                            bool aHidden, uint32_t aVisitCount, uint32_t aTyped)
 {
   NS_ENSURE_ARG(aURI);
+
+  // Embed visits are never shown in our views.
+  if (aTransitionType == nsINavHistoryService::TRANSITION_EMBED) {
+    return NS_OK;
+  }
 
   uint32_t added = 0;
 
@@ -4608,7 +4637,7 @@ nsNavHistoryResult::OnVisit(nsIURI* aURI, int64_t aVisitId, PRTime aTime,
       NS_ENSURE_TRUE(history, NS_OK);
       nsAutoCString todayLabel;
       history->GetStringFromName(
-        MOZ_UTF16("finduri-AgeInDays-is-0"), todayLabel);
+        u"finduri-AgeInDays-is-0", todayLabel);
       todayIsMissing = !todayLabel.Equals(title);
     }
   }

@@ -3,9 +3,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const { Cu } = require("chrome");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 const STRINGS_URI = "chrome://devtools/locale/jit-optimizations.properties";
-const L10N = new ViewHelpers.L10N(STRINGS_URI);
+const L10N = new LocalizationHelper(STRINGS_URI);
+
 const { PluralForm } = require("resource://gre/modules/PluralForm.jsm");
 const { DOM: dom, PropTypes, createClass, createFactory } = require("devtools/client/shared/vendor/react");
 const {
@@ -44,13 +46,13 @@ const JITOptimizationsItem = module.exports = createClass({
 
     let content;
     switch (type) {
-      case "site":         content = this._renderSite(this.props); break;
-      case "attempts":     content = this._renderAttempts(this.props); break;
-      case "types":        content = this._renderTypes(this.props); break;
-      case "attempt":      content = this._renderAttempt(this.props); break;
-      case "type":         content = this._renderType(this.props); break;
+      case "site": content = this._renderSite(this.props); break;
+      case "attempts": content = this._renderAttempts(this.props); break;
+      case "types": content = this._renderTypes(this.props); break;
+      case "attempt": content = this._renderAttempt(this.props); break;
+      case "type": content = this._renderType(this.props); break;
       case "observedtype": content = this._renderObservedType(this.props); break;
-    };
+    }
 
     return dom.div(
       {
@@ -89,7 +91,7 @@ const JITOptimizationsItem = module.exports = createClass({
         line: +site.data.line,
         column: site.data.column,
       }
-    })
+    });
     let children = [text, frame];
 
     if (!hasSuccessfulOutcome(site)) {

@@ -17,11 +17,11 @@
 #include "js/Value.h"
 
 #include "mozilla/Maybe.h"
-#include "mozilla/OwningNonNull.h"
+#include "mozilla/RootedOwningNonNull.h"
+#include "mozilla/RootedRefPtr.h"
 
 #include "mozilla/dom/DOMString.h"
 
-#include "nsAutoPtr.h" // for nsRefPtr member variables
 #include "nsCOMPtr.h"
 #include "nsStringGlue.h"
 #include "nsTArray.h"
@@ -499,6 +499,24 @@ struct MOZ_STACK_CLASS ParentObject {
   nsWrapperCache* const mWrapperCache;
   bool mUseXBLScope;
 };
+
+namespace binding_detail {
+
+// Class for simple sequence arguments, only used internally by codegen.
+template<typename T>
+class AutoSequence : public AutoTArray<T, 16>
+{
+public:
+  AutoSequence() : AutoTArray<T, 16>()
+  {}
+
+  // Allow converting to const sequences as needed
+  operator const Sequence<T>&() const {
+    return *reinterpret_cast<const Sequence<T>*>(this);
+  }
+};
+
+} // namespace binding_detail
 
 } // namespace dom
 } // namespace mozilla

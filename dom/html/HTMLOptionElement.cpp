@@ -144,8 +144,7 @@ HTMLOptionElement::Index()
   }
 
   int32_t index = defaultIndex;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    options->GetOptionIndex(this, 0, true, &index)));
+  MOZ_ALWAYS_SUCCEEDS(options->GetOptionIndex(this, 0, true, &index));
   return index;
 }
 
@@ -175,7 +174,7 @@ HTMLOptionElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
 
   if (aAttribute == nsGkAtoms::label ||
       aAttribute == nsGkAtoms::text) {
-    NS_UpdateHint(retval, NS_STYLE_HINT_REFLOW);
+    retval |= NS_STYLE_HINT_REFLOW;
   }
   return retval;
 }

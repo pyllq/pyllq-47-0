@@ -31,26 +31,18 @@ waitForExplicitFinish();
  *         and Promises cannot be resolved with CPOWs (see bug 1233497).
  */
 var addTab = Task.async(function* (url) {
-  info("Adding a new tab with URL: '" + url + "'");
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
-  let loaded = once(gBrowser.selectedBrowser, "load", true);
+  info(`Adding a new tab with URL: ${url}`);
+  let tab = gBrowser.selectedTab = gBrowser.addTab(url);
+  yield BrowserTestUtils.browserLoaded(tab.linkedBrowser);
 
-  content.location = url;
-  yield loaded;
-
-  info("URL '" + url + "' loading complete");
-
-  yield new Promise(resolve => {
-    let isBlank = url == "about:blank";
-    waitForFocus(resolve, content, isBlank);
-  });
+  info(`Tab added and URL ${url} loaded`);
 
   return tab.linkedBrowser;
 });
 
 function* initAnimationsFrontForUrl(url) {
-  const {AnimationsFront} = require("devtools/server/actors/animation");
-  const {InspectorFront} = require("devtools/server/actors/inspector");
+  const {AnimationsFront} = require("devtools/shared/fronts/animation");
+  const {InspectorFront} = require("devtools/shared/fronts/inspector");
 
   yield addTab(url);
 
@@ -69,7 +61,9 @@ function initDebuggerServer() {
     // Sometimes debugger server does not get destroyed correctly by previous
     // tests.
     DebuggerServer.destroy();
-  } catch (ex) { }
+  } catch (e) {
+    info(`DebuggerServer destroy error: ${e}\n${e.stack}`);
+  }
   DebuggerServer.init();
   DebuggerServer.addBrowserActors();
 }
@@ -105,7 +99,7 @@ function closeDebuggerClient(client) {
  * @param {Boolean} useCapture Optional, for addEventListener/removeEventListener
  * @return A promise that resolves when the event has been handled
  */
-function once(target, eventName, useCapture=false) {
+function once(target, eventName, useCapture = false) {
   info("Waiting for event: '" + eventName + "' on " + target + ".");
 
   return new Promise(resolve => {
@@ -180,7 +174,7 @@ function waitUntil(predicate, interval = 10) {
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       waitUntil(predicate).then(() => resolve(true));
     }, interval);
   });
@@ -191,13 +185,13 @@ function waitForMarkerType(front, types, predicate,
   eventName = "timeline-data")
 {
   types = [].concat(types);
-  predicate = predicate || function(){ return true; };
+  predicate = predicate || function () { return true; };
   let filteredMarkers = [];
   let { promise, resolve } = defer();
 
   info("Waiting for markers of type: " + types);
 
-  function handler (name, data) {
+  function handler(name, data) {
     if (typeof name === "string" && name !== "markers") {
       return;
     }

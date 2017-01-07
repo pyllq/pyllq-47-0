@@ -120,13 +120,13 @@ MediaEngineTabVideoSource::InitRunnable::Run()
 }
 
 void
-MediaEngineTabVideoSource::GetName(nsAString_internal& aName)
+MediaEngineTabVideoSource::GetName(nsAString_internal& aName) const
 {
-  aName.AssignLiteral(MOZ_UTF16("&getUserMedia.videoSource.tabShare;"));
+  aName.AssignLiteral(u"&getUserMedia.videoSource.tabShare;");
 }
 
 void
-MediaEngineTabVideoSource::GetUUID(nsACString_internal& aUuid)
+MediaEngineTabVideoSource::GetUUID(nsACString_internal& aUuid) const
 {
   aUuid.AssignLiteral("tab");
 }
@@ -139,22 +139,28 @@ nsresult
 MediaEngineTabVideoSource::Allocate(const dom::MediaTrackConstraints& aConstraints,
                                     const MediaEnginePrefs& aPrefs,
                                     const nsString& aDeviceId,
-                                    const nsACString& aOrigin)
+                                    const nsACString& aOrigin,
+                                    AllocationHandle** aOutHandle,
+                                    const char** aOutBadConstraint)
 {
   // windowId is not a proper constraint, so just read it.
   // It has no well-defined behavior in advanced, so ignore it there.
 
   mWindowId = aConstraints.mBrowserWindow.WasPassed() ?
               aConstraints.mBrowserWindow.Value() : -1;
-
-  return Restart(aConstraints, aPrefs, aDeviceId);
+  *aOutHandle = nullptr;
+  return Restart(nullptr, aConstraints, aPrefs, aDeviceId, aOutBadConstraint);
 }
 
 nsresult
-MediaEngineTabVideoSource::Restart(const dom::MediaTrackConstraints& aConstraints,
+MediaEngineTabVideoSource::Restart(AllocationHandle* aHandle,
+                                   const dom::MediaTrackConstraints& aConstraints,
                                    const mozilla::MediaEnginePrefs& aPrefs,
-                                   const nsString& aDeviceId)
+                                   const nsString& aDeviceId,
+                                   const char** aOutBadConstraint)
 {
+  MOZ_ASSERT(!aHandle);
+
   // scrollWithPage is not proper a constraint, so just read it.
   // It has no well-defined behavior in advanced, so ignore it there.
 
@@ -178,13 +184,15 @@ MediaEngineTabVideoSource::Restart(const dom::MediaTrackConstraints& aConstraint
 }
 
 nsresult
-MediaEngineTabVideoSource::Deallocate()
+MediaEngineTabVideoSource::Deallocate(AllocationHandle* aHandle)
 {
+  MOZ_ASSERT(!aHandle);
   return NS_OK;
 }
 
 nsresult
-MediaEngineTabVideoSource::Start(SourceMediaStream* aStream, TrackID aID)
+MediaEngineTabVideoSource::Start(SourceMediaStream* aStream, TrackID aID,
+                                 const PrincipalHandle& aPrincipalHandle)
 {
   nsCOMPtr<nsIRunnable> runnable;
   if (!mWindow)
@@ -200,7 +208,8 @@ MediaEngineTabVideoSource::Start(SourceMediaStream* aStream, TrackID aID)
 void
 MediaEngineTabVideoSource::NotifyPull(MediaStreamGraph*,
                                       SourceMediaStream* aSource,
-                                      TrackID aID, StreamTime aDesiredTime)
+                                      TrackID aID, StreamTime aDesiredTime,
+                                      const PrincipalHandle& aPrincipalHandle)
 {
   VideoSegment segment;
   MonitorAutoLock mon(mMonitor);
@@ -211,7 +220,8 @@ MediaEngineTabVideoSource::NotifyPull(MediaStreamGraph*,
   if (delta > 0) {
     // nullptr images are allowed
     gfx::IntSize size = image ? image->GetSize() : IntSize(0, 0);
-    segment.AppendFrame(image.forget().downcast<layers::Image>(), delta, size);
+    segment.AppendFrame(image.forget().downcast<layers::Image>(), delta, size,
+                        aPrincipalHandle);
     // This can fail if either a) we haven't added the track yet, or b)
     // we've removed or finished the track.
     aSource->AppendToTrack(aID, &(segment));
@@ -285,17 +295,19 @@ MediaEngineTabVideoSource::Draw() {
     presShell = presContext->PresShell();
   }
 
-  RefPtr<layers::ImageContainer> container = layers::LayerManager::CreateImageContainer();
+  RefPtr<layers::ImageContainer> container =
+    layers::LayerManager::CreateImageContainer(layers::ImageContainer::ASYNCHRONOUS);
   RefPtr<DrawTarget> dt =
     Factory::CreateDrawTargetForData(BackendType::CAIRO,
                                      mData.get(),
                                      size,
                                      stride,
                                      SurfaceFormat::B8G8R8X8);
-  if (!dt) {
+  if (!dt || !dt->IsValid()) {
     return;
   }
-  RefPtr<gfxContext> context = new gfxContext(dt);
+  RefPtr<gfxContext> context = gfxContext::CreateOrNull(dt);
+  MOZ_ASSERT(context); // already checked the draw target above
   context->SetMatrix(context->CurrentMatrix().Scale((((float) size.width)/mViewportWidth),
                                                     (((float) size.height)/mViewportHeight)));
 

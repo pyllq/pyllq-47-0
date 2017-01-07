@@ -472,7 +472,8 @@ nsUnknownContentTypeDialog.prototype = {
     var shouldntRememberChoice = (mimeType == "application/octet-stream" ||
                                   mimeType == "application/x-msdownload" ||
                                   this.mLauncher.targetFileIsExecutable);
-    if (shouldntRememberChoice && !this.openWithDefaultOK()) {
+    if ((shouldntRememberChoice && !this.openWithDefaultOK()) ||
+        Services.prefs.getBoolPref("browser.download.forbid_open_with")) {
       // hide featured choice
       this.dialogElement("normalBox").collapsed = true;
       // show basic choice
@@ -1100,7 +1101,7 @@ nsUnknownContentTypeDialog.prototype = {
         localHandlerApp.executable = fp.file;
         this.chosenApp = localHandlerApp;
       }
-#endif // MOZ_WIDGET_GTK3
+#endif // MOZ_WIDGET_GTK == 3
     }
     this.finishChooseApp();
   },

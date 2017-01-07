@@ -42,7 +42,7 @@ add_task(function* () {
   yield waitForMessages(msgForLocation1);
 
   // load second url
-  content.location = TEST_URI2;
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, TEST_URI2);
   yield loadBrowser(gBrowser.selectedBrowser);
 
   is(hud.outputNode.textContent.indexOf("Permission denied"), -1,
@@ -72,19 +72,18 @@ add_task(function* () {
   is(hud.outputNode.textContent.indexOf("Permission denied"), -1,
      "no permission denied errors");
 
+  // Navigation clears messages. Wait for that clear to happen before
+  // continuing the test or it might destroy messages we wait later on (Bug
+  // 1270234).
+  let cleared = hud.jsterm.once("messages-cleared");
+
   gBrowser.goBack();
 
-  yield waitForSuccess({
-    name: "go back",
-    validator: function() {
-      return content.location.href == TEST_URI1;
-    },
-  });
+  info("Waiting for messages to be cleared due to navigation");
+  yield cleared;
 
-  hud.jsterm.clearOutput();
-  executeSoon(() => {
-    hud.jsterm.execute("window.location.href");
-  });
+  info("Messages cleared after navigation; checking location");
+  hud.jsterm.execute("window.location.href");
 
   info("wait for window.location.href after goBack()");
   yield waitForMessages(msgForLocation1);

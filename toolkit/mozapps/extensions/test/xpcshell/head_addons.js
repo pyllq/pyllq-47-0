@@ -4,9 +4,8 @@
 
 var AM_Cc = Components.classes;
 var AM_Ci = Components.interfaces;
+var AM_Cu = Components.utils;
 
-const XULAPPINFO_CONTRACTID = "@mozilla.org/xre/app-info;1";
-const XULAPPINFO_CID = Components.ID("{c763b610-9d49-455a-bbd2-ede71682a1ac}");
 const CERTDB_CONTRACTID = "@mozilla.org/security/x509certdb;1";
 const CERTDB_CID = Components.ID("{fb0bbc5c-452e-4783-b32c-80124693d871}");
 
@@ -39,12 +38,16 @@ Components.utils.import("resource://gre/modules/Promise.jsm");
 Components.utils.import("resource://gre/modules/Task.jsm");
 const { OS } = Components.utils.import("resource://gre/modules/osfile.jsm", {});
 Components.utils.import("resource://gre/modules/AsyncShutdown.jsm");
-Components.utils.import("resource://testing-common/MockRegistrar.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Extension",
                                   "resource://gre/modules/Extension.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "HttpServer",
                                   "resource://testing-common/httpd.js");
+XPCOMUtils.defineLazyModuleGetter(this, "MockRegistrar",
+                                  "resource://testing-common/MockRegistrar.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "MockRegistry",
+                                  "resource://testing-common/MockRegistry.jsm");
+
 
 // We need some internal bits of AddonManager
 var AMscope = Components.utils.import("resource://gre/modules/AddonManager.jsm", {});
@@ -179,10 +182,12 @@ this.BootstrapMonitor = {
   },
 
   checkAddonInstalled(id, version = undefined) {
-    let installed = this.installed.get(id);
-    do_check_neq(installed, undefined);
-    if (version != undefined)
-      do_check_eq(installed.data.version, version);
+    const installed = this.installed.get(id);
+    notEqual(installed, undefined);
+    if (version !== undefined) {
+      equal(installed.data.version, version);
+    }
+    return installed;
   },
 
   checkAddonNotInstalled(id) {
@@ -261,50 +266,17 @@ function isNightlyChannel() {
   return channel != "aurora" && channel != "beta" && channel != "release" && channel != "esr";
 }
 
-function createAppInfo(id, name, version, platformVersion) {
-  gAppInfo = {
-    // nsIXULAppInfo
-    vendor: "Mozilla",
-    name: name,
-    ID: id,
-    version: version,
-    appBuildID: "2007010101",
-    platformVersion: platformVersion ? platformVersion : "1.0",
-    platformBuildID: "2007010101",
-
-    // nsIXULRuntime
-    browserTabsRemoteAutostart: false,
-    inSafeMode: false,
-    logConsoleErrors: true,
-    OS: "XPCShell",
-    XPCOMABI: "noarch-spidermonkey",
-    invalidateCachesOnRestart: function invalidateCachesOnRestart() {
-      // Do nothing
+function createAppInfo(ID, name, version, platformVersion="1.0") {
+  let tmp = {};
+  AM_Cu.import("resource://testing-common/AppInfo.jsm", tmp);
+  tmp.updateAppInfo({
+    ID, name, version, platformVersion,
+    crashReporter: true,
+    extraProps: {
+      browserTabsRemoteAutostart: false,
     },
-
-    // nsICrashReporter
-    annotations: {},
-
-    annotateCrashReport: function(key, data) {
-      this.annotations[key] = data;
-    },
-
-    QueryInterface: XPCOMUtils.generateQI([AM_Ci.nsIXULAppInfo,
-                                           AM_Ci.nsIXULRuntime,
-                                           AM_Ci.nsICrashReporter,
-                                           AM_Ci.nsISupports])
-  };
-
-  var XULAppInfoFactory = {
-    createInstance: function (outer, iid) {
-      if (outer != null)
-        throw Components.results.NS_ERROR_NO_AGGREGATION;
-      return gAppInfo.QueryInterface(iid);
-    }
-  };
-  var registrar = Components.manager.QueryInterface(AM_Ci.nsIComponentRegistrar);
-  registrar.registerFactory(XULAPPINFO_CID, "XULAppInfo",
-                            XULAPPINFO_CONTRACTID, XULAppInfoFactory);
+  });
+  gAppInfo = tmp.getAppInfo();
 }
 
 function getManifestURIForBundle(file) {
@@ -1022,7 +994,7 @@ function createInstallRDF(aData) {
 
   ["id", "version", "type", "internalName", "updateURL", "updateKey",
    "optionsURL", "optionsType", "aboutURL", "iconURL", "icon64URL",
-   "skinnable", "bootstrap", "strictCompatibility", "multiprocessCompatible"].forEach(function(aProp) {
+   "skinnable", "bootstrap", "unpack", "strictCompatibility", "multiprocessCompatible"].forEach(function(aProp) {
     if (aProp in aData)
       rdf += "<em:" + aProp + ">" + escapeXML(aData[aProp]) + "</em:" + aProp + ">\n";
   });
@@ -1722,7 +1694,8 @@ function completeAllInstalls(aInstalls, aCallback) {
     onDownloadCancelled: installCompleted,
     onInstallFailed: installCompleted,
     onInstallCancelled: installCompleted,
-    onInstallEnded: installCompleted
+    onInstallEnded: installCompleted,
+    onInstallPostponed: installCompleted,
   };
 
   aInstalls.forEach(function(aInstall) {
@@ -1776,105 +1749,6 @@ function promiseInstallAllFiles(aFiles, aIgnoreIncompatible) {
   let deferred = Promise.defer();
   installAllFiles(aFiles, deferred.resolve, aIgnoreIncompatible);
   return deferred.promise;
-
-}
-
-if ("nsIWindowsRegKey" in AM_Ci) {
-  var MockRegistry = {
-    LOCAL_MACHINE: {},
-    CURRENT_USER: {},
-    CLASSES_ROOT: {},
-
-    getRoot: function(aRoot) {
-      switch (aRoot) {
-      case AM_Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE:
-        return MockRegistry.LOCAL_MACHINE;
-      case AM_Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER:
-        return MockRegistry.CURRENT_USER;
-      case AM_Ci.nsIWindowsRegKey.ROOT_KEY_CLASSES_ROOT:
-        return MockRegistry.CLASSES_ROOT;
-      default:
-        do_throw("Unknown root " + aRoot);
-        return null;
-      }
-    },
-
-    setValue: function(aRoot, aPath, aName, aValue) {
-      let rootKey = MockRegistry.getRoot(aRoot);
-
-      if (!(aPath in rootKey)) {
-        rootKey[aPath] = [];
-      }
-      else {
-        for (let i = 0; i < rootKey[aPath].length; i++) {
-          if (rootKey[aPath][i].name == aName) {
-            if (aValue === null)
-              rootKey[aPath].splice(i, 1);
-            else
-              rootKey[aPath][i].value = aValue;
-            return;
-          }
-        }
-      }
-
-      if (aValue === null)
-        return;
-
-      rootKey[aPath].push({
-        name: aName,
-        value: aValue
-      });
-    }
-  };
-
-  /**
-   * This is a mock nsIWindowsRegistry implementation. It only implements the
-   * methods that the extension manager requires.
-   */
-  var MockWindowsRegKey = function MockWindowsRegKey() {
-  }
-
-  MockWindowsRegKey.prototype = {
-    values: null,
-
-    // --- Overridden nsISupports interface functions ---
-    QueryInterface: XPCOMUtils.generateQI([AM_Ci.nsIWindowsRegKey]),
-
-    // --- Overridden nsIWindowsRegKey interface functions ---
-    open: function(aRootKey, aRelPath, aMode) {
-      let rootKey = MockRegistry.getRoot(aRootKey);
-
-      if (!(aRelPath in rootKey))
-        rootKey[aRelPath] = [];
-      this.values = rootKey[aRelPath];
-    },
-
-    close: function() {
-      this.values = null;
-    },
-
-    get valueCount() {
-      if (!this.values)
-        throw Components.results.NS_ERROR_FAILURE;
-      return this.values.length;
-    },
-
-    getValueName: function(aIndex) {
-      if (!this.values || aIndex >= this.values.length)
-        throw Components.results.NS_ERROR_FAILURE;
-      return this.values[aIndex].name;
-    },
-
-    readStringValue: function(aName) {
-      for (let value of this.values) {
-        if (value.name == aName)
-          return value.value;
-      }
-      return null;
-    }
-  };
-
-  MockRegistrar.register("@mozilla.org/windows-registry-key;1", MockWindowsRegKey);
 }
 
 // Get the profile directory for tests to use.
@@ -1907,6 +1781,7 @@ Services.prefs.setBoolPref("extensions.showMismatchUI", false);
 Services.prefs.setCharPref("extensions.update.url", "http://127.0.0.1/updateURL");
 Services.prefs.setCharPref("extensions.update.background.url", "http://127.0.0.1/updateBackgroundURL");
 Services.prefs.setCharPref("extensions.blocklist.url", "http://127.0.0.1/blocklistURL");
+Services.prefs.setCharPref("services.settings.server", "http://localhost/dummy-kinto/v1");
 
 // By default ignore bundled add-ons
 Services.prefs.setBoolPref("extensions.installDistroAddons", false);

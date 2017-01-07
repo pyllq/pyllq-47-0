@@ -95,7 +95,7 @@
       <hbox id="netmonitor-toolbar" class="devtools-toolbar">
         <toolbarbutton id="requests-menu-clear-button"
                        class="devtools-toolbarbutton devtools-clear-icon"
-                       tooltip="&netmonitorUI.footer.clear;"/>
+                       tooltiptext="&netmonitorUI.footer.clear;"/>
         <hbox id="requests-menu-filter-buttons">
           <button id="requests-menu-filter-all-button"
                   class="requests-menu-filter-button"
@@ -143,6 +143,11 @@
                   data-key="flash"
                   label="&netmonitorUI.footer.filterFlash;">
           </button>
+          <button id="requests-menu-filter-ws-button"
+                  class="requests-menu-filter-button"
+                  data-key="ws"
+                  label="&netmonitorUI.footer.filterWS;">
+          </button>
           <button id="requests-menu-filter-other-button"
                   class="requests-menu-filter-button"
                   data-key="other"
@@ -155,7 +160,7 @@
                        class="devtools-toolbarbutton icon-and-text"
                        tooltiptext="&netmonitorUI.footer.perf;"/>
         <textbox id="requests-menu-filter-freetext-text"
-                 class="devtools-searchinput"
+                 class="devtools-filterinput"
                  type="search"
                  required="true"
                  placeholder="&netmonitorUI.footer.filterFreetext.label;"/>
@@ -216,6 +221,17 @@
                         flex="1">
                 </button>
               </hbox>
+              <hbox id="requests-menu-cause-header-box"
+                    class="requests-menu-header requests-menu-cause"
+                    align="center">
+                <button id="requests-menu-cause-button"
+                        class="requests-menu-header-button requests-menu-cause"
+                        data-key="cause"
+                        label="&netmonitorUI.toolbar.cause;"
+                        crop="end"
+                        flex="1">
+                </button>
+              </hbox>
               <hbox id="requests-menu-type-header-box"
                     class="requests-menu-header requests-menu-type"
                     align="center">
@@ -257,6 +273,7 @@
                         class="requests-menu-header-button requests-menu-waterfall"
                         data-key="waterfall"
                         pack="start"
+                        label="&netmonitorUI.toolbar.waterfall;"
                         flex="1">
                   <image id="requests-menu-waterfall-image"/>
                   <box id="requests-menu-waterfall-label-wrapper">
@@ -283,6 +300,7 @@
               <label value="&netmonitorUI.perfNotice1;"/>
               <button id="requests-menu-perf-notice-button"
                       standalone="true"
+                      tooltiptext="&netmonitorUI.perfNotice3;"
                       class="devtools-toolbarbutton"/>
               <label value="&netmonitorUI.perfNotice2;"/>
             </hbox>
@@ -315,6 +333,10 @@
                 <label class="plain requests-menu-domain"
                        crop="end"
                        flex="1"/>
+              </hbox>
+              <hbox class="requests-menu-subitem requests-menu-cause" align="center">
+                <label class="requests-menu-cause-stack" value="JS" hidden="true"/>
+                <label class="plain requests-menu-cause-label" flex="1" crop="end"/>
               </hbox>
               <label class="plain requests-menu-subitem requests-menu-type"
                      crop="end"/>

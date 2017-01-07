@@ -216,8 +216,6 @@ frame.Manager = class {
     mm.addWeakMessageListener("Marionette:error", this.driver);
     mm.addWeakMessageListener("Marionette:emitTouchEvent", this.driver);
     mm.addWeakMessageListener("Marionette:log", this.driver);
-    mm.addWeakMessageListener("Marionette:runEmulatorCmd", this.driver.emulator);
-    mm.addWeakMessageListener("Marionette:runEmulatorShell", this.driver.emulator);
     mm.addWeakMessageListener("Marionette:shareData", this.driver);
     mm.addWeakMessageListener("Marionette:switchToModalOrigin", this.driver);
     mm.addWeakMessageListener("Marionette:switchedToFrame", this.driver);
@@ -225,7 +223,6 @@ frame.Manager = class {
     mm.addWeakMessageListener("Marionette:getImportedScripts", this.driver.importedScripts);
     mm.addWeakMessageListener("Marionette:register", this.driver);
     mm.addWeakMessageListener("Marionette:listenersAttached", this.driver);
-    mm.addWeakMessageListener("Marionette:getFiles", this.driver);
     mm.addWeakMessageListener("MarionetteFrame:handleModal", this);
     mm.addWeakMessageListener("MarionetteFrame:getCurrentFrameId", this);
     mm.addWeakMessageListener("MarionetteFrame:getInterruptedState", this);
@@ -249,14 +246,11 @@ frame.Manager = class {
     mm.removeWeakMessageListener("Marionette:error", this.driver);
     mm.removeWeakMessageListener("Marionette:log", this.driver);
     mm.removeWeakMessageListener("Marionette:shareData", this.driver);
-    mm.removeWeakMessageListener("Marionette:runEmulatorCmd", this.driver.emulator);
-    mm.removeWeakMessageListener("Marionette:runEmulatorShell", this.driver.emulator);
     mm.removeWeakMessageListener("Marionette:switchedToFrame", this.driver);
     mm.removeWeakMessageListener("Marionette:getVisibleCookies", this.driver);
     mm.removeWeakMessageListener("Marionette:getImportedScripts", this.driver.importedScripts);
     mm.removeWeakMessageListener("Marionette:listenersAttached", this.driver);
     mm.removeWeakMessageListener("Marionette:register", this.driver);
-    mm.removeWeakMessageListener("Marionette:getFiles", this.driver);
     mm.removeWeakMessageListener("MarionetteFrame:handleModal", this);
     mm.removeWeakMessageListener("MarionetteFrame:getCurrentFrameId", this);
   }

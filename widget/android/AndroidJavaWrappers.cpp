@@ -18,7 +18,6 @@ using namespace mozilla::dom;
 jclass AndroidGeckoEvent::jGeckoEventClass = 0;
 jfieldID AndroidGeckoEvent::jActionField = 0;
 jfieldID AndroidGeckoEvent::jTypeField = 0;
-jfieldID AndroidGeckoEvent::jAckNeededField = 0;
 jfieldID AndroidGeckoEvent::jTimeField = 0;
 jfieldID AndroidGeckoEvent::jPoints = 0;
 jfieldID AndroidGeckoEvent::jPointIndicies = 0;
@@ -40,12 +39,6 @@ jfieldID AndroidGeckoEvent::jMetaStateField = 0;
 jfieldID AndroidGeckoEvent::jFlagsField = 0;
 jfieldID AndroidGeckoEvent::jCountField = 0;
 jfieldID AndroidGeckoEvent::jPointerIndexField = 0;
-jfieldID AndroidGeckoEvent::jLocationField = 0;
-jfieldID AndroidGeckoEvent::jConnectionTypeField = 0;
-jfieldID AndroidGeckoEvent::jIsWifiField = 0;
-jfieldID AndroidGeckoEvent::jDHCPGatewayField = 0;
-jfieldID AndroidGeckoEvent::jScreenOrientationField = 0;
-jfieldID AndroidGeckoEvent::jScreenAngleField = 0;
 jfieldID AndroidGeckoEvent::jByteBufferField = 0;
 jfieldID AndroidGeckoEvent::jWidthField = 0;
 jfieldID AndroidGeckoEvent::jHeightField = 0;
@@ -71,15 +64,6 @@ jfieldID AndroidRectF::jLeftField = 0;
 jfieldID AndroidRectF::jRightField = 0;
 jfieldID AndroidRectF::jTopField = 0;
 
-jclass AndroidLocation::jLocationClass = 0;
-jmethodID AndroidLocation::jGetLatitudeMethod = 0;
-jmethodID AndroidLocation::jGetLongitudeMethod = 0;
-jmethodID AndroidLocation::jGetAltitudeMethod = 0;
-jmethodID AndroidLocation::jGetAccuracyMethod = 0;
-jmethodID AndroidLocation::jGetBearingMethod = 0;
-jmethodID AndroidLocation::jGetSpeedMethod = 0;
-jmethodID AndroidLocation::jGetTimeMethod = 0;
-
 RefCountedJavaObject::~RefCountedJavaObject() {
     if (mObject)
         GetEnvForThread()->DeleteGlobalRef(mObject);
@@ -91,7 +75,6 @@ mozilla::InitAndroidJavaWrappers(JNIEnv *jEnv)
 {
     AndroidGeckoEvent::InitGeckoEventClass(jEnv);
     AndroidPoint::InitPointClass(jEnv);
-    AndroidLocation::InitLocationClass(jEnv);
     AndroidRect::InitRectClass(jEnv);
     AndroidRectF::InitRectFClass(jEnv);
 }
@@ -104,7 +87,6 @@ AndroidGeckoEvent::InitGeckoEventClass(JNIEnv *jEnv)
 
     jActionField = geckoEvent.getField("mAction", "I");
     jTypeField = geckoEvent.getField("mType", "I");
-    jAckNeededField = geckoEvent.getField("mAckNeeded", "Z");
     jTimeField = geckoEvent.getField("mTime", "J");
     jPoints = geckoEvent.getField("mPoints", "[Landroid/graphics/Point;");
     jPointIndicies = geckoEvent.getField("mPointIndicies", "[I");
@@ -125,12 +107,6 @@ AndroidGeckoEvent::InitGeckoEventClass(JNIEnv *jEnv)
     jFlagsField = geckoEvent.getField("mFlags", "I");
     jCountField = geckoEvent.getField("mCount", "I");
     jPointerIndexField = geckoEvent.getField("mPointerIndex", "I");
-    jLocationField = geckoEvent.getField("mLocation", "Landroid/location/Location;");
-    jConnectionTypeField = geckoEvent.getField("mConnectionType", "I");
-    jIsWifiField = geckoEvent.getField("mIsWifi", "Z");
-    jDHCPGatewayField = geckoEvent.getField("mDHCPGateway", "I");
-    jScreenOrientationField = geckoEvent.getField("mScreenOrientation", "S");
-    jScreenAngleField = geckoEvent.getField("mScreenAngle", "S");
     jByteBufferField = geckoEvent.getField("mBuffer", "Ljava/nio/ByteBuffer;");
     jWidthField = geckoEvent.getField("mWidth", "I");
     jHeightField = geckoEvent.getField("mHeight", "I");
@@ -139,46 +115,6 @@ AndroidGeckoEvent::InitGeckoEventClass(JNIEnv *jEnv)
     jGamepadButtonPressedField = geckoEvent.getField("mGamepadButtonPressed", "Z");
     jGamepadButtonValueField = geckoEvent.getField("mGamepadButtonValue", "F");
     jGamepadValuesField = geckoEvent.getField("mGamepadValues", "[F");
-}
-
-void
-AndroidLocation::InitLocationClass(JNIEnv *jEnv)
-{
-    AutoJNIClass location(jEnv, "android/location/Location");
-    jLocationClass = location.getGlobalRef();
-    jGetLatitudeMethod = location.getMethod("getLatitude", "()D");
-    jGetLongitudeMethod = location.getMethod("getLongitude", "()D");
-    jGetAltitudeMethod = location.getMethod("getAltitude", "()D");
-    jGetAccuracyMethod = location.getMethod("getAccuracy", "()F");
-    jGetBearingMethod = location.getMethod("getBearing", "()F");
-    jGetSpeedMethod = location.getMethod("getSpeed", "()F");
-    jGetTimeMethod = location.getMethod("getTime", "()J");
-}
-
-nsGeoPosition*
-AndroidLocation::CreateGeoPosition(JNIEnv *jenv, jobject jobj)
-{
-    AutoLocalJNIFrame jniFrame(jenv);
-
-    double latitude  = jenv->CallDoubleMethod(jobj, jGetLatitudeMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    double longitude = jenv->CallDoubleMethod(jobj, jGetLongitudeMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    double altitude  = jenv->CallDoubleMethod(jobj, jGetAltitudeMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    float  accuracy  = jenv->CallFloatMethod (jobj, jGetAccuracyMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    float  bearing   = jenv->CallFloatMethod (jobj, jGetBearingMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    float  speed     = jenv->CallFloatMethod (jobj, jGetSpeedMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-    long long time   = jenv->CallLongMethod  (jobj, jGetTimeMethod);
-    if (jniFrame.CheckForException()) return nullptr;
-
-    return new nsGeoPosition(latitude, longitude,
-                             altitude, accuracy,
-                             accuracy, bearing,
-                             speed,    time);
 }
 
 void
@@ -341,7 +277,6 @@ AndroidGeckoEvent::Init(JNIEnv *jenv, jobject jobj)
 
     mAction = jenv->GetIntField(jobj, jActionField);
     mType = jenv->GetIntField(jobj, jTypeField);
-    mAckNeeded = jenv->GetBooleanField(jobj, jAckNeededField);
 
     switch (mType) {
         case NATIVE_GESTURE_EVENT:
@@ -369,50 +304,9 @@ AndroidGeckoEvent::Init(JNIEnv *jenv, jobject jobj)
 
             break;
 
-        case SENSOR_EVENT:
-             mX = jenv->GetDoubleField(jobj, jXField);
-             mY = jenv->GetDoubleField(jobj, jYField);
-             mZ = jenv->GetDoubleField(jobj, jZField);
-             mW = jenv->GetDoubleField(jobj, jWField);
-             mFlags = jenv->GetIntField(jobj, jFlagsField);
-             mMetaState = jenv->GetIntField(jobj, jMetaStateField);
-             break;
-
-        case LOCATION_EVENT: {
-            jobject location = jenv->GetObjectField(jobj, jLocationField);
-            mGeoPosition = AndroidLocation::CreateGeoPosition(jenv, location);
-            break;
-        }
-
-        case LOAD_URI: {
+        case VIEWPORT: {
             ReadCharactersField(jenv);
             ReadCharactersExtraField(jenv);
-            break;
-        }
-
-        case VIEWPORT:
-        case BROADCAST: {
-            ReadCharactersField(jenv);
-            ReadCharactersExtraField(jenv);
-            break;
-        }
-
-        case NETWORK_CHANGED: {
-            mConnectionType = jenv->GetIntField(jobj, jConnectionTypeField);
-            mIsWifi = jenv->GetBooleanField(jobj, jIsWifiField);
-            mDHCPGateway = jenv->GetIntField(jobj, jDHCPGatewayField);
-            break;
-        }
-
-        case VISITED: {
-            ReadCharactersField(jenv);
-            break;
-        }
-
-        case THUMBNAIL: {
-            mMetaState = jenv->GetIntField(jobj, jMetaStateField);
-            ReadPointArray(mPoints, jenv, jPoints, 1);
-            mByteBuffer = new RefCountedJavaObject(jenv, jenv->GetObjectField(jobj, jByteBufferField));
             break;
         }
 
@@ -421,12 +315,6 @@ AndroidGeckoEvent::Init(JNIEnv *jenv, jobject jobj)
             mMetaState = jenv->GetIntField(jobj, jMetaStateField);
             ReadPointArray(mPoints, jenv, jPoints, 2);
             mByteBuffer = new RefCountedJavaObject(jenv, jenv->GetObjectField(jobj, jByteBufferField));
-            break;
-        }
-
-        case SCREENORIENTATION_CHANGED: {
-            mScreenOrientation = jenv->GetShortField(jobj, jScreenOrientationField);
-            mScreenAngle = jenv->GetShortField(jobj, jScreenAngleField);
             break;
         }
 
@@ -444,11 +332,6 @@ AndroidGeckoEvent::Init(JNIEnv *jenv, jobject jobj)
 
         case LOW_MEMORY: {
             mMetaState = jenv->GetIntField(jobj, jMetaStateField);
-            break;
-        }
-
-        case NETWORK_LINK_CHANGE: {
-            ReadCharactersField(jenv);
             break;
         }
 
@@ -513,7 +396,6 @@ void
 AndroidGeckoEvent::Init(int aType)
 {
     mType = aType;
-    mAckNeeded = false;
 }
 
 bool
@@ -567,7 +449,9 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
                 break;
             }
         }
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_DOWN:
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_POINTER_DOWN: {
             type = eTouchStart;
             break;
@@ -577,6 +461,7 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
                 break;
             }
         }
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_MOVE: {
             type = eTouchMove;
             break;
@@ -586,7 +471,9 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
                 break;
             }
         }
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_UP:
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_POINTER_UP: {
             type = eTouchEnd;
             // for pointer-up events we only want the data from
@@ -596,6 +483,7 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
             break;
         }
         case AndroidMotionEvent::ACTION_OUTSIDE:
+            MOZ_FALLTHROUGH;
         case AndroidMotionEvent::ACTION_CANCEL: {
             type = eTouchCancel;
             break;
@@ -608,21 +496,21 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
         return event;
     }
 
-    event.modifiers = DOMModifiers();
-    event.time = Time();
+    event.mModifiers = DOMModifiers();
+    event.mTime = Time();
 
     const LayoutDeviceIntPoint& offset = widget->WidgetToScreenOffset();
-    event.touches.SetCapacity(endIndex - startIndex);
+    event.mTouches.SetCapacity(endIndex - startIndex);
     for (int i = startIndex; i < endIndex; i++) {
         // In this code branch, we are dispatching this event directly
         // into Gecko (as opposed to going through the AsyncPanZoomController),
         // and the Points() array has points in CSS pixels, which we need
         // to convert.
         CSSToLayoutDeviceScale scale = widget->GetDefaultScale();
-        LayoutDeviceIntPoint pt(
+        auto pt = LayoutDeviceIntPoint::Truncate(
             (Points()[i].x * scale.scale) - offset.x,
             (Points()[i].y * scale.scale) - offset.y);
-        LayoutDeviceIntPoint radius(
+        auto radius = LayoutDeviceIntPoint::Truncate(
             PointRadii()[i].x * scale.scale,
             PointRadii()[i].y * scale.scale);
         RefPtr<Touch> t = new Touch(PointIndicies()[i],
@@ -630,7 +518,7 @@ AndroidGeckoEvent::MakeTouchEvent(nsIWidget* widget)
                                     radius,
                                     Orientations()[i],
                                     Pressures()[i]);
-        event.touches.AppendElement(t);
+        event.mTouches.AppendElement(t);
     }
 
     return event;
@@ -726,18 +614,19 @@ AndroidGeckoEvent::MakeMouseEvent(nsIWidget* widget)
     // XXX can we synthesize different buttons?
     event.button = WidgetMouseEvent::eLeftButton;
     if (msg != eMouseMove) {
-        event.clickCount = 1;
+        event.mClickCount = 1;
     }
-    event.modifiers = DOMModifiers();
-    event.time = Time();
+    event.mModifiers = DOMModifiers();
+    event.mTime = Time();
 
     // We are dispatching this event directly into Gecko (as opposed to going
     // through the AsyncPanZoomController), and the Points() array has points
     // in CSS pixels, which we need to convert to LayoutDevice pixels.
     const LayoutDeviceIntPoint& offset = widget->WidgetToScreenOffset();
     CSSToLayoutDeviceScale scale = widget->GetDefaultScale();
-    event.refPoint = LayoutDeviceIntPoint((Points()[0].x * scale.scale) - offset.x,
-                                          (Points()[0].y * scale.scale) - offset.y);
+    event.mRefPoint =
+        LayoutDeviceIntPoint::Truncate((Points()[0].x * scale.scale) - offset.x,
+                                       (Points()[0].y * scale.scale) - offset.y);
     return event;
 }
 

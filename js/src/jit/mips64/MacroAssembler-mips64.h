@@ -9,7 +9,6 @@
 
 #include "jsopcode.h"
 
-#include "jit/AtomicOp.h"
 #include "jit/IonCaches.h"
 #include "jit/JitFrames.h"
 #include "jit/mips-shared/MacroAssembler-mips-shared.h"
@@ -342,23 +341,24 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void unboxNonDouble(const Address& src, Register dest);
     void unboxNonDouble(const BaseIndex& src, Register dest);
     void unboxInt32(const ValueOperand& operand, Register dest);
-    void unboxInt32(const Operand& operand, Register dest);
+    void unboxInt32(Register src, Register dest);
     void unboxInt32(const Address& src, Register dest);
     void unboxInt32(const BaseIndex& src, Register dest);
     void unboxBoolean(const ValueOperand& operand, Register dest);
-    void unboxBoolean(const Operand& operand, Register dest);
+    void unboxBoolean(Register src, Register dest);
     void unboxBoolean(const Address& src, Register dest);
     void unboxBoolean(const BaseIndex& src, Register dest);
     void unboxDouble(const ValueOperand& operand, FloatRegister dest);
+    void unboxDouble(Register src, Register dest);
     void unboxDouble(const Address& src, FloatRegister dest);
     void unboxString(const ValueOperand& operand, Register dest);
-    void unboxString(const Operand& operand, Register dest);
+    void unboxString(Register src, Register dest);
     void unboxString(const Address& src, Register dest);
     void unboxSymbol(const ValueOperand& src, Register dest);
-    void unboxSymbol(const Operand& src, Register dest);
+    void unboxSymbol(Register src, Register dest);
     void unboxSymbol(const Address& src, Register dest);
     void unboxObject(const ValueOperand& src, Register dest);
-    void unboxObject(const Operand& src, Register dest);
+    void unboxObject(Register src, Register dest);
     void unboxObject(const Address& src, Register dest);
     void unboxObject(const BaseIndex& src, Register dest) { unboxNonDouble(src, dest); }
     void unboxValue(const ValueOperand& src, AnyRegister dest);
@@ -426,17 +426,13 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void loadUnboxedValue(const T& address, MIRType type, AnyRegister dest) {
         if (dest.isFloat())
             loadInt32OrDouble(address, dest.fpu());
-        else if (type == MIRType_Int32)
+        else if (type == MIRType::Int32)
             unboxInt32(address, dest.gpr());
-        else if (type == MIRType_Boolean)
+        else if (type == MIRType::Boolean)
             unboxBoolean(address, dest.gpr());
         else
             unboxNonDouble(address, dest.gpr());
     }
-
-    template <typename T>
-    void storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T& dest,
-                           MIRType slotType);
 
     template <typename T>
     void storeUnboxedPayload(ValueOperand value, T address, size_t nbytes) {
@@ -477,6 +473,10 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void storeValue(JSValueType type, Register reg, Address dest);
     void storeValue(const Value& val, Address dest);
     void storeValue(const Value& val, BaseIndex dest);
+    void storeValue(const Address& src, const Address& dest, Register temp) {
+        loadPtr(src, temp);
+        storePtr(temp, dest);
+    }
 
     void loadValue(Address src, ValueOperand val);
     void loadValue(Operand dest, ValueOperand val) {
@@ -878,23 +878,21 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void storeInt32x2(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
     void storeInt32x3(FloatRegister src, const Address& dest) { MOZ_CRASH("NYI"); }
     void storeInt32x3(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedInt32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeAlignedInt32x4(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
-    void loadUnalignedInt32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadUnalignedInt32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeUnalignedInt32x4(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
-    void storeUnalignedInt32x4(FloatRegister src, BaseIndex addr) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Int(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Int(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Int(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Int(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Int(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Int(FloatRegister src, BaseIndex addr) { MOZ_CRASH("NYI"); }
 
     void loadFloat32x3(const Address& src, FloatRegister dest) { MOZ_CRASH("NYI"); }
     void loadFloat32x3(const BaseIndex& src, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeFloat32x3(FloatRegister src, const Address& dest) { MOZ_CRASH("NYI"); }
-    void storeFloat32x3(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedFloat32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeAlignedFloat32x4(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
-    void loadUnalignedFloat32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadUnalignedFloat32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeUnalignedFloat32x4(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
-    void storeUnalignedFloat32x4(FloatRegister src, BaseIndex addr) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Float(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Float(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Float(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Float(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Float(FloatRegister src, Address addr) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Float(FloatRegister src, BaseIndex addr) { MOZ_CRASH("NYI"); }
 
     void loadDouble(const Address& addr, FloatRegister dest);
     void loadDouble(const BaseIndex& src, FloatRegister dest);
@@ -938,23 +936,8 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
     void storePtr(Register src, const Address& address);
     void storePtr(Register src, const BaseIndex& address);
     void storePtr(Register src, AbsoluteAddress dest);
-    void storeDouble(FloatRegister src, Address addr) {
-        ma_sd(src, addr);
-    }
-    void storeDouble(FloatRegister src, BaseIndex addr) {
-        MOZ_ASSERT(addr.offset == 0);
-        ma_sd(src, addr);
-    }
     void moveDouble(FloatRegister src, FloatRegister dest) {
         as_movd(dest, src);
-    }
-
-    void storeFloat32(FloatRegister src, Address addr) {
-        ma_ss(src, addr);
-    }
-    void storeFloat32(FloatRegister src, BaseIndex addr) {
-        MOZ_ASSERT(addr.offset == 0);
-        ma_ss(src, addr);
     }
 
     void zeroDouble(FloatRegister reg) {
@@ -998,11 +981,6 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
         return CodeOffset(nextOffset().getOffset());
     }
 
-    void memIntToValue(Address Source, Address Dest) {
-        load32(Source, ScratchRegister);
-        storeValue(JSVAL_TYPE_INT32, ScratchRegister, Dest);
-    }
-
     void lea(Operand addr, Register dest) {
         ma_daddu(dest, addr.baseReg(), Imm32(addr.disp()));
     }
@@ -1022,12 +1000,12 @@ class MacroAssemblerMIPS64Compat : public MacroAssemblerMIPS64
         as_movs(dest, src);
     }
 
-    void loadWasmActivation(Register dest) {
-        loadPtr(Address(GlobalReg, wasm::ActivationGlobalDataOffset - AsmJSGlobalRegBias), dest);
+    void loadWasmGlobalPtr(uint32_t globalDataOffset, Register dest) {
+        loadPtr(Address(GlobalReg, globalDataOffset - AsmJSGlobalRegBias), dest);
     }
     void loadAsmJSHeapRegisterFromGlobalData() {
         MOZ_ASSERT(Imm16::IsInSignedRange(wasm::HeapGlobalDataOffset - AsmJSGlobalRegBias));
-        loadPtr(Address(GlobalReg, wasm::HeapGlobalDataOffset - AsmJSGlobalRegBias), HeapReg);
+        loadWasmGlobalPtr(wasm::HeapGlobalDataOffset, HeapReg);
     }
 
     // Instrumentation for entering and leaving the profiler.

@@ -4,7 +4,7 @@
 
 "use strict";
 
-const {StorageFront} = require("devtools/server/actors/storage");
+const {StorageFront} = require("devtools/shared/fronts/storage");
 Services.scriptloader.loadSubScript("chrome://mochitests/content/browser/devtools/server/tests/browser/storage-helpers.js", this);
 
 const storeMap = {
@@ -316,13 +316,13 @@ const IDBValues = {
       ]
     }
   }
-}
+};
 
 function finishTests(client) {
 
   let closeConnection = () => {
 
-  }
+  };
 }
 
 function* testStores(data) {
@@ -341,7 +341,7 @@ function testCookies(cookiesActor) {
   return testCookiesObjects(0, cookiesActor.hosts, cookiesActor);
 }
 
-var testCookiesObjects = Task.async(function*(index, hosts, cookiesActor) {
+var testCookiesObjects = Task.async(function* (index, hosts, cookiesActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = data => {
     is(data.total, storeMap.cookies[host].length,
@@ -361,9 +361,7 @@ var testCookiesObjects = Task.async(function*(index, hosts, cookiesActor) {
           break;
         }
       }
-      if (!found) {
-        ok(false, "cookie " + item.name + " should not exist in response;");
-      }
+      ok(found, "cookie " + item.name + " should exist in response");
     }
   };
 
@@ -381,7 +379,7 @@ function testLocalStorage(localStorageActor) {
   return testLocalStorageObjects(0, localStorageActor.hosts, localStorageActor);
 }
 
-var testLocalStorageObjects = Task.async(function*(index, hosts, localStorageActor) {
+var testLocalStorageObjects = Task.async(function* (index, hosts, localStorageActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = data => {
     is(data.total, storeMap.localStorage[host].length,
@@ -396,10 +394,7 @@ var testLocalStorageObjects = Task.async(function*(index, hosts, localStorageAct
           break;
         }
       }
-      if (!found) {
-        ok(false, "local storage item " + item.name +
-                  " should not exist in response;");
-      }
+      ok(found, "local storage item " + item.name + " should exist in response");
     }
   };
 
@@ -418,7 +413,7 @@ function testSessionStorage(sessionStorageActor) {
                                    sessionStorageActor);
 }
 
-var testSessionStorageObjects = Task.async(function*(index, hosts, sessionStorageActor) {
+var testSessionStorageObjects = Task.async(function* (index, hosts, sessionStorageActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = data => {
     is(data.total, storeMap.sessionStorage[host].length,
@@ -433,10 +428,7 @@ var testSessionStorageObjects = Task.async(function*(index, hosts, sessionStorag
           break;
         }
       }
-      if (!found) {
-        ok(false, "session storage item " + item.name +
-                  " should not exist in response;");
-      }
+      ok(found, "session storage item " + item.name + " should exist in response");
     }
   };
 
@@ -448,7 +440,7 @@ var testSessionStorageObjects = Task.async(function*(index, hosts, sessionStorag
   yield testSessionStorageObjects(++index, hosts, sessionStorageActor);
 });
 
-var testIndexedDB = Task.async(function*(indexedDBActor) {
+var testIndexedDB = Task.async(function* (indexedDBActor) {
   is(Object.keys(indexedDBActor.hosts).length, 3,
      "Correct number of host entries for indexed db");
 
@@ -462,21 +454,16 @@ var testIndexedDB = Task.async(function*(indexedDBActor) {
           break;
         }
       }
-      if (!found) {
-        ok (false, item + " should not be present in list stores response");
-      }
-      else {
-        ok (true, item + " found from indexedDB list stores response");
-      }
+      ok(found, item + " should exist in list stores response");
     }
   }
 
   yield testIndexedDBs(0, indexedDBActor.hosts, indexedDBActor);
-  yield  testObjectStores(0, indexedDBActor.hosts, indexedDBActor);
-  yield  testIDBEntries(0, indexedDBActor.hosts, indexedDBActor);
+  yield testObjectStores(0, indexedDBActor.hosts, indexedDBActor);
+  yield testIDBEntries(0, indexedDBActor.hosts, indexedDBActor);
 });
 
-var testIndexedDBs = Task.async(function*(index, hosts, indexedDBActor) {
+var testIndexedDBs = Task.async(function* (index, hosts, indexedDBActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = data => {
     is(data.total, IDBValues.dbDetails[host].length,
@@ -494,9 +481,7 @@ var testIndexedDBs = Task.async(function*(index, hosts, indexedDBActor) {
           break;
         }
       }
-      if (!found) {
-        ok(false, "indexed db " + item.name + " should not exist in response");
-      }
+      ok(found, "indexed db " + item.name + " should exist in response");
     }
   };
 
@@ -508,7 +493,7 @@ var testIndexedDBs = Task.async(function*(index, hosts, indexedDBActor) {
   yield testIndexedDBs(++index, hosts, indexedDBActor);
 });
 
-var testObjectStores = Task.async(function*(index, hosts, indexedDBActor) {
+var testObjectStores = Task.async(function* (index, hosts, indexedDBActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = (data, db) => {
     is(data.total, IDBValues.objectStoreDetails[host][db].length,
@@ -537,16 +522,12 @@ var testObjectStores = Task.async(function*(index, hosts, indexedDBActor) {
                 break;
               }
             }
-            if (!indexFound) {
-              ok(false, "Index " + index + " should not be present in response");
-            }
+            ok(indexFound, "Index " + index + " should exist in response");
           }
           break;
         }
       }
-      if (!found) {
-        ok(false, "indexed db " + item.name + " should not exist in response");
-      }
+      ok(found, "indexed db " + item.name + " should exist in response");
     }
   };
 
@@ -563,7 +544,7 @@ var testObjectStores = Task.async(function*(index, hosts, indexedDBActor) {
   yield testObjectStores(++index, hosts, indexedDBActor);
 });
 
-var testIDBEntries = Task.async(function*(index, hosts, indexedDBActor) {
+var testIDBEntries = Task.async(function* (index, hosts, indexedDBActor) {
   let host = Object.keys(hosts)[index];
   let matchItems = (data, obj) => {
     is(data.total, IDBValues.entries[host][obj].length,
@@ -584,9 +565,7 @@ var testIDBEntries = Task.async(function*(index, hosts, indexedDBActor) {
           break;
         }
       }
-      if (!found) {
-        ok(false, "indexed db item " + item.name + " should not exist in response");
-      }
+      ok(found, "indexed db item " + item.name + " should exist in response");
     }
   };
 
@@ -603,7 +582,7 @@ var testIDBEntries = Task.async(function*(index, hosts, indexedDBActor) {
   yield testObjectStores(++index, hosts, indexedDBActor);
 });
 
-add_task(function*() {
+add_task(function* () {
   yield openTabAndSetupStorage(MAIN_DOMAIN + "storage-listings.html");
 
   initDebuggerServer();

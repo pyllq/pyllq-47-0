@@ -83,16 +83,22 @@ ssl_init()
   USER_NICKNAME=TestUser
   NORM_EXT=""
 
+  EC_SUITES=":C001:C002:C003:C004:C005:C006:C007:C008:C009:C00A:C00B:C00C:C00D"
+  EC_SUITES="${EC_SUITES}:C00E:C00F:C010:C011:C012:C013:C014:C023:C024:C027"
+  EC_SUITES="${EC_SUITES}:C028:C02B:C02C:C02F:C030:CCA8:CCA9:CCAA"
+
+  NON_EC_SUITES=":0016:0032:0033:0038:0039:003B:003C:003D:0040:0041:0067:006A:006B"
+  NON_EC_SUITES="${NON_EC_SUITES}:0084:009C:009D:009E:009F:00A2:00A3:CCAAcdefgijklmnvyz"
+
   if [ -z "$NSS_DISABLE_ECC" ] ; then
       ECC_STRING=" - with ECC"
       # List of cipher suites to test, including ECC cipher suites.
-      CIPHER_SUITES="-c ABCDEF:C001:C002:C003:C004:C005:C006:C007:C008:C009:C00A:C00B:C00C:C00D:C00E:C00F:C010:C011:C012:C013:C014:C023:C027:C02B:C02F:CCA8:CCA9:CCAA:0016:0032:0033:0038:0039:003B:003C:003D:0040:0041:0067:006A:006B:0084:009C:009E:00A2cdefgijklmnvyz"
+      CIPHER_SUITES="-c ${EC_SUITES}${NON_EC_SUITES}"
   else
       ECC_STRING=""
       # List of cipher suites to test, excluding ECC cipher suites.
-      CIPHER_SUITES="-c ABCDEF:0016:0032:0033:0038:0039:003B:003C:003D:0040:0041:0067:006A:006B:0084:009C:009E:00A2:CCAAcdefgijklmnvyz"
+      CIPHER_SUITES="-c ${NON_EC_SUITES}"
   fi
-
 
   if [ "${OS_ARCH}" != "WINNT" ]; then
       ulimit -n 1000 # make sure we have enough file descriptors
@@ -217,15 +223,15 @@ start_selfserv()
   echo "selfserv starting at `date`"
   echo "selfserv -D -p ${PORT} -d ${P_R_SERVERDIR} -n ${HOSTADDR} ${SERVER_OPTIONS} \\"
   echo "         ${ECC_OPTIONS} -S ${HOSTADDR}-dsa -w nss ${sparam} -i ${R_SERVERPID}\\"
-  echo "         $verbose -H 1 &"
+  echo "         -V ssl3:tls1.2 $verbose -H 1 &"
   if [ ${fileout} -eq 1 ]; then
       ${PROFTOOL} ${BINDIR}/selfserv -D -p ${PORT} -d ${P_R_SERVERDIR} -n ${HOSTADDR} ${SERVER_OPTIONS} \
-               ${ECC_OPTIONS} -S ${HOSTADDR}-dsa -w nss ${sparam} -i ${R_SERVERPID} $verbose -H 1 \
+               ${ECC_OPTIONS} -S ${HOSTADDR}-dsa -w nss ${sparam} -i ${R_SERVERPID} -V ssl3:tls1.2 $verbose -H 1 \
                > ${SERVEROUTFILE} 2>&1 &
       RET=$?
   else
       ${PROFTOOL} ${BINDIR}/selfserv -D -p ${PORT} -d ${P_R_SERVERDIR} -n ${HOSTADDR} ${SERVER_OPTIONS} \
-               ${ECC_OPTIONS} -S ${HOSTADDR}-dsa -w nss ${sparam} -i ${R_SERVERPID} $verbose -H 1 &
+               ${ECC_OPTIONS} -S ${HOSTADDR}-dsa -w nss ${sparam} -i ${R_SERVERPID} -V ssl3:tls1.2 $verbose -H 1 &
       RET=$?
   fi
 
@@ -267,7 +273,7 @@ ssl_cov()
   mixed=0
   start_selfserv # Launch the server
 
-  VMIN="ssl2"
+  VMIN="ssl3"
   VMAX="tls1.1"
                
   exec < ${SSLCOV}
@@ -275,26 +281,10 @@ ssl_cov()
   do
       echo "${testname}" | grep "EXPORT" > /dev/null 
       EXP=$?
-      echo "${testname}" | grep "SSL2" > /dev/null
-      SSL2=$?
 
-      if [ "${SSL2}" -eq 0 ] ; then
-          # We cannot use asynchronous cert verification with SSL2
-          SSL2_FLAGS=-O
-          VMIN="ssl2"
-      else
-          # Do not enable SSL2 for non-SSL2-specific tests. SSL2 is disabled by
-          # default in libssl but it is enabled by default in tstclnt; we want
-          # to test the libssl default whenever possible.
-          SSL2_FLAGS=
-          VMIN="ssl3"
-      fi
-      
-      if [ "$NORM_EXT" = "Extended Test" -a "${SSL2}" -eq 0 ] ; then
-          echo "$SCRIPTNAME: skipping  $testname for $NORM_EXT"
-      elif [ "$ectype" = "ECC" -a -n "$NSS_DISABLE_ECC" ] ; then
+      if [ "$ectype" = "ECC" -a -n "$NSS_DISABLE_ECC" ] ; then
           echo "$SCRIPTNAME: skipping  $testname (ECC only)"
-      elif [ "$SERVER_MODE" = "fips" -o "$CLIENT_MODE" = "fips" ] && [ "$SSL2" -eq 0 -o "$EXP" -eq 0 ] ; then
+      elif [ "$SERVER_MODE" = "fips" -o "$CLIENT_MODE" = "fips" ] && [ "$EXP" -eq 0 ] ; then
           echo "$SCRIPTNAME: skipping  $testname (non-FIPS only)"
       elif [ "`echo $ectype | cut -b 1`" != "#" ] ; then
           echo "$SCRIPTNAME: running $testname ----------------------------"
@@ -337,11 +327,11 @@ ssl_cov()
             fi
           fi
 
-          echo "tstclnt -p ${PORT} -h ${HOSTADDR} -c ${param} -V ${VMIN}:${VMAX} ${SSL2_FLAGS} ${CLIENT_OPTIONS} \\"
+          echo "tstclnt -p ${PORT} -h ${HOSTADDR} -c ${param} -V ${VMIN}:${VMAX} ${CLIENT_OPTIONS} \\"
           echo "        -f -d ${P_R_CLIENTDIR} -v -w nss < ${REQUEST_FILE}"
 
           rm ${TMP}/$HOST.tmp.$$ 2>/dev/null
-          ${PROFTOOL} ${BINDIR}/tstclnt -p ${PORT} -h ${HOSTADDR} -c ${param} -V ${VMIN}:${VMAX} ${SSL2_FLAGS} ${CLIENT_OPTIONS} -f \
+          ${PROFTOOL} ${BINDIR}/tstclnt -p ${PORT} -h ${HOSTADDR} -c ${param} -V ${VMIN}:${VMAX} ${CLIENT_OPTIONS} -f \
                   -d ${P_R_CLIENTDIR} -v -w nss < ${REQUEST_FILE} \
                   >${TMP}/$HOST.tmp.$$  2>&1
           ret=$?
@@ -436,10 +426,10 @@ ssl_stapling_sub()
     start_selfserv
 
     echo "tstclnt -p ${PORT} -h ${HOSTADDR} -f -d ${P_R_CLIENTDIR} -v ${CLIENT_OPTIONS} \\"
-    echo "        -c v -T -O -F -M 1 -V ssl3: < ${REQUEST_FILE}"
+    echo "        -c v -T -O -F -M 1 -V ssl3:tls1.2 < ${REQUEST_FILE}"
     rm ${TMP}/$HOST.tmp.$$ 2>/dev/null
     ${PROFTOOL} ${BINDIR}/tstclnt -p ${PORT} -h ${HOSTADDR} -f ${CLIENT_OPTIONS} \
-	    -d ${P_R_CLIENTDIR} -v -c v -T -O -F -M 1 -V ssl3: < ${REQUEST_FILE} \
+	    -d ${P_R_CLIENTDIR} -v -c v -T -O -F -M 1 -V ssl3:tls1.2 < ${REQUEST_FILE} \
 	    >${TMP}/$HOST.tmp.$$  2>&1
     ret=$?
     cat ${TMP}/$HOST.tmp.$$
@@ -484,10 +474,10 @@ ssl_stapling_stress()
     start_selfserv
 
     echo "strsclnt -q -p ${PORT} -d ${P_R_CLIENTDIR} ${CLIENT_OPTIONS} -w nss \\"
-    echo "         -c 1000 -V ssl3: -N -T $verbose ${HOSTADDR}"
+    echo "         -c 1000 -V ssl3:tls1.2 -N -T $verbose ${HOSTADDR}"
     echo "strsclnt started at `date`"
     ${PROFTOOL} ${BINDIR}/strsclnt -q -p ${PORT} -d ${P_R_CLIENTDIR} ${CLIENT_OPTIONS} -w nss \
-	    -c 1000 -V ssl3: -N -T $verbose ${HOSTADDR}
+	    -c 1000 -V ssl3:tls1.2 -N -T $verbose ${HOSTADDR}
     ret=$?
 
     echo "strsclnt completed at `date`"
@@ -554,10 +544,10 @@ ssl_signed_cert_timestamps()
     # Since we don't have server-side support, this test only covers advertising the
     # extension in the client hello.
     echo "tstclnt -p ${PORT} -h ${HOSTADDR} -f -d ${P_R_CLIENTDIR} -v ${CLIENT_OPTIONS} \\"
-    echo "        -U -V tls1.0: < ${REQUEST_FILE}"
+    echo "        -U -V tls1.0:tls1.2 < ${REQUEST_FILE}"
     rm ${TMP}/$HOST.tmp.$$ 2>/dev/null
     ${PROFTOOL} ${BINDIR}/tstclnt -p ${PORT} -h ${HOSTADDR} -f ${CLIENT_OPTIONS} \
-            -d ${P_R_CLIENTDIR} -v -U -V tls1.0: < ${REQUEST_FILE} \
+            -d ${P_R_CLIENTDIR} -v -U -V tls1.0:tls1.2 < ${REQUEST_FILE} \
             >${TMP}/$HOST.tmp.$$  2>&1
     ret=$?
     cat ${TMP}/$HOST.tmp.$$
@@ -585,19 +575,13 @@ ssl_stress()
           continue
       fi
 
-      echo "${testname}" | grep "SSL2" > /dev/null
-      SSL2=$?
       echo "${testname}" | grep "client auth" > /dev/null
       CAUTH=$?
 
-      if [ "${SSL2}" -eq 0 -a "$NORM_EXT" = "Extended Test" ] ; then
-          echo "$SCRIPTNAME: skipping  $testname for $NORM_EXT"
-      elif [ "$ectype" = "SNI" -a "$NORM_EXT" = "Extended Test" ] ; then
+      if [ "$ectype" = "SNI" -a "$NORM_EXT" = "Extended Test" ] ; then
           echo "$SCRIPTNAME: skipping  $testname for $NORM_EXT"
       elif [ "$ectype" = "ECC" -a  -n "$NSS_DISABLE_ECC" ] ; then
           echo "$SCRIPTNAME: skipping  $testname (ECC only)"
-      elif [ "${SERVER_MODE}" = "fips" -o "${CLIENT_MODE}" = "fips" ] && [ "${SSL2}" -eq 0 ] ; then
-          echo "$SCRIPTNAME: skipping  $testname (non-FIPS only)"
       elif [ "${CLIENT_MODE}" = "fips" -a "${CAUTH}" -ne 0 ] ; then
           echo "$SCRIPTNAME: skipping  $testname (non-FIPS only)"
       elif [ "`echo $ectype | cut -b 1`" != "#" ]; then
@@ -623,10 +607,10 @@ ssl_stress()
           fi
 
           echo "strsclnt -q -p ${PORT} -d ${P_R_CLIENTDIR} ${CLIENT_OPTIONS} -w nss $cparam \\"
-          echo "         $verbose ${HOSTADDR}"
+          echo "         -V ssl3:tls1.2 $verbose ${HOSTADDR}"
           echo "strsclnt started at `date`"
           ${PROFTOOL} ${BINDIR}/strsclnt -q -p ${PORT} -d ${P_R_CLIENTDIR} ${CLIENT_OPTIONS} -w nss $cparam \
-                   $verbose ${HOSTADDR}
+                   -V ssl3:tls1.2 $verbose ${HOSTADDR}
           ret=$?
           echo "strsclnt completed at `date`"
           html_msg $ret $value \
@@ -747,7 +731,6 @@ ssl_policy()
   exec < ${SSLPOLICY}
   while read value ectype testmax param policy testname
   do
-      SSL2_FLAGS=
       VMIN="ssl3"
 
       if [ "$ectype" = "ECC" -a -n "$NSS_DISABLE_ECC" ] ; then
@@ -907,7 +890,7 @@ load_group_crl() {
         echo "================= Reloading ${eccomment}CRL for group $grpBegin - $grpEnd ============="
 
         echo "tstclnt -p ${PORT} -h ${HOSTADDR} -f -d ${R_CLIENTDIR} -v \\"
-        echo "          -V ssl3: -w nss -n TestUser${UNREVOKED_CERT_GRP_1}${ecsuffix}"
+        echo "          -V ssl3:tls1.2 -w nss -n TestUser${UNREVOKED_CERT_GRP_1}${ecsuffix}"
         echo "Request:"
         echo "GET crl://${SERVERDIR}/root.crl_${grpBegin}-${grpEnd}${ecsuffix}"
         echo ""
@@ -920,7 +903,7 @@ GET crl://${SERVERDIR}/root.crl_${grpBegin}-${grpEnd}${ecsuffix}
 _EOF_REQUEST_
 
         ${PROFTOOL} ${BINDIR}/tstclnt -p ${PORT} -h ${HOSTADDR} -f  \
-            -d ${R_CLIENTDIR} -v -V ssl3: -w nss -n TestUser${UNREVOKED_CERT_GRP_1}${ecsuffix} \
+            -d ${R_CLIENTDIR} -v -V ssl3:tls1.2 -w nss -n TestUser${UNREVOKED_CERT_GRP_1}${ecsuffix} \
             >${OUTFILE_TMP}  2>&1 < ${REQF}
 
         cat ${OUTFILE_TMP}
@@ -1085,7 +1068,9 @@ ssl_run()
     do
         case "${SSL_RUN}" in
         "stapling")
-            ssl_stapling
+            if [ -nz "$NSS_DISABLE_LIBPKIX" ]; then
+              ssl_stapling
+            fi
             ;;
         "signed_cert_timestamps")
             ssl_signed_cert_timestamps

@@ -21,16 +21,16 @@ function consoleOpened(HUD) {
 
   let jsterm = HUD.jsterm;
   let popup = jsterm.autocompletePopup;
-  let onShown = function() {
+  let onShown = function () {
     ok(false, "popup shown");
   };
 
-  jsterm.execute("window.foobarBug660806 = {\
-    'location': 'value0',\
-    'locationbar': 'value1'\
-  }");
+  jsterm.execute(`window.foobarBug660806 = {
+    'location': 'value0',
+    'locationbar': 'value1'
+  }`);
 
-  popup._panel.addEventListener("popupshown", onShown, false);
+  popup.on("popup-opened", onShown);
 
   ok(!popup.isOpen, "popup is not open");
 
@@ -45,9 +45,9 @@ function consoleOpened(HUD) {
   is(jsterm.lastInputValue, "window.foobarBug660806.location",
      "lastInputValue is correct, again");
 
-  executeSoon(function() {
+  executeSoon(function () {
     ok(!popup.isOpen, "popup is not open");
-    popup._panel.removeEventListener("popupshown", onShown, false);
+    popup.off("popup-opened", onShown);
     executeSoon(deferred.resolve);
   });
   return deferred.promise;

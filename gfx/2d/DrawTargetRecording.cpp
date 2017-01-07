@@ -245,7 +245,8 @@ struct AdjustedPattern
         mPattern =
           new (mSurfPat) SurfacePattern(GetSourceSurface(surfPat->mSurface),
                                         surfPat->mExtendMode, surfPat->mMatrix,
-                                        surfPat->mFilter);
+                                        surfPat->mSamplingFilter,
+                                        surfPat->mSamplingRect);
         return mPattern;
       }
     case PatternType::LINEAR_GRADIENT:
@@ -299,12 +300,13 @@ DrawTargetRecording::DrawTargetRecording(DrawEventRecorder *aRecorder, DrawTarge
 }
 
 DrawTargetRecording::DrawTargetRecording(const DrawTargetRecording *aDT,
-                                         const IntSize &aSize,
-                                         SurfaceFormat aFormat)
+                                         DrawTarget *aSimilarDT)
   : mRecorder(aDT->mRecorder)
-  , mFinalDT(aDT->mFinalDT->CreateSimilarDrawTarget(aSize, aFormat))
+  , mFinalDT(aSimilarDT)
 {
-  mRecorder->RecordEvent(RecordedCreateSimilarDrawTarget(this, aSize, aFormat));
+  mRecorder->RecordEvent(RecordedCreateSimilarDrawTarget(this,
+                                                         mFinalDT->GetSize(),
+                                                         mFinalDT->GetFormat()));
   mFormat = mFinalDT->GetFormat();
 }
 
@@ -395,11 +397,22 @@ DrawTargetRecording::FillGlyphs(ScaledFont *aFont,
     RecordedFontData fontData(aFont);
     RecordedFontDetails fontDetails;
     if (fontData.GetFontDetails(fontDetails)) {
+      // Try to serialise the whole font, just in case this is a web font that
+      // is not present on the system.
       if (!mRecorder->HasStoredFontData(fontDetails.fontDataKey)) {
         mRecorder->RecordEvent(fontData);
         mRecorder->AddStoredFontData(fontDetails.fontDataKey);
       }
       mRecorder->RecordEvent(RecordedScaledFontCreation(aFont, fontDetails));
+    } else {
+      // If that fails, record just the font description and try to load it from
+      // the system on the other side.
+      RecordedFontDescriptor fontDesc(aFont);
+      if (fontDesc.IsValid()) {
+        mRecorder->RecordEvent(fontDesc);
+      } else {
+        gfxWarning() << "DrawTargetRecording::FillGlyphs failed to serialise ScaledFont";
+      }
     }
 #endif
     RecordingFontUserData *userData = new RecordingFontUserData;
@@ -464,6 +477,12 @@ DrawTargetRecording::Snapshot()
   mRecorder->RecordEvent(RecordedSnapshot(retSurf, this));
 
   return retSurf.forget();
+}
+
+void
+DrawTargetRecording::DetachAllSnapshots()
+{
+  mFinalDT->DetachAllSnapshots();
 }
 
 void
@@ -568,10 +587,10 @@ DrawTargetRecording::PushLayer(bool aOpaque, Float aOpacity,
     EnsureSurfaceStored(mRecorder, aMask, "PushLayer");
   }
 
-  mRecorder->RecordEvent(RecordedPushLayer(this, aOpacity, aOpacity, aMask,
+  mRecorder->RecordEvent(RecordedPushLayer(this, aOpaque, aOpacity, aMask,
                                            aMaskTransform, aBounds,
                                            aCopyBackground));
-  mFinalDT->PushLayer(aOpacity, aOpacity, aMask, aMaskTransform, aBounds,
+  mFinalDT->PushLayer(aOpaque, aOpacity, aMask, aMaskTransform, aBounds,
                       aCopyBackground);
 }
 
@@ -632,7 +651,14 @@ DrawTargetRecording::CreateSourceSurfaceFromNativeSurface(const NativeSurface &a
 already_AddRefed<DrawTarget>
 DrawTargetRecording::CreateSimilarDrawTarget(const IntSize &aSize, SurfaceFormat aFormat) const
 {
-  return MakeAndAddRef<DrawTargetRecording>(this, aSize, aFormat);
+  RefPtr<DrawTarget> similarDT =
+    mFinalDT->CreateSimilarDrawTarget(aSize, aFormat);
+  if (!similarDT) {
+    return nullptr;
+  }
+
+  similarDT = new DrawTargetRecording(this, similarDT);
+  return similarDT.forget();
 }
 
 already_AddRefed<PathBuilder>

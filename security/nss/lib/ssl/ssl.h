@@ -25,7 +25,7 @@
 
 SEC_BEGIN_PROTOS
 
-/* constant table enumerating all implemented SSL 2 and 3 cipher suites. */
+/* constant table enumerating all implemented cipher suites. */
 SSL_IMPORT const PRUint16 SSL_ImplementedCiphers[];
 
 /* the same as the above, but is a function */
@@ -206,6 +206,42 @@ SSL_IMPORT PRFileDesc *DTLS_ImportFD(PRFileDesc *model, PRFileDesc *fd);
 /* Request Signed Certificate Timestamps via TLS extension (client) */
 #define SSL_ENABLE_SIGNED_CERT_TIMESTAMPS 31
 
+/* Ordinarily, when negotiating a TLS_DHE_* cipher suite the server picks the
+ * group.  draft-ietf-tls-negotiated-ff-dhe changes this to use supported_groups
+ * (formerly supported_curves) to signal which pre-defined groups are OK.
+ *
+ * This option causes an NSS client to use this extension and demand that those
+ * groups be used.  A client will signal any enabled DHE groups in the
+ * supported_groups extension and reject groups that don't match what it has
+ * enabled.  A server will only negotiate TLS_DHE_* cipher suites if the
+ * client includes the extension.
+ *
+ * See SSL_DHEGroupPrefSet() for how to control which groups are enabled.
+ *
+ * This option cannot be enabled if NSS is not compiled with ECC support.
+ */
+#define SSL_REQUIRE_DH_NAMED_GROUPS 32
+
+/* Allow 0-RTT data (for TLS 1.3).
+ *
+ * When this option is set, the server's session tickets will contain
+ * a flag indicating that it accepts 0-RTT. When resuming such a
+ * session, PR_Write() on the client will be allowed immediately after
+ * starting the handshake and PR_Read() on the server will be allowed
+ * on the server to read that data. Calls to
+ * SSL_GetPreliminaryChannelInfo() and SSL_GetNextProto()
+ * can be made used during this period to learn about the channel
+ * parameters [TODO(ekr@rtfm.com): This hasn't landed yet].
+ *
+ * The transition between the 0-RTT and 1-RTT modes is marked by the
+ * handshake callback.
+ *
+ * WARNING: 0-RTT data has different anti-replay and PFS properties than
+ * the rest of the TLS data. See [draft-ietf-tls-tls13; Section 6.2.3]
+ * for more details.
+ */
+#define SSL_ENABLE_0RTT_DATA 33
+
 #ifdef SSL_DEPRECATED_FUNCTION
 /* Old deprecated function names */
 SSL_IMPORT SECStatus SSL_Enable(PRFileDesc *fd, int option, PRBool on);
@@ -267,10 +303,11 @@ SSL_IMPORT SECStatus SSL_SetNextProtoNego(PRFileDesc *fd,
                                           unsigned int length);
 
 typedef enum SSLNextProtoState {
-    SSL_NEXT_PROTO_NO_SUPPORT = 0, /* No peer support                */
-    SSL_NEXT_PROTO_NEGOTIATED = 1, /* Mutual agreement               */
-    SSL_NEXT_PROTO_NO_OVERLAP = 2, /* No protocol overlap found      */
-    SSL_NEXT_PROTO_SELECTED = 3    /* Server selected proto (ALPN)   */
+    SSL_NEXT_PROTO_NO_SUPPORT = 0, /* No peer support                   */
+    SSL_NEXT_PROTO_NEGOTIATED = 1, /* Mutual agreement                  */
+    SSL_NEXT_PROTO_NO_OVERLAP = 2, /* No protocol overlap found         */
+    SSL_NEXT_PROTO_SELECTED = 3,   /* Server selected proto (ALPN)      */
+    SSL_NEXT_PROTO_EARLY_VALUE = 4 /* We are in 0-RTT using this value. */
 } SSLNextProtoState;
 
 /* SSL_GetNextProto can be used in the HandshakeCallback or any time after
@@ -356,7 +393,7 @@ SSL_IMPORT unsigned int SSL_SignatureMaxCount();
 ** For example, a TLS extension sent by the client might indicate a preference.
 */
 SSL_IMPORT SECStatus SSL_DHEGroupPrefSet(PRFileDesc *fd,
-                                         SSLDHEGroupType *groups,
+                                         const SSLDHEGroupType *groups,
                                          PRUint16 num_groups);
 
 /* Enable the use of a DHE group that's smaller than the library default,
@@ -596,6 +633,8 @@ SSL_IMPORT const SECItem *SSL_PeerSignedCertTimestamps(PRFileDesc *fd);
  * handshake message. Parameter |responses| is for the server certificate of
  * the key exchange type |kea|.
  * The function will duplicate the responses array.
+ *
+ * Deprecated: see SSL_ConfigSecureServer for details.
  */
 SSL_IMPORT SECStatus
 SSL_SetStapledOCSPResponses(PRFileDesc *fd, const SECItemArray *responses,
@@ -608,6 +647,8 @@ SSL_SetStapledOCSPResponses(PRFileDesc *fd, const SECItemArray *responses,
  * is for the server certificate of the key exchange type |kea|.
  * The function will duplicate the provided data item. To clear previously
  * set data for a given key exchange type |kea|, pass NULL to |scts|.
+ *
+ * Deprecated: see SSL_ConfigSecureServer for details.
  */
 SSL_IMPORT SECStatus
 SSL_SetSignedCertTimestamps(PRFileDesc *fd, const SECItem *scts,
@@ -764,14 +805,72 @@ SSL_IMPORT SECStatus SSL_BadCertHook(PRFileDesc *fd, SSLBadCertHandler f,
 ** Configure SSL socket for running a secure server. Needs the
 ** certificate for the server and the servers private key. The arguments
 ** are copied.
+**
+** This method should be used in preference to SSL_ConfigSecureServer,
+** SSL_ConfigSecureServerWithCertChain, SSL_SetStapledOCSPResponses, and
+** SSL_SetSignedCertTimestamps.
+**
+** The authentication method is determined from the certificate and private key
+** based on how libssl authenticates peers. Primarily, this uses the value of
+** the SSLAuthType enum and is derived from the type of public key in the
+** certificate.  For example, different RSA certificates might be saved for
+** signing (ssl_auth_rsa_sign) and key encipherment
+** (ssl_auth_rsa_decrypt). Unique to RSA, the same certificate can be used for
+** both usages. Additional information about the authentication method is also
+** used: EC keys with different curves are separately stored.
+**
+** Only one certificate is stored for each authentication method.
+**
+** The optional |data| argument contains additional information about the
+** certificate:
+**
+** - |authType| (with a value other than ssl_auth_null) limits the
+**   authentication method; this is primarily useful in limiting the use of an
+**   RSA certificate to one particular key usage (either signing or key
+**   encipherment) when its key usages indicate support for both.
+**
+** - |certChain| provides an explicit certificate chain, rather than relying on
+**   NSS functions for finding a certificate chain.
+**
+** - |stapledOCSPResponses| provides a response for OCSP stapling.
+**
+** - |signedCertTimestamps| provides a value for the
+**   signed_certificate_timestamp extension used in certificate transparency.
+**
+** The |data_len| argument provides the length of the data.  This should be set
+** to |sizeof(data)|.
+**
+** This function allows an application to provide certificates with narrow key
+** usages attached to them.  For instance, RSA keys can be provided that are
+** limited to signing or decryption only.  Multiple EC certificates with keys on
+** different named curves can be provided.
+**
+** Unlike SSL_ConfigSecureServer(WithCertChain), this function does not accept
+** NULL for the |cert| and |key| arguments.  It will replace certificates that
+** have the same type, but it cannot be used to remove certificates that have
+** already been configured.
+*/
+SSL_IMPORT SECStatus SSL_ConfigServerCert(
+    PRFileDesc *fd, CERTCertificate *cert, SECKEYPrivateKey *key,
+    const SSLExtraServerCertData *data, unsigned int data_len);
+
+/*
+** Deprecated variant of SSL_ConfigServerCert.
+**
+** This uses values from the SSLKEAType to identify the type of |key| that the
+** |cert| contains.  This is incorrect, since key exchange and authentication
+** are separated in some cipher suites (in particular, ECDHE_RSA_* suites).
+**
+** Providing a |kea| parameter of ssl_kea_ecdh (or kt_ecdh) is interpreted as
+** providing both ECDH and ECDSA certificates.
 */
 SSL_IMPORT SECStatus SSL_ConfigSecureServer(
     PRFileDesc *fd, CERTCertificate *cert,
     SECKEYPrivateKey *key, SSLKEAType kea);
 
 /*
-** Allows SSL socket configuration with caller-supplied certificate chain.
-** If certChainOpt is NULL, tries to find one.
+** Deprecated variant of SSL_ConfigSecureServerCert.  The |data| argument to
+** SSL_ConfigSecureServerCert can be used to pass a certificate chain.
 */
 SSL_IMPORT SECStatus
 SSL_ConfigSecureServerWithCertChain(PRFileDesc *fd, CERTCertificate *cert,
@@ -1003,7 +1102,8 @@ SSL_IMPORT SECStatus SSL_GetSRTPCipher(PRFileDesc *fd,
 SSL_IMPORT SECStatus NSS_CmpCertChainWCANames(CERTCertificate *cert,
                                               CERTDistNames *caNames);
 
-/*
+/* Deprecated.  This reports a misleading value for certificates that might
+ * be used for signing rather than key exchange.
  * Returns key exchange type of the keys in an SSL server certificate.
  */
 SSL_IMPORT SSLKEAType NSS_FindCertKEAType(CERTCertificate *cert);
@@ -1044,6 +1144,8 @@ SSL_IMPORT SECStatus SSL_GetChannelInfo(PRFileDesc *fd, SSLChannelInfo *info,
  * Caller supplies the info struct.  This function fills it in.  Caller should
  * pass sizeof(SSLPreliminaryChannelInfo) as the |len| argument.
  *
+ * This function can be called prior to handshake details being confirmed (see
+ * SSL_GetChannelInfo above for what that means).  Thus, information provided by
  * this function is available to SSLAuthCertificate, SSLGetClientAuthData,
  * SSLSNISocketConfig, and other callbacks that might be called during the
  * processing of the first flight of client of server handshake messages.

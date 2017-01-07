@@ -11,7 +11,7 @@ const TEST_URL = "data:text/html;charset=utf8," +
                  "<div id='attr' a='1' b='2' c='3'></div>" +
                  "<div id='delattr' tobeinvalid='1' last='2'></div>";
 
-add_task(function*() {
+add_task(function* () {
   let {inspector} = yield openInspectorForURL(TEST_URL);
 
   yield testAttributeEditing(inspector);
@@ -69,7 +69,7 @@ function* testAttributeDeletion(inspector) {
   let focusedAttr = Services.focus.focusedElement;
   ok(focusedAttr.classList.contains("styleinspector-propertyeditor"),
      "in newattr");
-  is(focusedAttr.tagName, "input", "newattr is active");
+  is(focusedAttr.tagName, "textarea", "newattr is active");
 }
 
 function* editAttributeAndTab(newValue, inspector, goPrevious) {
@@ -89,7 +89,7 @@ function* editAttributeAndTab(newValue, inspector, goPrevious) {
  * field.
  */
 function* activateFirstAttribute(container, inspector) {
-  let {editor} = yield getContainerForSelector(container, inspector);
+  let {editor} = yield focusNode(container, inspector);
   editor.tag.focus();
 
   // Go to "id" attribute and trigger edit mode.

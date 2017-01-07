@@ -16,7 +16,7 @@ const TEST_URI = `
   Testing the color picker tooltip!
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {view} = yield openRuleView();
 
@@ -45,7 +45,7 @@ function* testPressingEnterCommitsChanges(swatch, ruleView) {
     "The text of the border css property was updated");
 
   let onModified = ruleView.once("ruleview-changed");
-  let spectrum = yield cPicker.spectrum;
+  let spectrum = cPicker.spectrum;
   let onHidden = cPicker.tooltip.once("hidden");
   EventUtils.sendKey("RETURN", spectrum.element.ownerDocument.defaultView);
   yield onHidden;

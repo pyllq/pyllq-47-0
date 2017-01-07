@@ -42,6 +42,7 @@
 #include "mozilla/dom/CSPDictionariesBinding.h"
 #include "mozilla/net/ReferrerPolicy.h"
 #include "nsINetworkInterceptController.h"
+#include "nsSandboxFlags.h"
 
 using namespace mozilla;
 
@@ -288,6 +289,15 @@ nsCSPContext::GetPolicy(uint32_t aIndex, nsAString& outStr)
   return NS_OK;
 }
 
+const nsCSPPolicy*
+nsCSPContext::GetPolicy(uint32_t aIndex)
+{
+  if (aIndex >= mPolicies.Length()) {
+    return nullptr;
+  }
+  return mPolicies[aIndex];
+}
+
 NS_IMETHODIMP
 nsCSPContext::GetPolicyCount(uint32_t *outPolicyCount)
 {
@@ -309,6 +319,20 @@ nsCSPContext::GetUpgradeInsecureRequests(bool *outUpgradeRequest)
 }
 
 NS_IMETHODIMP
+nsCSPContext::GetBlockAllMixedContent(bool *outBlockAllMixedContent)
+{
+  *outBlockAllMixedContent = false;
+  for (uint32_t i = 0; i < mPolicies.Length(); i++) {
+     if (!mPolicies[i]->getReportOnlyFlag() &&
+        mPolicies[i]->hasDirective(nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT)) {
+      *outBlockAllMixedContent = true;
+      return NS_OK;
+    }
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsCSPContext::GetReferrerPolicy(uint32_t* outPolicy, bool* outIsSet)
 {
   *outIsSet = false;
@@ -317,11 +341,25 @@ nsCSPContext::GetReferrerPolicy(uint32_t* outPolicy, bool* outIsSet)
   mozilla::net::ReferrerPolicy previousPolicy = mozilla::net::RP_Default;
   for (uint32_t i = 0; i < mPolicies.Length(); i++) {
     mPolicies[i]->getReferrerPolicy(refpol);
-    // an empty string in refpol means it wasn't set (that's the default in
-    // nsCSPPolicy).
-    if (!refpol.IsEmpty()) {
-      // if there are two policies that specify a referrer policy, then they
+    // only set the referrer policy if not delievered through a CSPRO and
+    // note that and an empty string in refpol means it wasn't set
+    // (that's the default in nsCSPPolicy).
+    if (!mPolicies[i]->getReportOnlyFlag() && !refpol.IsEmpty()) {
+      // Referrer Directive in CSP is no more used and going to be replaced by
+      // Referrer-Policy HTTP header. But we still keep using referrer directive,
+      // and would remove it later.
+      // Referrer Directive specs is not fully compliant with new referrer policy
+      // specs. What we are using here:
+      // - If the value of the referrer directive is invalid, the user agent
+      // should set the referrer policy to no-referrer.
+      // - If there are two policies that specify a referrer policy, then they
       // must agree or the employed policy is no-referrer.
+      if (!mozilla::net::IsValidReferrerPolicy(refpol)) {
+        *outPolicy = mozilla::net::RP_No_Referrer;
+        *outIsSet = true;
+        return NS_OK;
+      }
+
       uint32_t currentPolicy = mozilla::net::ReferrerPolicyFromString(refpol);
       if (*outIsSet && previousPolicy != currentPolicy) {
         *outPolicy = mozilla::net::RP_No_Referrer;
@@ -570,6 +608,11 @@ nsCSPContext::LogViolationDetails(uint16_t aViolationType,
                             CSP_UNSAFE_INLINE, SCRIPT_HASH_VIOLATION_OBSERVER_TOPIC);
       CASE_CHECK_AND_REPORT(HASH_STYLE,        STYLESHEET, aContent,
                             CSP_UNSAFE_INLINE, STYLE_HASH_VIOLATION_OBSERVER_TOPIC);
+      CASE_CHECK_AND_REPORT(REQUIRE_SRI_FOR_STYLE,   STYLESHEET, NS_LITERAL_STRING(""),
+                            CSP_REQUIRE_SRI_FOR, REQUIRE_SRI_STYLE_VIOLATION_OBSERVER_TOPIC);
+      CASE_CHECK_AND_REPORT(REQUIRE_SRI_FOR_SCRIPT,   SCRIPT, NS_LITERAL_STRING(""),
+                            CSP_REQUIRE_SRI_FOR, REQUIRE_SRI_SCRIPT_VIOLATION_OBSERVER_TOPIC);
+
 
       default:
         NS_ASSERTION(false, "LogViolationDetails with invalid type");
@@ -601,9 +644,12 @@ nsCSPContext::SetRequestContext(nsIDOMDocument* aDOMDocument,
     // console messages until it becomes available, see flushConsoleMessages
     mQueueUpMessages = !mInnerWindowID;
     mCallingChannelLoadGroup = doc->GetDocumentLoadGroup();
+
+    // set the flag on the document for CSP telemetry
+    doc->SetHasCSP(true);
   }
   else {
-    NS_WARNING("No Document in SetRequestContext; can not query loadgroup; sending reports may fail.");
+    CSPCONTEXTLOG(("No Document in SetRequestContext; can not query loadgroup; sending reports may fail."));
     mLoadingPrincipal = aPrincipal;
     mLoadingPrincipal->GetURI(getter_AddRefs(mSelfURI));
     // if no document is available, then it also does not make sense to queue console messages
@@ -677,35 +723,35 @@ nsCSPContext::logToConsole(const char16_t* aName,
  *
  * @param aURI
  *        The uri to be stripped for reporting
- * @param aProtectedResourcePrincipal
- *        The loadingPrincipal of the protected resource
+ * @param aSelfURI
+ *        The uri of the protected resource
  *        which is needed to enforce the SOP.
  * @return ASCII serialization of the uri to be reported.
  */
 void
 StripURIForReporting(nsIURI* aURI,
-                     nsIPrincipal* aProtectedResourcePrincipal,
+                     nsIURI* aSelfURI,
                      nsACString& outStrippedURI)
 {
   // 1) If the origin of uri is a globally unique identifier (for example,
   // aURI has a scheme of data, blob, or filesystem), then return the
   // ASCII serialization of uri’s scheme.
-  bool isHttp =
-    (NS_SUCCEEDED(aURI->SchemeIs("http", &isHttp)) && isHttp) ||
-    (NS_SUCCEEDED(aURI->SchemeIs("https", &isHttp)) && isHttp);
-  if (!isHttp) {
+  bool isHttpOrFtp =
+    (NS_SUCCEEDED(aURI->SchemeIs("http", &isHttpOrFtp)) && isHttpOrFtp) ||
+    (NS_SUCCEEDED(aURI->SchemeIs("https", &isHttpOrFtp)) && isHttpOrFtp) ||
+    (NS_SUCCEEDED(aURI->SchemeIs("ftp", &isHttpOrFtp)) && isHttpOrFtp);
+
+  if (!isHttpOrFtp) {
     // not strictly spec compliant, but what we really care about is
-    // http/https. If it's not http/https, then treat aURI as if
-    // it's a globally unique identifier and just return the scheme.
+    // http/https and also ftp. If it's not http/https or ftp, then treat aURI
+    // as if it's a globally unique identifier and just return the scheme.
     aURI->GetScheme(outStrippedURI);
     return;
   }
 
   // 2) If the origin of uri is not the same as the origin of the protected
   // resource, then return the ASCII serialization of uri’s origin.
-  bool sameOrigin =
-    NS_SUCCEEDED(aProtectedResourcePrincipal->CheckMayLoad(aURI, false, false));
-  if (!sameOrigin) {
+  if (!NS_SecurityCompareURIs(aSelfURI, aURI, false)) {
     // cross origin redirects also fall into this category, see:
     // http://www.w3.org/TR/CSP/#violation-reports
     aURI->GetPrePath(outStrippedURI);
@@ -762,7 +808,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
     nsCOMPtr<nsIURI> uri = do_QueryInterface(aBlockedContentSource);
     // could be a string or URI
     if (uri) {
-      StripURIForReporting(uri, mLoadingPrincipal, reportBlockedURI);
+      StripURIForReporting(uri, mSelfURI, reportBlockedURI);
     } else {
       nsCOMPtr<nsISupportsCString> cstr = do_QueryInterface(aBlockedContentSource);
       if (cstr) {
@@ -779,7 +825,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
 
   // document-uri
   nsAutoCString reportDocumentURI;
-  StripURIForReporting(mSelfURI, mLoadingPrincipal, reportDocumentURI);
+  StripURIForReporting(mSelfURI, mSelfURI, reportDocumentURI);
   report.mCsp_report.mDocument_uri = NS_ConvertUTF8toUTF16(reportDocumentURI);
 
   // original-policy
@@ -845,7 +891,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
       const char16_t* params[] = { reportURIs[r].get() };
       CSPCONTEXTLOG(("Could not create nsIURI for report URI %s",
                      reportURICstring.get()));
-      logToConsole(MOZ_UTF16("triedToSendReport"), params, ArrayLength(params),
+      logToConsole(u"triedToSendReport", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
       continue; // don't return yet, there may be more URIs
     }
@@ -886,7 +932,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
 
     if (!isHttpScheme) {
       const char16_t* params[] = { reportURIs[r].get() };
-      logToConsole(MOZ_UTF16("reportURInotHttpsOrHttp2"), params, ArrayLength(params),
+      logToConsole(u"reportURInotHttpsOrHttp2", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
       continue;
     }
@@ -929,7 +975,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
       continue;
     }
 
-    rv = uploadChannel->SetUploadStream(sis, NS_LITERAL_CSTRING("application/json"), -1);
+    rv = uploadChannel->SetUploadStream(sis, NS_LITERAL_CSTRING("application/csp-report"), -1);
     NS_ENSURE_SUCCESS(rv, rv);
 
     // if this is an HTTP channel, set the request method to post
@@ -949,7 +995,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
     if (NS_FAILED(rv)) {
       const char16_t* params[] = { reportURIs[r].get() };
       CSPCONTEXTLOG(("AsyncOpen failed for report URI %s", params[0]));
-      logToConsole(MOZ_UTF16("triedToSendReport"), params, ArrayLength(params),
+      logToConsole(u"triedToSendReport", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
     } else {
       CSPCONTEXTLOG(("Sent violation report to URI %s", reportURICstring.get()));
@@ -961,7 +1007,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
 /**
  * Dispatched from the main thread to send reports for one CSP violation.
  */
-class CSPReportSenderRunnable final : public nsRunnable
+class CSPReportSenderRunnable final : public Runnable
 {
   public:
     CSPReportSenderRunnable(nsISupports* aBlockedContentSource,
@@ -1034,8 +1080,8 @@ class CSPReportSenderRunnable final : public nsRunnable
         nsString blockedDataChar16 = NS_ConvertUTF8toUTF16(blockedDataStr);
         const char16_t* params[] = { mViolatedDirective.get(),
                                      blockedDataChar16.get() };
-        mCSPContext->logToConsole(mReportOnlyFlag ? MOZ_UTF16("CSPROViolationWithURI") :
-                                                    MOZ_UTF16("CSPViolationWithURI"),
+        mCSPContext->logToConsole(mReportOnlyFlag ? u"CSPROViolationWithURI" :
+                                                    u"CSPViolationWithURI",
                                   params, ArrayLength(params), mSourceFile, mScriptSample,
                                   mLineNum, 0, nsIScriptError::errorFlag);
       }
@@ -1103,6 +1149,21 @@ nsCSPContext::AsyncReportViolation(nsISupports* aBlockedContentSource,
                                                       aLineNum,
                                                       this));
    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsCSPContext::RequireSRIForType(nsContentPolicyType aContentType, bool* outRequiresSRIForType)
+{
+  *outRequiresSRIForType = false;
+  for (uint32_t i = 0; i < mPolicies.Length(); i++) {
+    if (mPolicies[i]->hasDirective(REQUIRE_SRI_FOR)) {
+      if (mPolicies[i]->requireSRIForType(aContentType)) {
+        *outRequiresSRIForType = true;
+        return NS_OK;
+      }
+    }
+  }
+  return NS_OK;
 }
 
 /**
@@ -1262,6 +1323,45 @@ nsCSPContext::ToJSON(nsAString& outCSPinJSON)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsCSPContext::GetCSPSandboxFlags(uint32_t* aOutSandboxFlags)
+{
+  if (!aOutSandboxFlags) {
+    return NS_ERROR_FAILURE;
+  }
+  *aOutSandboxFlags = SANDBOXED_NONE;
+
+  for (uint32_t i = 0; i < mPolicies.Length(); i++) {
+    uint32_t flags = mPolicies[i]->getSandboxFlags();
+
+    // current policy doesn't have sandbox flag, check next policy
+    if (!flags) {
+      continue;
+    }
+
+    // current policy has sandbox flags, if the policy is in enforcement-mode
+    // (i.e. not report-only) set these flags and check for policies with more
+    // restrictions
+    if (!mPolicies[i]->getReportOnlyFlag()) {
+      *aOutSandboxFlags |= flags;
+    } else {
+      // sandbox directive is ignored in report-only mode, warn about it and
+      // continue the loop checking for an enforcement policy.
+      nsAutoString policy;
+      mPolicies[i]->toString(policy);
+
+      CSPCONTEXTLOG(("nsCSPContext::GetCSPSandboxFlags, report only policy, ignoring sandbox in: %s",
+                    policy.get()));
+
+      const char16_t* params[] = { policy.get() };
+      logToConsole(u"ignoringReportOnlyDirective", params, ArrayLength(params),
+                   EmptyString(), EmptyString(), 0, 0, nsIScriptError::warningFlag);
+    }
+  }
+
+  return NS_OK;
+}
+
 /* ========== CSPViolationReportListener implementation ========== */
 
 NS_IMPL_ISUPPORTS(CSPViolationReportListener, nsIStreamListener, nsIRequestObserver, nsISupports);
@@ -1350,7 +1450,7 @@ CSPReportRedirectSink::AsyncOnChannelRedirect(nsIChannel* aOldChannel,
   NS_ASSERTION(observerService, "Observer service required to log CSP violations");
   observerService->NotifyObservers(uri,
                                    CSP_VIOLATION_TOPIC,
-                                   MOZ_UTF16("denied redirect while sending violation report"));
+                                   u"denied redirect while sending violation report");
 
   return NS_BINDING_REDIRECTED;
 }

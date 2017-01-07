@@ -63,7 +63,6 @@ import zipfile
 import pylru
 import taskcluster
 
-import buildconfig
 from mozbuild.util import (
     ensureParentDir,
     FileAvoidWrite,
@@ -214,7 +213,6 @@ class LinuxArtifactJob(ArtifactJob):
         'firefox/platform.ini',
         'firefox/plugin-container',
         'firefox/updater',
-        'firefox/webapprt-stub',
         'firefox/**/*.so',
     }
 
@@ -292,9 +290,11 @@ class MacArtifactJob(ArtifactJob):
                 'libplugin_child_interpose.dylib',
                 # 'libreplace_jemalloc.dylib',
                 # 'libreplace_malloc.dylib',
+                'libmozavutil.dylib',
+                'libmozavcodec.dylib',
                 'libsoftokn3.dylib',
                 'plugin-container.app/Contents/MacOS/plugin-container',
-                'updater.app/Contents/MacOS/updater',
+                'updater.app/Contents/MacOS/org.mozilla.updater',
                 # 'xpcshell',
                 'XUL',
             ])
@@ -307,7 +307,6 @@ class MacArtifactJob(ArtifactJob):
                 'gmp-clearkey/0.1/libclearkey.dylib',
                 # 'gmp-fake/1.0/libfake.dylib',
                 # 'gmp-fakeopenh264/1.0/libfakeopenh264.dylib',
-                'webapprt-stub',
             ])
 
             with JarWriter(file=processed_filename, optimize=False, compress_level=5) as writer:
@@ -388,20 +387,29 @@ class WinArtifactJob(ArtifactJob):
 # https://tools.taskcluster.net/index/artifacts/#buildbot.branches.mozilla-central/buildbot.branches.mozilla-central.
 # The values correpsond to a pair of (<package regex>, <test archive regex>).
 JOB_DETAILS = {
-    # 'android-api-9': (AndroidArtifactJob, 'public/build/fennec-(.*)\.android-arm\.apk'),
-    'android-api-15': (AndroidArtifactJob, ('public/build/fennec-(.*)\.android-arm\.apk',
+    'android-api-15': (AndroidArtifactJob, ('public/build/fennec-(.*)-arm\.apk',
                                             None)),
-    'android-x86': (AndroidArtifactJob, ('public/build/fennec-(.*)\.android-i386\.apk',
+    'android-x86': (AndroidArtifactJob, ('public/build/fennec-(.*)-i386\.apk',
                                          None)),
     'linux': (LinuxArtifactJob, ('public/build/firefox-(.*)\.linux-i686\.tar\.bz2',
                                  'public/build/firefox-(.*)\.common\.tests\.zip')),
+    'linux-debug': (LinuxArtifactJob, ('public/build/firefox-(.*)\.linux-i686\.tar\.bz2',
+                                 'public/build/firefox-(.*)\.common\.tests\.zip')),
     'linux64': (LinuxArtifactJob, ('public/build/firefox-(.*)\.linux-x86_64\.tar\.bz2',
                                    'public/build/firefox-(.*)\.common\.tests\.zip')),
+    'linux64-debug': (LinuxArtifactJob, ('public/build/target\.tar\.bz2',
+                                         'public/build/target\.common\.tests\.zip')),
     'macosx64': (MacArtifactJob, ('public/build/firefox-(.*)\.mac\.dmg',
+                                  'public/build/firefox-(.*)\.common\.tests\.zip')),
+    'macosx64-debug': (MacArtifactJob, ('public/build/firefox-(.*)\.mac64\.dmg',
                                   'public/build/firefox-(.*)\.common\.tests\.zip')),
     'win32': (WinArtifactJob, ('public/build/firefox-(.*)\.win32.zip',
                                'public/build/firefox-(.*)\.common\.tests\.zip')),
+    'win32-debug': (WinArtifactJob, ('public/build/firefox-(.*)\.win32.zip',
+                               'public/build/firefox-(.*)\.common\.tests\.zip')),
     'win64': (WinArtifactJob, ('public/build/firefox-(.*)\.win64.zip',
+                               'public/build/firefox-(.*)\.common\.tests\.zip')),
+    'win64-debug': (WinArtifactJob, ('public/build/firefox-(.*)\.win64.zip',
                                'public/build/firefox-(.*)\.common\.tests\.zip')),
 }
 
@@ -687,7 +695,7 @@ class ArtifactCache(CacheManager):
                 if now == self._last_dl_update:
                     return
                 self._last_dl_update = now
-                self.log(logging.DEBUG, 'artifact',
+                self.log(logging.INFO, 'artifact',
                          {'bytes_so_far': bytes_so_far, 'total_size': total_size, 'percent': percent},
                          'Downloading... {percent:02.1f} %')
 
@@ -718,20 +726,22 @@ class ArtifactCache(CacheManager):
 class Artifacts(object):
     '''Maintain state to efficiently fetch build artifacts from a Firefox tree.'''
 
-    def __init__(self, tree, job=None, log=None, cache_dir='.', hg=None, git=None, skip_cache=False):
+    def __init__(self, tree, substs, defines, job=None, log=None,
+                 cache_dir='.', hg=None, git=None, skip_cache=False,
+                 topsrcdir=None):
         if (hg and git) or (not hg and not git):
             raise ValueError("Must provide path to exactly one of hg and git")
 
+        self._substs = substs
+        self._defines = defines
         self._tree = tree
         self._job = job or self._guess_artifact_job()
         self._log = log
         self._hg = hg
         self._git = git
-        if self._git:
-            import which
-            self._cinnabar = which.which('git-cinnabar')
         self._cache_dir = cache_dir
         self._skip_cache = skip_cache
+        self._topsrcdir = topsrcdir
 
         try:
             self._artifact_job = get_job_details(self._job, log=self._log)
@@ -751,23 +761,30 @@ class Artifacts(object):
             self._log(*args, **kwargs)
 
     def _guess_artifact_job(self):
-        if buildconfig.substs.get('MOZ_BUILD_APP', '') == 'mobile/android':
-            if buildconfig.substs['ANDROID_CPU_ARCH'] == 'x86':
+        if self._substs.get('MOZ_BUILD_APP', '') == 'mobile/android':
+            if self._substs['ANDROID_CPU_ARCH'] == 'x86':
                 return 'android-x86'
             return 'android-api-15'
 
         target_64bit = False
-        if buildconfig.substs['target_cpu'] == 'x86_64':
+        if self._substs['target_cpu'] == 'x86_64':
             target_64bit = True
 
-        if buildconfig.defines.get('XP_LINUX', False):
-            return 'linux64' if target_64bit else 'linux'
-        if buildconfig.defines.get('XP_WIN', False):
-            return 'win64' if target_64bit else 'win32'
-        if buildconfig.defines.get('XP_MACOSX', False):
+        target_suffix = ''
+
+        # Add the "-debug" suffix to the guessed artifact job name
+        # if MOZ_DEBUG is enabled.
+        if self._substs.get('MOZ_DEBUG'):
+            target_suffix = '-debug'
+
+        if self._defines.get('XP_LINUX', False):
+            return ('linux64' if target_64bit else 'linux') + target_suffix
+        if self._defines.get('XP_WIN', False):
+            return ('win64' if target_64bit else 'win32') + target_suffix
+        if self._defines.get('XP_MACOSX', False):
             # We only produce unified builds in automation, so the target_cpu
             # check is not relevant.
-            return 'macosx64'
+            return 'macosx64' + target_suffix
         raise Exception('Cannot determine default job for |mach artifact|!')
 
     def _pushheads_from_rev(self, rev, count):
@@ -813,15 +830,14 @@ class Artifacts(object):
         return candidate_pushheads
 
     def _get_hg_revisions_from_git(self):
-
-        # First commit is HEAD, next is HEAD~1, etc.
         rev_list = subprocess.check_output([
             self._git, 'rev-list', '--topo-order',
-            'HEAD~{num}..HEAD'.format(num=NUM_REVISIONS_TO_QUERY),
+            '--max-count={num}'.format(num=NUM_REVISIONS_TO_QUERY),
+            'HEAD',
         ])
 
         hg_hash_list = subprocess.check_output([
-            self._cinnabar, 'git2hg'
+            self._git, 'cinnabar', 'git2hg'
         ] + rev_list.splitlines())
 
         zeroes = "0" * 40
@@ -848,7 +864,7 @@ class Artifacts(object):
             '--template', '{node}\n',
             '-r', 'last(public() and ::., {num})'.format(
                 num=NUM_REVISIONS_TO_QUERY)
-        ]).splitlines()
+        ], cwd=self._topsrcdir).splitlines()
 
     def _find_pushheads(self):
         """Returns an iterator of recent pushhead revisions, starting with the
@@ -991,7 +1007,7 @@ class Artifacts(object):
                 raise ValueError('hg revision specification must resolve to exactly one commit')
         else:
             revision = subprocess.check_output([self._git, 'rev-parse', revset]).strip()
-            revision = subprocess.check_output([self._cinnabar, 'git2hg', revision]).strip()
+            revision = subprocess.check_output([self._git, 'cinnabar', 'git2hg', revision]).strip()
             if len(revision.split('\n')) != 1:
                 raise ValueError('hg revision specification must resolve to exactly one commit')
             if revision == "0" * 40:

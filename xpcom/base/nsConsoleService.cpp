@@ -121,7 +121,7 @@ nsConsoleService::~nsConsoleService()
   ClearMessages();
 }
 
-class AddConsolePrefWatchers : public nsRunnable
+class AddConsolePrefWatchers : public Runnable
 {
 public:
   explicit AddConsolePrefWatchers(nsConsoleService* aConsole) : mConsole(aConsole)
@@ -161,7 +161,7 @@ nsConsoleService::Init()
 
 namespace {
 
-class LogMessageRunnable : public nsRunnable
+class LogMessageRunnable : public Runnable
 {
 public:
   LogMessageRunnable(nsIConsoleMessage* aMessage, nsConsoleService* aService)
@@ -463,7 +463,7 @@ nsConsoleService::Observe(nsISupports* aSubject, const char* aTopic,
     MOZ_ASSERT(supportsInt);
 
     uint64_t windowId;
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(supportsInt->GetData(&windowId)));
+    MOZ_ALWAYS_SUCCEEDS(supportsInt->GetData(&windowId));
 
     ClearMessagesForWindowID(windowId);
   } else {

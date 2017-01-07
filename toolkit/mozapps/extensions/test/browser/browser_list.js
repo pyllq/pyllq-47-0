@@ -16,7 +16,6 @@ var gCategoryUtilities;
 var gApp = document.getElementById("bundle_brand").getString("brandShortName");
 var gVersion = Services.appinfo.version;
 var gBlocklistURL = Services.urlFormatter.formatURLPref("extensions.blocklist.detailsURL");
-var gPluginURL = Services.urlFormatter.formatURLPref("plugins.update.url");
 var gDate = new Date(2010, 7, 16);
 var infoURL = Services.urlFormatter.formatURLPref("app.support.baseURL") + "unsigned-addons";
 
@@ -358,7 +357,7 @@ add_task(function*() {
   is(get_node(addon, "warning").textContent, "An important update is available for Test add-on 7.", "Warning message should be correct");
   is_element_visible(get_node(addon, "warning-link"), "Warning link should be visible");
   is(get_node(addon, "warning-link").value, "Update Now", "Warning link text should be correct");
-  is(get_node(addon, "warning-link").href, gPluginURL, "Warning link should be correct");
+  is(get_node(addon, "warning-link").href, "http://example.com/addon7@tests.mozilla.org", "Warning link should be correct");
   is_element_hidden(get_node(addon, "error"), "Error message should be hidden");
   is_element_hidden(get_node(addon, "error-link"), "Error link should be hidden");
   is_element_hidden(get_node(addon, "pending"), "Pending message should be hidden");
@@ -666,7 +665,7 @@ add_task(function*() {
   is(get_node(addon, "warning").textContent, "An important update is available for Test add-on 7.", "Warning message should be correct");
   is_element_visible(get_node(addon, "warning-link"), "Warning link should be visible");
   is(get_node(addon, "warning-link").value, "Update Now", "Warning link text should be correct");
-  is(get_node(addon, "warning-link").href, gPluginURL, "Warning link should be correct");
+  is(get_node(addon, "warning-link").href, "http://example.com/addon7@tests.mozilla.org", "Warning link should be correct");
   is_element_hidden(get_node(addon, "error"), "Error message should be hidden");
   is_element_hidden(get_node(addon, "error-link"), "Error link should be hidden");
   is_element_hidden(get_node(addon, "pending"), "Pending message should be hidden");

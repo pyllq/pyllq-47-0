@@ -18,10 +18,13 @@ struct SystemPrincipalInfo
 { };
 
 struct NullPrincipalInfo
-{ };
+{
+  PrincipalOriginAttributes attrs;
+};
 
 struct ExpandedPrincipalInfo
 {
+  PrincipalOriginAttributes attrs;
   PrincipalInfo[] whitelist;
 };
 

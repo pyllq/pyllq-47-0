@@ -103,7 +103,7 @@ function replaceCSSResource(window, fileURI) {
 
 function watchCSS(window) {
   if (Services.prefs.getBoolPref("devtools.loader.hotreload")) {
-    const watcher = require("devtools/client/shared/file-watcher");
+    const watcher = require("devtools/client/shared/devtools-file-watcher");
 
     function onFileChanged(_, relativePath) {
       if (relativePath.match(/\.css$/)) {
@@ -123,7 +123,7 @@ function watchCSS(window) {
 
         replaceCSS(
           window,
-          "chrome://devtools/content/" +  relativePath.replace(/^client\//, "")
+          "chrome://devtools/content/" + relativePath.replace(/^client\//, "")
         );
         replaceCSS(window, "resource://devtools/" + relativePath);
       } else if (relativePath.match(/\.(svg|png)$/)) {

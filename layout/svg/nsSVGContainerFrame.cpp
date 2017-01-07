@@ -20,7 +20,7 @@ using namespace mozilla;
 
 NS_QUERYFRAME_HEAD(nsSVGContainerFrame)
   NS_QUERYFRAME_ENTRY(nsSVGContainerFrame)
-NS_QUERYFRAME_TAIL_INHERITING(nsSVGContainerFrameBase)
+NS_QUERYFRAME_TAIL_INHERITING(nsContainerFrame)
 
 NS_QUERYFRAME_HEAD(nsSVGDisplayContainerFrame)
   NS_QUERYFRAME_ENTRY(nsSVGDisplayContainerFrame)
@@ -71,14 +71,14 @@ nsSVGContainerFrame::RemoveFrame(ChildListID aListID,
 }
 
 bool
-nsSVGContainerFrame::UpdateOverflow()
+nsSVGContainerFrame::ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas)
 {
   if (mState & NS_FRAME_IS_NONDISPLAY) {
     // We don't maintain overflow rects.
     // XXX It would have be better if the restyle request hadn't even happened.
     return false;
   }
-  return nsSVGContainerFrameBase::UpdateOverflow();
+  return nsContainerFrame::ComputeCustomOverflow(aOverflowAreas);
 }
 
 /**
@@ -248,7 +248,7 @@ nsSVGDisplayContainerFrame::IsSVGTransformed(gfx::Matrix *aOwnTransform,
 //----------------------------------------------------------------------
 // nsISVGChildFrame methods
 
-nsresult
+DrawResult
 nsSVGDisplayContainerFrame::PaintSVG(gfxContext& aContext,
                                      const gfxMatrix& aTransform,
                                      const nsIntRect *aDirtyRect)
@@ -259,9 +259,8 @@ nsSVGDisplayContainerFrame::PaintSVG(gfxContext& aContext,
                "If display lists are enabled, only painting of non-display "
                "SVG should take this code path");
 
-  const nsStyleDisplay *display = StyleDisplay();
-  if (display->mOpacity == 0.0) {
-    return NS_OK;
+  if (StyleEffects()->mOpacity == 0.0) {
+    return DrawResult::SUCCESS;
   }
 
   gfxMatrix matrix = aTransform;
@@ -269,10 +268,11 @@ nsSVGDisplayContainerFrame::PaintSVG(gfxContext& aContext,
     matrix = static_cast<const nsSVGElement*>(GetContent())->
                PrependLocalTransformsTo(matrix, eChildToUserSpace);
     if (matrix.IsSingular()) {
-      return NS_OK;
+      return DrawResult::SUCCESS;
     }
   }
 
+  DrawResult result = DrawResult::SUCCESS;
   for (nsIFrame* kid = mFrames.FirstChild(); kid;
        kid = kid->GetNextSibling()) {
     gfxMatrix m = matrix;
@@ -289,10 +289,13 @@ nsSVGDisplayContainerFrame::PaintSVG(gfxContext& aContext,
         continue;
       }
     }
-    nsSVGUtils::PaintFrameWithEffects(kid, aContext, m, aDirtyRect);
+    result = nsSVGUtils::PaintFrameWithEffects(kid, aContext, m, aDirtyRect);
+    if (result != DrawResult::SUCCESS) {
+      return result;
+    }
   }
 
-  return NS_OK;
+  return result;
 }
 
 nsIFrame*

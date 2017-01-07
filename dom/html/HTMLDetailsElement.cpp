@@ -66,9 +66,28 @@ HTMLDetailsElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
   nsChangeHint hint =
     nsGenericHTMLElement::GetAttributeChangeHint(aAttribute, aModType);
   if (aAttribute == nsGkAtoms::open) {
-    NS_UpdateHint(hint, nsChangeHint_ReconstructFrame);
+    hint |= nsChangeHint_ReconstructFrame;
   }
   return hint;
+}
+
+nsresult
+HTMLDetailsElement::BeforeSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
+                                  nsAttrValueOrString* aValue, bool aNotify)
+{
+  if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::open) {
+    bool setOpen = aValue != nullptr;
+    if (Open() != setOpen) {
+      if (mToggleEventDispatcher) {
+        mToggleEventDispatcher->Cancel();
+      }
+      mToggleEventDispatcher = new ToggleEventDispatcher(this);
+      mToggleEventDispatcher->PostDOMEvent();
+    }
+  }
+
+  return nsGenericHTMLElement::BeforeSetAttr(aNameSpaceID, aName, aValue,
+                                             aNotify);
 }
 
 JSObject*

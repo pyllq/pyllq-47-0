@@ -12,12 +12,10 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/StyleAnimationValue.h"
 #include "mozilla/dom/Animation.h"
 #include "mozilla/Attributes.h" // For MOZ_NON_OWNING_REF
 #include "mozilla/Assertions.h"
 #include "nsContentUtils.h"
-#include "nsCSSProperty.h"
 #include "nsCSSPseudoElements.h"
 #include "nsCycleCollectionParticipant.h"
 
@@ -30,9 +28,13 @@ namespace dom {
 class Element;
 }
 
+template <class AnimationType>
 class CommonAnimationManager {
 public:
-  explicit CommonAnimationManager(nsPresContext *aPresContext);
+  explicit CommonAnimationManager(nsPresContext *aPresContext)
+    : mPresContext(aPresContext)
+  {
+  }
 
   // NOTE:  This can return null after Disconnect().
   nsPresContext* PresContext() const { return mPresContext; }
@@ -40,39 +42,33 @@ public:
   /**
    * Notify the manager that the pres context is going away.
    */
-  void Disconnect();
+  void Disconnect()
+  {
+    // Content nodes might outlive the transition or animation manager.
+    RemoveAllElementCollections();
 
-  static bool ExtractComputedValueForTransition(
-                  nsCSSProperty aProperty,
-                  nsStyleContext* aStyleContext,
-                  StyleAnimationValue& aComputedValue);
-
-protected:
-  virtual ~CommonAnimationManager();
-
-  void AddElementCollection(AnimationCollection* aCollection);
-  void RemoveAllElementCollections();
-
-  virtual nsIAtom* GetAnimationsAtom() = 0;
-  virtual nsIAtom* GetAnimationsBeforeAtom() = 0;
-  virtual nsIAtom* GetAnimationsAfterAtom() = 0;
-
-public:
-  // Get (and optionally create) the collection of animations managed
-  // by this class for the given |aElement| and |aPseudoType|.
-  AnimationCollection*
-  GetAnimationCollection(dom::Element *aElement,
-                         CSSPseudoElementType aPseudoType,
-                         bool aCreateIfNeeded);
-
-  // Given the frame |aFrame| with possibly animated content, finds its
-  // associated collection of animations. If it is a generated content
-  // frame, it may examine the parent frame to search for such animations.
-  AnimationCollection*
-  GetAnimationCollection(const nsIFrame* aFrame);
+    mPresContext = nullptr;
+  }
 
 protected:
-  LinkedList<AnimationCollection> mElementCollections;
+  virtual ~CommonAnimationManager()
+  {
+    MOZ_ASSERT(!mPresContext, "Disconnect should have been called");
+  }
+
+  void AddElementCollection(AnimationCollection<AnimationType>* aCollection)
+  {
+    mElementCollections.insertBack(aCollection);
+  }
+  void RemoveAllElementCollections()
+  {
+    while (AnimationCollection<AnimationType>* head =
+           mElementCollections.getFirst()) {
+      head->Destroy(); // Note: this removes 'head' from mElementCollections.
+    }
+  }
+
+  LinkedList<AnimationCollection<AnimationType>> mElementCollections;
   nsPresContext *mPresContext; // weak (non-null from ctor to Disconnect)
 };
 

@@ -31,6 +31,7 @@
 #include "mozilla/Telemetry.h"
 
 #include "jsapi.h"
+#include "jsfriendapi.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsCRTGlue.h"
 #include "nsDirectoryServiceDefs.h"
@@ -62,9 +63,9 @@ GetCurrentThreadDebuggerMallocSizeOf()
 {
   auto ccrt = CycleCollectedJSRuntime::Get();
   MOZ_ASSERT(ccrt);
-  auto rt = ccrt->Runtime();
-  MOZ_ASSERT(rt);
-  auto mallocSizeOf = JS::dbg::GetDebuggerMallocSizeOf(rt);
+  auto cx = ccrt->Context();
+  MOZ_ASSERT(cx);
+  auto mallocSizeOf = JS::dbg::GetDebuggerMallocSizeOf(cx);
   MOZ_ASSERT(mallocSizeOf);
   return mallocSizeOf;
 }
@@ -106,7 +107,7 @@ HeapSnapshot::Create(JSContext* cx,
 
 template<typename MessageType>
 static bool
-parseMessage(ZeroCopyInputStream& stream, MessageType& message)
+parseMessage(ZeroCopyInputStream& stream, uint32_t sizeOfMessage, MessageType& message)
 {
   // We need to create a new `CodedInputStream` for each message so that the
   // 64MB limit is applied per-message rather than to the whole stream.
@@ -121,16 +122,7 @@ parseMessage(ZeroCopyInputStream& stream, MessageType& message)
   // non-dominating messages.
   codedStream.SetRecursionLimit(HeapSnapshot::MAX_STACK_DEPTH * 3);
 
-  // Because protobuf messages aren't self-delimiting, we serialize each message
-  // preceeded by its size in bytes. When deserializing, we read this size and
-  // then limit reading from the stream to the given byte size. If we didn't,
-  // then the first message would consume the entire stream.
-
-  uint32_t size = 0;
-  if (NS_WARN_IF(!codedStream.ReadVarint32(&size)))
-    return false;
-
-  auto limit = codedStream.PushLimit(size);
+  auto limit = codedStream.PushLimit(sizeOfMessage);
   if (NS_WARN_IF(!message.ParseFromCodedStream(&codedStream)) ||
       NS_WARN_IF(!codedStream.ConsumedEntireMessage()) ||
       NS_WARN_IF(codedStream.BytesUntilLimit() != 0))
@@ -145,8 +137,6 @@ parseMessage(ZeroCopyInputStream& stream, MessageType& message)
 template<typename CharT, typename InternedStringSet>
 struct GetOrInternStringMatcher
 {
-  using ReturnType = const CharT*;
-
   InternedStringSet& internedStrings;
 
   explicit GetOrInternStringMatcher(InternedStringSet& strings) : internedStrings(strings) { }
@@ -390,27 +380,16 @@ HeapSnapshot::saveStackFrame(const protobuf::StackFrame& frame,
 #undef GET_STRING_OR_REF_WITH_PROP_NAMES
 #undef GET_STRING_OR_REF
 
-static inline bool
-StreamHasData(GzipInputStream& stream)
+// Because protobuf messages aren't self-delimiting, we serialize each message
+// preceded by its size in bytes. When deserializing, we read this size and then
+// limit reading from the stream to the given byte size. If we didn't, then the
+// first message would consume the entire stream.
+static bool
+readSizeOfNextMessage(ZeroCopyInputStream& stream, uint32_t* sizep)
 {
-  // Test for the end of the stream. The protobuf library gives no way to tell
-  // the difference between an underlying read error and the stream being
-  // done. All we can do is attempt to read data and extrapolate guestimations
-  // from the result of that operation.
-
-  const void* buf;
-  int size;
-  bool more = stream.Next(&buf, &size);
-  if (!more)
-    // Could not read any more data. We are optimistic and assume the stream is
-    // just exhausted and there is not an underlying IO error, since this
-    // function is only called at message boundaries.
-    return false;
-
-  // There is more data still available in the stream. Return the data we read
-  // to the stream and let the parser get at it.
-  stream.BackUp(size);
-  return true;
+  MOZ_ASSERT(sizep);
+  CodedInputStream codedStream(&stream);
+  return codedStream.ReadVarint32(sizep) && *sizep > 0;
 }
 
 bool
@@ -421,11 +400,14 @@ HeapSnapshot::init(JSContext* cx, const uint8_t* buffer, uint32_t size)
 
   ArrayInputStream stream(buffer, size);
   GzipInputStream gzipStream(&stream);
+  uint32_t sizeOfMessage = 0;
 
   // First is the metadata.
 
   protobuf::Metadata metadata;
-  if (!parseMessage(gzipStream, metadata))
+  if (NS_WARN_IF(!readSizeOfNextMessage(gzipStream, &sizeOfMessage)))
+    return false;
+  if (!parseMessage(gzipStream, sizeOfMessage, metadata))
     return false;
   if (metadata.has_timestamp())
     timestamp.emplace(metadata.timestamp());
@@ -433,7 +415,9 @@ HeapSnapshot::init(JSContext* cx, const uint8_t* buffer, uint32_t size)
   // Next is the root node.
 
   protobuf::Node root;
-  if (!parseMessage(gzipStream, root))
+  if (NS_WARN_IF(!readSizeOfNextMessage(gzipStream, &sizeOfMessage)))
+    return false;
+  if (!parseMessage(gzipStream, sizeOfMessage, root))
     return false;
 
   // Although the id is optional in the protobuf format for future proofing, we
@@ -452,9 +436,13 @@ HeapSnapshot::init(JSContext* cx, const uint8_t* buffer, uint32_t size)
 
   // Finally, the rest of the nodes in the core dump.
 
-  while (StreamHasData(gzipStream)) {
+  // Test for the end of the stream. The protobuf library gives no way to tell
+  // the difference between an underlying read error and the stream being
+  // done. All we can do is attempt to read the size of the next message and
+  // extrapolate guestimations from the result of that operation.
+  while (readSizeOfNextMessage(gzipStream, &sizeOfMessage)) {
     protobuf::Node node;
-    if (!parseMessage(gzipStream, node))
+    if (!parseMessage(gzipStream, sizeOfMessage, node))
       return false;
     if (NS_WARN_IF(!saveNode(node, edgeReferents)))
       return false;
@@ -501,7 +489,7 @@ HeapSnapshot::TakeCensus(JSContext* cx, JS::HandleObject options,
   {
     JS::AutoCheckCannotGC nogc;
 
-    JS::ubi::CensusTraversal traversal(JS_GetRuntime(cx), handler, nogc);
+    JS::ubi::CensusTraversal traversal(cx, handler, nogc);
     if (NS_WARN_IF(!traversal.init())) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return;
@@ -568,10 +556,10 @@ HeapSnapshot::ComputeDominatorTree(ErrorResult& rv)
   {
     auto ccrt = CycleCollectedJSRuntime::Get();
     MOZ_ASSERT(ccrt);
-    auto rt = ccrt->Runtime();
-    MOZ_ASSERT(rt);
-    JS::AutoCheckCannotGC nogc(rt);
-    maybeTree = JS::ubi::DominatorTree::Create(rt, nogc, getRoot());
+    auto cx = ccrt->Context();
+    MOZ_ASSERT(cx);
+    JS::AutoCheckCannotGC nogc(cx);
+    maybeTree = JS::ubi::DominatorTree::Create(cx, nogc, getRoot());
   }
 
   if (NS_WARN_IF(maybeTree.isNothing())) {
@@ -633,12 +621,8 @@ HeapSnapshot::ComputeShortestPaths(JSContext*cx, uint64_t start,
 
   Maybe<ShortestPaths> maybeShortestPaths;
   {
-    auto ccrt = CycleCollectedJSRuntime::Get();
-    MOZ_ASSERT(ccrt);
-    auto rt = ccrt->Runtime();
-    MOZ_ASSERT(rt);
-    JS::AutoCheckCannotGC nogc(rt);
-    maybeShortestPaths = ShortestPaths::Create(rt, nogc, maxNumPaths, *startNode,
+    JS::AutoCheckCannotGC nogc(cx);
+    maybeShortestPaths = ShortestPaths::Create(cx, nogc, maxNumPaths, *startNode,
                                                Move(targetsSet));
   }
 
@@ -722,17 +706,17 @@ HeapSnapshot::ComputeShortestPaths(JSContext*cx, uint64_t start,
 /*** Saving Heap Snapshots ************************************************************************/
 
 // If we are only taking a snapshot of the heap affected by the given set of
-// globals, find the set of zones the globals are allocated within. Returns
-// false on OOM failure.
+// globals, find the set of compartments the globals are allocated
+// within. Returns false on OOM failure.
 static bool
-PopulateZonesWithGlobals(ZoneSet& zones, AutoObjectVector& globals)
+PopulateCompartmentsWithGlobals(CompartmentSet& compartments, AutoObjectVector& globals)
 {
-  if (!zones.init())
+  if (!compartments.init())
     return false;
 
   unsigned length = globals.length();
   for (unsigned i = 0; i < length; i++) {
-    if (!zones.put(GetObjectZone(globals[i])))
+    if (!compartments.put(GetObjectCompartment(globals[i])))
       return false;
   }
 
@@ -747,7 +731,7 @@ AddGlobalsAsRoots(AutoObjectVector& globals, ubi::RootList& roots)
   unsigned length = globals.length();
   for (unsigned i = 0; i < length; i++) {
     if (!roots.addRoot(ubi::Node(globals[i].get()),
-                       MOZ_UTF16("heap snapshot global")))
+                       u"heap snapshot global"))
     {
       return false;
     }
@@ -757,9 +741,10 @@ AddGlobalsAsRoots(AutoObjectVector& globals, ubi::RootList& roots)
 
 // Choose roots and limits for a traversal, given `boundaries`. Set `roots` to
 // the set of nodes within the boundaries that are referred to by nodes
-// outside. If `boundaries` does not include all JS zones, initialize `zones` to
-// the set of included zones; otherwise, leave `zones` uninitialized. (You can
-// use zones.initialized() to check.)
+// outside. If `boundaries` does not include all JS compartments, initialize
+// `compartments` to the set of included compartments; otherwise, leave
+// `compartments` uninitialized. (You can use compartments.initialized() to
+// check.)
 //
 // If `boundaries` is incoherent, or we encounter an error while trying to
 // handle it, or we run out of memory, set `rv` appropriately and return
@@ -769,10 +754,10 @@ EstablishBoundaries(JSContext* cx,
                     ErrorResult& rv,
                     const HeapSnapshotBoundaries& boundaries,
                     ubi::RootList& roots,
-                    ZoneSet& zones)
+                    CompartmentSet& compartments)
 {
   MOZ_ASSERT(!roots.initialized());
-  MOZ_ASSERT(!zones.initialized());
+  MOZ_ASSERT(!compartments.initialized());
 
   bool foundBoundaryProperty = false;
 
@@ -805,8 +790,8 @@ EstablishBoundaries(JSContext* cx,
 
     AutoObjectVector globals(cx);
     if (!dbg::GetDebuggeeGlobals(cx, *dbgObj, globals) ||
-        !PopulateZonesWithGlobals(zones, globals) ||
-        !roots.init(zones) ||
+        !PopulateCompartmentsWithGlobals(compartments, globals) ||
+        !roots.init(compartments) ||
         !AddGlobalsAsRoots(globals, roots))
     {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
@@ -840,8 +825,8 @@ EstablishBoundaries(JSContext* cx,
       }
     }
 
-    if (!PopulateZonesWithGlobals(zones, globals) ||
-        !roots.init(zones) ||
+    if (!PopulateCompartmentsWithGlobals(compartments, globals) ||
+        !roots.init(compartments) ||
         !AddGlobalsAsRoots(globals, roots))
     {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
@@ -855,8 +840,8 @@ EstablishBoundaries(JSContext* cx,
   }
 
   MOZ_ASSERT(roots.initialized());
-  MOZ_ASSERT_IF(boundaries.mDebugger.WasPassed(), zones.initialized());
-  MOZ_ASSERT_IF(boundaries.mGlobals.WasPassed(), zones.initialized());
+  MOZ_ASSERT_IF(boundaries.mDebugger.WasPassed(), compartments.initialized());
+  MOZ_ASSERT_IF(boundaries.mGlobals.WasPassed(), compartments.initialized());
   return true;
 }
 
@@ -869,8 +854,6 @@ class TwoByteString : public Variant<JSAtom*, const char16_t*, JS::ubi::EdgeName
 
   struct AsTwoByteStringMatcher
   {
-    using ReturnType = TwoByteString;
-
     TwoByteString match(JSAtom* atom) {
       return TwoByteString(atom);
     }
@@ -882,16 +865,12 @@ class TwoByteString : public Variant<JSAtom*, const char16_t*, JS::ubi::EdgeName
 
   struct IsNonNullMatcher
   {
-    using ReturnType = bool;
-
     template<typename T>
     bool match(const T& t) { return t != nullptr; }
   };
 
   struct LengthMatcher
   {
-    using ReturnType = size_t;
-
     size_t match(JSAtom* atom) {
       MOZ_ASSERT(atom);
       JS::ubi::AtomOrTwoByteChars s(atom);
@@ -911,8 +890,6 @@ class TwoByteString : public Variant<JSAtom*, const char16_t*, JS::ubi::EdgeName
 
   struct CopyToBufferMatcher
   {
-    using ReturnType = size_t;
-
     RangedPtr<char16_t> destination;
     size_t              maxLength;
 
@@ -994,8 +971,6 @@ struct TwoByteString::HashPolicy {
   using Lookup = TwoByteString;
 
   struct HashingMatcher {
-    using ReturnType  = js::HashNumber;
-
     js::HashNumber match(const JSAtom* atom) {
       return js::DefaultHasher<const JSAtom*>::hash(atom);
     }
@@ -1018,7 +993,6 @@ struct TwoByteString::HashPolicy {
   }
 
   struct EqualityMatcher {
-    using ReturnType = bool;
     const TwoByteString& rhs;
     explicit EqualityMatcher(const TwoByteString& rhs) : rhs(rhs) { }
 
@@ -1174,7 +1148,7 @@ class MOZ_STACK_CLASS StreamWriter : public CoreDumpWriter
     data->set_line(frame.line());
     data->set_column(frame.column());
     data->set_issystem(frame.isSystem());
-    data->set_isselfhosted(frame.isSelfHosted());
+    data->set_isselfhosted(frame.isSelfHosted(cx));
 
     auto dupeSource = TwoByteString::from(frame.source());
     if (!attachTwoByteString(dupeSource,
@@ -1237,7 +1211,7 @@ public:
   }
 
   virtual bool writeNode(const JS::ubi::Node& ubiNode,
-                         EdgePolicy includeEdges) final {
+                         EdgePolicy includeEdges) override final {
     // NB: de-duplicated string properties must be written in the same order
     // here as they are read in `HeapSnapshot::saveNode` or else indices in
     // references to already serialized strings will be off.
@@ -1255,13 +1229,12 @@ public:
       return false;
     }
 
-    JSRuntime* rt = JS_GetRuntime(cx);
-    mozilla::MallocSizeOf mallocSizeOf = dbg::GetDebuggerMallocSizeOf(rt);
+    mozilla::MallocSizeOf mallocSizeOf = dbg::GetDebuggerMallocSizeOf(cx);
     MOZ_ASSERT(mallocSizeOf);
     protobufNode.set_size(ubiNode.size(mallocSizeOf));
 
     if (includeEdges) {
-      auto edges = ubiNode.edges(JS_GetRuntime(cx), wantNames);
+      auto edges = ubiNode.edges(cx, wantNames);
       if (NS_WARN_IF(!edges))
         return false;
 
@@ -1321,8 +1294,8 @@ public:
 // core dump.
 class MOZ_STACK_CLASS HeapSnapshotHandler
 {
-  CoreDumpWriter& writer;
-  JS::ZoneSet*    zones;
+  CoreDumpWriter&     writer;
+  JS::CompartmentSet* compartments;
 
 public:
   // For telemetry.
@@ -1330,9 +1303,9 @@ public:
   uint32_t edgeCount;
 
   HeapSnapshotHandler(CoreDumpWriter& writer,
-                      JS::ZoneSet* zones)
+                      JS::CompartmentSet* compartments)
     : writer(writer),
-      zones(zones)
+      compartments(compartments)
   { }
 
   // JS::ubi::BreadthFirst handler interface.
@@ -1360,21 +1333,21 @@ public:
 
     const JS::ubi::Node& referent = edge.referent;
 
-    if (!zones)
-      // We aren't targeting a particular set of zones, so serialize all the
+    if (!compartments)
+      // We aren't targeting a particular set of compartments, so serialize all the
       // things!
       return writer.writeNode(referent, CoreDumpWriter::INCLUDE_EDGES);
 
-    // We are targeting a particular set of zones. If this node is in our target
+    // We are targeting a particular set of compartments. If this node is in our target
     // set, serialize it and all of its edges. If this node is _not_ in our
     // target set, we also serialize under the assumption that it is a shared
-    // resource being used by something in our target zones since we reached it
+    // resource being used by something in our target compartments since we reached it
     // by traversing the heap graph. However, we do not serialize its outgoing
     // edges and we abandon further traversal from this node.
 
-    JS::Zone* zone = referent.zone();
+    JSCompartment* compartment = referent.compartment();
 
-    if (zones->has(zone))
+    if (compartments->has(compartment))
       return writer.writeNode(referent, CoreDumpWriter::INCLUDE_EDGES);
 
     traversal.abandonReferent();
@@ -1388,7 +1361,7 @@ WriteHeapGraph(JSContext* cx,
                const JS::ubi::Node& node,
                CoreDumpWriter& writer,
                bool wantNames,
-               JS::ZoneSet* zones,
+               JS::CompartmentSet* compartments,
                JS::AutoCheckCannotGC& noGC,
                uint32_t& outNodeCount,
                uint32_t& outEdgeCount)
@@ -1402,8 +1375,8 @@ WriteHeapGraph(JSContext* cx,
   // Walk the heap graph starting from the given node and serialize it into the
   // core dump.
 
-  HeapSnapshotHandler handler(writer, zones);
-  HeapSnapshotHandler::Traversal traversal(JS_GetRuntime(cx), handler, noGC);
+  HeapSnapshotHandler handler(writer, compartments);
+  HeapSnapshotHandler::Traversal traversal(cx, handler, noGC);
   if (!traversal.init())
     return false;
   traversal.wantNames = wantNames;
@@ -1457,7 +1430,7 @@ HeapSnapshot::CreateUniqueCoreDumpFile(ErrorResult& rv,
 class DeleteHeapSnapshotTempFileHelperChild
 {
 public:
-  MOZ_CONSTEXPR DeleteHeapSnapshotTempFileHelperChild() { }
+  constexpr DeleteHeapSnapshotTempFileHelperChild() { }
 
   void operator()(PHeapSnapshotTempFileHelperChild* ptr) const {
     NS_WARN_IF(!HeapSnapshotTempFileHelperChild::Send__delete__(ptr));
@@ -1548,7 +1521,7 @@ ThreadSafeChromeUtils::SaveHeapSnapshot(GlobalObject& global,
   auto start = TimeStamp::Now();
 
   bool wantNames = true;
-  ZoneSet zones;
+  CompartmentSet compartments;
   uint32_t nodeCount = 0;
   uint32_t edgeCount = 0;
 
@@ -1568,8 +1541,8 @@ ThreadSafeChromeUtils::SaveHeapSnapshot(GlobalObject& global,
 
   {
     Maybe<AutoCheckCannotGC> maybeNoGC;
-    ubi::RootList rootList(JS_GetRuntime(cx), maybeNoGC, wantNames);
-    if (!EstablishBoundaries(cx, rv, boundaries, rootList, zones))
+    ubi::RootList rootList(cx, maybeNoGC, wantNames);
+    if (!EstablishBoundaries(cx, rv, boundaries, rootList, compartments))
       return;
 
     MOZ_ASSERT(maybeNoGC.isSome());
@@ -1583,7 +1556,7 @@ ThreadSafeChromeUtils::SaveHeapSnapshot(GlobalObject& global,
                         roots,
                         writer,
                         wantNames,
-                        zones.initialized() ? &zones : nullptr,
+                        compartments.initialized() ? &compartments : nullptr,
                         maybeNoGC.ref(),
                         nodeCount,
                         edgeCount))

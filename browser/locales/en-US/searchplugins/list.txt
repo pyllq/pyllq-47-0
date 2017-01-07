@@ -1,7 +1,6 @@
 pinyincidian
 taobao
 bing
-eBay
 google
 twitter
 wikipedia

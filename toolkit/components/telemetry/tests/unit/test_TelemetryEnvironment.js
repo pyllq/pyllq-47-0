@@ -11,6 +11,10 @@ Cu.import("resource://testing-common/httpd.js");
 Cu.import("resource://testing-common/MockRegistrar.jsm", this);
 Cu.import("resource://gre/modules/FileUtils.jsm");
 
+// AttributionCode is only needed for Firefox
+XPCOMUtils.defineLazyModuleGetter(this, "AttributionCode",
+                                  "resource:///modules/AttributionCode.jsm");
+
 // Lazy load |LightweightThemeManager|, we won't be using it on Gonk.
 XPCOMUtils.defineLazyModuleGetter(this, "LightweightThemeManager",
                                   "resource://gre/modules/LightweightThemeManager.jsm");
@@ -70,6 +74,9 @@ const PLUGIN_UPDATED_TOPIC     = "plugins-list-updated";
 
 // system add-ons are enabled at startup, so record date when the test starts
 const SYSTEM_ADDON_INSTALL_DATE = Date.now();
+
+// Valid attribution code to write so that settings.attribution can be tested.
+const ATTRIBUTION_CODE = "source%3Dgoogle.com";
 
 /**
  * Used to mock plugin tags in our fake plugin host.
@@ -268,6 +275,31 @@ function spoofPartnerInfo() {
   }
 }
 
+function getAttributionFile() {
+  let file = Services.dirsvc.get("LocalAppData", Ci.nsIFile);
+  file.append("mozilla");
+  file.append(AppConstants.MOZ_APP_NAME);
+  file.append("postSigningData");
+  return file;
+}
+
+function spoofAttributionData() {
+  if (gIsWindows) {
+    AttributionCode._clearCache();
+    let stream = Cc["@mozilla.org/network/file-output-stream;1"].
+                 createInstance(Ci.nsIFileOutputStream);
+    stream.init(getAttributionFile(), -1, -1, 0);
+    stream.write(ATTRIBUTION_CODE, ATTRIBUTION_CODE.length);
+  }
+}
+
+function cleanupAttributionData() {
+  if (gIsWindows) {
+    getAttributionFile().remove(false);
+    AttributionCode._clearCache();
+  }
+}
+
 /**
  * Check that a value is a string and not empty.
  *
@@ -310,7 +342,7 @@ function checkBuildSection(data) {
   const expectedInfo = {
     applicationId: APP_ID,
     applicationName: APP_NAME,
-    buildId: "2007010101",
+    buildId: gAppInfo.appBuildID,
     version: APP_VERSION,
     vendor: "Mozilla",
     platformVersion: PLATFORM_VERSION,
@@ -381,6 +413,11 @@ function checkSettingsSection(data) {
   if ("defaultSearchEngine" in data.settings) {
     checkString(data.settings.defaultSearchEngine);
     Assert.equal(typeof data.settings.defaultSearchEngineData, "object");
+  }
+
+  if ("attribution" in data.settings) {
+    Assert.equal(typeof data.settings.attribution, "object");
+    Assert.equal(data.settings.attribution.source, "google.com");
   }
 }
 
@@ -581,6 +618,8 @@ function checkSystemSection(data) {
 
     let features = gfxInfo.getFeatures();
     Assert.equal(features.compositor, gfxData.features.compositor);
+    Assert.equal(features.opengl, gfxData.features.opengl);
+    Assert.equal(features.webgl, gfxData.features.webgl);
   }
   catch (e) {}
 }
@@ -765,6 +804,13 @@ function run_test() {
   // Spoof the the hotfixVersion
   Preferences.set("extensions.hotfix.lastVersion", APP_HOTFIX_VERSION);
 
+  // Create the attribution data file, so that settings.attribution will exist.
+  // The attribution functionality only exists in Firefox.
+  if (AppConstants.MOZ_BUILD_APP == "browser") {
+    spoofAttributionData();
+    do_register_cleanup(cleanupAttributionData);
+  }
+
   run_next_test();
 }
 
@@ -814,7 +860,7 @@ add_task(function* test_prefWatchPolicies() {
   Preferences.set(PREF_TEST_5, expectedValue);
 
   // Set the Environment preferences to watch.
-  TelemetryEnvironment._watchPreferences(PREFS_TO_WATCH);
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   let deferred = PromiseUtils.defer();
 
   // Check that the pref values are missing or present as expected
@@ -862,7 +908,7 @@ add_task(function* test_prefWatch_prefReset() {
   fakeNow(gNow);
 
   // Set the Environment preferences to watch.
-  TelemetryEnvironment._watchPreferences(PREFS_TO_WATCH);
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   let deferred = PromiseUtils.defer();
   TelemetryEnvironment.registerChangeListener("testWatchPrefs_reset", deferred.resolve);
 
@@ -1290,7 +1336,7 @@ add_task(function* test_changeThrottling() {
   fakeNow(gNow);
 
   // Set the Environment preferences to watch.
-  TelemetryEnvironment._watchPreferences(PREFS_TO_WATCH);
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   let deferred = PromiseUtils.defer();
   let changeCount = 0;
   TelemetryEnvironment.registerChangeListener("testWatchPrefs_throttling", () => {
@@ -1346,6 +1392,7 @@ add_task(function* test_defaultSearchEngine() {
   let expectedSearchEngineData = {
     name: "telemetrySearchIdentifier",
     loadPath: "jar:[other]/searchTest.jar!testsearchplugin/telemetrySearchIdentifier.xml",
+    origin: "default",
     submissionURL: "http://ar.wikipedia.org/wiki/%D8%AE%D8%A7%D8%B5:%D8%A8%D8%AD%D8%AB?search=&sourceid=Mozilla-search"
   };
   Assert.deepEqual(data.settings.defaultSearchEngineData, expectedSearchEngineData);
@@ -1386,10 +1433,56 @@ add_task(function* test_defaultSearchEngine() {
 
   const EXPECTED_SEARCH_ENGINE_DATA = {
     name: "telemetry_default",
-    loadPath: null
+    loadPath: "[other]addEngineWithDetails",
+    origin: "verified"
   };
   Assert.deepEqual(data.settings.defaultSearchEngineData, EXPECTED_SEARCH_ENGINE_DATA);
   TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
+
+  // Cleanly install an engine from an xml file, and check if origin is
+  // recorded as "verified".
+  gNow = fakeNow(futureDate(gNow, 10 * MILLISECONDS_PER_MINUTE));
+  let promise = new Promise(resolve => {
+    TelemetryEnvironment.registerChangeListener("testWatch_SearchDefault", resolve);
+  });
+  let engine = yield new Promise((resolve, reject) => {
+    Services.obs.addObserver(function obs(subject, topic, data) {
+      try {
+        let engine = subject.QueryInterface(Ci.nsISearchEngine);
+        do_print("Observed " + data + " for " + engine.name);
+        if (data != "engine-added" || engine.name != "engine-telemetry") {
+          return;
+        }
+
+        Services.obs.removeObserver(obs, "browser-search-engine-modified");
+        resolve(engine);
+      } catch (ex) {
+        reject(ex);
+      }
+    }, "browser-search-engine-modified", false);
+    Services.search.addEngine("file://" + do_get_cwd().path + "/engine.xml",
+                              null, null, false);
+  });
+  Services.search.defaultEngine = engine;
+  yield promise;
+  TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
+  data = TelemetryEnvironment.currentEnvironment;
+  checkEnvironmentData(data);
+  Assert.deepEqual(data.settings.defaultSearchEngineData,
+                   {"name":"engine-telemetry","loadPath":"[other]/engine.xml","origin":"verified"});
+
+  // Now break this engine's load path hash.
+  gNow = fakeNow(futureDate(gNow, 10 * MILLISECONDS_PER_MINUTE));
+  promise = new Promise(resolve => {
+    TelemetryEnvironment.registerChangeListener("testWatch_SearchDefault", resolve);
+  });
+  engine.wrappedJSObject.setAttr("loadPathHash", "broken");
+  Services.obs.notifyObservers(null, "browser-search-engine-modified", "engine-current");
+  yield promise;
+  TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
+  data = TelemetryEnvironment.currentEnvironment;
+  Assert.equal(data.settings.defaultSearchEngineData.origin, "invalid");
+  Services.search.removeEngine(engine);
 
   // Define and reset the test preference.
   const PREF_TEST = "toolkit.telemetry.test.pref1";
@@ -1401,7 +1494,7 @@ add_task(function* test_defaultSearchEngine() {
   // Set the clock in the future so our changes don't get throttled.
   gNow = fakeNow(futureDate(gNow, 10 * MILLISECONDS_PER_MINUTE));
   // Watch the test preference.
-  TelemetryEnvironment._watchPreferences(PREFS_TO_WATCH);
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   deferred = PromiseUtils.defer();
   TelemetryEnvironment.registerChangeListener("testSearchEngine_pref", deferred.resolve);
   // Trigger an environment change.
@@ -1435,7 +1528,7 @@ add_task(function* test_environmentShutdown() {
   fakeNow(gNow);
 
   // Set up the preferences and listener, then the trigger shutdown
-  TelemetryEnvironment._watchPreferences(PREFS_TO_WATCH);
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   TelemetryEnvironment.registerChangeListener("test_environmentShutdownChange", () => {
   // Register a new change listener that asserts if change is propogated
     Assert.ok(false, "No change should be propagated after shutdown.");

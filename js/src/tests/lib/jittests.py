@@ -114,6 +114,8 @@ class JitTest:
         self.tz_pacific = False # True means force Pacific time for the test
         self.test_also_noasmjs = False # True means run with and without asm.js
                                        # enabled.
+        self.test_also_wasm_baseline = False # True means run with and and without
+                                       # wasm baseline compiler enabled.
         self.test_also = [] # List of other configurations to test with.
         self.test_join = [] # List of other configurations to test with all existing variants.
         self.expect_error = '' # Errors to expect and consider passing
@@ -134,6 +136,7 @@ class JitTest:
         t.valgrind = self.valgrind
         t.tz_pacific = self.tz_pacific
         t.test_also_noasmjs = self.test_also_noasmjs
+        t.test_also_wasm_baseline = self.test_also_noasmjs
         t.test_also = self.test_also
         t.test_join = self.test_join
         t.expect_error = self.expect_error
@@ -215,16 +218,17 @@ class JitTest:
                     elif name == 'test-also-noasmjs':
                         if options.can_test_also_noasmjs:
                             test.test_also.append(['--no-asmjs'])
+                            # test-also-noasmjs is a sure indicator that the file contains asm.js code;
+                            # in that case we want to test the wasm baseline compiler too, as asm.js
+                            # is translated to wasm
+                            test.test_also.append(['--wasm-always-baseline'])
+                    elif name == 'test-also-wasm-baseline':
+                        if options.can_test_also_wasm_baseline:
+                            test.test_also.append(['--wasm-always-baseline'])
                     elif name.startswith('test-also='):
                         test.test_also.append([name[len('test-also='):]])
                     elif name.startswith('test-join='):
                         test.test_join.append([name[len('test-join='):]])
-                    elif name == 'ion-eager':
-                        test.jitflags.append('--ion-eager')
-                    elif name == 'baseline-eager':
-                        test.jitflags.append('--baseline-eager')
-                    elif name == 'dump-bytecode':
-                        test.jitflags.append('--dump-bytecode')
                     elif name == 'module':
                         test.is_module = True
                     elif name.startswith('--'):
@@ -297,7 +301,7 @@ def find_tests(substring=None):
         for filename in filenames:
             if not filename.endswith('.js'):
                 continue
-            if filename in ('shell.js', 'browser.js', 'jsref.js'):
+            if filename in ('shell.js', 'browser.js'):
                 continue
             test = os.path.join(dirpath, filename)
             if substring is None \
@@ -547,7 +551,7 @@ def process_test_results(results, num_tests, pb, options):
     pb.finish(True)
     return print_test_summary(num_tests, failures, complete, doing, options)
 
-def run_tests(tests, prefix, options):
+def run_tests(tests, num_tests, prefix, options):
     # The jstests tasks runner requires the following options. The names are
     # taken from the jstests options processing code, which are frequently
     # subtly different from the options jit-tests expects. As such, we wrap
@@ -561,7 +565,6 @@ def run_tests(tests, prefix, options):
     # The test runner wants the prefix as a static on the Test class.
     JitTest.js_cmd_prefix = prefix
 
-    num_tests = len(tests) * options.repeat
     pb = create_progressbar(num_tests, options)
     gen = run_all_tests(tests, prefix, pb, shim_options)
     ok = process_test_results(gen, num_tests, pb, options)
@@ -597,7 +600,7 @@ def push_progs(options, device, progs):
                                      os.path.basename(local_file))
         device.pushFile(local_file, remote_file)
 
-def run_tests_remote(tests, prefix, options):
+def run_tests_remote(tests, num_tests, prefix, options):
     # Setup device with everything needed to run our tests.
     from mozdevice import devicemanagerADB, devicemanagerSUT
 
@@ -645,7 +648,6 @@ def run_tests_remote(tests, prefix, options):
     prefix[0] = os.path.join(options.remote_test_root, 'js')
 
     # Run all tests.
-    num_tests = len(tests) * options.repeat
     pb = create_progressbar(num_tests, options)
     gen = get_remote_results(tests, dm, prefix, options)
     ok = process_test_results(gen, num_tests, pb, options)

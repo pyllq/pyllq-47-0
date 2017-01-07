@@ -1,15 +1,17 @@
 "use strict";
 
+var {classes: Cc, interfaces: Ci, utils: Cu} = Components;
+
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 var {
   detectLanguage,
 } = ExtensionUtils;
 
-extensions.registerSchemaAPI("i18n", null, (extension, context) => {
+extensions.registerSchemaAPI("i18n", (extension, context) => {
   return {
     i18n: {
       getMessage: function(messageName, substitutions) {
-        return extension.localizeMessage(messageName, substitutions);
+        return extension.localizeMessage(messageName, substitutions, {cloneScope: context.cloneScope});
       },
 
       getAcceptLanguages: function() {

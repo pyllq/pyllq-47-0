@@ -17,7 +17,6 @@
 #include "mozilla/layers/LayersTypes.h"  // for BufferMode, LayersBackend, etc
 #include "mozilla/layers/ShadowLayers.h"  // for ShadowLayerForwarder, etc
 #include "mozilla/layers/APZTestData.h" // for APZTestData
-#include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsIObserver.h"                // for nsIObserver
 #include "nsISupportsImpl.h"            // for Layer::Release, etc
@@ -31,11 +30,10 @@ namespace mozilla {
 namespace layers {
 
 class ClientPaintedLayer;
-class CompositorChild;
+class CompositorBridgeChild;
 class ImageLayer;
 class PLayerChild;
 class FrameUniformityData;
-class TextureClientPool;
 
 class ClientLayerManager final : public LayerManager
 {
@@ -44,13 +42,7 @@ class ClientLayerManager final : public LayerManager
 public:
   explicit ClientLayerManager(nsIWidget* aWidget);
 
-  virtual void Destroy() override
-  {
-    // It's important to call ClearCachedResource before Destroy because the
-    // former will early-return if the later has already run.
-    ClearCachedResources();
-    LayerManager::Destroy();
-  }
+  virtual void Destroy() override;
 
 protected:
   virtual ~ClientLayerManager();
@@ -122,8 +114,6 @@ public:
 
   virtual void SetIsFirstPaint() override;
 
-  TextureClientPool* GetTexturePool(gfx::SurfaceFormat aFormat, TextureFlags aFlags);
-
   /**
    * Pass through call to the forwarder for nsPresContext's
    * CollectPluginGeometryUpdates. Passes widget configuration information
@@ -158,9 +148,9 @@ public:
   void* GetPaintedLayerCallbackData() const
   { return mPaintedLayerCallbackData; }
 
-  CompositorChild* GetRemoteRenderer();
+  CompositorBridgeChild* GetRemoteRenderer();
 
-  CompositorChild* GetCompositorChild();
+  CompositorBridgeChild* GetCompositorBridgeChild();
 
   // Disable component alpha layers with the software compositor.
   virtual bool ShouldAvoidComponentAlphaLayers() override { return !IsCompositingCheap(); }
@@ -256,6 +246,9 @@ public:
   void AddDidCompositeObserver(DidCompositeObserver* aObserver);
   void RemoveDidCompositeObserver(DidCompositeObserver* aObserver);
 
+  virtual already_AddRefed<PersistentBufferProvider>
+  CreatePersistentBufferProvider(const gfx::IntSize& aSize, gfx::SurfaceFormat aFormat) override;
+
 protected:
   enum TransactionPhase {
     PHASE_NONE, PHASE_CONSTRUCTION, PHASE_DRAWING, PHASE_FORWARD
@@ -298,6 +291,8 @@ private:
   void MakeSnapshotIfRequired();
 
   void ClearLayer(Layer* aLayer);
+
+  void HandleMemoryPressureLayer(Layer* aLayer);
 
   bool EndTransactionInternal(DrawPaintedLayerCallback aCallback,
                               void* aCallbackData,
@@ -348,7 +343,6 @@ private:
   APZTestData mApzTestData;
 
   RefPtr<ShadowLayerForwarder> mForwarder;
-  AutoTArray<RefPtr<TextureClientPool>,2> mTexturePools;
   AutoTArray<dom::OverfillCallback*,0> mOverfillCallbacks;
   mozilla::TimeStamp mTransactionStart;
 
@@ -385,6 +379,10 @@ public:
   }
 
   virtual void ClearCachedResources() { }
+
+  // Shrink memory usage.
+  // Called when "memory-pressure" is observed.
+  virtual void HandleMemoryPressure() { }
 
   virtual void RenderLayer() = 0;
   virtual void RenderLayerWithReadback(ReadbackProcessor *aReadback) { RenderLayer(); }

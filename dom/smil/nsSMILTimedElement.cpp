@@ -9,6 +9,7 @@
 #include "mozilla/ContentEvents.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/SVGAnimationElement.h"
+#include "nsAutoPtr.h"
 #include "nsSMILTimedElement.h"
 #include "nsAttrValueInlines.h"
 #include "nsSMILAnimationFunction.h"
@@ -78,7 +79,7 @@ nsSMILTimedElement::InstanceTimeComparator::LessThan(
 
 namespace
 {
-  class AsyncTimeEventRunner : public nsRunnable
+  class AsyncTimeEventRunner : public Runnable
   {
   protected:
     RefPtr<nsIContent> mTarget;
@@ -97,10 +98,10 @@ namespace
     NS_IMETHOD Run()
     {
       InternalSMILTimeEvent event(true, mMsg);
-      event.detail = mDetail;
+      event.mDetail = mDetail;
 
       nsPresContext* context = nullptr;
-      nsIDocument* doc = mTarget->GetCurrentDoc();
+      nsIDocument* doc = mTarget->GetUncomposedDoc();
       if (doc) {
         nsCOMPtr<nsIPresShell> shell = doc->GetShell();
         if (shell) {

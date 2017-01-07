@@ -13,7 +13,6 @@
 
 // XXX fold this into nsStyleContext and group by nsStyleXXX struct
 
-// Indices into border/padding/margin arrays
 namespace mozilla {
 namespace css {
 typedef mozilla::Side Side;
@@ -55,45 +54,64 @@ static inline css::Side operator++(css::Side& side, int) {
 #define NS_SIDE_TO_HALF_CORNER(side_, second_, parallel_) \
   ((((side_) + !!(second_))*2 + ((side_) + !(parallel_))%2) % 8)
 
+// Basic Shapes (currently unused)
+enum class StyleBasicShape : uint8_t{
+  Polygon,
+  Circle,
+  Ellipse,
+  Inset,
+};
+
 // box-sizing
 enum class StyleBoxSizing : uint8_t {
   Content,
-  Padding,
   Border
 };
 
-// clip-path sizing
-#define NS_STYLE_CLIP_SHAPE_SIZING_NOBOX   0
-#define NS_STYLE_CLIP_SHAPE_SIZING_CONTENT 1
-#define NS_STYLE_CLIP_SHAPE_SIZING_PADDING 2
-#define NS_STYLE_CLIP_SHAPE_SIZING_BORDER  3
-#define NS_STYLE_CLIP_SHAPE_SIZING_MARGIN  4
-#define NS_STYLE_CLIP_SHAPE_SIZING_FILL    5
-#define NS_STYLE_CLIP_SHAPE_SIZING_STROKE  6
-#define NS_STYLE_CLIP_SHAPE_SIZING_VIEW    7
-
-// Basic Shapes
-#define NS_STYLE_BASIC_SHAPE_POLYGON       0
-#define NS_STYLE_BASIC_SHAPE_CIRCLE        1
-#define NS_STYLE_BASIC_SHAPE_ELLIPSE       2
-#define NS_STYLE_BASIC_SHAPE_INSET         3
-
 // box-shadow
-#define NS_STYLE_BOX_SHADOW_INSET         0
+enum class StyleBoxShadowType : uint8_t {
+  Inset,
+};
+
+// clip-path type
+// X11 has a #define for None causing conflicts, so we use None_ here
+enum class StyleClipPathType : uint8_t {
+  None_,
+  URL,
+  Shape,
+  Box,
+};
+
+// clip-path sizing
+enum class StyleClipShapeSizing : uint8_t {
+  NoBox,
+  Content,
+  Padding,
+  Border,
+  Margin,
+  Fill,
+  Stroke,
+  View,
+};
 
 // float-edge
-#define NS_STYLE_FLOAT_EDGE_CONTENT       0
-#define NS_STYLE_FLOAT_EDGE_MARGIN        1
+enum class StyleFloatEdge : uint8_t {
+  ContentBox,
+  MarginBox,
+};
 
 // user-focus
-#define NS_STYLE_USER_FOCUS_NONE            0
-#define NS_STYLE_USER_FOCUS_IGNORE          1
-#define NS_STYLE_USER_FOCUS_NORMAL          2
-#define NS_STYLE_USER_FOCUS_SELECT_ALL      3
-#define NS_STYLE_USER_FOCUS_SELECT_BEFORE   4
-#define NS_STYLE_USER_FOCUS_SELECT_AFTER    5
-#define NS_STYLE_USER_FOCUS_SELECT_SAME     6
-#define NS_STYLE_USER_FOCUS_SELECT_MENU     7
+// X11 has a #define for None causing conflicts, so we use None_ here
+enum class StyleUserFocus : uint8_t {
+  None_,
+  Ignore,
+  Normal,
+  SelectAll,
+  SelectBefore,
+  SelectAfter,
+  SelectSame,
+  SelectMenu,
+};
 
 // user-select
 #define NS_STYLE_USER_SELECT_NONE       0
@@ -267,10 +285,12 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_IMAGELAYER_ATTACHMENT_LOCAL         2
 
 // See nsStyleImageLayers
-// Code depends on these constants having the same values as BG_ORIGIN_*
+// Code depends on these constants having the same values as IMAGELAYER_ORIGIN_*
 #define NS_STYLE_IMAGELAYER_CLIP_BORDER              0
 #define NS_STYLE_IMAGELAYER_CLIP_PADDING             1
 #define NS_STYLE_IMAGELAYER_CLIP_CONTENT             2
+// One extra constant which does not exist in IMAGELAYER_ORIGIN_*
+#define NS_STYLE_IMAGELAYER_CLIP_TEXT                3
 
 // A magic value that we use for our "pretend that background-clip is
 // 'padding' when we have a solid border" optimization.  This isn't
@@ -298,6 +318,8 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_IMAGELAYER_REPEAT_REPEAT_X          0x01
 #define NS_STYLE_IMAGELAYER_REPEAT_REPEAT_Y          0x02
 #define NS_STYLE_IMAGELAYER_REPEAT_REPEAT            0x03
+#define NS_STYLE_IMAGELAYER_REPEAT_SPACE             0x04
+#define NS_STYLE_IMAGELAYER_REPEAT_ROUND             0x05
 
 // See nsStyleImageLayers
 #define NS_STYLE_IMAGELAYER_SIZE_CONTAIN             0
@@ -340,6 +362,7 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_BORDER_IMAGE_REPEAT_STRETCH    0
 #define NS_STYLE_BORDER_IMAGE_REPEAT_REPEAT     1
 #define NS_STYLE_BORDER_IMAGE_REPEAT_ROUND      2
+#define NS_STYLE_BORDER_IMAGE_REPEAT_SPACE      3
 
 #define NS_STYLE_BORDER_IMAGE_SLICE_NOFILL      0
 #define NS_STYLE_BORDER_IMAGE_SLICE_FILL        1
@@ -464,6 +487,8 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_DISPLAY_RUBY_TEXT              36
 #define NS_STYLE_DISPLAY_RUBY_TEXT_CONTAINER    37
 #define NS_STYLE_DISPLAY_CONTENTS               38
+#define NS_STYLE_DISPLAY_WEBKIT_BOX             39
+#define NS_STYLE_DISPLAY_WEBKIT_INLINE_BOX      40
 
 // See nsStyleDisplay
 // If these are re-ordered, nsComputedDOMStyle::DoGetContain() and
@@ -556,12 +581,6 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_FLOAT_RIGHT                    2
 #define NS_STYLE_FLOAT_INLINE_START             3
 #define NS_STYLE_FLOAT_INLINE_END               4
-
-// See nsStyleClipPath
-#define NS_STYLE_CLIP_PATH_NONE                 0
-#define NS_STYLE_CLIP_PATH_URL                  1
-#define NS_STYLE_CLIP_PATH_SHAPE                2
-#define NS_STYLE_CLIP_PATH_BOX                  3
 
 // See nsStyleFilter
 #define NS_STYLE_FILTER_NONE                    0
@@ -692,7 +711,7 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_POSITION_FIXED                 3
 #define NS_STYLE_POSITION_STICKY                4
 
-// See nsStyleDisplay.mClip
+// See nsStyleEffects.mClip, mClipFlags
 #define NS_STYLE_CLIP_AUTO                      0x00
 #define NS_STYLE_CLIP_RECT                      0x01
 #define NS_STYLE_CLIP_TYPE_MASK                 0x0F
@@ -795,7 +814,7 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_RESIZE_VERTICAL                3
 
 // See nsStyleText
-#define NS_STYLE_TEXT_ALIGN_DEFAULT               0
+#define NS_STYLE_TEXT_ALIGN_START                 0
 #define NS_STYLE_TEXT_ALIGN_LEFT                  1
 #define NS_STYLE_TEXT_ALIGN_RIGHT                 2
 #define NS_STYLE_TEXT_ALIGN_CENTER                3
@@ -845,7 +864,7 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_TEXT_TRANSFORM_CAPITALIZE      1
 #define NS_STYLE_TEXT_TRANSFORM_LOWERCASE       2
 #define NS_STYLE_TEXT_TRANSFORM_UPPERCASE       3
-#define NS_STYLE_TEXT_TRANSFORM_FULLWIDTH       4
+#define NS_STYLE_TEXT_TRANSFORM_FULL_WIDTH      4
 
 // See nsStyleDisplay
 #define NS_STYLE_TOUCH_ACTION_NONE            (1 << 0)
@@ -908,8 +927,8 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_WORDBREAK_KEEP_ALL             2
 
 // See nsStyleText
-#define NS_STYLE_WORDWRAP_NORMAL                0
-#define NS_STYLE_WORDWRAP_BREAK_WORD            1
+#define NS_STYLE_OVERFLOWWRAP_NORMAL            0
+#define NS_STYLE_OVERFLOWWRAP_BREAK_WORD        1
 
 // See nsStyleText
 #define NS_STYLE_HYPHENS_NONE                   0
@@ -950,7 +969,7 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_UNICODE_BIDI_NORMAL            0x0
 #define NS_STYLE_UNICODE_BIDI_EMBED             0x1
 #define NS_STYLE_UNICODE_BIDI_ISOLATE           0x2
-#define NS_STYLE_UNICODE_BIDI_OVERRIDE          0x4
+#define NS_STYLE_UNICODE_BIDI_BIDI_OVERRIDE     0x4
 #define NS_STYLE_UNICODE_BIDI_ISOLATE_OVERRIDE  0x6
 #define NS_STYLE_UNICODE_BIDI_PLAINTEXT         0x8
 
@@ -1119,6 +1138,10 @@ enum class FillMode : uint32_t;
 #define NS_STYLE_TEXT_RENDERING_OPTIMIZELEGIBILITY 2
 #define NS_STYLE_TEXT_RENDERING_GEOMETRICPRECISION 3
 
+// adjust-color
+#define NS_STYLE_COLOR_ADJUST_ECONOMY               0
+#define NS_STYLE_COLOR_ADJUST_EXACT                 1
+
 // color-interpolation and color-interpolation-filters
 #define NS_STYLE_COLOR_INTERPOLATION_AUTO           0
 #define NS_STYLE_COLOR_INTERPOLATION_SRGB           1
@@ -1159,7 +1182,7 @@ enum class FillMode : uint32_t;
 
 // composite
 #define NS_STYLE_MASK_COMPOSITE_ADD                 0
-#define NS_STYLE_MASK_COMPOSITE_SUBSTRACT           1
+#define NS_STYLE_MASK_COMPOSITE_SUBTRACT            1
 #define NS_STYLE_MASK_COMPOSITE_INTERSECT           2
 #define NS_STYLE_MASK_COMPOSITE_EXCLUDE             3
 

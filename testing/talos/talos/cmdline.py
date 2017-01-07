@@ -22,17 +22,17 @@ class _StopAction(argparse.Action):
 class _ListTests(_StopAction):
     def __call__(self, parser, namespace, values, option_string=None):
         from talos import test
-        print 'Available tests:'
-        print '================\n'
+        print('Available tests:')
+        print('================\n')
         test_class_names = [
             (test_class.name(), test_class.description())
             for test_class in test.test_dict().itervalues()
         ]
         test_class_names.sort()
         for name, description in test_class_names:
-            print name
-            print '-'*len(name)
-            print description
+            print(name)
+            print('-'*len(name))
+            print(description)
             print  # Appends a single blank line to the end
         parser.exit()
 
@@ -40,12 +40,12 @@ class _ListTests(_StopAction):
 class _ListSuite(_StopAction):
     def __call__(self, parser, namespace, values, option_string=None):
         from talos.config import suites_conf
-        print 'Available suites:'
+        print('Available suites:')
         conf = suites_conf()
         max_suite_name = max([len(s) for s in conf])
         pattern = " %%-%ds (%%s)" % max_suite_name
         for name in conf:
-            print pattern % (name, ':'.join(conf[name]['tests']))
+            print(pattern % (name, ':'.join(conf[name]['tests'])))
         print
         parser.exit()
 
@@ -67,8 +67,9 @@ def create_parser(mach_interface=False):
             help="List of tests to run, separated by ':' (ex. damp:cart)")
     add_arg('--suite',
             help="Suite to use (instead of --activeTests)")
-    add_arg('--e10s', action='store_true',
-            help="enable e10s")
+    add_arg('--disable-e10s', dest='e10s',
+            action='store_false', default=True,
+            help="disable e10s")
     add_arg('--noChrome', action='store_true',
             help="do not run tests as chrome")
     add_arg('--rss', action='store_true',
@@ -103,7 +104,7 @@ def create_parser(mach_interface=False):
                  " Currently used for xperf only.")
     add_arg('--noShutdown', dest='shutdown', action='store_true',
             help="Record time browser takes to shutdown after testing")
-    add_arg('--setPref', action='append', default=[], dest="extraPrefs",
+    add_arg('--setpref', action='append', default=[], dest="extraPrefs",
             metavar="PREF=VALUE",
             help="defines an extra user preference")
     add_arg('--webServer', dest='webserver',
@@ -134,6 +135,10 @@ def create_parser(mach_interface=False):
             help='Specify the url for the repository we are testing. '
                  'This will use the value found in application.ini if'
                  ' it is not specified.')
+    add_arg('--framework',
+            help='Will post to the specified framework for Perfherder. '
+                 'Default "talos".  Used primarily for experiments on '
+                 'new platforms')
     add_arg('--print-tests', action=_ListTests,
             help="print available tests")
     add_arg('--print-suites', action=_ListSuite,

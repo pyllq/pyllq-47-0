@@ -113,7 +113,7 @@ public:
   }
   void SetWidth(uint32_t aWidth, ErrorResult& aError)
   {
-    SetUnsignedIntAttr(nsGkAtoms::width, aWidth, aError);
+    SetUnsignedIntAttr(nsGkAtoms::width, aWidth, 0, aError);
   }
   uint32_t Height()
   {
@@ -121,7 +121,7 @@ public:
   }
   void SetHeight(uint32_t aHeight, ErrorResult& aError)
   {
-    SetUnsignedIntAttr(nsGkAtoms::height, aHeight, aError);
+    SetUnsignedIntAttr(nsGkAtoms::height, aHeight, 0, aError);
   }
   uint32_t NaturalWidth();
   uint32_t NaturalHeight();
@@ -132,7 +132,7 @@ public:
   }
   void SetHspace(uint32_t aHspace, ErrorResult& aError)
   {
-    SetUnsignedIntAttr(nsGkAtoms::hspace, aHspace, aError);
+    SetUnsignedIntAttr(nsGkAtoms::hspace, aHspace, 0, aError);
   }
   uint32_t Vspace()
   {
@@ -140,7 +140,7 @@ public:
   }
   void SetVspace(uint32_t aVspace, ErrorResult& aError)
   {
-    SetUnsignedIntAttr(nsGkAtoms::vspace, aVspace, aError);
+    SetUnsignedIntAttr(nsGkAtoms::vspace, aVspace, 0, aError);
   }
 
   // The XPCOM versions of the following getters work for Web IDL bindings as well
@@ -197,7 +197,7 @@ public:
   }
   void GetReferrerPolicy(nsAString& aReferrer)
   {
-    GetHTMLAttr(nsGkAtoms::referrerpolicy, aReferrer);
+    GetEnumAttr(nsGkAtoms::referrerpolicy, EmptyCString().get(), aReferrer);
   }
 
   net::ReferrerPolicy
@@ -292,6 +292,9 @@ protected:
   // only mode after Bug 1076583
   bool InResponsiveMode();
 
+  // True if the given URL and density equal the last URL and density that was loaded by this element.
+  bool SelectedSourceMatchesLast(nsIURI* aSelectedSource, double aSelectedDensity);
+
   // Resolve and load the current mResponsiveSelector (responsive mode) or src
   // attr image.
   nsresult LoadSelectedImage(bool aForce, bool aNotify, bool aAlwaysLoad);
@@ -338,8 +341,6 @@ protected:
                                    const nsAString *aSizes = nullptr);
 
   CSSIntPoint GetXY();
-  virtual void GetItemValueText(DOMString& text) override;
-  virtual void SetItemValueText(const nsAString& text) override;
   virtual JSObject* WrapNode(JSContext *aCx, JS::Handle<JSObject*> aGivenProto) override;
   void UpdateFormOwner();
 
@@ -365,6 +366,11 @@ private:
 
   bool mInDocResponsiveContent;
   RefPtr<ImageLoadTask> mPendingImageLoadTask;
+
+  // Last URL that was attempted to load by this element.
+  nsCOMPtr<nsIURI> mLastSelectedSource;
+  // Last pixel density that was selected.
+  double mCurrentDensity;
 };
 
 } // namespace dom

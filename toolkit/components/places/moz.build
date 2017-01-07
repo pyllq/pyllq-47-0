@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -35,8 +35,8 @@ if CONFIG['MOZ_PLACES']:
     ]
 
     UNIFIED_SOURCES += [
-        'AsyncFaviconHelpers.cpp',
         'Database.cpp',
+        'FaviconHelpers.cpp',
         'Helpers.cpp',
         'History.cpp',
         'nsAnnoProtocolHandler.cpp',
@@ -78,15 +78,16 @@ if CONFIG['MOZ_PLACES']:
         'nsLivemarkService.js',
         'nsPlacesExpiration.js',
         'nsTaggingService.js',
+        'PageIconProtocolHandler.js',
         'PlacesCategoriesStarter.js',
         'toolkitplaces.manifest',
+        'UnifiedComplete.js',
     ]
-    if CONFIG['MOZ_XUL']:
+
+    if CONFIG['MOZ_SUITE']:
         EXTRA_COMPONENTS += [
             'nsPlacesAutoComplete.js',
             'nsPlacesAutoComplete.manifest',
-            'UnifiedComplete.js',
-            'UnifiedComplete.manifest',
         ]
 
     FINAL_LIBRARY = 'xul'
@@ -95,3 +96,6 @@ include('/ipc/chromium/chromium-config.mozbuild')
 
 with Files('**'):
     BUG_COMPONENT = ('Toolkit', 'Places')
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wno-error=shadow']

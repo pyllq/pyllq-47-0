@@ -13,7 +13,6 @@
 #include "mozilla/AutoRestore.h"
 #include "mozilla/Scoped.h"
 #include "mozilla/Services.h"
-#include "nsAutoPtr.h"
 #include "nsIFile.h"
 #include "nsIObserverService.h"
 #include "nsPrintfCString.h"
@@ -255,7 +254,7 @@ MozMtpDatabase::UpdateEntry(MtpObjectHandle aHandle, DeviceStorageFile* aFile)
 }
 
 
-class MtpWatcherNotifyRunnable final : public nsRunnable
+class MtpWatcherNotifyRunnable final : public Runnable
 {
 public:
   MtpWatcherNotifyRunnable(nsACString& aStorageName,

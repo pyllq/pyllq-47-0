@@ -29,6 +29,7 @@ NS_IMPL_ISUPPORTS(ZoomConstraintsClient, nsIDOMEventListener, nsIObserver)
 
 static const nsLiteralString DOM_META_ADDED = NS_LITERAL_STRING("DOMMetaAdded");
 static const nsLiteralString DOM_META_CHANGED = NS_LITERAL_STRING("DOMMetaChanged");
+static const nsLiteralString FULLSCREEN_CHANGED = NS_LITERAL_STRING("fullscreenchange");
 static const nsLiteralCString BEFORE_FIRST_PAINT = NS_LITERAL_CSTRING("before-first-paint");
 static const nsLiteralCString NS_PREF_CHANGED = NS_LITERAL_CSTRING("nsPref:changed");
 
@@ -75,6 +76,7 @@ ZoomConstraintsClient::Destroy()
   if (mEventTarget) {
     mEventTarget->RemoveEventListener(DOM_META_ADDED, this, false);
     mEventTarget->RemoveEventListener(DOM_META_CHANGED, this, false);
+    mEventTarget->RemoveSystemEventListener(FULLSCREEN_CHANGED, this, false);
     mEventTarget = nullptr;
   }
 
@@ -109,11 +111,12 @@ ZoomConstraintsClient::Init(nsIPresShell* aPresShell, nsIDocument* aDocument)
   mDocument = aDocument;
 
   if (nsCOMPtr<nsPIDOMWindowOuter> window = mDocument->GetWindow()) {
-    mEventTarget = window->GetChromeEventHandler();
+    mEventTarget = window->GetParentTarget();
   }
   if (mEventTarget) {
     mEventTarget->AddEventListener(DOM_META_ADDED, this, false);
     mEventTarget->AddEventListener(DOM_META_CHANGED, this, false);
+    mEventTarget->AddSystemEventListener(FULLSCREEN_CHANGED, this, false);
   }
 
   nsCOMPtr<nsIObserverService> observerService = mozilla::services::GetObserverService();
@@ -136,6 +139,9 @@ ZoomConstraintsClient::HandleEvent(nsIDOMEvent* event)
   } else if (type.Equals(DOM_META_CHANGED)) {
     ZCC_LOG("Got a dom-meta-changed event in %p\n", this);
     RefreshZoomConstraints();
+  } else if (type.Equals(FULLSCREEN_CHANGED)) {
+    ZCC_LOG("Got a fullscreen-change event in %p\n", this);
+    RefreshZoomConstraints();
   }
 
   return NS_OK;
@@ -152,7 +158,7 @@ ZoomConstraintsClient::Observe(nsISupports* aSubject, const char* aTopic, const 
     // We need to run this later because all the pref change listeners need
     // to execute before we can be guaranteed that gfxPrefs::ForceUserScalable()
     // returns the updated value.
-    NS_DispatchToMainThread(NS_NewRunnableMethod(
+    NS_DispatchToMainThread(NewRunnableMethod(
       this, &ZoomConstraintsClient::RefreshZoomConstraints));
   }
   return NS_OK;
@@ -208,6 +214,12 @@ ZoomConstraintsClient::RefreshZoomConstraints()
 
   mozilla::layers::ZoomConstraints zoomConstraints =
     ComputeZoomConstraintsFromViewportInfo(viewportInfo);
+
+  if (mDocument->Fullscreen()) {
+    ZCC_LOG("%p is in fullscreen, disallowing zooming\n", this);
+    zoomConstraints.mAllowZoom = false;
+    zoomConstraints.mAllowDoubleTapZoom = false;
+  }
 
   if (zoomConstraints.mAllowDoubleTapZoom) {
     // If the CSS viewport is narrower than the screen (i.e. width <= device-width)

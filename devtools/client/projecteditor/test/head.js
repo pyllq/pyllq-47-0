@@ -56,15 +56,13 @@ function addTab(url) {
   info("Adding a new tab with URL: '" + url + "'");
   let def = promise.defer();
 
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
-  gBrowser.selectedBrowser.addEventListener("load", function onload() {
-    gBrowser.selectedBrowser.removeEventListener("load", onload, true);
+  let tab = gBrowser.selectedTab = gBrowser.addTab(url);
+  BrowserTestUtils.browserLoaded(tab.linkedBrowser).then(function () {
     info("URL '" + url + "' loading complete");
     waitForFocus(() => {
       def.resolve(tab);
     }, content);
-  }, true);
-  content.location = url;
+  });
 
   return def.promise;
 }
@@ -92,7 +90,7 @@ function addProjectEditorTabForTempDirectory(opts = {}) {
     // Bug 1037292 - The test servers sometimes are unable to
     // write to the temporary directory due to locked files
     // or access denied errors.  Try again if this failed.
-    info ("Project Editor temp directory creation failed.  Trying again.");
+    info("Project Editor temp directory creation failed.  Trying again.");
     TEMP_PATH = buildTempDirectoryStructure();
   }
   let customOpts = {
@@ -101,7 +99,7 @@ function addProjectEditorTabForTempDirectory(opts = {}) {
     projectOverviewURL: SAMPLE_WEBAPP_URL
   };
 
-  info ("Adding a project editor tab for editing at: " + TEMP_PATH);
+  info("Adding a project editor tab for editing at: " + TEMP_PATH);
   return addProjectEditorTab(opts).then((projecteditor) => {
     return projecteditor.setProjectToAppPath(TEMP_PATH, customOpts).then(() => {
       return projecteditor;
@@ -118,8 +116,8 @@ function addProjectEditorTab(opts = {}) {
     let projecteditor = ProjectEditor.ProjectEditor(iframe, opts);
 
 
-    ok (iframe, "Tab has placeholder iframe for projecteditor");
-    ok (projecteditor, "ProjectEditor has been initialized");
+    ok(iframe, "Tab has placeholder iframe for projecteditor");
+    ok(projecteditor, "ProjectEditor has been initialized");
 
     return projecteditor.loaded.then((projecteditor) => {
       return projecteditor;
@@ -134,7 +132,7 @@ function addProjectEditorTab(opts = {}) {
 function buildTempDirectoryStructure() {
 
   let dirName = TEMP_FOLDER_NAME;
-  info ("Building a temporary directory at " + dirName);
+  info("Building a temporary directory at " + dirName);
 
   // First create (and remove) the temp dir to discard any changes
   let TEMP_DIR = FileUtils.getDir("TmpD", [dirName], true);
@@ -151,42 +149,42 @@ function buildTempDirectoryStructure() {
   let htmlFile = FileUtils.getFile("TmpD", [dirName, "index.html"]);
   htmlFile.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
   writeToFileSync(htmlFile, [
-    '<!DOCTYPE html>',
+    "<!DOCTYPE html>",
     '<html lang="en">',
-    ' <head>',
+    " <head>",
     '   <meta charset="utf-8" />',
-    '   <title>ProjectEditor Temp File</title>',
+    "   <title>ProjectEditor Temp File</title>",
     '   <link rel="stylesheet" href="style.css" />',
-    ' </head>',
+    " </head>",
     ' <body id="home">',
-    '   <p>ProjectEditor Temp File</p>',
-    ' </body>',
-    '</html>'].join("\n")
+    "   <p>ProjectEditor Temp File</p>",
+    " </body>",
+    "</html>"].join("\n")
   );
 
   let readmeFile = FileUtils.getFile("TmpD", [dirName, "README.md"]);
   readmeFile.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
   writeToFileSync(readmeFile, [
-    '## Readme'
-    ].join("\n")
+    "## Readme"
+  ].join("\n")
   );
 
   let licenseFile = FileUtils.getFile("TmpD", [dirName, "LICENSE"]);
   licenseFile.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
   writeToFileSync(licenseFile, [
-   '/* This Source Code Form is subject to the terms of the Mozilla Public',
-   ' * License, v. 2.0. If a copy of the MPL was not distributed with this',
-   ' * file, You can obtain one at http://mozilla.org/MPL/2.0/. */'
-    ].join("\n")
+    "/* This Source Code Form is subject to the terms of the Mozilla Public",
+    " * License, v. 2.0. If a copy of the MPL was not distributed with this",
+    " * file, You can obtain one at http://mozilla.org/MPL/2.0/. */"
+  ].join("\n")
   );
 
   let cssFile = FileUtils.getFile("TmpD", [dirName, "css", "styles.css"]);
   cssFile.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
   writeToFileSync(cssFile, [
-    'body {',
-    ' background: red;',
-    '}'
-    ].join("\n")
+    "body {",
+    " background: red;",
+    "}"
+  ].join("\n")
   );
 
   FileUtils.getFile("TmpD", [dirName, "js", "script.js"]).createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
@@ -215,7 +213,7 @@ function writeToFile(file, data) {
   var istream = converter.convertToInputStream(data);
 
   // The last argument (the callback) is optional.
-  NetUtil.asyncCopy(istream, ostream, function(status) {
+  NetUtil.asyncCopy(istream, ostream, function (status) {
     if (!Components.isSuccessCode(status)) {
       // Handle error!
       info("ERROR WRITING TEMP FILE", status);
@@ -264,7 +262,7 @@ function* getFileData(file) {
   NetUtil.asyncFetch({
     uri: NetUtil.newURI(file),
     loadUsingSystemPrincipal: true
-  }, function(inputStream, status) {
+  }, function (inputStream, status) {
     if (!Components.isSuccessCode(status)) {
       info("ERROR READING TEMP FILE", status);
     }
@@ -272,7 +270,7 @@ function* getFileData(file) {
     // Detect if an empty file is loaded
     try {
       inputStream.available();
-    } catch(e) {
+    } catch (e) {
       def.resolve("");
       return;
     }

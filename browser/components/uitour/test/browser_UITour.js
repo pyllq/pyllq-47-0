@@ -284,13 +284,29 @@ var tests = [
     function callback(result) {
       let props = ["defaultUpdateChannel", "version"];
       for (let property of props) {
-        ok(typeof(result[property]) !== undefined, "Check " + property + " isn't undefined.");
+        ok(typeof(result[property]) !== "undefined", "Check " + property + " isn't undefined.");
         is(result[property], Services.appinfo[property], "Should have the same " + property + " property.");
       }
       done();
     }
 
     gContentAPI.getConfiguration("appinfo", callback);
+  },
+  function test_getConfigurationDistribution(done) {
+    gContentAPI.getConfiguration("appinfo", (result) => {
+      ok(typeof(result.distribution) !== "undefined", "Check distribution isn't undefined.");
+      is(result.distribution, "default", "Should be \"default\" without preference set.");
+
+      let defaults = Services.prefs.getDefaultBranch("distribution.");
+      let testDistributionID = "TestDistribution";
+      defaults.setCharPref("id", testDistributionID);
+      gContentAPI.getConfiguration("appinfo", (result) => {
+        ok(typeof(result.distribution) !== "undefined", "Check distribution isn't undefined.");
+        is(result.distribution, testDistributionID, "Should have the distribution as set in preference.");
+
+        done();
+      });
+    });
   },
   function test_addToolbarButton(done) {
     let placement = CustomizableUI.getPlacementOfWidget("panic-button");
@@ -363,6 +379,9 @@ var tests = [
     let ac = new TelemetryArchiveTesting.Checker();
     yield ac.promiseInit();
     yield gContentAPI.setTreatmentTag("foobar", "baz");
+    // Wait until the treatment telemetry is sent before looking in the archive.
+    yield BrowserTestUtils.waitForContentEvent(gTestTab.linkedBrowser, "mozUITourNotification", false,
+                                               event => event.detail.event === "TreatmentTag:TelemetrySent");
     yield new Promise((resolve) => {
       gContentAPI.getTreatmentTag("foobar", (data) => {
         is(data.value, "baz", "set and retrieved treatmentTag");

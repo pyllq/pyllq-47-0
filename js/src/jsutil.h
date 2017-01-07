@@ -262,13 +262,13 @@ BitArrayIndexToWordMask(size_t i)
 }
 
 static inline bool
-IsBitArrayElementSet(size_t* array, size_t length, size_t i)
+IsBitArrayElementSet(const size_t* array, size_t length, size_t i)
 {
     return array[BitArrayIndexToWordIndex(length, i)] & BitArrayIndexToWordMask(i);
 }
 
 static inline bool
-IsAnyBitArrayElementSet(size_t* array, size_t length)
+IsAnyBitArrayElementSet(const size_t* array, size_t length)
 {
     unsigned numWords = NumWordsForBitArrayOfLength(length);
     for (unsigned i = 0; i < numWords; ++i) {
@@ -328,6 +328,7 @@ PodSet(T* aDst, T aSrc, size_t aNElem)
 #define JS_MOVED_TENURED_PATTERN 0x49
 #define JS_SWEPT_TENURED_PATTERN 0x4B
 #define JS_ALLOCATED_TENURED_PATTERN 0x4D
+#define JS_FREED_HEAP_PTR_PATTERN 0x6B
 
 /*
  * Ensure JS_SWEPT_CODE_PATTERN is a byte pattern that will crash immediately

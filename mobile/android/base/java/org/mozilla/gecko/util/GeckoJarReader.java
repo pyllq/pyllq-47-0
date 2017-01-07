@@ -62,12 +62,9 @@ public final class GeckoJarReader {
             if (inputStream != null) {
                 try {
                     inputStream.close();
-                } catch(IOException ex) {
+                } catch (IOException ex) {
                     Log.e(LOGTAG, "Error closing stream", ex);
                 }
-            }
-            if (zip != null) {
-                zip.close();
             }
         }
 
@@ -93,12 +90,9 @@ public final class GeckoJarReader {
             if (reader != null) {
                 try {
                     reader.close();
-                } catch(IOException ex) {
+                } catch (IOException ex) {
                     Log.e(LOGTAG, "Error closing reader", ex);
                 }
-            }
-            if (zip != null) {
-                zip.close();
             }
         }
 
@@ -238,7 +232,7 @@ public final class GeckoJarReader {
         if (url.startsWith("jar:")) {
             int jarEnd = url.lastIndexOf("!");
             String subStr = url.substring(4, jarEnd);
-            results.push(url.substring(jarEnd+2)); // remove the !/ characters
+            results.push(url.substring(jarEnd + 2)); // remove the !/ characters
             return parseUrl(subStr, results);
         } else {
             results.push(url);

@@ -246,6 +246,14 @@ EVENT(keyup,
       eKeyUp,
       EventNameType_HTMLXUL,
       eKeyboardEventClass)
+EVENT(mozkeydownonplugin,
+      eKeyDownOnPlugin,
+      EventNameType_None,
+      eKeyboardEventClass)
+EVENT(mozkeyuponplugin,
+      eKeyUpOnPlugin,
+      EventNameType_None,
+      eKeyboardEventClass)
 NON_IDL_EVENT(mozbrowserbeforekeydown,
               eBeforeKeyDown,
               EventNameType_None,
@@ -262,6 +270,10 @@ NON_IDL_EVENT(mozbrowserafterkeyup,
               eAfterKeyUp,
               EventNameType_None,
               eBeforeAfterKeyboardEventClass)
+NON_IDL_EVENT(mozaccesskeynotfound,
+              eAccessKeyNotFound,
+              EventNameType_None,
+              eKeyboardEventClass)
 EVENT(loadeddata,
       eLoadedData,
       EventNameType_HTML,
@@ -311,10 +323,18 @@ EVENT(mozfullscreenerror,
       EventNameType_HTML,
       eBasicEventClass)
 EVENT(mozpointerlockchange,
-      ePointerLockChange,
+      eMozPointerLockChange,
       EventNameType_HTML,
       eBasicEventClass)
 EVENT(mozpointerlockerror,
+      eMozPointerLockError,
+      EventNameType_HTML,
+      eBasicEventClass)
+EVENT(pointerlockchange,
+      ePointerLockChange,
+      EventNameType_HTML,
+      eBasicEventClass)
+EVENT(pointerlockerror,
       ePointerLockError,
       EventNameType_HTML,
       eBasicEventClass)
@@ -419,6 +439,10 @@ EVENT(suspend,
       eBasicEventClass)
 EVENT(timeupdate,
       eTimeUpdate,
+      EventNameType_HTML,
+      eBasicEventClass)
+EVENT(toggle,
+      eToggle,
       EventNameType_HTML,
       eBasicEventClass)
 EVENT(volumechange,
@@ -572,6 +596,13 @@ WINDOW_ONLY_EVENT(devicelight,
                   EventNameType_None,
                   eBasicEventClass)
 
+// Install events as per W3C Manifest spec
+WINDOW_ONLY_EVENT(install,
+                  eInstall,
+                  EventNameType_None,
+                  eBasicEventClass)
+
+
 #ifdef MOZ_B2G
 WINDOW_ONLY_EVENT(moztimechange,
                   eTimeChange,
@@ -696,7 +727,7 @@ NON_IDL_EVENT(speakerforcedchange,
 
 // Events that only have on* attributes on XUL elements
 
- // "text" event is legacy event for modifying composition string in nsEditor.
+ // "text" event is legacy event for modifying composition string in EditorBase.
  // This shouldn't be used by web/xul apps.  "compositionupdate" should be
  // used instead.
 NON_IDL_EVENT(text,
@@ -749,14 +780,6 @@ NON_IDL_EVENT(commandupdate,
               eBasicEventClass)
 NON_IDL_EVENT(dragexit,
               eDragExit,
-              EventNameType_XUL,
-              eDragEventClass)
-NON_IDL_EVENT(dragdrop,
-              eLegacyDragDrop,
-              EventNameType_XUL,
-              eDragEventClass)
-NON_IDL_EVENT(draggesture,
-              eLegacyDragGesture,
               EventNameType_XUL,
               eDragEventClass)
 NON_IDL_EVENT(overflow,

@@ -366,6 +366,7 @@ var currentStateObj = Task.async(function* () {
     state.engines.push({
       name: engine.name,
       iconBuffer: yield arrayBufferFromDataURI(uri),
+      hidden: false,
     });
   }
   return state;
@@ -391,7 +392,10 @@ function arrayBufferFromDataURI(uri) {
             createInstance(Ci.nsIXMLHttpRequest);
   xhr.open("GET", uri, true);
   xhr.responseType = "arraybuffer";
-  xhr.onloadend = () => {
+  xhr.onerror = () => {
+    deferred.resolve(null);
+  };
+  xhr.onload = () => {
     deferred.resolve(xhr.response);
   };
   try {

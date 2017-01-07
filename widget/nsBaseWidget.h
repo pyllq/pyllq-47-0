@@ -5,7 +5,10 @@
 #ifndef nsBaseWidget_h__
 #define nsBaseWidget_h__
 
+#include "InputData.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/WidgetUtils.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "nsRect.h"
@@ -14,33 +17,53 @@
 #include "nsIFile.h"
 #include "nsString.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsIRollupListener.h"
 #include "nsIObserver.h"
 #include "nsIWidgetListener.h"
 #include "nsPIDOMWindow.h"
 #include "nsWeakReference.h"
 #include <algorithm>
+
+#if defined(XP_WIN)
+// Scroll capture constants
+const uint32_t kScrollCaptureFillColor = 0xFFa0a0a0; // gray
+const mozilla::gfx::SurfaceFormat kScrollCaptureFormat =
+  mozilla::gfx::SurfaceFormat::X8R8G8B8_UINT32;
+#endif
+
 class nsIContent;
 class nsAutoRollup;
 class gfxContext;
 
 namespace mozilla {
+class CompositorVsyncDispatcher;
 #ifdef ACCESSIBILITY
 namespace a11y {
 class Accessible;
 }
 #endif
 
+namespace gfx {
+class DrawTarget;
+class SourceSurface;
+} // namespace gfx
+
 namespace layers {
 class BasicLayerManager;
-class CompositorChild;
-class CompositorParent;
-class APZCTreeManager;
+class CompositorBridgeChild;
+class CompositorBridgeParent;
+class IAPZCTreeManager;
 class GeckoContentController;
 class APZEventState;
+class CompositorSession;
+class ImageContainer;
 struct ScrollableLayerGuid;
 } // namespace layers
+
+namespace widget {
+class CompositorWidgetDelegate;
+class InProcessCompositorWidget;
+} // namespace widget
 
 class CompositorVsyncDispatcher;
 } // namespace mozilla
@@ -76,9 +99,9 @@ public:
 
 /**
  * Common widget implementation used as base class for native
- * or crossplatform implementations of Widgets. 
- * All cross-platform behavior that all widgets need to implement 
- * should be placed in this class. 
+ * or crossplatform implementations of Widgets.
+ * All cross-platform behavior that all widgets need to implement
+ * should be placed in this class.
  * (Note: widget implementations are not required to use this
  * class, but it gives them a head start.)
  */
@@ -87,14 +110,17 @@ class nsBaseWidget : public nsIWidget, public nsSupportsWeakReference
 {
   friend class nsAutoRollup;
   friend class DispatchWheelEventOnMainThread;
+  friend class mozilla::widget::InProcessCompositorWidget;
 
 protected:
   typedef base::Thread Thread;
+  typedef mozilla::gfx::DrawTarget DrawTarget;
+  typedef mozilla::gfx::SourceSurface SourceSurface;
   typedef mozilla::layers::BasicLayerManager BasicLayerManager;
   typedef mozilla::layers::BufferMode BufferMode;
-  typedef mozilla::layers::CompositorChild CompositorChild;
-  typedef mozilla::layers::CompositorParent CompositorParent;
-  typedef mozilla::layers::APZCTreeManager APZCTreeManager;
+  typedef mozilla::layers::CompositorBridgeChild CompositorBridgeChild;
+  typedef mozilla::layers::CompositorBridgeParent CompositorBridgeParent;
+  typedef mozilla::layers::IAPZCTreeManager IAPZCTreeManager;
   typedef mozilla::layers::GeckoContentController GeckoContentController;
   typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
   typedef mozilla::layers::APZEventState APZEventState;
@@ -102,6 +128,9 @@ protected:
   typedef mozilla::CSSIntRect CSSIntRect;
   typedef mozilla::CSSRect CSSRect;
   typedef mozilla::ScreenRotation ScreenRotation;
+  typedef mozilla::widget::CompositorWidgetDelegate CompositorWidgetDelegate;
+  typedef mozilla::layers::CompositorSession CompositorSession;
+  typedef mozilla::layers::ImageContainer ImageContainer;
 
   virtual ~nsBaseWidget();
 
@@ -155,23 +184,13 @@ public:
 
   virtual LayerManager*   GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) override;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
 
-  CompositorVsyncDispatcher* GetCompositorVsyncDispatcher() override;
+  mozilla::CompositorVsyncDispatcher* GetCompositorVsyncDispatcher();
   void            CreateCompositorVsyncDispatcher();
-  virtual CompositorParent* NewCompositorParent(int aSurfaceWidth, int aSurfaceHeight);
   virtual void            CreateCompositor();
   virtual void            CreateCompositor(int aWidth, int aHeight);
   virtual void            PrepareWindowEffects() override {}
-  virtual void            CleanupWindowEffects() override {}
-  virtual bool            PreRender(LayerManagerComposite* aManager) override { return true; }
-  virtual void            PostRender(LayerManagerComposite* aManager) override {}
-  virtual void            DrawWindowUnderlay(LayerManagerComposite* aManager, LayoutDeviceIntRect aRect) override {}
-  virtual void            DrawWindowOverlay(LayerManagerComposite* aManager, LayoutDeviceIntRect aRect) override {}
-  virtual already_AddRefed<mozilla::gfx::DrawTarget> StartRemoteDrawing() override;
-  virtual void            EndRemoteDrawing() override { };
-  virtual void            CleanupRemoteDrawing() override { };
   virtual void            UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries) override {}
   NS_IMETHOD              SetModal(bool aModal) override;
   virtual uint32_t        GetMaxTouchPoints() const override;
@@ -249,16 +268,15 @@ public:
   virtual nsIWidgetListener* GetPreviouslyAttachedWidgetListener() override;
   virtual void               SetPreviouslyAttachedWidgetListener(nsIWidgetListener* aListener) override;
   NS_IMETHOD_(TextEventDispatcher*) GetTextEventDispatcher() override final;
+  NS_IMETHOD_(TextEventDispatcherListener*)
+    GetNativeTextEventDispatcherListener() override;
   virtual void ZoomToRect(const uint32_t& aPresShellId,
                           const FrameMetrics::ViewID& aViewId,
                           const CSSRect& aRect,
                           const uint32_t& aFlags) override;
-  // Helper function for dispatching events which are not processed by APZ,
-  // but need to be transformed by APZ.
-  nsEventStatus DispatchInputEvent(mozilla::WidgetInputEvent* aEvent) override;
-
   // Dispatch an event that must be first be routed through APZ.
-  nsEventStatus DispatchAPZAwareEvent(mozilla::WidgetInputEvent* aEvent) override;
+  nsEventStatus DispatchInputEvent(mozilla::WidgetInputEvent* aEvent) override;
+  void DispatchEventToAPZOnly(mozilla::WidgetInputEvent* aEvent) override;
 
   void SetConfirmedTargetAPZC(uint64_t aInputBlockId,
                               const nsTArray<ScrollableLayerGuid>& aTargets) const override;
@@ -291,6 +309,10 @@ public:
   mozilla::a11y::Accessible* GetRootAccessible();
 #endif
 
+  // Return true if this is a simple widget (that is typically not worth
+  // accelerating)
+  bool IsSmallPopup() const;
+
   nsPopupLevel PopupLevel() { return mPopupLevel; }
 
   virtual LayoutDeviceIntSize
@@ -305,21 +327,15 @@ public:
   // return true if this is a popup widget with a native titlebar
   bool IsPopupWithTitleBar() const
   {
-    return (mWindowType == eWindowType_popup && 
+    return (mWindowType == eWindowType_popup &&
             mBorderStyle != eBorderStyle_default &&
             mBorderStyle & eBorderStyle_title);
   }
 
   NS_IMETHOD              ReparentNativeWidget(nsIWidget* aNewParent) override = 0;
 
-  virtual uint32_t GetGLFrameBufferFormat() override;
-
   virtual const SizeConstraints GetSizeConstraints() override;
   virtual void SetSizeConstraints(const SizeConstraints& aConstraints) override;
-
-  virtual bool CaptureWidgetOnScreen(RefPtr<mozilla::gfx::DrawTarget> aDT) override {
-    return false;
-  }
 
   virtual void StartAsyncScrollbarDrag(const AsyncDragMetrics& aDragMetrics) override;
 
@@ -351,8 +367,51 @@ public:
 
   void Shutdown();
 
-protected:
+#if defined(XP_WIN)
+  uint64_t CreateScrollCaptureContainer() override;
+#endif
 
+protected:
+  // These are methods for CompositorWidgetWrapper, and should only be
+  // accessed from that class. Derived widgets can choose which methods to
+  // implement, or none if supporting out-of-process compositing.
+  virtual bool PreRender(mozilla::layers::LayerManagerComposite* aManager) {
+    return true;
+  }
+  virtual void PostRender(mozilla::layers::LayerManagerComposite* aManager)
+  {}
+  virtual void DrawWindowUnderlay(mozilla::layers::LayerManagerComposite* aManager,
+                                  LayoutDeviceIntRect aRect)
+  {}
+  virtual void DrawWindowOverlay(mozilla::layers::LayerManagerComposite* aManager,
+                                 LayoutDeviceIntRect aRect)
+  {}
+  virtual already_AddRefed<DrawTarget> StartRemoteDrawing();
+  virtual already_AddRefed<DrawTarget>
+  StartRemoteDrawingInRegion(LayoutDeviceIntRegion& aInvalidRegion, BufferMode* aBufferMode)
+  {
+    return StartRemoteDrawing();
+  }
+  virtual void EndRemoteDrawing()
+  {}
+  virtual void EndRemoteDrawingInRegion(DrawTarget* aDrawTarget,
+                                        LayoutDeviceIntRegion& aInvalidRegion)
+  {
+    EndRemoteDrawing();
+  }
+  virtual void CleanupRemoteDrawing()
+  {}
+  virtual void CleanupWindowEffects()
+  {}
+  virtual bool InitCompositor(mozilla::layers::Compositor* aCompositor) {
+    return true;
+  }
+  virtual uint32_t GetGLFrameBufferFormat();
+  virtual mozilla::layers::Composer2D* GetComposer2D() {
+    return nullptr;
+  }
+
+protected:
   void            ResolveIconName(const nsAString &aIconName,
                                   const nsAString &aIconSuffix,
                                   nsIFile **aResult);
@@ -421,7 +480,7 @@ protected:
 
   virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
                                               TouchPointerState aPointerState,
-                                              ScreenIntPoint aPointerScreenPoint,
+                                              LayoutDeviceIntPoint aPoint,
                                               double aPointerPressure,
                                               uint32_t aPointerOrientation,
                                               nsIObserver* aObserver) override
@@ -432,6 +491,12 @@ protected:
 
   virtual nsresult NotifyIMEInternal(const IMENotification& aIMENotification)
   { return NS_ERROR_NOT_IMPLEMENTED; }
+
+  /**
+   * GetPseudoIMEContext() returns pseudo IME context when TextEventDispatcher
+   * has non-native input transaction.  Otherwise, returns nullptr.
+   */
+  void* GetPseudoIMEContext();
 
 protected:
   // Utility to check if an array of clip rects is equal to our
@@ -477,7 +542,7 @@ protected:
                         std::min(c.mMaxSize.height, *aHeight));
   }
 
-  virtual CompositorChild* GetRemoteRenderer() override;
+  virtual CompositorBridgeChild* GetRemoteRenderer() override;
 
   /**
    * Notify the widget that this window is being used with OMTC.
@@ -487,14 +552,60 @@ protected:
 
   nsIDocument* GetDocument() const;
 
+  void EnsureTextEventDispatcher();
+
   // Notify the compositor that a device reset has occurred.
   void OnRenderingDeviceReset();
 
+  bool UseAPZ();
+
+  /**
+   * For widgets that support synthesizing native touch events, this function
+   * can be used to manage the current state of synthetic pointers. Each widget
+   * must maintain its own MultiTouchInput instance and pass it in as the state,
+   * along with the desired parameters for the changes. This function returns
+   * a new MultiTouchInput object that is ready to be dispatched.
+   */
+  mozilla::MultiTouchInput
+  UpdateSynthesizedTouchState(mozilla::MultiTouchInput* aState,
+                              uint32_t aPointerId,
+                              TouchPointerState aPointerState,
+                              LayoutDeviceIntPoint aPoint,
+                              double aPointerPressure,
+                              uint32_t aPointerOrientation);
+
+#if defined(XP_WIN)
+  void UpdateScrollCapture() override;
+
+  /**
+   * To be overridden by derived classes to return a snapshot that can be used
+   * during scrolling. Returning null means we won't update the container.
+   * @return an already AddRefed SourceSurface containing the snapshot
+   */
+  virtual already_AddRefed<SourceSurface> CreateScrollSnapshot()
+  {
+    return nullptr;
+  };
+
+  /**
+   * Used by derived classes to create a fallback scroll image.
+   * @param aSnapshotDrawTarget DrawTarget to fill with fallback image.
+   */
+  void DefaultFillScrollCapture(DrawTarget* aSnapshotDrawTarget);
+
+  RefPtr<ImageContainer> mScrollCaptureContainer;
+#endif
+
 protected:
+  // Returns whether compositing should use an external surface size.
+  virtual bool UseExternalCompositingSurface() const {
+    return false;
+  }
+
   /**
    * Starts the OMTC compositor destruction sequence.
    *
-   * When this function returns, the compositor should not be 
+   * When this function returns, the compositor should not be
    * able to access the opengl context anymore.
    * It is safe to call it several times if platform implementations
    * require the compositor to be destroyed before ~nsBaseWidget is
@@ -502,6 +613,7 @@ protected:
    */
   virtual void DestroyCompositor();
   void DestroyLayerManager();
+  void ReleaseContentController();
 
   void FreeShutdownObserver();
 
@@ -509,10 +621,10 @@ protected:
   nsIWidgetListener* mAttachedWidgetListener;
   nsIWidgetListener* mPreviouslyAttachedWidgetListener;
   RefPtr<LayerManager> mLayerManager;
-  RefPtr<CompositorChild> mCompositorChild;
-  RefPtr<CompositorParent> mCompositorParent;
+  RefPtr<CompositorSession> mCompositorSession;
+  RefPtr<CompositorBridgeChild> mCompositorBridgeChild;
   RefPtr<mozilla::CompositorVsyncDispatcher> mCompositorVsyncDispatcher;
-  RefPtr<APZCTreeManager> mAPZC;
+  RefPtr<IAPZCTreeManager> mAPZC;
   RefPtr<GeckoContentController> mRootContentController;
   RefPtr<APZEventState> mAPZEventState;
   SetAllowedTouchBehaviorCallback mSetAllowedTouchBehaviorCallback;
@@ -530,10 +642,12 @@ protected:
   nsPopupType       mPopupType;
   SizeConstraints   mSizeConstraints;
 
+  CompositorWidgetDelegate* mCompositorWidgetDelegate;
+
   bool              mUpdateCursor;
   bool              mUseAttachedEvents;
   bool              mIMEHasFocus;
-#if defined(XP_WIN) || defined(XP_MACOSX)
+#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_GTK)
   bool              mAccessibilityInUseFlag;
 #endif
   static nsIRollupListener* gRollupListener;
@@ -565,19 +679,19 @@ protected:
   static void debug_DumpInvalidate(FILE* aFileOut,
                                    nsIWidget* aWidget,
                                    const LayoutDeviceIntRect* aRect,
-                                   const nsAutoCString& aWidgetName,
+                                   const char* aWidgetName,
                                    int32_t aWindowID);
 
   static void debug_DumpEvent(FILE* aFileOut,
                               nsIWidget* aWidget,
                               mozilla::WidgetGUIEvent* aGuiEvent,
-                              const nsAutoCString& aWidgetName,
+                              const char* aWidgetName,
                               int32_t aWindowID);
 
   static void debug_DumpPaintEvent(FILE *                aFileOut,
                                    nsIWidget *           aWidget,
                                    const nsIntRegion &   aPaintEvent,
-                                   const nsAutoCString & aWidgetName,
+                                   const char *          aWidgetName,
                                    int32_t               aWindowID);
 
   static bool debug_GetCachedBoolPref(const char* aPrefName);

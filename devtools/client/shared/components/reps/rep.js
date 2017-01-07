@@ -7,9 +7,11 @@
 "use strict";
 
 // Make this available to both AMD and CJS environments
-define(function(require, exports, module) {
+define(function (require, exports, module) {
   // Dependencies
   const React = require("devtools/client/shared/vendor/react");
+
+  const { isGrip } = require("./rep-utils");
 
   // Load all existing rep templates
   const { Undefined } = require("./undefined");
@@ -19,11 +21,44 @@ define(function(require, exports, module) {
   const { ArrayRep } = require("./array");
   const { Obj } = require("./object");
 
+  // DOM types (grips)
+  const { Attribute } = require("./attribute");
+  const { DateTime } = require("./date-time");
+  const { Document } = require("./document");
+  const { Event } = require("./event");
+  const { Func } = require("./function");
+  const { RegExp } = require("./regexp");
+  const { StyleSheet } = require("./stylesheet");
+  const { TextNode } = require("./text-node");
+  const { Window } = require("./window");
+  const { ObjectWithText } = require("./object-with-text");
+  const { ObjectWithURL } = require("./object-with-url");
+  const { GripArray } = require("./grip-array");
+  const { Grip } = require("./grip");
+
   // List of all registered template.
   // XXX there should be a way for extensions to register a new
   // or modify an existing rep.
-  let reps = [Undefined, Null, StringRep, Number, ArrayRep, Obj];
-  let defaultRep;
+  let reps = [
+    RegExp,
+    StyleSheet,
+    Event,
+    DateTime,
+    TextNode,
+    Attribute,
+    Func,
+    ArrayRep,
+    Document,
+    Window,
+    ObjectWithText,
+    ObjectWithURL,
+    GripArray,
+    Grip,
+    Undefined,
+    Null,
+    StringRep,
+    Number,
+  ];
 
   /**
    * Generic rep that is using for rendering native JS types or an object.
@@ -34,8 +69,13 @@ define(function(require, exports, module) {
   const Rep = React.createClass({
     displayName: "Rep",
 
-    render: function() {
-      let rep = getRep(this.props.object);
+    propTypes: {
+      object: React.PropTypes.any,
+      defaultRep: React.PropTypes.object,
+    },
+
+    render: function () {
+      let rep = getRep(this.props.object, this.props.defaultRep);
       return rep(this.props);
     },
   });
@@ -49,8 +89,11 @@ define(function(require, exports, module) {
    * @param object {Object} Object to be rendered in the UI. This
    * can be generic JS object as well as a grip (handle to a remote
    * debuggee object).
+   *
+   * @param defaultObject {React.Component} The default template
+   * that should be used to render given object if none is found.
    */
-  function getRep(object) {
+  function getRep(object, defaultRep = Obj) {
     let type = typeof object;
     if (type == "object" && object instanceof String) {
       type = "string";
@@ -70,15 +113,11 @@ define(function(require, exports, module) {
           return React.createFactory(rep.rep);
         }
       } catch (err) {
-        console.error("reps.getRep; EXCEPTION ", err, err);
+        console.error(err);
       }
     }
 
     return React.createFactory(defaultRep.rep);
-  }
-
-  function isGrip(object) {
-    return object && object.actor;
   }
 
   // Exports from this module

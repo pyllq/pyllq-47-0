@@ -22,13 +22,27 @@
 
   <commandset id="editMenuCommands"/>
 
+  <popupset id="storagePopupSet">
+    <menupopup id="storage-tree-popup">
+      <menuitem id="storage-tree-popup-delete-all"
+                label="&storage.popupMenu.deleteAllLabel;"/>
+      <menuitem id="storage-tree-popup-delete-database"/>
+    </menupopup>
+    <menupopup id="storage-table-popup">
+      <menuitem id="storage-table-popup-delete"/>
+      <menuitem id="storage-table-popup-delete-all-from"/>
+      <menuitem id="storage-table-popup-delete-all"
+                label="&storage.popupMenu.deleteAllLabel;"/>
+    </menupopup>
+  </popupset>
+
   <box flex="1" class="devtools-responsive-container theme-body">
     <vbox id="storage-tree"/>
     <splitter class="devtools-side-splitter"/>
     <vbox flex="1">
       <hbox id="storage-toolbar" class="devtools-toolbar">
         <textbox id="storage-searchbox"
-                 class="devtools-searchinput"
+                 class="devtools-filterinput"
                  type="search"
                  timeout="200"
                  placeholder="&searchBox.placeholder;"/>

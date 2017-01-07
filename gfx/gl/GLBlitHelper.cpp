@@ -193,9 +193,9 @@ GLBlitHelper::InitTexQuadProgram(BlitType target)
         uniform vec2 uCbCrTexScale;                                         \n\
         void main()                                                         \n\
         {                                                                   \n\
-            float y = texture2D(uYTexture, vTexCoord * uYTexScale).a;       \n\
-            float cb = texture2D(uCbTexture, vTexCoord * uCbCrTexScale).a;  \n\
-            float cr = texture2D(uCrTexture, vTexCoord * uCbCrTexScale).a;  \n\
+            float y = texture2D(uYTexture, vTexCoord * uYTexScale).r;       \n\
+            float cb = texture2D(uCbTexture, vTexCoord * uCbCrTexScale).r;  \n\
+            float cr = texture2D(uCrTexture, vTexCoord * uCbCrTexScale).r;  \n\
             y = (y - 0.06275) * 1.16438;                                    \n\
             cb = cb - 0.50196;                                              \n\
             cr = cr - 0.50196;                                              \n\
@@ -236,8 +236,8 @@ GLBlitHelper::InitTexQuadProgram(BlitType target)
 
     bool success = false;
 
-    GLuint *programPtr;
-    GLuint *fragShaderPtr;
+    GLuint* programPtr;
+    GLuint* fragShaderPtr;
     const char* fragShaderSource;
     switch (target) {
     case ConvertEGLImage:
@@ -329,7 +329,7 @@ GLBlitHelper::InitTexQuadProgram(BlitType target)
         mGL->fBindAttribLocation(program, 0, "aPosition");
         mGL->fLinkProgram(program);
 
-        if (mGL->DebugMode()) {
+        if (GLContext::ShouldSpew()) {
             GLint status = 0;
             mGL->fGetShaderiv(mTexBlit_VertShader, LOCAL_GL_COMPILE_STATUS, &status);
             if (status != LOCAL_GL_TRUE) {
@@ -372,7 +372,7 @@ GLBlitHelper::InitTexQuadProgram(BlitType target)
         GLint status = 0;
         mGL->fGetProgramiv(program, LOCAL_GL_LINK_STATUS, &status);
         if (status != LOCAL_GL_TRUE) {
-            if (mGL->DebugMode()) {
+            if (GLContext::ShouldSpew()) {
                 NS_ERROR("Linking blit program failed.");
                 GLint length = 0;
                 mGL->fGetProgramiv(program, LOCAL_GL_INFO_LOG_LENGTH, &length);
@@ -607,9 +607,23 @@ GLBlitHelper::BindAndUploadYUVTexture(Channel which,
     MOZ_ASSERT(which < Channel_Max, "Invalid channel!");
     GLuint* srcTexArr[3] = {&mSrcTexY, &mSrcTexCb, &mSrcTexCr};
     GLuint& tex = *srcTexArr[which];
+
+    // RED textures aren't valid in GLES2, and ALPHA textures are not valid in desktop GL Core Profiles.
+    // So use R8 textures on GL3.0+ and GLES3.0+, but LUMINANCE/LUMINANCE/UNSIGNED_BYTE otherwise.
+    GLenum format;
+    GLenum internalFormat;
+    if (mGL->IsAtLeast(gl::ContextProfile::OpenGLCore, 300) ||
+        mGL->IsAtLeast(gl::ContextProfile::OpenGLES, 300)) {
+        format = LOCAL_GL_RED;
+        internalFormat = LOCAL_GL_R8;
+    } else {
+        format = LOCAL_GL_LUMINANCE;
+        internalFormat = LOCAL_GL_LUMINANCE;
+    }
+
     if (!tex) {
         MOZ_ASSERT(needsAllocation);
-        tex = CreateTexture(mGL, LOCAL_GL_ALPHA, LOCAL_GL_ALPHA, LOCAL_GL_UNSIGNED_BYTE,
+        tex = CreateTexture(mGL, internalFormat, format, LOCAL_GL_UNSIGNED_BYTE,
                             gfx::IntSize(width, height), false);
     }
     mGL->fActiveTexture(LOCAL_GL_TEXTURE0 + which);
@@ -622,17 +636,17 @@ GLBlitHelper::BindAndUploadYUVTexture(Channel which,
                             0,
                             width,
                             height,
-                            LOCAL_GL_ALPHA,
+                            format,
                             LOCAL_GL_UNSIGNED_BYTE,
                             data);
     } else {
         mGL->fTexImage2D(LOCAL_GL_TEXTURE_2D,
                          0,
-                         LOCAL_GL_ALPHA,
+                         internalFormat,
                          width,
                          height,
                          0,
-                         LOCAL_GL_ALPHA,
+                         format,
                          LOCAL_GL_UNSIGNED_BYTE,
                          data);
     }
@@ -889,9 +903,13 @@ GLBlitHelper::BlitImageToFramebuffer(layers::Image* srcImage,
         return BlitGrallocImage(static_cast<layers::GrallocImage*>(srcImage));
 #endif
 
-    case ConvertPlanarYCbCr:
-        mGL->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
-        return BlitPlanarYCbCrImage(static_cast<PlanarYCbCrImage*>(srcImage));
+    case ConvertPlanarYCbCr: {
+            const auto saved = mGL->GetIntAs<GLint>(LOCAL_GL_UNPACK_ALIGNMENT);
+            mGL->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
+            const auto ret = BlitPlanarYCbCrImage(static_cast<PlanarYCbCrImage*>(srcImage));
+            mGL->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, saved);
+            return ret;
+        }
 
 #ifdef MOZ_WIDGET_ANDROID
     case ConvertSurfaceTexture:

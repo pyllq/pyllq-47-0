@@ -323,8 +323,7 @@ nsAppShell::Init()
   }
 
 #if !defined(RELEASE_BUILD) || defined(DEBUG)
-  if (nsCocoaFeatures::OnMavericksOrLater() &&
-      Preferences::GetBool("security.sandbox.mac.track.violations", false)) {
+  if (Preferences::GetBool("security.sandbox.mac.track.violations", false)) {
     nsSandboxViolationSink::Start();
   }
 #endif
@@ -364,7 +363,7 @@ nsAppShell::ProcessGeckoEvents(void* aInfo)
     // presentable.
     //
     // But _don't_ set windowNumber to '-1' -- that can lead to nasty
-    // wierdness like bmo bug 397039 (a crash in [NSApp sendEvent:] on one of
+    // weirdness like bmo bug 397039 (a crash in [NSApp sendEvent:] on one of
     // these fake events, because the -1 has gotten changed into the number
     // of an actual NSWindow object, and that NSWindow object has just been
     // destroyed).  Setting windowNumber to '0' seems to work fine -- this
@@ -683,9 +682,7 @@ nsAppShell::Exit(void)
   mTerminated = true;
 
 #if !defined(RELEASE_BUILD) || defined(DEBUG)
-  if (nsCocoaFeatures::OnMavericksOrLater()) {
-    nsSandboxViolationSink::Stop();
-  }
+  nsSandboxViolationSink::Stop();
 #endif
 
   // Quoting from Apple's doc on the [NSApplication stop:] method (from their

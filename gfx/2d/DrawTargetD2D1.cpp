@@ -41,6 +41,7 @@ ID2D1Factory1 *D2DFactory1()
 DrawTargetD2D1::DrawTargetD2D1()
   : mPushedLayers(1)
   , mUsedCommandListsSincePurge(0)
+  , mDidComplexBlendWithListInList(false)
 {
 }
 
@@ -170,7 +171,8 @@ DrawTargetD2D1::DrawSurface(SourceSurface *aSurface,
   }
 
   if (bitmap && aSurfOptions.mSamplingBounds == SamplingBounds::UNBOUNDED) {
-    mDC->DrawBitmap(bitmap, D2DRect(aDest), aOptions.mAlpha, D2DFilter(aSurfOptions.mFilter), D2DRect(aSource));
+    mDC->DrawBitmap(bitmap, D2DRect(aDest), aOptions.mAlpha,
+                    D2DFilter(aSurfOptions.mSamplingFilter), D2DRect(aSource));
   } else {
     // This has issues ignoring the alpha channel on windows 7 with images marked opaque.
     MOZ_ASSERT(aSurface->GetFormat() != SurfaceFormat::B8G8R8X8);
@@ -178,7 +180,7 @@ DrawTargetD2D1::DrawSurface(SourceSurface *aSurface,
                           D2D1::ImageBrushProperties(samplingBounds,
                                                      D2D1_EXTEND_MODE_CLAMP,
                                                      D2D1_EXTEND_MODE_CLAMP,
-                                                     D2DInterpolationMode(aSurfOptions.mFilter)),
+                                                     D2DInterpolationMode(aSurfOptions.mSamplingFilter)),
                           D2D1::BrushProperties(aOptions.mAlpha, D2DMatrix(transform)),
                           getter_AddRefs(brush));
     mDC->FillRectangle(D2DRect(aDest), brush);
@@ -338,7 +340,7 @@ DrawTargetD2D1::MaskSurface(const Pattern &aSource,
     return;
   }
 
-  IntSize size = IntSize(bitmap->GetSize().width, bitmap->GetSize().height);
+  IntSize size = IntSize::Truncate(bitmap->GetSize().width, bitmap->GetSize().height);
 
   Rect maskRect = Rect(0.f, 0.f, Float(size.width), Float(size.height));
 
@@ -363,7 +365,7 @@ DrawTargetD2D1::CopySurface(SourceSurface *aSurface,
   mDC->SetTransform(D2D1::IdentityMatrix());
   mTransformDirty = true;
 
-  Matrix mat;
+  Matrix mat = Matrix::Translation(aDestination.x - aSourceRect.x, aDestination.y - aSourceRect.y);
   RefPtr<ID2D1Image> image = GetImageForSurface(aSurface, mat, ExtendMode::CLAMP);
 
   if (!image) {
@@ -371,10 +373,16 @@ DrawTargetD2D1::CopySurface(SourceSurface *aSurface,
     return;
   }
 
-  if (!mat.IsIdentity()) {
-    gfxDebug() << *this << ": At this point complex partial uploads are not supported for CopySurface.";
+  if (mat.HasNonIntegerTranslation()) {
+    gfxDebug() << *this << ": At this point scaled partial uploads are not supported for CopySurface.";
     return;
   }
+
+  IntRect sourceRect = aSourceRect;
+  sourceRect.x += (aDestination.x - aSourceRect.x) - mat._31;
+  sourceRect.width -= (aDestination.x - aSourceRect.x) - mat._31;
+  sourceRect.y += (aDestination.y - aSourceRect.y) - mat._32;
+  sourceRect.height -= (aDestination.y - aSourceRect.y) - mat._32;
 
   RefPtr<ID2D1Bitmap> bitmap;
   image->QueryInterface((ID2D1Bitmap**)getter_AddRefs(bitmap));
@@ -391,7 +399,7 @@ DrawTargetD2D1::CopySurface(SourceSurface *aSurface,
     return;
   }
 
-  Rect srcRect(Float(aSourceRect.x), Float(aSourceRect.y),
+  Rect srcRect(Float(sourceRect.x), Float(sourceRect.y),
                Float(aSourceRect.width), Float(aSourceRect.height));
 
   Rect dstRect(Float(aDestination.x), Float(aDestination.y),
@@ -937,6 +945,7 @@ DrawTargetD2D1::Init(ID3D11Texture2D* aTexture, SurfaceFormat aFormat)
 
   ID2D1Device* device = Factory::GetD2D1Device();
   if (!device) {
+    gfxCriticalNote << "[D2D1.1] Failed to obtain a device for DrawTargetD2D1::Init(ID3D11Texture2D*, SurfaceFormat).";
     return false;
   }
 
@@ -1001,6 +1010,7 @@ DrawTargetD2D1::Init(const IntSize &aSize, SurfaceFormat aFormat)
 
   ID2D1Device* device = Factory::GetD2D1Device();
   if (!device) {
+    gfxCriticalNote << "[D2D1.1] Failed to obtain a device for DrawTargetD2D1::Init(IntSize, SurfaceFormat).";
     return false;
   }
 
@@ -1201,9 +1211,15 @@ DrawTargetD2D1::PrepareForDrawing(CompositionOp aOp, const Pattern &aPattern)
     return;
   }
 
-  mDC->CreateCommandList(getter_AddRefs(mCommandList));
+  HRESULT result = mDC->CreateCommandList(getter_AddRefs(mCommandList));
   mDC->SetTarget(mCommandList);
   mUsedCommandListsSincePurge++;
+
+  // This is where we should have a valid command list.  If we don't, something is
+  // wrong, and it's likely an OOM.
+  if (!mCommandList) {
+    gfxDevCrash(LogReason::InvalidCommandList) << "Invalid D2D1.1 command list on creation " << mUsedCommandListsSincePurge << ", " << gfx::hexa(result);
+  }
 
   D2D1_RECT_F rect;
   bool isAligned;
@@ -1236,6 +1252,10 @@ DrawTargetD2D1::FinalizeDrawing(CompositionOp aOp, const Pattern &aPattern)
   }
 
   mDC->SetTarget(CurrentTarget());
+  if (!mCommandList) {
+    gfxDevCrash(LogReason::InvalidCommandList) << "Invalid D21.1 command list on finalize";
+    return;
+  }
   mCommandList->Close();
 
   RefPtr<ID2D1CommandList> source = mCommandList;
@@ -1283,6 +1303,13 @@ DrawTargetD2D1::FinalizeDrawing(CompositionOp aOp, const Pattern &aPattern)
     blendEffect->SetValue(D2D1_BLEND_PROP_MODE, D2DBlendMode(aOp));
 
     mDC->DrawImage(blendEffect, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_BOUNDED_SOURCE_COPY);
+
+    // This may seem a little counter intuitive. If this is false, we go through the regular
+    // codepaths and set it to true. When this was true, GetImageForLayerContent will return
+    // a bitmap for the current command list and we will no longer have a complex blend
+    // with a list for tmpImage. Therefore we can set it to false again.
+    mDidComplexBlendWithListInList = !mDidComplexBlendWithListInList;
+
     return;
   }
 
@@ -1360,6 +1387,8 @@ DrawTargetD2D1::GetDeviceSpaceClipRect(D2D1_RECT_F& aClipRect, bool& aIsPixelAli
 already_AddRefed<ID2D1Image>
 DrawTargetD2D1::GetImageForLayerContent()
 {
+  PopAllClips();
+
   if (!CurrentLayer().mCurrentList) {
     RefPtr<ID2D1Bitmap> tmpBitmap;
     HRESULT hr = mDC->CreateBitmap(D2DIntSize(mSize), D2D1::BitmapProperties(D2DPixelFormat(mFormat)), getter_AddRefs(tmpBitmap));
@@ -1374,17 +1403,28 @@ DrawTargetD2D1::GetImageForLayerContent()
     tmpBitmap->CopyFromBitmap(nullptr, mBitmap, nullptr);
     return tmpBitmap.forget();
   } else {
-    PopAllClips();
-
     RefPtr<ID2D1CommandList> list = CurrentLayer().mCurrentList;
     mDC->CreateCommandList(getter_AddRefs(CurrentLayer().mCurrentList));
     mDC->SetTarget(CurrentTarget());
     list->Close();
 
+    RefPtr<ID2D1Bitmap1> tmpBitmap;
+    if (mDidComplexBlendWithListInList) {
+      mDC->CreateBitmap(mBitmap->GetPixelSize(), nullptr, 0, &D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), getter_AddRefs(tmpBitmap));
+      mDC->SetTransform(D2D1::IdentityMatrix());
+      mDC->SetTarget(tmpBitmap);
+      mDC->DrawImage(list, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_BOUNDED_SOURCE_COPY);
+      mDC->SetTarget(CurrentTarget());
+    }
+
     DCCommandSink sink(mDC);
     list->Stream(&sink);
 
     PushAllClips();
+
+    if (mDidComplexBlendWithListInList) {
+      return tmpBitmap.forget();
+    }
 
     return list.forget();
   }
@@ -1658,7 +1698,7 @@ DrawTargetD2D1::CreateBrushForPattern(const Pattern &aPattern, Float aAlpha)
         RefPtr<ID2D1Image> oldTarget;
         RefPtr<ID2D1Bitmap1> tmpBitmap;
         mDC->CreateBitmap(D2D1::SizeU(pat->mSurface->GetSize().width, pat->mSurface->GetSize().height), nullptr, 0,
-                          &D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)),
+                          D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)),
                           getter_AddRefs(tmpBitmap));
         mDC->GetTarget(getter_AddRefs(oldTarget));
         mDC->SetTarget(tmpBitmap);
@@ -1688,7 +1728,7 @@ DrawTargetD2D1::CreateBrushForPattern(const Pattern &aPattern, Float aAlpha)
 
         mDC->CreateBitmapBrush(bitmap,
                                D2D1::BitmapBrushProperties(xRepeat, yRepeat,
-                                                           D2DFilter(pat->mFilter)),
+                                                           D2DFilter(pat->mSamplingFilter)),
                                D2D1::BrushProperties(aAlpha, D2DMatrix(mat)),
                                getter_AddRefs(bitmapBrush));
         if (!bitmapBrush) {
@@ -1719,7 +1759,7 @@ DrawTargetD2D1::CreateBrushForPattern(const Pattern &aPattern, Float aAlpha)
                           D2D1::ImageBrushProperties(samplingBounds,
                                                      xRepeat,
                                                      yRepeat,
-                                                     D2DInterpolationMode(pat->mFilter)),
+                                                     D2DInterpolationMode(pat->mSamplingFilter)),
                           D2D1::BrushProperties(aAlpha, D2DMatrix(mat)),
                           getter_AddRefs(imageBrush));
 

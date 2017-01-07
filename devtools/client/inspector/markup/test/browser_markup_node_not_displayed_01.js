@@ -18,10 +18,11 @@ const TEST_DATA = [
   {selector: "head", isDisplayed: false},
   {selector: "#display-none", isDisplayed: false},
   {selector: "#hidden-true", isDisplayed: false},
-  {selector: "#visibility-hidden", isDisplayed: true}
+  {selector: "#visibility-hidden", isDisplayed: true},
+  {selector: "#hidden-via-hide-shortcut", isDisplayed: false},
 ];
 
-add_task(function*() {
+add_task(function* () {
   let {inspector} = yield openInspectorForURL(TEST_URL);
 
   for (let {selector, isDisplayed} of TEST_DATA) {

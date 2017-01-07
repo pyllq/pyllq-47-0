@@ -5,6 +5,7 @@
 
 // Services = object with smart getters for common XPCOM services
 Components.utils.import("resource://gre/modules/AppConstants.jsm");
+Components.utils.import("resource://gre/modules/ContextualIdentityService.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
@@ -271,12 +272,17 @@ function openLinkIn(url, where, params) {
                                  createInstance(Ci.nsISupportsPRUint32);
     referrerPolicySupports.data = aReferrerPolicy;
 
+    var userContextIdSupports = Cc["@mozilla.org/supports-PRUint32;1"].
+                                 createInstance(Ci.nsISupportsPRUint32);
+    userContextIdSupports.data = aUserContextId;
+
     sa.AppendElement(wuri);
     sa.AppendElement(charset);
     sa.AppendElement(referrerURISupports);
     sa.AppendElement(aPostData);
     sa.AppendElement(allowThirdPartyFixupSupports);
     sa.AppendElement(referrerPolicySupports);
+    sa.AppendElement(userContextIdSupports);
 
     let features = "chrome,dialog=no,all";
     if (aIsPrivate) {
@@ -329,12 +335,12 @@ function openLinkIn(url, where, params) {
       flags |= Ci.nsIWebNavigation.LOAD_FLAGS_FIXUP_SCHEME_TYPOS;
     }
 
-    // LOAD_FLAGS_DISALLOW_INHERIT_OWNER isn't supported for javascript URIs,
+    // LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL isn't supported for javascript URIs,
     // i.e. it causes them not to load at all. Callers should strip
     // "javascript:" from pasted strings to protect users from malicious URIs
     // (see stripUnsafeProtocolOnPaste).
     if (aDisallowInheritPrincipal && !(uriObj && uriObj.schemeIs("javascript"))) {
-      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_OWNER;
+      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL;
     }
 
     if (aAllowPopups) {
@@ -349,6 +355,7 @@ function openLinkIn(url, where, params) {
       referrerURI: aNoReferrer ? null : aReferrerURI,
       referrerPolicy: aReferrerPolicy,
       postData: aPostData,
+      userContextId: aUserContextId
     });
     break;
   case "tabshifted":
@@ -401,6 +408,62 @@ function checkForMiddleClick(node, event) {
     // (Menus close automatically with left-click but not with middle-click.)
     closeMenus(event.target);
   }
+}
+
+// Populate a menu with user-context menu items. This method should be called
+// by onpopupshowing passing the event as first argument. addCommandAttribute
+// param is used to set the 'command' attribute in the new menuitem elements.
+function createUserContextMenu(event, addCommandAttribute = true, excludeUserContextId = 0) {
+  while (event.target.hasChildNodes()) {
+    event.target.removeChild(event.target.firstChild);
+  }
+
+  let bundle = document.getElementById("bundle_browser");
+  let docfrag = document.createDocumentFragment();
+
+  // If we are excluding a userContextId, we want to add a 'no-container' item.
+  if (excludeUserContextId) {
+    let menuitem = document.createElement("menuitem");
+    menuitem.setAttribute("usercontextid", "0");
+    menuitem.setAttribute("label", bundle.getString("userContextNone.label"));
+    menuitem.setAttribute("accesskey", bundle.getString("userContextNone.accesskey"));
+
+    // We don't set an oncommand/command attribute attribute because if we have
+    // to exclude a userContextId we are generating the contextMenu and
+    // addCommandAttribute will be false.
+
+    docfrag.appendChild(menuitem);
+
+    let menuseparator = document.createElement("menuseparator");
+    docfrag.appendChild(menuseparator);
+  }
+
+  ContextualIdentityService.getIdentities().forEach(identity => {
+    if (identity.userContextId == excludeUserContextId) {
+      return;
+    }
+
+    let menuitem = document.createElement("menuitem");
+    menuitem.setAttribute("usercontextid", identity.userContextId);
+    menuitem.setAttribute("label", ContextualIdentityService.getUserContextLabel(identity.userContextId));
+
+    if (identity.accessKey) {
+      menuitem.setAttribute("accesskey", bundle.getString(identity.accessKey));
+    }
+
+    menuitem.classList.add("menuitem-iconic");
+
+    if (addCommandAttribute) {
+      menuitem.setAttribute("command", "Browser:NewUserContextTab");
+    }
+
+    menuitem.setAttribute("image", identity.icon);
+
+    docfrag.appendChild(menuitem);
+  });
+
+  event.target.appendChild(docfrag);
+  return true;
 }
 
 // Closes all popups that are ancestors of the node.
@@ -564,7 +627,7 @@ function openPreferences(paneID, extraArgs)
     win = Services.ww.openWindow(null, Services.prefs.getCharPref("browser.chromeURL"),
                                  "_blank", "chrome,dialog=no,all", windowArguments);
   } else {
-    newLoad = !win.switchToTabHavingURI(preferencesURL, true, {ignoreFragment: true});
+    newLoad = !win.switchToTabHavingURI(preferencesURL, true, { ignoreFragment: true, replaceQueryString: true });
     browser = win.gBrowser.selectedBrowser;
   }
 

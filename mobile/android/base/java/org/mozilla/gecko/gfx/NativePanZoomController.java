@@ -10,18 +10,27 @@ import org.mozilla.gecko.GeckoEvent;
 import org.mozilla.gecko.GeckoThread;
 import org.mozilla.gecko.PrefsHelper;
 import org.mozilla.gecko.annotation.WrapForJNI;
+import org.mozilla.gecko.gfx.DynamicToolbarAnimator.PinReason;
 import org.mozilla.gecko.mozglue.JNIObject;
 import org.mozilla.gecko.util.ThreadUtils;
 
 import org.json.JSONObject;
 
+import org.mozilla.gecko.ZoomConstraints;
+
+import android.graphics.RectF;
 import android.graphics.PointF;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.InputDevice;
+
 
 class NativePanZoomController extends JNIObject implements PanZoomController {
+    private static final String LOGTAG = "NativePanZoomController";
+
     private final PanZoomTarget mTarget;
     private final LayerView mView;
     private boolean mDestroyed;
@@ -32,6 +41,12 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
     private long mLastDownTime;
     private static final float MAX_SCROLL = 0.075f * GeckoAppShell.getDpi();
 
+    // The maximum amount we allow you to zoom into a page
+    private static final float MAX_ZOOM = 8.0f;
+
+    private static Long mLastMultitouchTimestamp = 0L;
+
+    // see widget/android/nsWindow.cpp:708
     @WrapForJNI
     private native boolean handleMotionEvent(
             int action, int actionIndex, long time, int metaState,
@@ -44,7 +59,15 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
             float x, float y,
             float hScroll, float vScroll);
 
-    private boolean handleMotionEvent(MotionEvent event, boolean keepInViewCoordinates) {
+    @WrapForJNI
+    private native boolean handleMouseEvent(
+            int action, long time, int metaState,
+            float x, float y, int buttons);
+
+    @WrapForJNI
+    private native void handleMotionEventVelocity(long time, float ySpeed);
+
+    private boolean handleMotionEvent(MotionEvent event) {
         if (mDestroyed) {
             return false;
         }
@@ -67,30 +90,20 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
         final float[] toolMinor = new float[count];
 
         final MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords();
-        final PointF point = !keepInViewCoordinates ? new PointF() : null;
-        final float zoom = !keepInViewCoordinates ? mView.getViewportMetrics().zoomFactor : 1.0f;
 
         for (int i = 0; i < count; i++) {
             pointerId[i] = event.getPointerId(i);
             event.getPointerCoords(i, coords);
 
-            if (keepInViewCoordinates) {
-                x[i] = coords.x;
-                y[i] = coords.y;
-            } else {
-                point.x = coords.x;
-                point.y = coords.y;
-                final PointF newPoint = mView.convertViewPointToLayerPoint(point);
-                x[i] = newPoint.x;
-                y[i] = newPoint.y;
-            }
+            x[i] = coords.x;
+            y[i] = coords.y;
 
             orientation[i] = coords.orientation;
             pressure[i] = coords.pressure;
 
             // If we are converting to CSS pixels, we should adjust the radii as well.
-            toolMajor[i] = coords.toolMajor / zoom;
-            toolMinor[i] = coords.toolMinor / zoom;
+            toolMajor[i] = coords.toolMajor;
+            toolMinor[i] = coords.toolMinor;
         }
 
         return handleMotionEvent(action, event.getActionIndex(), event.getEventTime(),
@@ -121,6 +134,25 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
         return handleScrollEvent(event.getEventTime(), event.getMetaState(), x, y, hScroll, vScroll);
     }
 
+    private boolean handleMouseEvent(MotionEvent event) {
+        if (mDestroyed) {
+            return false;
+        }
+
+        final int count = event.getPointerCount();
+
+        if (count <= 0) {
+            return false;
+        }
+
+        final MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords();
+        event.getPointerCoords(0, coords);
+        final float x = coords.x;
+        final float y = coords.y;
+
+        return handleMouseEvent(event.getActionMasked(), event.getEventTime(), event.getMetaState(), x, y, event.getButtonState());
+    }
+
 
     NativePanZoomController(PanZoomTarget target, View view) {
         mTarget = target;
@@ -144,26 +176,146 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
         }
     }
 
+    private ImmutableViewportMetrics getMetrics() {
+        return mTarget.getViewportMetrics();
+    }
+
+    /* Returns the nearest viewport metrics with no overscroll visible. */
+    private ImmutableViewportMetrics getValidViewportMetrics() {
+        return getValidViewportMetrics(getMetrics());
+    }
+
+    private ImmutableViewportMetrics getValidViewportMetrics(ImmutableViewportMetrics viewportMetrics) {
+        /* First, we adjust the zoom factor so that we can make no overscrolled area visible. */
+        float zoomFactor = viewportMetrics.zoomFactor;
+        RectF pageRect = viewportMetrics.getPageRect();
+        RectF viewport = viewportMetrics.getViewport();
+
+        float focusX = viewport.width() / 2.0f;
+        float focusY = viewport.height() / 2.0f;
+
+        float minZoomFactor = 0.0f;
+        float maxZoomFactor = MAX_ZOOM;
+
+        ZoomConstraints constraints = mTarget.getZoomConstraints();
+
+        if (constraints.getMinZoom() > 0 || !constraints.getAllowZoom()) {
+            minZoomFactor = constraints.getMinZoom();
+        }
+        if (constraints.getMaxZoom() > 0 || !constraints.getAllowZoom()) {
+            maxZoomFactor = constraints.getMaxZoom();
+        }
+
+        // Ensure minZoomFactor keeps the page at least as big as the viewport.
+        if (pageRect.width() > 0) {
+            float pageWidth = pageRect.width();
+            float scaleFactor = viewport.width() / pageWidth;
+            minZoomFactor = Math.max(minZoomFactor, zoomFactor * scaleFactor);
+            if (viewport.width() > pageWidth)
+                focusX = 0.0f;
+        }
+        if (pageRect.height() > 0) {
+            float pageHeight = pageRect.height();
+            float scaleFactor = viewport.height() / pageHeight;
+            minZoomFactor = Math.max(minZoomFactor, zoomFactor * scaleFactor);
+            if (viewport.height() > pageHeight)
+                focusY = 0.0f;
+        }
+
+        maxZoomFactor = Math.max(maxZoomFactor, minZoomFactor);
+
+        if (zoomFactor < minZoomFactor) {
+            // if one (or both) of the page dimensions is smaller than the viewport,
+            // zoom using the top/left as the focus on that axis. this prevents the
+            // scenario where, if both dimensions are smaller than the viewport, but
+            // by different scale factors, we end up scrolled to the end on one axis
+            // after applying the scale
+            PointF center = new PointF(focusX, focusY);
+            viewportMetrics = viewportMetrics.scaleTo(minZoomFactor, center);
+        } else if (zoomFactor > maxZoomFactor) {
+            PointF center = new PointF(viewport.width() / 2.0f, viewport.height() / 2.0f);
+            viewportMetrics = viewportMetrics.scaleTo(maxZoomFactor, center);
+        }
+
+        /* Now we pan to the right origin. */
+        viewportMetrics = viewportMetrics.clamp();
+
+        return viewportMetrics;
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        return handleMotionEvent(event, /* keepInViewCoordinates */ true);
+// NOTE: This commented out block of code allows Fennec to generate
+//       mouse event instead of converting them to touch events.
+//       This gives Fennec similar behaviour to desktop when using
+//       a mouse.
+//
+//        if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
+//            return handleMouseEvent(event);
+//        } else {
+//            return handleMotionEvent(event);
+//        }
+        boolean result = handleMotionEvent(event);
+
+        int count = event.getPointerCount();
+        if (count==2 && 
+            (System.currentTimeMillis() - mLastMultitouchTimestamp > 1000)
+                ) {
+            switch (event.getAction() & MotionEvent.ACTION_MASK) {
+            case MotionEvent.ACTION_DOWN:
+                //onTouchStart(event);
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                //onTouchStart(event);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                //onTouchMove(event);
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                //onTouchEnd(event);
+                synchronized (mTarget.getLock()) {
+                    Log.e(LOGTAG, "trigger mTarget.setViewportMetrics");
+                    mTarget.setAnimationTarget(getValidViewportMetrics());
+                }            
+                break;
+            }
+        }
+        if (count > 2)
+            mLastMultitouchTimestamp = System.currentTimeMillis();
+
+        return result;
     }
 
     @Override
     public boolean onMotionEvent(MotionEvent event) {
         final int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_SCROLL && event.getDownTime() >= mLastDownTime) {
-            mLastDownTime = event.getDownTime();
+        if (action == MotionEvent.ACTION_SCROLL) {
+            if (event.getDownTime() >= mLastDownTime) {
+                mLastDownTime = event.getDownTime();
+            } else if ((InputDevice.getDevice(event.getDeviceId()).getSources() & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD) {
+                return false;
+            }
             return handleScrollEvent(event);
+        } else if ((action == MotionEvent.ACTION_HOVER_MOVE) ||
+                   (action == MotionEvent.ACTION_HOVER_ENTER) ||
+                   (action == MotionEvent.ACTION_HOVER_EXIT)) {
+            return handleMouseEvent(event);
+        } else {
+            return false;
         }
-
-        return false;
     }
 
     @Override
     public boolean onKeyEvent(KeyEvent event) {
         // FIXME implement this
         return false;
+    }
+
+    @Override
+    public void onMotionEventVelocity(final long aEventTime, final float aSpeedY) {
+        handleMotionEventVelocity(aEventTime, aSpeedY);
     }
 
     @Override
@@ -209,7 +361,7 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
 
     @Override @WrapForJNI(allowMultithread = true) // PanZoomController
     public void destroy() {
-        if (mDestroyed) {
+        if (mDestroyed || !mTarget.isGeckoReady()) {
             return;
         }
         mDestroyed = true;
@@ -294,5 +446,19 @@ class NativePanZoomController extends JNIObject implements PanZoomController {
                 });
             }
         }
+    }
+
+    @WrapForJNI
+    private void setScrollingRootContent(final boolean isRootContent) {
+        mTarget.setScrollingRootContent(isRootContent);
+    }
+
+    /**
+     * Active SelectionCaretDrag requires DynamicToolbarAnimator to be pinned
+     * to avoid unwanted scroll interactions.
+     */
+    @WrapForJNI
+    private void onSelectionDragState(boolean state) {
+        mView.getDynamicToolbarAnimator().setPinned(state, PinReason.CARET_DRAG);
     }
 }

@@ -12,7 +12,6 @@
 #include "mozilla/UniquePtr.h"
 
 extern PLDHashTable* gHashTable;
-extern bool gDirty;
 
 namespace mozilla {
 namespace dom {
@@ -21,13 +20,16 @@ class PrefSetting;
 } // namespace mozilla
 
 mozilla::UniquePtr<char*[]>
-pref_savePrefs(PLDHashTable* aTable);
+pref_savePrefs(PLDHashTable* aTable, uint32_t* aPrefCount);
 
 nsresult
 pref_SetPref(const mozilla::dom::PrefSetting& aPref);
 
 int pref_CompareStrings(const void *v1, const void *v2, void* unused);
 PrefHashEntry* pref_HashTableLookup(const char *key);
+
+bool
+pref_EntryHasAdvisablySizedValues(PrefHashEntry* aHashEntry);
 
 void pref_GetPrefFromEntry(PrefHashEntry *aHashEntry,
                            mozilla::dom::PrefSetting* aPref);

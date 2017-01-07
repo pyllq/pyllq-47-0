@@ -4,17 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _NSNSSIOLAYER_H
-#define _NSNSSIOLAYER_H
+#ifndef nsNSSIOLayer_h
+#define nsNSSIOLayer_h
 
 #include "TransportSecurityInfo.h"
-#include "nsISSLSocketControl.h"
+#include "mozilla/TimeStamp.h"
+#include "nsCOMPtr.h"
+#include "nsDataHashtable.h"
 #include "nsIClientAuthDialogs.h"
 #include "nsIProxyInfo.h"
+#include "nsISSLSocketControl.h"
 #include "nsNSSCertificate.h"
-#include "nsDataHashtable.h"
 #include "nsTHashtable.h"
-#include "mozilla/TimeStamp.h"
 #include "sslt.h"
 
 namespace mozilla {
@@ -216,9 +217,7 @@ public:
                                    PRErrorCode intoleranceReason);
   bool rememberStrongCiphersFailed(const nsACString& hostName, int16_t port,
                                    PRErrorCode intoleranceReason);
-  // returns the known tolerant version
-  // or 0 if there is no known tolerant version
-  uint16_t forgetIntolerance(const nsACString& hostname, int16_t port);
+  void forgetIntolerance(const nsACString& hostname, int16_t port);
   void adjustForTLSIntolerance(const nsACString& hostname, int16_t port,
                                /*in/out*/ SSLVersionRange& range,
                                /*out*/ StrongCipherStatus& strongCipherStatus);
@@ -231,6 +230,7 @@ public:
   bool isPublic() const;
   void addInsecureFallbackSite(const nsCString& hostname, bool temporary);
   void removeInsecureFallbackSite(const nsACString& hostname, uint16_t port);
+  bool isInsecureFallbackSite(const nsACString& hostname);
 
   bool mFalseStartRequireNPN;
   bool mUnrestrictedRC4Fallback;
@@ -261,4 +261,4 @@ nsresult nsSSLIOLayerAddToSocket(int32_t family,
 nsresult nsSSLIOLayerFreeTLSIntolerantSites();
 nsresult displayUnknownCertErrorAlert(nsNSSSocketInfo* infoObject, int error);
 
-#endif /* _NSNSSIOLAYER_H */
+#endif // nsNSSIOLayer_h

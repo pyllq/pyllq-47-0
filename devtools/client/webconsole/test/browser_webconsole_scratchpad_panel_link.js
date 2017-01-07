@@ -8,7 +8,6 @@
 const TEST_URI = "data:text/html;charset=utf8,<p>test Scratchpad panel " +
                  "linking</p>";
 
-var { Task } = Cu.import("resource://gre/modules/Task.jsm", {});
 var { Tools } = require("devtools/client/definitions");
 var { isTargetSupported } = Tools.scratchpad;
 
@@ -21,7 +20,7 @@ function pushPrefEnv() {
   return deferred.promise;
 }
 
-add_task(function*() {
+add_task(function* () {
   waitForExplicitFinish();
 
   yield pushPrefEnv();
@@ -58,7 +57,7 @@ add_task(function*() {
 
   let [matched] = [...messages[0].matched];
   ok(matched, "Found logged message from Scratchpad");
-  let anchor = matched.querySelector("a.message-location");
+  let anchor = matched.querySelector(".message-location .frame-link-filename");
 
   toolbox.on("scratchpad-selected", function selected() {
     toolbox.off("scratchpad-selected", selected);

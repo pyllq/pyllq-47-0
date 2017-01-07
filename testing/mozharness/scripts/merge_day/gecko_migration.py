@@ -153,9 +153,14 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
             if url:
                 self.gecko_repos.append({
                     "repo": url,
-                    "revision": self.config.get("%s_repo_revision", "default"),
+                    "branch": self.config.get("%s_repo_branch" % (k,), "default"),
                     "dest": dirs['abs_%s_dir' % k],
                     "vcs": "hg",
+                    # "hg" vcs uses robustcheckout extension requires the use of a share
+                    # but having a share breaks migration logic when merging repos.
+                    # Solution: tell hg vcs to create a unique share directory for each
+                    # gecko repo. see mozharness/base/vcs/mercurial.py for implementation
+                    "use_vcs_unique_share": True,
                 })
             else:
                 self.warning("Skipping %s" % repo_key)
@@ -179,9 +184,9 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
     def query_push_args(self, cwd):
         if cwd == self.query_abs_dirs()['abs_to_dir'] and \
                 self.config['migration_behavior'] == 'beta_to_release':
-            return ['--new-branch']
+            return ['--new-branch', '-r', '.']
         else:
-            return []
+            return ['-r', '.']
 
     def query_from_revision(self):
         """ Shortcut to get the revision for the from repo
@@ -370,6 +375,12 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
             staging beta user repo migrations.
             """
         dirs = self.query_abs_dirs()
+        # Reset display_version.txt
+        for f in self.config["copy_files"]:
+            self.copyfile(
+                os.path.join(dirs['abs_to_dir'], f["src"]),
+                os.path.join(dirs['abs_to_dir'], f["dst"]))
+
         self.apply_replacements()
         if self.config.get("remove_locales"):
             self.remove_locales(
@@ -456,7 +467,7 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
             """
         repos = [{
             "repo": self.config["tools_repo_url"],
-            "revision": self.config["tools_repo_revision"],
+            "branch": self.config["tools_repo_branch"],
             "dest": "tools",
             "vcs": "hg",
         }] + self.query_repos()
@@ -514,7 +525,7 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
            very quickly).
         2) Arbitrary builders ("post_merge_builders"). These are additional
            builders to trigger that aren't part of the nightly builder set.
-           For example: hg bundle generation builders.
+           Previous example: hg bundle generation builders.
         """
         dirs = self.query_abs_dirs()
         branch = self.config["to_repo_url"].rstrip("/").split("/")[-1]

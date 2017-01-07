@@ -22,11 +22,7 @@ class H264Converter : public MediaDataDecoder {
 public:
 
   H264Converter(PlatformDecoderModule* aPDM,
-                const VideoInfo& aConfig,
-                layers::LayersBackend aLayersBackend,
-                layers::ImageContainer* aImageContainer,
-                FlushableTaskQueue* aVideoTaskQueue,
-                MediaDataDecoderCallback* aCallback);
+                const CreateDecoderParams& aParams);
   virtual ~H264Converter();
 
   RefPtr<InitPromise> Init() override;
@@ -51,7 +47,7 @@ private:
   // Will create the required MediaDataDecoder if need AVCC and we have a SPS NAL.
   // Returns NS_ERROR_FAILURE if error is permanent and can't be recovered and
   // will set mError accordingly.
-  nsresult CreateDecoder();
+  nsresult CreateDecoder(DecoderDoctorDiagnostics* aDiagnostics);
   nsresult CreateDecoderAndInit(MediaRawData* aSample);
   nsresult CheckForSPSChange(MediaRawData* aSample);
   void UpdateConfigFromExtraData(MediaByteBuffer* aExtraData);
@@ -64,11 +60,12 @@ private:
   VideoInfo mCurrentConfig;
   layers::LayersBackend mLayersBackend;
   RefPtr<layers::ImageContainer> mImageContainer;
-  RefPtr<FlushableTaskQueue> mVideoTaskQueue;
+  const RefPtr<TaskQueue> mTaskQueue;
   nsTArray<RefPtr<MediaRawData>> mMediaRawSamples;
   MediaDataDecoderCallback* mCallback;
   RefPtr<MediaDataDecoder> mDecoder;
   MozPromiseRequestHolder<InitPromise> mInitPromiseRequest;
+  RefPtr<GMPCrashHelper> mGMPCrashHelper;
   bool mNeedAVCC;
   nsresult mLastError;
 };

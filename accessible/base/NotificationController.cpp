@@ -97,6 +97,17 @@ NotificationController::Shutdown()
   mNotifications.Clear();
   mEvents.Clear();
   mRelocations.Clear();
+  mEventTree.Clear();
+}
+
+EventTree*
+NotificationController::QueueMutation(Accessible* aContainer)
+{
+  EventTree* tree = mEventTree.FindOrInsert(aContainer);
+  if (tree) {
+    ScheduleProcessing();
+  }
+  return tree;
 }
 
 void
@@ -260,7 +271,7 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
       if (text.mString.IsEmpty()) {
   #ifdef A11Y_LOG
         if (logging::IsEnabled(logging::eTree | logging::eText)) {
-          logging::MsgBegin("TREE", "text node lost its content");
+          logging::MsgBegin("TREE", "text node lost its content; doc: %p", mDocument);
           logging::Node("container", containerElm);
           logging::Node("content", textNode);
           logging::MsgEnd();
@@ -274,7 +285,7 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
       // Update text of the accessible and fire text change events.
   #ifdef A11Y_LOG
       if (logging::IsEnabled(logging::eText)) {
-        logging::MsgBegin("TEXT", "text may be changed");
+        logging::MsgBegin("TEXT", "text may be changed; doc: %p", mDocument);
         logging::Node("container", containerElm);
         logging::Node("content", textNode);
         logging::MsgEntry("old text '%s'",
@@ -293,7 +304,7 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
     if (!text.mString.IsEmpty()) {
   #ifdef A11Y_LOG
       if (logging::IsEnabled(logging::eTree | logging::eText)) {
-        logging::MsgBegin("TREE", "text node gains new content");
+        logging::MsgBegin("TREE", "text node gains new content; doc: %p", mDocument);
         logging::Node("container", containerElm);
         logging::Node("content", textNode);
         logging::MsgEnd();
@@ -301,13 +312,11 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
   #endif
 
       // Make sure the text node is in accessible document still.
-      Accessible* container = mDocument->GetAccessibleOrContainer(containerNode);
-      NS_ASSERTION(container,
-                   "Text node having rendered text hasn't accessible document!");
+      Accessible* container = mDocument->AccessibleOrTrueContainer(containerNode);
+      MOZ_ASSERT(container,
+                 "Text node having rendered text hasn't accessible document!");
       if (container) {
-        nsTArray<nsCOMPtr<nsIContent> > insertedContents;
-        insertedContents.AppendElement(textNode);
-        mDocument->ProcessContentInserted(container, &insertedContents);
+        mDocument->ProcessContentInserted(container, textNode);
       }
     }
   }
@@ -381,7 +390,9 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
 
   // Process relocation list.
   for (uint32_t idx = 0; idx < mRelocations.Length(); idx++) {
-    mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
+    if (mRelocations[idx]->IsInDocument()) {
+      mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
+    }
   }
   mRelocations.Clear();
 
@@ -389,6 +400,10 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
   // process it synchronously.  However we do not want to reenter if fireing
   // events causes script to run.
   mObservingState = eRefreshProcessing;
+
+  RefPtr<DocAccessible> deathGrip(mDocument);
+  mEventTree.Process(deathGrip);
+  deathGrip = nullptr;
 
   ProcessEventQueue();
 

@@ -230,12 +230,14 @@ MacroAssembler::inc64(AbsoluteAddress dest)
 void
 MacroAssembler::lshiftPtr(Imm32 imm, Register dest)
 {
+    MOZ_ASSERT(0 <= imm.value && imm.value < 32);
     ma_sll(dest, dest, imm);
 }
 
 void
 MacroAssembler::lshift64(Imm32 imm, Register64 dest)
 {
+    MOZ_ASSERT(0 <= imm.value && imm.value < 64);
     ScratchRegisterScope scratch(*this);
     as_sll(dest.high, dest.high, imm.value);
     as_srl(scratch, dest.low, 32 - imm.value);
@@ -246,18 +248,21 @@ MacroAssembler::lshift64(Imm32 imm, Register64 dest)
 void
 MacroAssembler::rshiftPtr(Imm32 imm, Register dest)
 {
+    MOZ_ASSERT(0 <= imm.value && imm.value < 32);
     ma_srl(dest, dest, imm);
 }
 
 void
 MacroAssembler::rshiftPtrArithmetic(Imm32 imm, Register dest)
 {
+    MOZ_ASSERT(0 <= imm.value && imm.value < 32);
     ma_sra(dest, dest, imm);
 }
 
 void
 MacroAssembler::rshift64(Imm32 imm, Register64 dest)
 {
+    MOZ_ASSERT(0 <= imm.value && imm.value < 64);
     ScratchRegisterScope scratch(*this);
     as_srl(dest.low, dest.low, imm.value);
     as_sll(scratch, dest.high, 32 - imm.value);
@@ -300,9 +305,10 @@ MacroAssembler::branchPrivatePtr(Condition cond, const Address& lhs, Register rh
     branchPtr(cond, lhs, rhs, label);
 }
 
+template <class L>
 void
 MacroAssembler::branchTest64(Condition cond, Register64 lhs, Register64 rhs, Register temp,
-                             Label* label)
+                             L label)
 {
     if (cond == Assembler::Zero) {
         MOZ_ASSERT(lhs.low == rhs.low);
@@ -411,6 +417,39 @@ void
 MacroAssembler::branchTestMagic(Condition cond, const ValueOperand& value, L label)
 {
     ma_b(value.typeReg(), ImmTag(JSVAL_TAG_MAGIC), label, cond);
+}
+
+void
+MacroAssembler::branchTestMagic(Condition cond, const Address& valaddr, JSWhyMagic why, Label* label)
+{
+    branchTestMagic(cond, valaddr, label);
+    branch32(cond, ToPayload(valaddr), Imm32(why), label);
+}
+
+// ========================================================================
+// Memory access primitives.
+void
+MacroAssembler::storeUncanonicalizedDouble(FloatRegister src, const Address& addr)
+{
+    ma_sd(src, addr);
+}
+void
+MacroAssembler::storeUncanonicalizedDouble(FloatRegister src, const BaseIndex& addr)
+{
+    MOZ_ASSERT(addr.offset == 0);
+    ma_sd(src, addr);
+}
+
+void
+MacroAssembler::storeUncanonicalizedFloat32(FloatRegister src, const Address& addr)
+{
+    ma_ss(src, addr);
+}
+void
+MacroAssembler::storeUncanonicalizedFloat32(FloatRegister src, const BaseIndex& addr)
+{
+    MOZ_ASSERT(addr.offset == 0);
+    ma_ss(src, addr);
 }
 
 //}}} check_macroassembler_style

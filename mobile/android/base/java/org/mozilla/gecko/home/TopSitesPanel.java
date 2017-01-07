@@ -9,6 +9,7 @@ import static org.mozilla.gecko.db.URLMetadataTable.TILE_COLOR_COLUMN;
 import static org.mozilla.gecko.db.URLMetadataTable.TILE_IMAGE_URL_COLUMN;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
@@ -16,9 +17,6 @@ import java.util.Map;
 
 import org.mozilla.gecko.GeckoProfile;
 import org.mozilla.gecko.R;
-import org.mozilla.gecko.Restrictions;
-import org.mozilla.gecko.Tab;
-import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.Telemetry;
 import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.db.BrowserContract.Thumbnails;
@@ -33,6 +31,7 @@ import org.mozilla.gecko.home.PinSiteDialog.OnSiteSelectedListener;
 import org.mozilla.gecko.home.TopSitesGridView.OnEditPinnedSiteListener;
 import org.mozilla.gecko.home.TopSitesGridView.TopSitesGridContextMenuInfo;
 import org.mozilla.gecko.restrictions.Restrictable;
+import org.mozilla.gecko.restrictions.Restrictions;
 import org.mozilla.gecko.util.StringUtils;
 import org.mozilla.gecko.util.ThreadUtils;
 
@@ -223,7 +222,7 @@ public class TopSitesPanel extends HomeFragment {
 
                         Telemetry.sendUIEvent(TelemetryContract.Event.LOAD_URL, method, extra);
 
-                        mUrlOpenListener.onUrlOpen(url, EnumSet.noneOf(OnUrlOpenListener.Flags.class));
+                        mUrlOpenListener.onUrlOpen(url, EnumSet.of(OnUrlOpenListener.Flags.NO_READER_VIEW));
                     }
                 } else {
                     if (mEditPinnedSiteListener != null) {
@@ -354,10 +353,6 @@ public class TopSitesPanel extends HomeFragment {
         if (!Restrictions.isAllowed(context, Restrictable.PRIVATE_BROWSING)) {
             menu.findItem(R.id.home_open_private_tab).setVisible(false);
         }
-
-        // We only show these menu items on the reading list panel:
-        menu.findItem(R.id.mark_read).setVisible(false);
-        menu.findItem(R.id.mark_unread).setVisible(false);
     }
 
     @Override
@@ -531,6 +526,19 @@ public class TopSitesPanel extends HomeFragment {
             return super.getItem(position + mMaxGridEntries);
         }
 
+        /**
+         * We have to override default getItemId implementation, since for a given position, it returns
+         * value of the _id column. In our case _id is always 0 (see Combined view).
+         */
+        @Override
+        public long getItemId(int position) {
+            final int adjustedPosition = position + mMaxGridEntries;
+            final Cursor cursor = getCursor();
+
+            cursor.moveToPosition(adjustedPosition);
+            return getItemIdForTopSitesCursor(cursor);
+        }
+
         @Override
         public void bindView(View view, Context context, Cursor cursor) {
             final int position = cursor.getPosition();
@@ -588,6 +596,18 @@ public class TopSitesPanel extends HomeFragment {
             }
 
             notifyDataSetChanged();
+        }
+
+        /**
+         * We have to override default getItemId implementation, since for a given position, it returns
+         * value of the _id column. In our case _id is always 0 (see Combined view).
+         */
+        @Override
+        public long getItemId(int position) {
+            final Cursor cursor = getCursor();
+            cursor.moveToPosition(position);
+
+            return getItemIdForTopSitesCursor(cursor);
         }
 
         @Override
@@ -718,10 +738,9 @@ public class TopSitesPanel extends HomeFragment {
             do {
                 final String url = c.getString(col);
 
-                // Only try to fetch thumbnails for non-empty URLs that
-                // don't have an associated suggested image URL.
-                final GeckoProfile profile = GeckoProfile.get(getActivity());
-                if (TextUtils.isEmpty(url) || profile.getDB().hasSuggestedImageUrl(url)) {
+                // Only try to fetch thumbnails for non-empty URLs
+                //final GeckoProfile profile = GeckoProfile.get(getActivity());
+                if (TextUtils.isEmpty(url)) {
                     continue;
                 }
 
@@ -792,16 +811,18 @@ public class TopSitesPanel extends HomeFragment {
     /**
      * An AsyncTaskLoader to load the thumbnails from a cursor.
      */
-    @SuppressWarnings("serial")
     static class ThumbnailsLoader extends AsyncTaskLoader<Map<String, ThumbnailInfo>> {
         private final BrowserDB mDB;
         private Map<String, ThumbnailInfo> mThumbnailInfos;
         private final ArrayList<String> mUrls;
 
-        private static final ArrayList<String> COLUMNS = new ArrayList<String>() {{
-            add(TILE_IMAGE_URL_COLUMN);
-            add(TILE_COLOR_COLUMN);
-        }};
+        private static final List<String> COLUMNS;
+        static {
+            final ArrayList<String> tempColumns = new ArrayList<>(2);
+            tempColumns.add(TILE_IMAGE_URL_COLUMN);
+            tempColumns.add(TILE_COLOR_COLUMN);
+            COLUMNS = Collections.unmodifiableList(tempColumns);
+        }
 
         public ThumbnailsLoader(Context context, ArrayList<String> urls) {
             super(context);
@@ -816,29 +837,10 @@ public class TopSitesPanel extends HomeFragment {
                 return thumbnails;
             }
 
-            // Query the DB for tile images.
             final ContentResolver cr = getContext().getContentResolver();
-            final Map<String, Map<String, Object>> metadata = mDB.getURLMetadata().getForURLs(cr, mUrls, COLUMNS);
-
-            // Keep a list of urls that don't have tiles images. We'll use thumbnails for them instead.
-            final List<String> thumbnailUrls = new ArrayList<String>();
-            for (String url : mUrls) {
-                ThumbnailInfo info = ThumbnailInfo.fromMetadata(metadata.get(url));
-                if (info == null) {
-                    // If we didn't find metadata, we'll look for a thumbnail for this url.
-                    thumbnailUrls.add(url);
-                    continue;
-                }
-
-                thumbnails.put(url, info);
-            }
-
-            if (thumbnailUrls.size() == 0) {
-                return thumbnails;
-            }
-
-            // Query the DB for tile thumbnails.
-            final Cursor cursor = mDB.getThumbnailsForUrls(cr, thumbnailUrls);
+            
+            // Query the DB for thumbnails.
+            final Cursor cursor = mDB.getThumbnailsForUrls(cr, mUrls);
             if (cursor == null) {
                 return thumbnails;
             }
@@ -913,7 +915,6 @@ public class TopSitesPanel extends HomeFragment {
         @Override
         protected void onReset() {
             super.onReset();
-
             // Ensure the loader is stopped.
             onStopLoading();
 
@@ -941,5 +942,26 @@ public class TopSitesPanel extends HomeFragment {
                 mGridAdapter.updateThumbnails(null);
             }
         }
+    }
+
+    /**
+     * We are trying to return stable IDs so that Android can recycle views appropriately:
+     * - If we have a history ID then we return it
+     * - If we only have a bookmark ID then we negate it and return it. We negate it in order
+     *   to avoid clashing/conflicting with history IDs.
+     *
+     * @param cursorInPosition Cursor already moved to position for which we're getting a stable ID
+     * @return Stable ID for a given cursor
+     */
+    private static long getItemIdForTopSitesCursor(final Cursor cursorInPosition) {
+        final int historyIdCol = cursorInPosition.getColumnIndexOrThrow(TopSites.HISTORY_ID);
+        final long historyId = cursorInPosition.getLong(historyIdCol);
+        if (historyId != 0) {
+            return historyId;
+        }
+
+        final int bookmarkIdCol = cursorInPosition.getColumnIndexOrThrow(TopSites.BOOKMARK_ID);
+        final long bookmarkId = cursorInPosition.getLong(bookmarkIdCol);
+        return -1 * bookmarkId;
     }
 }

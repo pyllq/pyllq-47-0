@@ -65,7 +65,7 @@ using namespace mozilla::gl;
 
 typedef nsNPAPIPluginInstance::VideoInfo VideoInfo;
 
-class PluginEventRunnable : public nsRunnable
+class PluginEventRunnable : public Runnable
 {
 public:
   PluginEventRunnable(nsNPAPIPluginInstance* instance, ANPEvent* event)
@@ -92,7 +92,9 @@ static RefPtr<GLContext> sPluginContext = nullptr;
 static bool EnsureGLContext()
 {
   if (!sPluginContext) {
-    sPluginContext = GLContextProvider::CreateHeadless(CreateContextFlags::REQUIRE_COMPAT_PROFILE);
+    const auto flags = CreateContextFlags::REQUIRE_COMPAT_PROFILE;
+    nsCString discardedFailureId;
+    sPluginContext = GLContextProvider::CreateHeadless(flags, &discardedFailureId);
   }
 
   return sPluginContext != nullptr;
@@ -317,10 +319,10 @@ nsNPAPIPluginInstance::GetDOMWindow()
   if (!mOwner)
     return nullptr;
 
-  RefPtr<nsPluginInstanceOwner> deathGrip(mOwner);
+  RefPtr<nsPluginInstanceOwner> kungFuDeathGrip(mOwner);
 
   nsCOMPtr<nsIDocument> doc;
-  mOwner->GetDocument(getter_AddRefs(doc));
+  kungFuDeathGrip->GetDocument(getter_AddRefs(doc));
   if (!doc)
     return nullptr;
 
@@ -786,7 +788,7 @@ void nsNPAPIPluginInstance::NotifyFullScreen(bool aFullScreen)
   SendLifecycleEvent(this, mFullScreen ? kEnterFullScreen_ANPLifecycleAction : kExitFullScreen_ANPLifecycleAction);
 
   if (mFullScreen && mFullScreenOrientation != dom::eScreenOrientation_None) {
-    widget::GeckoAppShell::LockScreenOrientation(mFullScreenOrientation);
+    java::GeckoAppShell::LockScreenOrientation(mFullScreenOrientation);
   }
 }
 
@@ -843,11 +845,11 @@ void nsNPAPIPluginInstance::SetFullScreenOrientation(uint32_t orientation)
     // We're already fullscreen so immediately apply the orientation change
 
     if (mFullScreenOrientation != dom::eScreenOrientation_None) {
-      widget::GeckoAppShell::LockScreenOrientation(mFullScreenOrientation);
+      java::GeckoAppShell::LockScreenOrientation(mFullScreenOrientation);
     } else if (oldOrientation != dom::eScreenOrientation_None) {
       // We applied an orientation when we entered fullscreen, but
       // we don't want it anymore
-      widget::GeckoAppShell::UnlockScreenOrientation();
+      java::GeckoAppShell::UnlockScreenOrientation();
     }
   }
 }
@@ -891,7 +893,7 @@ already_AddRefed<AndroidSurfaceTexture> nsNPAPIPluginInstance::CreateSurfaceText
     return nullptr;
   }
 
-  nsCOMPtr<nsIRunnable> frameCallback = NS_NewRunnableMethod(this, &nsNPAPIPluginInstance::OnSurfaceTextureFrameAvailable);
+  nsCOMPtr<nsIRunnable> frameCallback = NewRunnableMethod(this, &nsNPAPIPluginInstance::OnSurfaceTextureFrameAvailable);
   surface->SetFrameAvailableCallback(frameCallback);
   return surface.forget();
 }
@@ -911,7 +913,7 @@ void* nsNPAPIPluginInstance::AcquireContentWindow()
       return nullptr;
   }
 
-  return mContentSurface->NativeWindow()->Handle();
+  return mContentSurface->NativeWindow();
 }
 
 AndroidSurfaceTexture*
@@ -932,7 +934,7 @@ void* nsNPAPIPluginInstance::AcquireVideoWindow()
 
   VideoInfo* info = new VideoInfo(surface);
 
-  void* window = info->mSurfaceTexture->NativeWindow()->Handle();
+  void* window = info->mSurfaceTexture->NativeWindow();
   mVideos.insert(std::pair<void*, VideoInfo*>(window, info));
 
   return window;
@@ -1001,7 +1003,8 @@ nsresult nsNPAPIPluginInstance::IsRemoteDrawingCoreAnimation(bool* aDrawing)
 #endif
 }
 
-nsresult nsNPAPIPluginInstance::ContentsScaleFactorChanged(double aContentsScaleFactor)
+nsresult
+nsNPAPIPluginInstance::ContentsScaleFactorChanged(double aContentsScaleFactor)
 {
 #ifdef XP_MACOSX
   if (!mPlugin)
@@ -1019,6 +1022,31 @@ nsresult nsNPAPIPluginInstance::ContentsScaleFactorChanged(double aContentsScale
 #else
   return NS_ERROR_FAILURE;
 #endif
+}
+
+nsresult
+nsNPAPIPluginInstance::CSSZoomFactorChanged(float aCSSZoomFactor)
+{
+  if (RUNNING != mRunning)
+    return NS_OK;
+
+  PLUGIN_LOG(PLUGIN_LOG_NORMAL, ("nsNPAPIPluginInstance informing plugin of CSS Zoom Factor change this=%p\n",this));
+
+  if (!mPlugin || !mPlugin->GetLibrary())
+    return NS_ERROR_FAILURE;
+
+  NPPluginFuncs* pluginFunctions = mPlugin->PluginFuncs();
+
+  if (!pluginFunctions->setvalue)
+    return NS_ERROR_FAILURE;
+
+  PluginDestructionGuard guard(this);
+
+  NPError error;
+  double value = static_cast<double>(aCSSZoomFactor);
+  NS_TRY_SAFE_CALL_RETURN(error, (*pluginFunctions->setvalue)(&mNPP, NPNVCSSZoomFactor, &value), this,
+                          NS_PLUGIN_CALL_UNSAFE_TO_REENTER_GECKO);
+  return (error == NPERR_NO_ERROR) ? NS_OK : NS_ERROR_FAILURE;
 }
 
 nsresult
@@ -1133,16 +1161,24 @@ nsNPAPIPluginInstance::GetScrollCaptureContainer(ImageContainer**aContainer)
   AutoPluginLibraryCall library(this);
   return !library ? NS_ERROR_FAILURE : library->GetScrollCaptureContainer(&mNPP, aContainer);
 }
-nsresult
-nsNPAPIPluginInstance::UpdateScrollState(bool aIsScrolling)
-{
-  if (RUNNING != mRunning)
-    return NS_OK;
-
-  AutoPluginLibraryCall library(this);
-  return !library ? NS_ERROR_FAILURE : library->UpdateScrollState(&mNPP, aIsScrolling);
-}
 #endif
+
+nsresult
+nsNPAPIPluginInstance::HandledWindowedPluginKeyEvent(
+                         const NativeEventData& aKeyEventData,
+                         bool aIsConsumed)
+{
+  if (NS_WARN_IF(!mPlugin)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  PluginLibrary* library = mPlugin->GetLibrary();
+  if (NS_WARN_IF(!library)) {
+    return NS_ERROR_FAILURE;
+  }
+  return library->HandledWindowedPluginKeyEvent(&mNPP, aKeyEventData,
+                                                aIsConsumed);
+}
 
 void
 nsNPAPIPluginInstance::DidComposite()
@@ -1504,35 +1540,6 @@ nsNPAPIPluginInstance::GetMIMEType(const char* *result)
   return NS_OK;
 }
 
-nsresult
-nsNPAPIPluginInstance::GetJSContext(JSContext* *outContext)
-{
-  if (!mOwner)
-    return NS_ERROR_FAILURE;
-
-  RefPtr<nsPluginInstanceOwner> deathGrip(mOwner);
-
-  *outContext = nullptr;
-  nsCOMPtr<nsIDocument> document;
-
-  nsresult rv = mOwner->GetDocument(getter_AddRefs(document));
-
-  if (NS_SUCCEEDED(rv) && document) {
-    nsCOMPtr<nsIScriptGlobalObject> global =
-      do_QueryInterface(document->GetWindow());
-
-    if (global) {
-      nsIScriptContext *context = global->GetContext();
-
-      if (context) {
-        *outContext = context->GetNativeContext();
-      }
-    }
-  }
-
-  return rv;
-}
-
 nsPluginInstanceOwner*
 nsNPAPIPluginInstance::GetOwner()
 {
@@ -1596,7 +1603,7 @@ nsNPAPIPluginInstance::SetCurrentAsyncSurface(NPAsyncSurface *surface, NPRect *c
   }
 }
 
-class CarbonEventModelFailureEvent : public nsRunnable {
+class CarbonEventModelFailureEvent : public Runnable {
 public:
   nsCOMPtr<nsIContent> mContent;
 
@@ -1739,6 +1746,16 @@ nsNPAPIPluginInstance::GetContentsScaleFactor()
   return scaleFactor;
 }
 
+float
+nsNPAPIPluginInstance::GetCSSZoomFactor()
+{
+  float zoomFactor = 1.0;
+  if (mOwner) {
+    mOwner->GetCSSZoomFactor(&zoomFactor);
+  }
+  return zoomFactor;
+}
+
 nsresult
 nsNPAPIPluginInstance::GetRunID(uint32_t* aRunID)
 {
@@ -1793,6 +1810,15 @@ nsNPAPIPluginInstance::WindowVolumeChanged(float aVolume, bool aMuted)
   nsresult rv = SetMuted(aMuted);
   NS_WARN_IF(NS_FAILED(rv));
   return rv;
+}
+
+NS_IMETHODIMP
+nsNPAPIPluginInstance::WindowSuspendChanged(nsSuspendedTypes aSuspend)
+{
+  // It doesn't support suspended, so we just do something like mute/unmute.
+  WindowVolumeChanged(1.0, /* useless */
+                      aSuspend != nsISuspendedTypes::NONE_SUSPENDED);
+  return NS_OK;
 }
 
 NS_IMETHODIMP

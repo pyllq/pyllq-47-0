@@ -18,7 +18,7 @@ const TEST_URI = `
   <span class="testclass">This is a span</span>
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {inspector, view} = yield openRuleView();
 
@@ -74,5 +74,5 @@ function* testAddProperty(view) {
   let textProp = yield addProperty(view, 1, "text-align", "center");
 
   is(textProp.value, "center", "Text prop should have been changed.");
-  is(textProp.overridden, false, "Property should not be overridden");
+  ok(!textProp.overridden, "Property should not be overridden");
 }

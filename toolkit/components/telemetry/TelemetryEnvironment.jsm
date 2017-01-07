@@ -24,6 +24,8 @@ Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const Utils = TelemetryUtils;
 
+XPCOMUtils.defineLazyModuleGetter(this, "AttributionCode",
+                                  "resource:///modules/AttributionCode.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ctypes",
                                   "resource://gre/modules/ctypes.jsm");
 if (AppConstants.platform !== "gonk") {
@@ -42,6 +44,8 @@ const CHANGE_THROTTLE_INTERVAL_MS = 5 * 60 * 1000;
 
 // The maximum length of a string (e.g. description) in the addons section.
 const MAX_ADDON_STRING_LENGTH = 100;
+// The maximum length of a string value in the settings.attribution object.
+const MAX_ATTRIBUTION_STRING_LENGTH = 100;
 
 /**
  * This is a policy object used to override behavior for testing.
@@ -88,8 +92,20 @@ this.TelemetryEnvironment = {
   RECORD_PREF_VALUE: 2, // We only record user-set prefs.
 
   // Testing method
-  _watchPreferences: function(prefMap) {
+  testWatchPreferences: function(prefMap) {
     return getGlobal()._watchPreferences(prefMap);
+  },
+
+  /**
+   * Intended for use in tests only.
+   *
+   * In multiple tests we need a way to shut and re-start telemetry together
+   * with TelemetryEnvironment. This is problematic due to the fact that
+   * TelemetryEnvironment is a singleton. We, therefore, need this helper
+   * method to be able to re-set TelemetryEnvironment.
+   */
+  testReset: function() {
+    return getGlobal().reset();
   },
 };
 
@@ -120,8 +136,9 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.startup.page", {what: RECORD_PREF_VALUE}],
   ["browser.tabs.animate", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.suggest.searches", {what: RECORD_PREF_VALUE}],
-  ["browser.urlbar.unifiedcomplete", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.userMadeSearchSuggestionsChoice", {what: RECORD_PREF_VALUE}],
+  // Record "Zoom Text Only" pref in Firefox 50 to 52 (Bug 979323).
+  ["browser.zoom.full", {what: RECORD_PREF_VALUE}],
   ["devtools.chrome.enabled", {what: RECORD_PREF_VALUE}],
   ["devtools.debugger.enabled", {what: RECORD_PREF_VALUE}],
   ["devtools.debugger.remote-enabled", {what: RECORD_PREF_VALUE}],
@@ -150,7 +167,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["layers.componentalpha.enabled", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.disable-warp", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.force-warp", {what: RECORD_PREF_VALUE}],
-  ["layers.offmainthreadcomposition.enabled", {what: RECORD_PREF_VALUE}],
+  ["layers.offmainthreadcomposition.force-disabled", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-d3d9", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-opengl", {what: RECORD_PREF_VALUE}],
   ["layout.css.devPixelsPerPx", {what: RECORD_PREF_VALUE}],
@@ -164,6 +181,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["services.sync.serverURL", {what: RECORD_PREF_STATE}],
   ["security.mixed_content.block_active_content", {what: RECORD_PREF_VALUE}],
   ["security.mixed_content.block_display_content", {what: RECORD_PREF_VALUE}],
+  ["security.sandbox.content.level", {what: RECORD_PREF_VALUE}],
   ["xpinstall.signatures.required", {what: RECORD_PREF_VALUE}],
 ]);
 
@@ -182,11 +200,12 @@ const PREF_UPDATE_AUTODOWNLOAD = "app.update.auto";
 const PREF_SEARCH_COHORT = "browser.search.cohort";
 const PREF_E10S_COHORT = "e10s.rollout.cohort";
 
-const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
-const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
-const SEARCH_SERVICE_TOPIC = "browser-search-service";
 const COMPOSITOR_CREATED_TOPIC = "compositor:created";
 const DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC = "distribution-customization-complete";
+const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
+const GFX_FEATURES_READY_TOPIC = "gfx-features-ready";
+const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
+const SEARCH_SERVICE_TOPIC = "browser-search-service";
 
 /**
  * Enforces the parameter to a boolean value.
@@ -269,7 +288,7 @@ function getGfxField(aPropertyName, aDefault) {
   try {
     // Accessing the field may throw if |aPropertyName| does not exist.
     let gfxProp = gfxInfo[aPropertyName];
-    if (gfxProp !== "") {
+    if (gfxProp !== undefined && gfxProp !== "") {
       return gfxProp;
     }
   } catch (e) {}
@@ -512,7 +531,8 @@ EnvironmentAddonBuilder.prototype = {
     };
 
     let result = {
-      changed: !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
+      changed: !this._environment._currentEnvironment.addons ||
+               !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
     };
 
     if (result.changed) {
@@ -748,6 +768,9 @@ function EnvironmentCache() {
 
   this._currentEnvironment.profile = {};
   p.push(this._updateProfile());
+  if (AppConstants.MOZ_BUILD_APP == "browser") {
+    p.push(this._updateAttribution());
+  }
 
   let setup = () => {
     this._initTask = null;
@@ -902,20 +925,21 @@ EnvironmentCache.prototype = {
 
   _addObservers: function () {
     // Watch the search engine change and service topics.
-    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
-    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
     Services.obs.addObserver(this, COMPOSITOR_CREATED_TOPIC, false);
     Services.obs.addObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC, false);
+    Services.obs.addObserver(this, GFX_FEATURES_READY_TOPIC, false);
+    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
+    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
   },
 
   _removeObservers: function () {
-    // Remove the search engine change and service observers.
-    Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
-    Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
     Services.obs.removeObserver(this, COMPOSITOR_CREATED_TOPIC);
     try {
       Services.obs.removeObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC);
     } catch(ex) {}
+    Services.obs.removeObserver(this, GFX_FEATURES_READY_TOPIC);
+    Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
+    Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
   },
 
   observe: function (aSubject, aTopic, aData) {
@@ -935,6 +959,7 @@ EnvironmentCache.prototype = {
         // Now that the search engine init is complete, record the default search choice.
         this._updateSearchEngine();
         break;
+      case GFX_FEATURES_READY_TOPIC:
       case COMPOSITOR_CREATED_TOPIC:
         // Full graphics information is not available until we have created at
         // least one off-main-thread-composited window. Thus we wait for the
@@ -1161,6 +1186,21 @@ EnvironmentCache.prototype = {
   }),
 
   /**
+   * Update the cached attribution data object.
+   * @returns Promise<> resolved when the I/O is complete.
+   */
+  _updateAttribution: Task.async(function* () {
+    let data = yield AttributionCode.getAttrDataAsync();
+    if (Object.keys(data).length > 0) {
+      this._currentEnvironment.settings.attribution = {};
+      for (let key in data) {
+        this._currentEnvironment.settings.attribution[key] =
+          limitStringToLength(data[key], MAX_ATTRIBUTION_STRING_LENGTH);
+      }
+    }
+  }),
+
+  /**
    * Get the partner data in object form.
    * @return Object containing the partner data.
    */
@@ -1198,8 +1238,8 @@ EnvironmentCache.prototype = {
     };
 
     const CPU_EXTENSIONS = ["hasMMX", "hasSSE", "hasSSE2", "hasSSE3", "hasSSSE3",
-                            "hasSSE4A", "hasSSE4_1", "hasSSE4_2", "hasEDSP", "hasARMv6",
-                            "hasARMv7", "hasNEON"];
+                            "hasSSE4A", "hasSSE4_1", "hasSSE4_2", "hasAVX", "hasAVX2",
+                            "hasEDSP", "hasARMv6", "hasARMv7", "hasNEON"];
 
     // Enumerate the available CPU extensions.
     let availableExts = [];
@@ -1336,7 +1376,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_getGFXData - Two display adapters detected.");
 
     gfxData.adapters.push(getGfxAdapter("2"));
-    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active ", null);
+    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active", null);
 
     return gfxData;
   },
@@ -1409,4 +1449,9 @@ EnvironmentCache.prototype = {
       }
     }
   },
+
+  reset: function () {
+    this._shutdown = false;
+    this._delayedInitFinished = false;
+  }
 };

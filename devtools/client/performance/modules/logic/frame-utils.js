@@ -9,6 +9,8 @@ const { assert } = require("devtools/shared/DevToolsUtils");
 const { isChromeScheme, isContentScheme, parseURL } =
   require("devtools/client/shared/source-utils");
 
+const { CATEGORY_MASK, CATEGORY_MAPPINGS } = require("devtools/client/performance/modules/categories");
+
 // Character codes used in various parsing helper functions.
 const CHAR_CODE_R = "r".charCodeAt(0);
 const CHAR_CODE_0 = "0".charCodeAt(0);
@@ -161,7 +163,7 @@ function parseLocation(location, fallbackLine, fallbackColumn) {
       let evalLine = line;
       let [, _fileName, , _line] = fileName.match(/(.+)(%20line%20(\d+)%20%3E%20eval)/) || [];
       fileName = `${_fileName} (eval:${evalLine})`;
-      line =  _line;
+      line = _line;
       assert(_fileName !== undefined,
              "Filename could not be found from an eval location site");
       assert(_line !== undefined,
@@ -178,7 +180,7 @@ function parseLocation(location, fallbackLine, fallbackColumn) {
   }
 
   return { functionName, fileName, host, port, url, line, column };
-};
+}
 
 /**
  * Sets the properties of `isContent` and `category` on a frame.
@@ -229,18 +231,18 @@ function computeIsContentAndCategory(frame) {
           isChromeScheme(location, j) &&
           (location.indexOf("resource://devtools") !== -1 ||
            location.indexOf("resource://devtools") !== -1)) {
-        frame.category = global.CATEGORY_DEVTOOLS;
+        frame.category = CATEGORY_MASK("tools");
         return;
       }
     }
   }
 
   if (location === "EnterJIT") {
-    frame.category = global.CATEGORY_JIT;
+    frame.category = CATEGORY_MASK("js");
     return;
   }
 
-  frame.category = global.CATEGORY_OTHER;
+  frame.category = CATEGORY_MASK("other");
 }
 
 /**
@@ -260,7 +262,7 @@ function getInflatedFrameCache(frameTable) {
   inflatedCache = Array.from({ length: frameTable.data.length }, () => null);
   gInflatedFrameStore.set(frameTable, inflatedCache);
   return inflatedCache;
-};
+}
 
 /**
  * Get or add an inflated frame to a cache.
@@ -276,7 +278,7 @@ function getOrAddInflatedFrame(cache, index, frameTable, stringTable) {
     inflatedFrame = cache[index] = new InflatedFrame(index, frameTable, stringTable);
   }
   return inflatedFrame;
-};
+}
 
 /**
  * An intermediate data structured used to hold inflated frames.
@@ -309,7 +311,7 @@ function InflatedFrame(index, frameTable, stringTable) {
   // attempt to generate a useful category, fallback to the one provided
   // by the profiling data, or fallback to an unknown category.
   computeIsContentAndCategory(this);
-};
+}
 
 /**
  * Gets the frame key (i.e., equivalence group) according to options. Content
@@ -328,8 +330,7 @@ InflatedFrame.prototype.getFrameKey = function getFrameKey(options) {
 
   if (options.isLeaf) {
     // We only care about leaf platform frames if we are displaying content
-    // only. If no category is present, give the default category of
-    // CATEGORY_OTHER.
+    // only. If no category is present, give the default category of "other".
     //
     // 1. The leaf is where time is _actually_ being spent, so we _need_ to
     // show it to developers in some way to give them accurate profiling
@@ -375,7 +376,7 @@ function shouldDemangle(name) {
  *
  * @return {object}
  */
-function getFrameInfo (node, options) {
+function getFrameInfo(node, options) {
   let data = gFrameData.get(node);
 
   if (!data) {
@@ -389,7 +390,7 @@ function getFrameInfo (node, options) {
       data.isMetaCategory = node.isMetaCategory;
     }
     data.samples = node.youngestFrameSamples;
-    data.categoryData = global.CATEGORY_MAPPINGS[node.category] || {};
+    data.categoryData = CATEGORY_MAPPINGS[node.category] || {};
     data.nodeType = node.nodeType;
 
     // Frame name (function location or some meta information)
@@ -445,7 +446,7 @@ exports.getFrameInfo = getFrameInfo;
  * @param {string} location
  * @return {?FrameNode}
  */
-function findFrameByLocation (threadNode, location) {
+function findFrameByLocation(threadNode, location) {
   if (!threadNode.inverted) {
     throw new Error("FrameUtils.findFrameByLocation only supports leaf nodes in an inverted tree.");
   }

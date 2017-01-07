@@ -31,13 +31,17 @@ AudioCallbackAdapter::Decoded(const nsTArray<int16_t>& aPCM, uint64_t aTimeStamp
 
   if (aRate == 0 || aChannels == 0) {
     NS_WARNING("Invalid rate or num channels returned on GMP audio samples");
-    mCallback->Error();
+    mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
     return;
   }
 
   size_t numFrames = aPCM.Length() / aChannels;
   MOZ_ASSERT((aPCM.Length() % aChannels) == 0);
-  auto audioData = MakeUnique<AudioDataValue[]>(aPCM.Length());
+  AlignedAudioBuffer audioData(aPCM.Length());
+  if (!audioData) {
+    mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
+    return;
+  }
 
   for (size_t i = 0; i < aPCM.Length(); ++i) {
     audioData[i] = AudioSampleToFloat(aPCM[i]);
@@ -48,7 +52,7 @@ AudioCallbackAdapter::Decoded(const nsTArray<int16_t>& aPCM, uint64_t aTimeStamp
     auto timestamp = UsecsToFrames(aTimeStamp, aRate);
     if (!timestamp.isValid()) {
       NS_WARNING("Invalid timestamp");
-      mCallback->Error();
+      mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
       return;
     }
     mAudioFrameOffset = timestamp.value();
@@ -58,7 +62,7 @@ AudioCallbackAdapter::Decoded(const nsTArray<int16_t>& aPCM, uint64_t aTimeStamp
   auto timestamp = FramesToUsecs(mAudioFrameOffset + mAudioFrameSum, aRate);
   if (!timestamp.isValid()) {
     NS_WARNING("Invalid timestamp on audio samples");
-    mCallback->Error();
+    mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
     return;
   }
   mAudioFrameSum += numFrames;
@@ -66,7 +70,7 @@ AudioCallbackAdapter::Decoded(const nsTArray<int16_t>& aPCM, uint64_t aTimeStamp
   auto duration = FramesToUsecs(numFrames, aRate);
   if (!duration.isValid()) {
     NS_WARNING("Invalid duration on audio samples");
-    mCallback->Error();
+    mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
     return;
   }
 
@@ -112,14 +116,55 @@ void
 AudioCallbackAdapter::Error(GMPErr aErr)
 {
   MOZ_ASSERT(IsOnGMPThread());
-  mCallback->Error();
+  mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
 }
 
 void
 AudioCallbackAdapter::Terminated()
 {
   NS_WARNING("AAC GMP decoder terminated.");
-  mCallback->Error();
+  mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
+}
+
+GMPAudioDecoderParams::GMPAudioDecoderParams(const CreateDecoderParams& aParams)
+  : mConfig(aParams.AudioConfig())
+  , mTaskQueue(aParams.mTaskQueue)
+  , mCallback(nullptr)
+  , mAdapter(nullptr)
+  , mCrashHelper(aParams.mCrashHelper)
+{}
+
+GMPAudioDecoderParams&
+GMPAudioDecoderParams::WithCallback(MediaDataDecoderProxy* aWrapper)
+{
+  MOZ_ASSERT(aWrapper);
+  MOZ_ASSERT(!mCallback); // Should only be called once per instance.
+  mCallback = aWrapper->Callback();
+  mAdapter = nullptr;
+  return *this;
+}
+
+GMPAudioDecoderParams&
+GMPAudioDecoderParams::WithAdapter(AudioCallbackAdapter* aAdapter)
+{
+  MOZ_ASSERT(aAdapter);
+  MOZ_ASSERT(!mAdapter); // Should only be called once per instance.
+  mCallback = aAdapter->Callback();
+  mAdapter = aAdapter;
+  return *this;
+}
+
+GMPAudioDecoder::GMPAudioDecoder(const GMPAudioDecoderParams& aParams)
+  : mConfig(aParams.mConfig)
+  , mCallback(aParams.mCallback)
+  , mGMP(nullptr)
+  , mAdapter(aParams.mAdapter)
+  , mCrashHelper(aParams.mCrashHelper)
+{
+  MOZ_ASSERT(!mAdapter || mCallback == mAdapter->Callback());
+  if (!mAdapter) {
+    mAdapter = new AudioCallbackAdapter(mCallback);
+  }
 }
 
 void
@@ -187,7 +232,7 @@ GMPAudioDecoder::Init()
   nsTArray<nsCString> tags;
   InitTags(tags);
   UniquePtr<GetGMPAudioDecoderCallback> callback(new GMPInitDoneCallback(this));
-  if (NS_FAILED(mMPS->GetGMPAudioDecoder(&tags, GetNodeId(), Move(callback)))) {
+  if (NS_FAILED(mMPS->GetGMPAudioDecoder(mCrashHelper, &tags, GetNodeId(), Move(callback)))) {
     mInitPromise.Reject(MediaDataDecoder::DecoderFailureReason::INIT_ERROR, __func__);
   }
 
@@ -201,7 +246,7 @@ GMPAudioDecoder::Input(MediaRawData* aSample)
 
   RefPtr<MediaRawData> sample(aSample);
   if (!mGMP) {
-    mCallback->Error();
+    mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
     return NS_ERROR_FAILURE;
   }
 
@@ -210,7 +255,7 @@ GMPAudioDecoder::Input(MediaRawData* aSample)
   gmp::GMPAudioSamplesImpl samples(sample, mConfig.mChannels, mConfig.mRate);
   nsresult rv = mGMP->Decode(samples);
   if (NS_FAILED(rv)) {
-    mCallback->Error();
+    mCallback->Error(MediaDataDecoderError::DECODE_ERROR);
     return rv;
   }
 

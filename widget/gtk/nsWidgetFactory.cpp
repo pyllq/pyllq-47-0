@@ -53,7 +53,6 @@
 
 #include "nsIComponentRegistrar.h"
 #include "nsComponentManagerUtils.h"
-#include "nsAutoPtr.h"
 #include "mozilla/gfx/2D.h"
 #include <gtk/gtk.h>
 
@@ -218,7 +217,7 @@ NS_DEFINE_NAMED_CID(NS_PRINTER_ENUMERATOR_CID);
 NS_DEFINE_NAMED_CID(NS_PRINTSESSION_CID);
 NS_DEFINE_NAMED_CID(NS_DEVICE_CONTEXT_SPEC_CID);
 NS_DEFINE_NAMED_CID(NS_PRINTDIALOGSERVICE_CID);
-#endif 
+#endif
 NS_DEFINE_NAMED_CID(NS_IMAGE_TO_PIXBUF_CID);
 #if defined(MOZ_X11)
 NS_DEFINE_NAMED_CID(NS_IDLE_SERVICE_CID);

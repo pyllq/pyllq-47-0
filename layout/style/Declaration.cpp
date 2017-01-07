@@ -146,7 +146,7 @@ Declaration::RemoveProperty(nsCSSProperty aProperty)
 
   if (nsCSSProps::IsShorthand(aProperty)) {
     CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(p, aProperty,
-                                         nsCSSProps::eEnabledForAllContent) {
+                                         CSSEnabledState::eForAllContent) {
       data.ClearLonghandProperty(*p);
       mOrder.RemoveElement(static_cast<uint32_t>(*p));
     }
@@ -201,6 +201,41 @@ Declaration::GetAuthoredValue(nsCSSProperty aProperty, nsAString& aValue) const
   GetValue(aProperty, aValue, nsCSSValue::eAuthorSpecified);
 }
 
+static void
+AppendSingleImageLayerPositionValue(const nsCSSValue& aPositionX,
+                                    const nsCSSValue& aPositionY,
+                                    const nsCSSProperty aTable[],
+                                    nsAString& aValue,
+                                    nsCSSValue::Serialization aSerialization)
+{
+  // We need to make sure that we don't serialize to an invalid 3-value form.
+  // The 3-value form is only valid if both edges are present.
+  const nsCSSValue &xEdge = aPositionX.GetArrayValue()->Item(0);
+  const nsCSSValue &xOffset = aPositionX.GetArrayValue()->Item(1);
+  const nsCSSValue &yEdge = aPositionY.GetArrayValue()->Item(0);
+  const nsCSSValue &yOffset = aPositionY.GetArrayValue()->Item(1);
+  bool xHasEdge = (eCSSUnit_Enumerated == xEdge.GetUnit());
+  bool xHasBoth = xHasEdge && (eCSSUnit_Null != xOffset.GetUnit());
+  bool yHasEdge = (eCSSUnit_Enumerated == yEdge.GetUnit());
+  bool yHasBoth = yHasEdge && (eCSSUnit_Null != yOffset.GetUnit());
+
+  if (yHasBoth && !xHasEdge) {
+    // Output 4-value form by adding the x edge.
+    aValue.AppendLiteral("left ");
+  }
+  aPositionX.AppendToString(aTable[nsStyleImageLayers::positionX],
+                            aValue, aSerialization);
+
+  aValue.Append(char16_t(' '));
+
+  if (xHasBoth && !yHasEdge) {
+    // Output 4-value form by adding the y edge.
+    aValue.AppendLiteral("top ");
+  }
+  aPositionY.AppendToString(aTable[nsStyleImageLayers::positionY],
+                            aValue, aSerialization);
+}
+
 void
 Declaration::GetImageLayerValue(
                    nsCSSCompressedDataBlock *data,
@@ -221,8 +256,10 @@ Declaration::GetImageLayerValue(
     data->ValueFor(aTable[nsStyleImageLayers::image])->GetListValue();
   const nsCSSValuePairList *repeat =
     data->ValueFor(aTable[nsStyleImageLayers::repeat])->GetPairListValue();
-  const nsCSSValueList *position =
-    data->ValueFor(aTable[nsStyleImageLayers::position])->GetListValue();
+  const nsCSSValueList *positionX =
+    data->ValueFor(aTable[nsStyleImageLayers::positionX])->GetListValue();
+  const nsCSSValueList *positionY =
+    data->ValueFor(aTable[nsStyleImageLayers::positionY])->GetListValue();
   const nsCSSValueList *clip =
     data->ValueFor(aTable[nsStyleImageLayers::clip])->GetListValue();
   const nsCSSValueList *origin =
@@ -274,8 +311,8 @@ Declaration::GetImageLayerValue(
     }
 
     aValue.Append(char16_t(' '));
-    position->mValue.AppendToString(aTable[nsStyleImageLayers::position],
-                                    aValue, aSerialization);
+    AppendSingleImageLayerPositionValue(positionX->mValue, positionY->mValue,
+                                        aTable, aValue, aSerialization);
 
     if (size->mXValue.GetUnit() != eCSSUnit_Auto ||
         size->mYValue.GetUnit() != eCSSUnit_Auto) {
@@ -293,14 +330,21 @@ Declaration::GetImageLayerValue(
                origin->mValue.GetUnit() == eCSSUnit_Enumerated,
                "should not have inherit/initial within list");
 
+    int32_t originDefaultValue =
+      (aTable == nsStyleImageLayers::kBackgroundLayerTable)
+      ? NS_STYLE_IMAGELAYER_ORIGIN_PADDING : NS_STYLE_IMAGELAYER_ORIGIN_BORDER;
     if (clip->mValue.GetIntValue() != NS_STYLE_IMAGELAYER_CLIP_BORDER ||
-        origin->mValue.GetIntValue() != NS_STYLE_IMAGELAYER_ORIGIN_PADDING) {
-      MOZ_ASSERT(nsCSSProps::kKeywordTableTable[
-                   aTable[nsStyleImageLayers::origin]] ==
-                 nsCSSProps::kImageLayerOriginKTable);
-      MOZ_ASSERT(nsCSSProps::kKeywordTableTable[
-                   aTable[nsStyleImageLayers::clip]] ==
-                 nsCSSProps::kImageLayerOriginKTable);
+        origin->mValue.GetIntValue() != originDefaultValue) {
+#ifdef DEBUG
+      for (size_t i = 0; nsCSSProps::kImageLayerOriginKTable[i].mValue != -1; i++) {
+        // For each keyword & value in kOriginKTable, ensure that
+        // kBackgroundKTable has a matching entry at the same position.
+        MOZ_ASSERT(nsCSSProps::kImageLayerOriginKTable[i].mKeyword ==
+                   nsCSSProps::kBackgroundClipKTable[i].mKeyword);
+        MOZ_ASSERT(nsCSSProps::kImageLayerOriginKTable[i].mValue ==
+                   nsCSSProps::kBackgroundClipKTable[i].mValue);
+      }
+#endif
       static_assert(NS_STYLE_IMAGELAYER_CLIP_BORDER ==
                     NS_STYLE_IMAGELAYER_ORIGIN_BORDER &&
                     NS_STYLE_IMAGELAYER_CLIP_PADDING ==
@@ -333,7 +377,8 @@ Declaration::GetImageLayerValue(
 
     image = image->mNext;
     repeat = repeat->mNext;
-    position = position->mNext;
+    positionX = positionX->mNext;
+    positionY = positionY->mNext;
     clip = clip->mNext;
     origin = origin->mNext;
     size = size->mNext;
@@ -344,7 +389,8 @@ Declaration::GetImageLayerValue(
     if (!image) {
       // This layer is an background layer
       if (aTable == nsStyleImageLayers::kBackgroundLayerTable) {
-        if (repeat || position || clip || origin || size || attachment) {
+        if (repeat || positionX || positionY || clip || origin || size ||
+            attachment) {
           // Uneven length lists, so can't be serialized as shorthand.
           aValue.Truncate();
           return;
@@ -356,7 +402,8 @@ Declaration::GetImageLayerValue(
 #else
         MOZ_ASSERT_UNREACHABLE("Should never get here when mask-as-shorthand is disable");
 #endif
-        if (repeat || position || clip || origin || size || composite || mode) {
+        if (repeat || positionX || positionY || clip || origin || size ||
+            composite || mode) {
           // Uneven length lists, so can't be serialized as shorthand.
           aValue.Truncate();
           return;
@@ -367,7 +414,8 @@ Declaration::GetImageLayerValue(
 
     // This layer is an background layer
     if (aTable == nsStyleImageLayers::kBackgroundLayerTable) {
-      if (!repeat || !position || !clip || !origin || !size || !attachment) {
+      if (!repeat || !positionX || !positionY || !clip || !origin || !size ||
+          !attachment) {
         // Uneven length lists, so can't be serialized as shorthand.
         aValue.Truncate();
         return;
@@ -379,12 +427,45 @@ Declaration::GetImageLayerValue(
 #else
       MOZ_ASSERT_UNREACHABLE("Should never get here when mask-as-shorthand is disable");
 #endif
-      if (!repeat || !position || !clip || !origin || !size ||
+      if (!repeat || !positionX || !positionY || !clip || !origin || !size ||
           !composite || !mode) {
         // Uneven length lists, so can't be serialized as shorthand.
         aValue.Truncate();
         return;
       }
+    }
+    aValue.Append(char16_t(','));
+    aValue.Append(char16_t(' '));
+  }
+}
+
+void
+Declaration::GetImageLayerPositionValue(
+                   nsCSSCompressedDataBlock *data,
+                   nsAString& aValue,
+                   nsCSSValue::Serialization aSerialization,
+                   const nsCSSProperty aTable[]) const
+{
+  // We know from above that all subproperties were specified.
+  // However, we still can't represent that in the shorthand unless
+  // they're all lists of the same length.  So if they're different
+  // lengths, we need to bail out.
+  const nsCSSValueList *positionX =
+    data->ValueFor(aTable[nsStyleImageLayers::positionX])->GetListValue();
+  const nsCSSValueList *positionY =
+    data->ValueFor(aTable[nsStyleImageLayers::positionY])->GetListValue();
+  for (;;) {
+    AppendSingleImageLayerPositionValue(positionX->mValue, positionY->mValue,
+                                        aTable, aValue, aSerialization);
+    positionX = positionX->mNext;
+    positionY = positionY->mNext;
+
+    if (!positionX || !positionY) {
+      if (positionX || positionY) {
+        // Uneven length lists, so can't be serialized as shorthand.
+        aValue.Truncate();
+      }
+      return;
     }
     aValue.Append(char16_t(','));
     aValue.Append(char16_t(' '));
@@ -434,7 +515,7 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
            initialCount = 0, inheritCount = 0, unsetCount = 0,
            matchingTokenStreamCount = 0, nonMatchingTokenStreamCount = 0;
   CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(p, aProperty,
-                                       nsCSSProps::eEnabledForAllContent) {
+                                       CSSEnabledState::eForAllContent) {
     if (*p == eCSSProperty__x_system_font) {
       // The system-font subproperty doesn't count.
       continue;
@@ -665,10 +746,20 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
                          nsStyleImageLayers::kBackgroundLayerTable);
       break;
     }
+    case eCSSProperty_background_position: {
+      GetImageLayerPositionValue(data, aValue, aSerialization,
+                                 nsStyleImageLayers::kBackgroundLayerTable);
+      break;
+    }
 #ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
     case eCSSProperty_mask: {
       GetImageLayerValue(data, aValue, aSerialization,
                          nsStyleImageLayers::kMaskLayerTable);
+      break;
+    }
+    case eCSSProperty_mask_position: {
+      GetImageLayerPositionValue(data, aValue, aSerialization,
+                                 nsStyleImageLayers::kMaskLayerTable);
       break;
     }
 #endif
@@ -1307,6 +1398,28 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
       // we don't have a shorthand that can express. Bail.
       break;
     }
+    case eCSSProperty__webkit_text_stroke: {
+      const nsCSSValue* strokeWidth =
+        data->ValueFor(eCSSProperty__webkit_text_stroke_width);
+      const nsCSSValue* strokeColor =
+        data->ValueFor(eCSSProperty__webkit_text_stroke_color);
+      bool isDefaultColor = strokeColor->GetUnit() == eCSSUnit_EnumColor &&
+        strokeColor->GetIntValue() == NS_COLOR_CURRENTCOLOR;
+
+      if (strokeWidth->GetUnit() != eCSSUnit_Integer ||
+          strokeWidth->GetIntValue() != 0 || isDefaultColor) {
+        AppendValueToString(eCSSProperty__webkit_text_stroke_width,
+                            aValue, aSerialization);
+        if (!isDefaultColor) {
+          aValue.Append(char16_t(' '));
+        }
+      }
+      if (!isDefaultColor) {
+        AppendValueToString(eCSSProperty__webkit_text_stroke_color,
+                            aValue, aSerialization);
+      }
+      break;
+    }
     case eCSSProperty_all:
       // If we got here, then we didn't have all "inherit" or "initial" or
       // "unset" values for all of the longhand property components of 'all'.
@@ -1322,8 +1435,8 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
 bool
 Declaration::GetValueIsImportant(const nsAString& aProperty) const
 {
-  nsCSSProperty propID =
-    nsCSSProps::LookupProperty(aProperty, nsCSSProps::eIgnoreEnabledState);
+  nsCSSProperty propID = nsCSSProps::
+    LookupProperty(aProperty, CSSEnabledState::eIgnoreEnabledState);
   if (propID == eCSSProperty_UNKNOWN) {
     return false;
   }
@@ -1348,7 +1461,7 @@ Declaration::GetValueIsImportant(nsCSSProperty aProperty) const
   }
 
   CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(p, aProperty,
-                                       nsCSSProps::eEnabledForAllContent) {
+                                       CSSEnabledState::eForAllContent) {
     if (*p == eCSSProperty__x_system_font) {
       // The system_font subproperty doesn't count.
       continue;
@@ -1462,7 +1575,7 @@ Declaration::ToString(nsAString& aString) const
       continue;
     }
 
-    if (!nsCSSProps::IsEnabled(property, nsCSSProps::eEnabledForAllContent)) {
+    if (!nsCSSProps::IsEnabled(property, CSSEnabledState::eForAllContent)) {
       continue;
     }
     bool doneProperty = false;

@@ -106,8 +106,6 @@ SipccSdpAttributeList::LoadSimpleStrings(sdp_t* sdp, uint16_t level,
                    errorHolder);
   LoadSimpleString(sdp, level, SDP_ATTR_LABEL, SdpAttribute::kLabelAttribute,
                    errorHolder);
-  LoadSimpleString(sdp, level, SDP_ATTR_IDENTITY,
-                   SdpAttribute::kIdentityAttribute, errorHolder);
 }
 
 void
@@ -361,6 +359,10 @@ SipccSdpAttributeList::GetCodecType(rtp_ptype type)
       return SdpRtpmapAttributeList::kVP8;
     case RTP_VP9:
       return SdpRtpmapAttributeList::kVP9;
+    case RTP_RED:
+      return SdpRtpmapAttributeList::kRed;
+    case RTP_ULPFEC:
+      return SdpRtpmapAttributeList::kUlpfec;
     case RTP_NONE:
     // Happens when sipcc doesn't know how to translate to the enum
     case RTP_CELP:
@@ -648,6 +650,16 @@ SipccSdpAttributeList::LoadMsidSemantics(sdp_t* sdp, uint16_t level,
 }
 
 void
+SipccSdpAttributeList::LoadIdentity(sdp_t* sdp, uint16_t level)
+{
+  const char* val = sdp_attr_get_long_string(sdp, SDP_ATTR_IDENTITY, level, 0, 1);
+  if (val) {
+    SetAttribute(new SdpStringAttribute(SdpAttribute::kIdentityAttribute,
+                                        std::string(val)));
+  }
+}
+
+void
 SipccSdpAttributeList::LoadFmtp(sdp_t* sdp, uint16_t level)
 {
   auto fmtps = MakeUnique<SdpFmtpAttributeList>();
@@ -684,14 +696,7 @@ SipccSdpAttributeList::LoadFmtp(sdp_t* sdp, uint16_t level)
             !!(fmtp->level_asymmetry_allowed);
 
         h264Parameters->packetization_mode = fmtp->packetization_mode;
-// Copied from VcmSIPCCBinding
-#ifdef _WIN32
-        sscanf_s(fmtp->profile_level_id, "%x",
-                 &h264Parameters->profile_level_id, sizeof(unsigned*));
-#else
-        sscanf(fmtp->profile_level_id, "%xu",
-               &h264Parameters->profile_level_id);
-#endif
+        sscanf(fmtp->profile_level_id, "%x", &h264Parameters->profile_level_id);
         h264Parameters->max_mbps = fmtp->max_mbps;
         h264Parameters->max_fs = fmtp->max_fs;
         h264Parameters->max_cpb = fmtp->max_cpb;
@@ -720,11 +725,23 @@ SipccSdpAttributeList::LoadFmtp(sdp_t* sdp, uint16_t level)
 
         parameters.reset(vp8Parameters);
       } break;
+      case RTP_RED: {
+        SdpFmtpAttributeList::RedParameters* redParameters(
+            new SdpFmtpAttributeList::RedParameters);
+        for (int i = 0;
+             i < SDP_FMTP_MAX_REDUNDANT_ENCODINGS && fmtp->redundant_encodings[i];
+             ++i) {
+          redParameters->encodings.push_back(fmtp->redundant_encodings[i]);
+        }
+
+        parameters.reset(redParameters);
+      } break;
       case RTP_OPUS: {
         SdpFmtpAttributeList::OpusParameters* opusParameters(
             new SdpFmtpAttributeList::OpusParameters);
         opusParameters->maxplaybackrate = fmtp->maxplaybackrate;
         opusParameters->stereo = fmtp->stereo;
+        opusParameters->useInBandFec = fmtp->useinbandfec;
         parameters.reset(opusParameters);
       } break;
       default: {
@@ -930,6 +947,9 @@ SipccSdpAttributeList::LoadRtcpFb(sdp_t* sdp, uint16_t level,
         os << rtcpfb->param.trr_int;
         parameter = os.str();
       } break;
+      case SDP_RTCP_FB_REMB: {
+        type = SdpRtcpFbAttributeList::kRemb;
+      } break;
       default:
         // Type we don't care about, ignore.
         continue;
@@ -1003,6 +1023,8 @@ SipccSdpAttributeList::Load(sdp_t* sdp, uint16_t level,
     if (!LoadMsidSemantics(sdp, level, errorHolder)) {
       return false;
     }
+
+    LoadIdentity(sdp, level);
   } else {
     sdp_media_e mtype = sdp_get_media_type(sdp, level);
     if (mtype == SDP_MEDIA_APPLICATION) {

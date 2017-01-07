@@ -19,7 +19,6 @@
 #undef GetBinaryType
 #undef RemoveDirectory
 
-#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "nsRegion.h"
 #include "nsRect.h"
@@ -79,6 +78,27 @@ class nsWindow;
 class nsWindowBase;
 struct KeyPair;
 
+#if !defined(DPI_AWARENESS_CONTEXT_DECLARED) && !defined(DPI_AWARENESS_CONTEXT_UNAWARE)
+
+DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+
+typedef enum DPI_AWARENESS {
+  DPI_AWARENESS_INVALID = -1,
+  DPI_AWARENESS_UNAWARE = 0,
+  DPI_AWARENESS_SYSTEM_AWARE = 1,
+  DPI_AWARENESS_PER_MONITOR_AWARE = 2
+} DPI_AWARENESS;
+
+#define DPI_AWARENESS_CONTEXT_UNAWARE           ((DPI_AWARENESS_CONTEXT)-1)
+#define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE      ((DPI_AWARENESS_CONTEXT)-2)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE ((DPI_AWARENESS_CONTEXT)-3)
+
+#define DPI_AWARENESS_CONTEXT_DECLARED
+#endif // (DPI_AWARENESS_CONTEXT_DECLARED)
+
+typedef DPI_AWARENESS_CONTEXT(WINAPI * SetThreadDpiAwarenessContextProc)(DPI_AWARENESS_CONTEXT);
+typedef BOOL(WINAPI * EnableNonClientDpiScalingProc)(HWND);
+
 namespace mozilla {
 namespace widget {
 
@@ -127,7 +147,39 @@ public:
 
 class WinUtils
 {
+  // Function pointers for APIs that may not be available depending on
+  // the Win10 update version -- will be set up in Initialize().
+  static SetThreadDpiAwarenessContextProc sSetThreadDpiAwarenessContext;
+  static EnableNonClientDpiScalingProc sEnableNonClientDpiScaling;
+
 public:
+  class AutoSystemDpiAware
+  {
+  public:
+    AutoSystemDpiAware()
+    {
+      if (sSetThreadDpiAwarenessContext) {
+        mPrevContext = sSetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+      }
+    }
+
+    ~AutoSystemDpiAware()
+    {
+      if (sSetThreadDpiAwarenessContext) {
+        sSetThreadDpiAwarenessContext(mPrevContext);
+      }
+    }
+
+  private:
+    DPI_AWARENESS_CONTEXT mPrevContext;
+  };
+
+  // Wrapper for DefWindowProc that will enable non-client dpi scaling on the
+  // window during creation.
+  static LRESULT WINAPI
+  NonClientDpiScalingDefWindowProcW(HWND hWnd, UINT msg,
+                                    WPARAM wParam, LPARAM lParam);
+
   /**
    * Get the system's default logical-to-physical DPI scaling factor,
    * which is based on the primary display. Note however that unlike
@@ -240,8 +292,8 @@ public:
    * |                 |       |    window like dialog |                       |
    * +-----------------+-------+-----------------------+-----------------------+
    */
-  static HWND GetTopLevelHWND(HWND aWnd, 
-                              bool aStopIfNotChild = false, 
+  static HWND GetTopLevelHWND(HWND aWnd,
+                              bool aStopIfNotChild = false,
                               bool aStopIfNotPopup = true);
 
   /**
@@ -482,9 +534,9 @@ class AsyncFaviconDataReady final : public nsIFaviconDataCallback
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIFAVICONDATACALLBACK
-  
-  AsyncFaviconDataReady(nsIURI *aNewURI, 
-                        nsCOMPtr<nsIThread> &aIOThread, 
+
+  AsyncFaviconDataReady(nsIURI *aNewURI,
+                        nsCOMPtr<nsIThread> &aIOThread,
                         const bool aURLShortcut);
   nsresult OnFaviconDataNotAvailable(void);
 private:
@@ -562,7 +614,7 @@ public:
                                        nsCOMPtr<nsIThread> &aIOThread,
                                        bool aURLShortcut);
 
-  static nsresult HashURI(nsCOMPtr<nsICryptoHash> &aCryptoHash, 
+  static nsresult HashURI(nsCOMPtr<nsICryptoHash> &aCryptoHash,
                           nsIURI *aUri,
                           nsACString& aUriHash);
 
@@ -570,7 +622,7 @@ public:
                                     nsCOMPtr<nsIFile> &aICOFile,
                                     bool aURLShortcut);
 
-  static nsresult 
+  static nsresult
   CacheIconFileFromFaviconURIAsync(nsCOMPtr<nsIURI> aFaviconPageURI,
                                    nsCOMPtr<nsIFile> aICOFile,
                                    nsCOMPtr<nsIThread> &aIOThread,

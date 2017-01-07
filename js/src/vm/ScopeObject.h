@@ -141,8 +141,10 @@ class StaticBlockScope : public NestedStaticScope
 
     /* Return the number of variables associated with this block. */
     uint32_t numVariables() const {
-        // TODO: propertyCount() is O(n), use O(1) lastProperty()->slot() instead
-        return propertyCount();
+        uint32_t num = 0;
+        if (!lastProperty()->isEmptyShape())
+            num = lastProperty()->slot() + 1 - RESERVED_SLOTS;
+        return num;
     }
 
   private:
@@ -816,6 +818,8 @@ class ModuleEnvironmentObject : public LexicalScopeBase
 {
     static const uint32_t MODULE_SLOT = 1;
 
+    static const ObjectOps objectOps_;
+
   public:
     static const Class class_;
 
@@ -893,7 +897,7 @@ class NestedScopeObject : public ScopeObject
   public:
     // Return the static scope corresponding to this scope chain object.
     inline NestedStaticScope* staticScope() {
-        return &getProto()->as<NestedStaticScope>();
+        return &staticPrototype()->as<NestedStaticScope>();
     }
 
     void initEnclosingScope(JSObject* obj) {
@@ -923,7 +927,7 @@ class DynamicWithObject : public NestedScopeObject
            WithKind kind = SyntacticWith);
 
     StaticWithScope& staticWith() const {
-        return getProto()->as<StaticWithScope>();
+        return staticPrototype()->as<StaticWithScope>();
     }
 
     /* Return the 'o' in 'with (o)'. */
@@ -961,6 +965,7 @@ class ClonedBlockObject : public NestedScopeObject
 
   public:
     static const unsigned RESERVED_SLOTS = 2;
+    static const ObjectOps objectOps_;
     static const Class class_;
 
   private:
@@ -1002,7 +1007,7 @@ class ClonedBlockObject : public NestedScopeObject
   public:
     /* The static block from which this block was cloned. */
     StaticBlockScope& staticBlock() const {
-        return getProto()->as<StaticBlockScope>();
+        return staticPrototype()->as<StaticBlockScope>();
     }
 
     /* Assuming 'put' has been called, return the value of the ith let var. */
@@ -1208,7 +1213,7 @@ class LiveScopeVal
     friend class MissingScopeKey;
 
     AbstractFramePtr frame_;
-    RelocatablePtrObject staticScope_;
+    HeapPtr<JSObject*> staticScope_;
 
     static void staticAsserts();
 
@@ -1352,10 +1357,12 @@ class DebugScopes
 #endif
 
     static DebugScopeObject* hasDebugScope(JSContext* cx, ScopeObject& scope);
-    static bool addDebugScope(JSContext* cx, ScopeObject& scope, DebugScopeObject& debugScope);
+    static bool addDebugScope(JSContext* cx, Handle<ScopeObject*> scope,
+                              Handle<DebugScopeObject*> debugScope);
 
     static DebugScopeObject* hasDebugScope(JSContext* cx, const ScopeIter& si);
-    static bool addDebugScope(JSContext* cx, const ScopeIter& si, DebugScopeObject& debugScope);
+    static bool addDebugScope(JSContext* cx, const ScopeIter& si,
+                              Handle<DebugScopeObject*> debugScope);
 
     static bool updateLiveScopes(JSContext* cx);
     static LiveScopeVal* hasLiveScope(ScopeObject& scope);
@@ -1382,7 +1389,7 @@ template<>
 inline bool
 JSObject::is<js::StaticBlockScope>() const
 {
-    return hasClass(&js::ClonedBlockObject::class_) && !getProto();
+    return hasClass(&js::ClonedBlockObject::class_) && !staticPrototype();
 }
 
 template<>
@@ -1406,7 +1413,7 @@ template<>
 inline bool
 JSObject::is<js::ClonedBlockObject>() const
 {
-    return hasClass(&js::ClonedBlockObject::class_) && !!getProto();
+    return hasClass(&js::ClonedBlockObject::class_) && staticPrototype();
 }
 
 template<>
@@ -1605,5 +1612,13 @@ AnalyzeEntrainedVariables(JSContext* cx, HandleScript script);
 #endif
 
 } // namespace js
+
+namespace JS {
+
+template <>
+struct DeletePolicy<js::DebugScopes> : public js::GCManagedDeletePolicy<js::DebugScopes>
+{};
+
+} // namespace JS
 
 #endif /* vm_ScopeObject_h */

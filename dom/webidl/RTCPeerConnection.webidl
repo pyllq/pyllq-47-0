@@ -62,7 +62,7 @@ dictionary RTCAnswerOptions : RTCOfferAnswerOptions {
 dictionary RTCOfferOptions : RTCOfferAnswerOptions {
   long    offerToReceiveVideo;
   long    offerToReceiveAudio;
-  // boolean iceRestart = false; // Not implemented (Bug 906986)
+  boolean iceRestart = false;
 
   // Mozilla proprietary options (at risk: Bug 1196974)
   boolean mozDontOfferDataChannel;
@@ -116,9 +116,9 @@ interface RTCPeerConnection : EventTarget  {
   attribute DOMString id;
 
   RTCConfiguration      getConfiguration ();
-  [UnsafeInPrerendering]
+  [UnsafeInPrerendering, Deprecated="RTCPeerConnectionGetStreams"]
   sequence<MediaStream> getLocalStreams ();
-  [UnsafeInPrerendering]
+  [UnsafeInPrerendering, Deprecated="RTCPeerConnectionGetStreams"]
   sequence<MediaStream> getRemoteStreams ();
   [UnsafeInPrerendering]
   MediaStream? getStreamById (DOMString streamId);

@@ -123,8 +123,6 @@ protected:
   void DispatchSimpleEvent(const nsAString & aStr);
   // Creating a error event with message.
   void NotifyError(nsresult aRv);
-  // Check if the recorder's principal is the subsume of mediaStream
-  bool CheckPrincipal();
   // Set encoded MIME type.
   void SetMimeType(const nsString &aMimeType);
   void SetOptions(const MediaRecorderOptions& aInitDict);
@@ -134,7 +132,6 @@ protected:
   void RemoveSession(Session* aSession);
   // Functions for Session to query input source info.
   MediaStream* GetSourceMediaStream();
-  nsIPrincipal* GetSourcePrincipal();
   // DOM wrapper for source media stream. Will be null when input is audio node.
   RefPtr<DOMMediaStream> mDOMStream;
   // Source audio node. Will be null when input is a media stream.
@@ -151,6 +148,9 @@ protected:
   // Hold the sessions reference and clean it when the DestroyRunnable for a
   // session is running.
   nsTArray<RefPtr<Session> > mSessions;
+
+  nsCOMPtr<nsIDocument> mDocument;
+
   // It specifies the container format as well as the audio and video capture formats.
   nsString mMimeType;
 

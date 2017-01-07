@@ -5,7 +5,6 @@ browser.jar:
 %  content browser %content/browser/ contentaccessible=yes
 #ifdef XP_MACOSX
 %  overlay chrome://mozapps/content/downloads/downloads.xul chrome://browser/content/downloadManagerOverlay.xul
-%  overlay chrome://global/content/console.xul chrome://browser/content/jsConsoleOverlay.xul
 %  overlay chrome://mozapps/content/update/updates.xul chrome://browser/content/softwareUpdateOverlay.xul
 #endif
 #ifdef XP_WIN
@@ -61,8 +60,6 @@ browser.jar:
         content/browser/aboutaccounts/images/graphic_sync_intro.png           (content/aboutaccounts/images/graphic_sync_intro.png)
         content/browser/aboutaccounts/images/graphic_sync_intro@2x.png        (content/aboutaccounts/images/graphic_sync_intro@2x.png)
 
-        content/browser/certerror/aboutCertError.xhtml     (content/aboutcerterror/aboutCertError.xhtml)
-        content/browser/certerror/aboutCertError.css       (content/aboutcerterror/aboutCertError.css)
 
         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
@@ -81,12 +78,12 @@ browser.jar:
         content/browser/browser-customization.js      (content/browser-customization.js)
         content/browser/browser-data-submission-info-bar.js (content/browser-data-submission-info-bar.js)
         content/browser/browser-devedition.js         (content/browser-devedition.js)
-        content/browser/browser-eme.js                (content/browser-eme.js)
         content/browser/browser-feeds.js              (content/browser-feeds.js)
-        content/browser/browser-fullScreen.js         (content/browser-fullScreen.js)
+        content/browser/browser-fullScreenAndPointerLock.js  (content/browser-fullScreenAndPointerLock.js)
         content/browser/browser-fullZoom.js           (content/browser-fullZoom.js)
         content/browser/browser-fxaccounts.js         (content/browser-fxaccounts.js)
         content/browser/browser-gestureSupport.js     (content/browser-gestureSupport.js)
+        content/browser/browser-media.js              (content/browser-media.js)
         content/browser/browser-places.js             (content/browser-places.js)
         content/browser/browser-plugins.js            (content/browser-plugins.js)
         content/browser/browser-refreshblocker.js     (content/browser-refreshblocker.js)
@@ -182,7 +179,6 @@ browser.jar:
 #ifdef XP_MACOSX
 *       content/browser/macBrowserOverlay.xul         (content/macBrowserOverlay.xul)
 *       content/browser/downloadManagerOverlay.xul    (content/downloadManagerOverlay.xul)
-*       content/browser/jsConsoleOverlay.xul          (content/jsConsoleOverlay.xul)
 *       content/browser/softwareUpdateOverlay.xul  (content/softwareUpdateOverlay.xul)
 #endif
 *       content/browser/viewSourceOverlay.xul         (content/viewSourceOverlay.xul)

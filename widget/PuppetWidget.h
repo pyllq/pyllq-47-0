@@ -19,6 +19,8 @@
 #include "mozilla/RefPtr.h"
 #include "nsBaseScreen.h"
 #include "nsBaseWidget.h"
+#include "nsCOMArray.h"
+#include "nsIKeyEventInPluginCallback.h"
 #include "nsIScreenManager.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
@@ -132,7 +134,6 @@ public:
                  LayoutDeviceIntPoint* aPoint = nullptr);
 
   NS_IMETHOD DispatchEvent(WidgetGUIEvent* aEvent, nsEventStatus& aStatus) override;
-  nsEventStatus DispatchAPZAwareEvent(WidgetInputEvent* aEvent) override;
   nsEventStatus DispatchInputEvent(WidgetInputEvent* aEvent) override;
   void SetConfirmedTargetAPZC(uint64_t aInputBlockId,
                               const nsTArray<ScrollableLayerGuid>& aTargets) const override;
@@ -169,8 +170,7 @@ public:
   virtual LayerManager*
   GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                   LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                  LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                  bool* aAllowRetaining = nullptr) override;
+                  LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
 
   NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
                                     const InputContextAction& aAction) override;
@@ -241,11 +241,11 @@ public:
                                                     nsIObserver* aObserver) override;
   virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
                                               TouchPointerState aPointerState,
-                                              ScreenIntPoint aPointerScreenPoint,
+                                              LayoutDeviceIntPoint aPoint,
                                               double aPointerPressure,
                                               uint32_t aPointerOrientation,
                                               nsIObserver* aObserver) override;
-  virtual nsresult SynthesizeNativeTouchTap(ScreenIntPoint aPointerScreenPoint,
+  virtual nsresult SynthesizeNativeTouchTap(LayoutDeviceIntPoint aPoint,
                                             bool aLongTap,
                                             nsIObserver* aObserver) override;
   virtual nsresult ClearNativeTouchSequence(nsIObserver* aObserver) override;
@@ -260,6 +260,21 @@ public:
                           const FrameMetrics::ViewID& aViewId,
                           const CSSRect& aRect,
                           const uint32_t& aFlags) override;
+
+  virtual bool HasPendingInputEvent() override;
+
+  void HandledWindowedPluginKeyEvent(const NativeEventData& aKeyEventData,
+                                     bool aIsConsumed);
+  virtual nsresult OnWindowedPluginKeyEvent(
+                     const NativeEventData& aKeyEventData,
+                     nsIKeyEventInPluginCallback* aCallback) override;
+
+  virtual void LookUpDictionary(
+                 const nsAString& aText,
+                 const nsTArray<mozilla::FontRange>& aFontRangeArray,
+                 const bool aIsVertical,
+                 const LayoutDeviceIntPoint& aPoint) override;
+
 protected:
   virtual nsresult NotifyIMEInternal(
                      const IMENotification& aIMENotification) override;
@@ -286,7 +301,7 @@ private:
 
   nsIWidgetListener* GetCurrentWidgetListener();
 
-  class PaintTask : public nsRunnable {
+  class PaintTask : public Runnable {
   public:
     NS_DECL_NSIRUNNABLE
     explicit PaintTask(PuppetWidget* widget) : mWidget(widget) {}
@@ -345,6 +360,8 @@ private:
 
   nsCOMPtr<imgIContainer> mCustomCursor;
   uint32_t mCursorHotspotX, mCursorHotspotY;
+
+  nsCOMArray<nsIKeyEventInPluginCallback> mKeyEventInPluginCallbacks;
 
 protected:
   bool mEnabled;

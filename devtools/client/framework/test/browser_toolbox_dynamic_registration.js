@@ -3,24 +3,21 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
+const TEST_URL = "data:text/html,test for dynamically registering and unregistering tools";
+
 var toolbox;
 
 function test()
 {
-  gBrowser.selectedTab = gBrowser.addTab();
-  let target = TargetFactory.forTab(gBrowser.selectedTab);
-
-  gBrowser.selectedBrowser.addEventListener("load", function onLoad(evt) {
-    gBrowser.selectedBrowser.removeEventListener(evt.type, onLoad, true);
+  addTab(TEST_URL).then(tab => {
+    let target = TargetFactory.forTab(tab);
     gDevTools.showToolbox(target).then(testRegister);
-  }, true);
-
-  content.location = "data:text/html,test for dynamically registering and unregistering tools";
+  });
 }
 
 function testRegister(aToolbox)
 {
-  toolbox = aToolbox
+  toolbox = aToolbox;
   gDevTools.once("tool-registered", toolRegistered);
 
   gDevTools.registerTool({
@@ -28,7 +25,8 @@ function testRegister(aToolbox)
     label: "Test Tool",
     inMenu: true,
     isTargetSupported: () => true,
-    build: function() {}
+    build: function () {},
+    key: "t"
   });
 }
 
@@ -47,8 +45,8 @@ function toolRegistered(event, toolId)
   ok(panel, "new tool's panel exists in toolbox UI");
 
   for (let win of getAllBrowserWindows()) {
-    let command = win.document.getElementById("Tools:" + toolId);
-    ok(command, "command for new tool added to every browser window");
+    let key = win.document.getElementById("key_" + toolId);
+    ok(key, "key for new tool added to every browser window");
     let menuitem = win.document.getElementById("menuitem_" + toolId);
     ok(menuitem, "menu item of new tool added to every browser window");
   }
@@ -89,8 +87,8 @@ function toolUnregistered(event, toolDefinition)
   ok(!panel, "tool's panel was removed from toolbox UI");
 
   for (let win of getAllBrowserWindows()) {
-    let command = win.document.getElementById("Tools:" + toolId);
-    ok(!command, "command removed from every browser window");
+    let key = win.document.getElementById("key_" + toolId);
+    ok(!key, "key removed from every browser window");
     let menuitem = win.document.getElementById("menuitem_" + toolId);
     ok(!menuitem, "menu item removed from every browser window");
   }

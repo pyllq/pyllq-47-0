@@ -161,7 +161,7 @@ var pktApi = (function() {
     function getCookiesFromPocket() {
 
         var cookieManager = Cc["@mozilla.org/cookiemanager;1"].getService(Ci.nsICookieManager2);
-        var pocketCookies = cookieManager.getCookiesFromHost(pocketSiteHost);
+        var pocketCookies = cookieManager.getCookiesFromHost(pocketSiteHost, {});
         var cookies = {};
         while (pocketCookies.hasMoreElements()) {
             var cookie = pocketCookies.getNext().QueryInterface(Ci.nsICookie2);
@@ -326,8 +326,8 @@ var pktApi = (function() {
     /**
      * Add a new link to Pocket
      * @param {string} url     URL of the link
-     * @param {Object | undefined} options Can provide an title and have a
-     *                                     success and error callbacks
+     * @param {Object | undefined} options Can provide a string-based title, a
+     *                                     `success` callback and an `error` callback.
      * @return {Boolean} Returns Boolean whether the api call started sucessfully
      */
     function addLink(url, options) {
@@ -341,9 +341,8 @@ var pktApi = (function() {
             since: since ? since : 0
         };
 
-        var title = options.title;
-        if (title !== "undefined") {
-            sendData.title = title;
+        if (options.title) {
+            sendData.title = options.title;
         }
 
         return apiRequest({
@@ -610,22 +609,33 @@ var pktApi = (function() {
     /**
      * Helper function to get current signup AB group the user is in
      */
-    function getSignupAB() {
-        var setting = getSetting('signupAB');
-        if (!setting || setting.contains('hero'))
+    function getSignupPanelTabTestVariant() {
+        return getMultipleTestOption('panelSignUp', {control: 1, v1: 8, v2: 1 })
+    }
+
+    function getMultipleTestOption(testName, testOptions) {
+        // Get the test from preferences if we've already assigned the user to a test
+        var settingName = 'test.' + testName;
+        var assignedValue = getSetting(settingName);
+        var valArray = [];
+
+        // If not assigned yet, pick and store a value
+        if (!assignedValue)
         {
-            var rand = (Math.floor(Math.random()*100+1));
-            if (rand > 90)
-            {
-                setting = 'storyboard_nlm';
-            }
-            else
-            {
-                setting = 'storyboard_lm';
-            }
-            setSetting('signupAB',setting);
+            // Get a weighted array of test variants from the testOptions object
+            Object.keys(testOptions).forEach(function(key) {
+              for (var i = 0; i < testOptions[key]; i++) {
+                valArray.push(key);
+              }
+            });
+
+            // Get a random test variant and set the user to it
+            assignedValue = valArray[Math.floor(Math.random() * valArray.length)];
+            setSetting(settingName, assignedValue);
         }
-        return setting;
+
+        return assignedValue;
+
     }
 
     /**
@@ -642,6 +652,6 @@ var pktApi = (function() {
         isPremiumUser: isPremiumUser,
         getSuggestedTagsForItem: getSuggestedTagsForItem,
         getSuggestedTagsForURL: getSuggestedTagsForURL,
-        getSignupAB: getSignupAB
+        getSignupPanelTabTestVariant: getSignupPanelTabTestVariant,
     };
 }());

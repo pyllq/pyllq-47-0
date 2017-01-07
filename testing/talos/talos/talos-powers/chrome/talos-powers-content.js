@@ -43,3 +43,40 @@ addMessageListener("TalosContentProfiler:Response", (msg) => {
   content.dispatchEvent(
     new content.CustomEvent("TalosContentProfilerResponse", event));
 });
+
+addEventListener("TalosPowersContentForceCCAndGC", (e) => {
+  Cu.forceGC();
+  Cu.forceCC();
+  Cu.forceShrinkingGC();
+  sendSyncMessage("TalosPowersContent:ForceCCAndGC");
+});
+
+addEventListener("TalosPowersContentFocus", (e) => {
+  if (content.location.protocol != "file:" &&
+      content.location.hostname != "localhost" &&
+      content.location.hostname != "127.0.0.1") {
+    throw new Error("TalosPowersContentFocus may only be used with local content");
+  }
+  content.focus();
+  let contentEvent = Cu.cloneInto({
+    bubbles: true,
+  }, content);
+  content.dispatchEvent(new content.CustomEvent("TalosPowersContentFocused", contentEvent));
+}, true, true);
+
+addEventListener("TalosPowersContentGetStartupInfo", (e) => {
+  sendAsyncMessage("TalosPowersContent:GetStartupInfo");
+  addMessageListener("TalosPowersContent:GetStartupInfo:Result",
+                     function onResult(msg) {
+    removeMessageListener("TalosPowersContent:GetStartupInfo:Result",
+                          onResult);
+    let event = Cu.cloneInto({
+      bubbles: true,
+      detail: msg.data,
+    }, content);
+
+    content.dispatchEvent(
+      new content.CustomEvent("TalosPowersContentGetStartupInfoResult",
+                              event));
+  });
+});

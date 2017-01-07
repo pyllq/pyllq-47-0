@@ -11,6 +11,7 @@
 #include "mozIGeckoMediaPluginService.h"
 #include "mozilla/CDMProxy.h"
 #include "mozilla/unused.h"
+#include "nsAutoPtr.h"
 #include "nsServiceManagerUtils.h"
 #include "MediaInfo.h"
 #include "nsClassHashtable.h"
@@ -83,14 +84,14 @@ public:
       return;
     }
 
-    if (aDecrypted.mStatus == GMPNoKeyErr) {
+    if (aDecrypted.mStatus == NoKeyErr) {
       // Key became unusable after we sent the sample to CDM to decrypt.
       // Call Input() again, so that the sample is enqueued for decryption
       // if the key becomes usable again.
       Input(aDecrypted.mSample);
-    } else if (GMP_FAILED(aDecrypted.mStatus)) {
+    } else if (aDecrypted.mStatus != Ok) {
       if (mCallback) {
-        mCallback->Error();
+        mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
       }
     } else {
       MOZ_ASSERT(!mIsShutdown);
@@ -167,7 +168,7 @@ public:
   EMEMediaDataDecoderProxy(already_AddRefed<AbstractThread> aProxyThread,
                            MediaDataDecoderCallback* aCallback,
                            CDMProxy* aProxy,
-                           FlushableTaskQueue* aTaskQueue)
+                           TaskQueue* aTaskQueue)
    : MediaDataDecoderProxy(Move(aProxyThread), aCallback)
    , mSamplesWaitingForKey(new SamplesWaitingForKey(this, aTaskQueue, aProxy))
    , mProxy(aProxy)
@@ -208,14 +209,9 @@ EMEMediaDataDecoderProxy::Shutdown()
   return rv;
 }
 
-EMEDecoderModule::EMEDecoderModule(CDMProxy* aProxy,
-                                   PDMFactory* aPDM,
-                                   bool aCDMDecodesAudio,
-                                   bool aCDMDecodesVideo)
+EMEDecoderModule::EMEDecoderModule(CDMProxy* aProxy, PDMFactory* aPDM)
   : mProxy(aProxy)
   , mPDM(aPDM)
-  , mCDMDecodesAudio(aCDMDecodesAudio)
-  , mCDMDecodesVideo(aCDMDecodesVideo)
 {
 }
 
@@ -224,7 +220,7 @@ EMEDecoderModule::~EMEDecoderModule()
 }
 
 static already_AddRefed<MediaDataDecoderProxy>
-CreateDecoderWrapper(MediaDataDecoderCallback* aCallback, CDMProxy* aProxy, FlushableTaskQueue* aTaskQueue)
+CreateDecoderWrapper(MediaDataDecoderCallback* aCallback, CDMProxy* aProxy, TaskQueue* aTaskQueue)
 {
   RefPtr<gmp::GeckoMediaPluginService> s(gmp::GeckoMediaPluginService::GetGeckoMediaPluginService());
   if (!s) {
@@ -240,77 +236,65 @@ CreateDecoderWrapper(MediaDataDecoderCallback* aCallback, CDMProxy* aProxy, Flus
 }
 
 already_AddRefed<MediaDataDecoder>
-EMEDecoderModule::CreateVideoDecoder(const VideoInfo& aConfig,
-                                     layers::LayersBackend aLayersBackend,
-                                     layers::ImageContainer* aImageContainer,
-                                     FlushableTaskQueue* aVideoTaskQueue,
-                                     MediaDataDecoderCallback* aCallback)
+EMEDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
 {
-  MOZ_ASSERT(aConfig.mCrypto.mValid);
+  MOZ_ASSERT(aParams.mConfig.mCrypto.mValid);
 
-  if (mCDMDecodesVideo) {
-    RefPtr<MediaDataDecoderProxy> wrapper = CreateDecoderWrapper(aCallback, mProxy, aVideoTaskQueue);
-    wrapper->SetProxyTarget(new EMEVideoDecoder(mProxy,
-                                                aConfig,
-                                                aLayersBackend,
-                                                aImageContainer,
-                                                aVideoTaskQueue,
-                                                wrapper->Callback()));
+  if (SupportsMimeType(aParams.mConfig.mMimeType, nullptr)) {
+    // GMP decodes. Assume that means it can decrypt too.
+    RefPtr<MediaDataDecoderProxy> wrapper =
+      CreateDecoderWrapper(aParams.mCallback, mProxy, aParams.mTaskQueue);
+    auto params = GMPVideoDecoderParams(aParams).WithCallback(wrapper);
+    wrapper->SetProxyTarget(new EMEVideoDecoder(mProxy, params));
     return wrapper.forget();
   }
 
   MOZ_ASSERT(mPDM);
-  RefPtr<MediaDataDecoder> decoder(
-    mPDM->CreateDecoder(aConfig,
-                        aVideoTaskQueue,
-                        aCallback,
-                        aLayersBackend,
-                        aImageContainer));
+  RefPtr<MediaDataDecoder> decoder(mPDM->CreateDecoder(aParams));
   if (!decoder) {
     return nullptr;
   }
 
   RefPtr<MediaDataDecoder> emeDecoder(new EMEDecryptor(decoder,
-                                                         aCallback,
-                                                         mProxy,
-                                                         AbstractThread::GetCurrent()->AsTaskQueue()));
+                                                       aParams.mCallback,
+                                                       mProxy,
+                                                       AbstractThread::GetCurrent()->AsTaskQueue()));
   return emeDecoder.forget();
 }
 
 already_AddRefed<MediaDataDecoder>
-EMEDecoderModule::CreateAudioDecoder(const AudioInfo& aConfig,
-                                     FlushableTaskQueue* aAudioTaskQueue,
-                                     MediaDataDecoderCallback* aCallback)
+EMEDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
 {
-  MOZ_ASSERT(aConfig.mCrypto.mValid);
+  MOZ_ASSERT(aParams.mConfig.mCrypto.mValid);
 
-  if (mCDMDecodesAudio) {
-    RefPtr<MediaDataDecoderProxy> wrapper = CreateDecoderWrapper(aCallback, mProxy, aAudioTaskQueue);
-    wrapper->SetProxyTarget(new EMEAudioDecoder(mProxy,
-                                                aConfig,
-                                                aAudioTaskQueue,
-                                                wrapper->Callback()));
+  if (SupportsMimeType(aParams.mConfig.mMimeType, nullptr)) {
+    // GMP decodes. Assume that means it can decrypt too.
+    RefPtr<MediaDataDecoderProxy> wrapper =
+      CreateDecoderWrapper(aParams.mCallback, mProxy, aParams.mTaskQueue);
+    auto gmpParams = GMPAudioDecoderParams(aParams).WithCallback(wrapper);
+    wrapper->SetProxyTarget(new EMEAudioDecoder(mProxy, gmpParams));
     return wrapper.forget();
   }
 
   MOZ_ASSERT(mPDM);
-  RefPtr<MediaDataDecoder> decoder(
-    mPDM->CreateDecoder(aConfig, aAudioTaskQueue, aCallback));
+  RefPtr<MediaDataDecoder> decoder(mPDM->CreateDecoder(aParams));
   if (!decoder) {
     return nullptr;
   }
 
   RefPtr<MediaDataDecoder> emeDecoder(new EMEDecryptor(decoder,
-                                                         aCallback,
-                                                         mProxy,
-                                                         AbstractThread::GetCurrent()->AsTaskQueue()));
+                                                       aParams.mCallback,
+                                                       mProxy,
+                                                       AbstractThread::GetCurrent()->AsTaskQueue()));
   return emeDecoder.forget();
 }
 
 PlatformDecoderModule::ConversionRequired
 EMEDecoderModule::DecoderNeedsConversion(const TrackInfo& aConfig) const
 {
-  if (aConfig.IsVideo()) {
+  if (aConfig.IsVideo() &&
+      (aConfig.mMimeType.EqualsLiteral("video/avc") ||
+       aConfig.mMimeType.EqualsLiteral("video/mp4"))) {
     return kNeedAVCC;
   } else {
     return kNeedNone;
@@ -318,7 +302,8 @@ EMEDecoderModule::DecoderNeedsConversion(const TrackInfo& aConfig) const
 }
 
 bool
-EMEDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
+EMEDecoderModule::SupportsMimeType(const nsACString& aMimeType,
+                                   DecoderDoctorDiagnostics* aDiagnostics) const
 {
   Maybe<nsCString> gmp;
   gmp.emplace(NS_ConvertUTF16toUTF8(mProxy->KeySystem()));

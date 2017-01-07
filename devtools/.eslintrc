@@ -3,23 +3,27 @@
     "react"
   ],
   "globals": {
-    "Cc": true,
-    "Ci": true,
+    "atob": true,
+    "btoa": true,
     "Components": true,
+    "CSSRule": true,
+    "clearInterval": true,
+    "clearTimeout": true,
     "console": true,
-    "Cr": true,
-    "Cu": true,
-    "devtools": true,
+    "DOMParser": true,
     "dump": true,
-    "EventEmitter": true,
     "exports": true,
+    "isWorker": true,
     "loader": true,
     "module": true,
+    "reportError": true,
     "require": true,
-    "Services": true,
-    "Task": true,
-    "XPCNativeWrapper": true,
-    "XPCOMUtils": true,
+    "setInterval": true,
+    "setTimeout": true,
+    "uneval": true,
+    "URL": true,
+    "XMLHttpRequest": true,
+    "_Iterator": true,
   },
   "rules": {
     // These are the rules that have been configured so far to match the
@@ -28,26 +32,51 @@
     // Rules from the mozilla plugin
     "mozilla/mark-test-function-used": 1,
     "mozilla/no-aArgs": 1,
-    "mozilla/no-cpows-in-tests": 1,
+    "mozilla/no-cpows-in-tests": 2,
+    "mozilla/no-single-arg-cu-import": 2,
     // See bug 1224289.
-    "mozilla/reject-importGlobalProperties": 1,
+    "mozilla/reject-importGlobalProperties": 2,
     "mozilla/var-only-at-top-level": 1,
 
     // Rules from the React plugin
-    "react/display-name": 1,
-    "react/no-danger": 1,
-    "react/no-did-mount-set-state": 1,
-    "react/no-did-update-set-state": 1,
-    "react/no-direct-mutation-state": 1,
-    "react/no-unknown-property": 1,
+    "react/display-name": 2,
+    "react/no-danger": 2,
+    "react/no-did-mount-set-state": 2,
+    "react/no-did-update-set-state": 2,
+    "react/no-direct-mutation-state": 2,
+    "react/no-unknown-property": 2,
     "react/prefer-es6-class": [1, "never"],
-    "react/prop-types": 1,
-    "react/sort-comp": [1, {
+    // Disabled temporarily until errors are fixed.
+    "react/prop-types": 0,
+    "react/sort-comp": [2, {
       order: [
-        "propTypes",
+        "lifecycle",
         "everything-else",
         "render"
-      ]
+      ],
+      groups: {
+        lifecycle: [
+          "displayName",
+          "propTypes",
+          "contextTypes",
+          "childContextTypes",
+          "mixins",
+          "statics",
+          "defaultProps",
+          "constructor",
+          "getDefaultProps",
+          "getInitialState",
+          "state",
+          "getChildContext",
+          "componentWillMount",
+          "componentDidMount",
+          "componentWillReceiveProps",
+          "shouldComponentUpdate",
+          "componentWillUpdate",
+          "componentDidUpdate",
+          "componentWillUnmount"
+        ]
+      }
     }],
 
     // Disallow using variables outside the blocks they are defined (especially
@@ -66,7 +95,7 @@
     // Enforce one true comma style.
     "comma-style": [2, "last"],
     // Warn about cyclomatic complexity in functions.
-    "complexity": 2,
+    "complexity": [2, 35],
     // Require return statements to either always or never specify values.
     "consistent-return": 2,
     // Don't warn for inconsistent naming when capturing this (not so important
@@ -112,7 +141,7 @@
     // rule is a better rule to check this.
     "max-depth": 0,
     // Maximum length of a line.
-    "max-len": [2, 80, 2, {"ignoreUrls": true, "ignorePattern": "\\s*require\\s*\\(|^\\s*loader\\.lazy|-\\*-"}],
+    "max-len": [2, 90, 2, {"ignoreUrls": true, "ignorePattern": "data:image\/|\\s*require\\s*\\(|^\\s*loader\\.lazy|-\\*-"}],
     // Maximum depth callbacks can be nested.
     "max-nested-callbacks": [2, 3],
     // Don't limit the number of parameters that can be used in a function.
@@ -172,8 +201,6 @@
     "no-empty": 2,
     // Disallow the use of empty character classes in regular expressions.
     "no-empty-character-class": 2,
-    // Disallow use of labels for anything other then loops and switches.
-    "no-empty-label": 2,
     // Disallow use of eval(). We have other APIs to evaluate code in content.
     "no-eval": 2,
     // Disallow assigning to the exception in a catch block.
@@ -306,8 +333,10 @@
     "padded-blocks": [2, "never"],
     // Don't require quotes around object literal property names.
     "quote-props": 0,
-    // Double quotes should be used.
-    "quotes": [2, "double", "avoid-escape"],
+    // Double quotes should be used.  Other quote characters can be used around strings
+    // with embedded double quotes to avoid escaping them.  Template literals are allowed
+    // mainly for building multi-line messages where only some lines use substitution.
+    "quotes": [2, "double", {"avoidEscape": true, "allowTemplateLiterals": true}],
     // Require use of the second argument for parseInt().
     "radix": 2,
     // Always require use of semicolons wherever they are valid.
@@ -319,14 +348,15 @@
     "sort-vars": 0,
     // Deprecated, will be removed in 1.0.
     "space-after-function-name": 0,
-    // Require a space after keywords.
-    "space-after-keywords": [2, "always"],
+    // Require a space around all keywords.
+    "keyword-spacing": 2,
     // Require a space before the start brace of a block.
     "space-before-blocks": [2, "always"],
     // Deprecated, will be removed in 1.0.
     "space-before-function-parentheses": 0,
-    // Disallow space before function opening parenthesis.
-    "space-before-function-paren": [2, "never"],
+    // Require space after keyword for anonymous functions, but disallow space
+    // after name of named functions.
+    "space-before-function-paren": [2, {"anonymous": "always", "named": "never"}],
     // Disable the rule that checks if spaces inside {} and [] are there or not.
     // Our code is split on conventions, and it'd be nice to have 2 rules
     // instead, one for [] and one for {}. So, disabling until we write them.
@@ -335,8 +365,6 @@
     "space-in-parens": [2, "never"],
     // Require spaces around operators, except for a|0.
     "space-infix-ops": [2, {"int32Hint": true}],
-    // Require a space after return, throw, and case.
-    "space-return-throw-case": 2,
     // Require spaces before/after unary operators (words on by default,
     // nonwords off by default).
     "space-unary-ops": [2, { "words": true, "nonwords": false }],
@@ -391,7 +419,7 @@
     // disallow labels that share a name with a variable
     "no-label-var": 0,
     // disallow use of labeled statements
-    "no-labels": 0,
+    "no-labels": 2,
     // disallow unnecessary nested blocks
     "no-lone-blocks": 0,
     // disallow creation of functions within loops

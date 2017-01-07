@@ -9,7 +9,7 @@
 
 const TEST_URI = "<body style='color: red'>Test page for bug 1160720";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {view} = yield openRuleView();
 
@@ -17,7 +17,7 @@ add_task(function*() {
     .querySelector(".ruleview-colorswatch");
 
   let picker = yield openColorPickerForSwatch(cSwatch, view);
-  let spectrum = yield picker.spectrum;
+  let spectrum = picker.spectrum;
   let change = spectrum.once("changed");
 
   info("Pressing mouse down over color picker.");

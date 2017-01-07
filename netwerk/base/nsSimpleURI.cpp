@@ -24,6 +24,9 @@
 
 using namespace mozilla::ipc;
 
+namespace mozilla {
+namespace net {
+
 static NS_DEFINE_CID(kThisSimpleURIImplementationCID,
                      NS_THIS_SIMPLEURI_IMPLEMENTATION_CID);
 static NS_DEFINE_CID(kSimpleURICID, NS_SIMPLEURI_CID);
@@ -193,28 +196,23 @@ nsSimpleURI::SetSpec(const nsACString &aSpec)
 {
     NS_ENSURE_STATE(mMutable);
     
-    const nsAFlatCString& flat = PromiseFlatCString(aSpec);
-    const char* specPtr = flat.get();
-
     // filter out unexpected chars "\r\n\t" if necessary
     nsAutoCString filteredSpec;
-    int32_t specLen;
-    if (net_FilterURIString(specPtr, filteredSpec)) {
-        specPtr = filteredSpec.get();
-        specLen = filteredSpec.Length();
-    } else
-        specLen = flat.Length();
+    net_FilterURIString(aSpec, filteredSpec);
 
     // nsSimpleURI currently restricts the charset to US-ASCII
     nsAutoCString spec;
-    NS_EscapeURL(specPtr, specLen, esc_OnlyNonASCII|esc_AlwaysCopy, spec);
+    nsresult rv = NS_EscapeURL(filteredSpec, esc_OnlyNonASCII, spec, fallible);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
 
     int32_t colonPos = spec.FindChar(':');
     if (colonPos < 0 || !net_IsValidScheme(spec.get(), colonPos))
         return NS_ERROR_MALFORMED_URI;
 
     mScheme.Truncate();
-    mozilla::DebugOnly<int32_t> n = spec.Left(mScheme, colonPos);
+    DebugOnly<int32_t> n = spec.Left(mScheme, colonPos);
     NS_ASSERTION(n == colonPos, "Left failed");
     ToLowerCase(mScheme);
 
@@ -236,7 +234,7 @@ nsSimpleURI::SetScheme(const nsACString &scheme)
 
     const nsPromiseFlatCString &flat = PromiseFlatCString(scheme);
     if (!net_IsValidScheme(flat)) {
-        NS_ERROR("the given url scheme contains invalid characters");
+        NS_WARNING("the given url scheme contains invalid characters");
         return NS_ERROR_MALFORMED_URI;
     }
 
@@ -473,28 +471,51 @@ nsSimpleURI::SchemeIs(const char *i_Scheme, bool *o_Equals)
 }
 
 /* virtual */ nsSimpleURI*
-nsSimpleURI::StartClone(nsSimpleURI::RefHandlingEnum /* ignored */)
+nsSimpleURI::StartClone(nsSimpleURI::RefHandlingEnum refHandlingMode,
+                        const nsACString& newRef)
 {
-    return new nsSimpleURI();
+    nsSimpleURI* url = new nsSimpleURI();
+    SetRefOnClone(url, refHandlingMode, newRef);
+    return url;
+}
+
+/* virtual */ void
+nsSimpleURI::SetRefOnClone(nsSimpleURI* url,
+                           nsSimpleURI::RefHandlingEnum refHandlingMode,
+                           const nsACString& newRef)
+{
+    if (refHandlingMode == eHonorRef) {
+        url->mRef = mRef;
+        url->mIsRefValid = mIsRefValid;
+    } else if (refHandlingMode == eReplaceRef) {
+        url->SetRef(newRef);
+    }
 }
 
 NS_IMETHODIMP
 nsSimpleURI::Clone(nsIURI** result)
 {
-    return CloneInternal(eHonorRef, result);
+    return CloneInternal(eHonorRef, EmptyCString(), result);
 }
 
 NS_IMETHODIMP
 nsSimpleURI::CloneIgnoringRef(nsIURI** result)
 {
-    return CloneInternal(eIgnoreRef, result);
+    return CloneInternal(eIgnoreRef, EmptyCString(), result);
+}
+
+NS_IMETHODIMP
+nsSimpleURI::CloneWithNewRef(const nsACString &newRef, nsIURI** result)
+{
+    return CloneInternal(eReplaceRef, newRef, result);
 }
 
 nsresult
 nsSimpleURI::CloneInternal(nsSimpleURI::RefHandlingEnum refHandlingMode,
+                           const nsACString &newRef,
                            nsIURI** result)
 {
-    RefPtr<nsSimpleURI> url = StartClone(refHandlingMode);
+    RefPtr<nsSimpleURI> url = StartClone(refHandlingMode, newRef);
     if (!url)
         return NS_ERROR_OUT_OF_MEMORY;
 
@@ -502,10 +523,6 @@ nsSimpleURI::CloneInternal(nsSimpleURI::RefHandlingEnum refHandlingMode,
     // don't call any setter methods.
     url->mScheme = mScheme;
     url->mPath = mPath;
-    if (refHandlingMode == eHonorRef) {
-        url->mRef = mRef;
-        url->mIsRefValid = mIsRefValid;
-    }
 
     url.forget(result);
     return NS_OK;
@@ -633,7 +650,7 @@ nsSimpleURI::SetMutable(bool value)
 //----------------------------------------------------------------------------
 
 size_t 
-nsSimpleURI::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+nsSimpleURI::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 {
   return mScheme.SizeOfExcludingThisIfUnshared(aMallocSizeOf) +
          mPath.SizeOfExcludingThisIfUnshared(aMallocSizeOf) +
@@ -641,7 +658,9 @@ nsSimpleURI::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 }
 
 size_t
-nsSimpleURI::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
+nsSimpleURI::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
 
+} // namespace net
+} // namespace mozilla

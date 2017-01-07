@@ -37,6 +37,8 @@
 #include "vm/Shape.h"
 #include "vm/UnboxedObject.h"
 
+using mozilla::FloatingPoint;
+
 // * How to read/write MacroAssembler method declarations:
 //
 // The following macros are made to avoid #ifdef around each method declarations
@@ -72,7 +74,7 @@
 // DEFINED_ON is a macro which check if, for the current architecture, the
 // method is defined on the macro assembler or not.
 //
-// For each architecutre, we have a macro named DEFINED_ON_arch.  This macro is
+// For each architecture, we have a macro named DEFINED_ON_arch.  This macro is
 // empty if this is not the current architecture.  Otherwise it must be either
 // set to "define" or "crash" (only use for the none target so-far).
 //
@@ -94,7 +96,7 @@
 //
 //   crash
 //
-// or to nothing, if the current architecture is not lsited in the list of
+// or to nothing, if the current architecture is not listed in the list of
 // arguments of DEFINED_ON.  Note, only one of the DEFINED_ON_arch macro
 // contributes to the non-empty result, which is the macro of the current
 // architecture if it is listed in the arguments of DEFINED_ON.
@@ -443,7 +445,7 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void Pop(const Operand op) DEFINED_ON(x86_shared);
     void Pop(Register reg) PER_SHARED_ARCH;
-    void Pop(FloatRegister t) DEFINED_ON(x86_shared);
+    void Pop(FloatRegister t) PER_SHARED_ARCH;
     void Pop(const ValueOperand& val) PER_SHARED_ARCH;
     void popRooted(VMFunction::RootType rootType, Register cellReg, const ValueOperand& valueReg);
 
@@ -481,7 +483,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void call(JitCode* c) PER_SHARED_ARCH;
 
     inline void call(const wasm::CallSiteDesc& desc, const Register reg);
-    inline void call(const wasm::CallSiteDesc& desc, AsmJSInternalCallee callee);
+    inline void call(const wasm::CallSiteDesc& desc, uint32_t callee);
 
     CodeOffset callWithPatch() PER_SHARED_ARCH;
     void patchCall(uint32_t callerOffset, uint32_t calleeOffset) PER_SHARED_ARCH;
@@ -493,13 +495,20 @@ class MacroAssembler : public MacroAssemblerSpecific
     void patchThunk(uint32_t thunkOffset, uint32_t targetOffset) PER_SHARED_ARCH;
     static void repatchThunk(uint8_t* code, uint32_t thunkOffset, uint32_t targetOffset) PER_SHARED_ARCH;
 
+    // Emit a nop that can be patched to and from a nop and a jump with an int8
+    // relative displacement.
+    CodeOffset nopPatchableToNearJump() PER_SHARED_ARCH;
+    static void patchNopToNearJump(uint8_t* jump, uint8_t* target) PER_SHARED_ARCH;
+    static void patchNearJumpToNop(uint8_t* jump) PER_SHARED_ARCH;
+
     // Push the return address and make a call. On platforms where this function
     // is not defined, push the link register (pushReturnAddress) at the entry
     // point of the callee.
-    void callAndPushReturnAddress(Register reg) DEFINED_ON(mips_shared, x86_shared);
-    void callAndPushReturnAddress(Label* label) DEFINED_ON(mips_shared, x86_shared);
+    void callAndPushReturnAddress(Register reg) DEFINED_ON(x86_shared);
+    void callAndPushReturnAddress(Label* label) DEFINED_ON(x86_shared);
 
-    void pushReturnAddress() DEFINED_ON(arm, arm64);
+    void pushReturnAddress() DEFINED_ON(mips_shared, arm, arm64);
+    void popReturnAddress() DEFINED_ON(mips_shared, arm, arm64);
 
   public:
     // ===============================================================
@@ -684,6 +693,9 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void move64(Imm64 imm, Register64 dest) PER_ARCH;
     inline void move64(Register64 src, Register64 dest) PER_ARCH;
 
+    inline void moveFloat32ToGPR(FloatRegister src, Register dest) PER_SHARED_ARCH;
+    inline void moveGPRToFloat32(Register src, FloatRegister dest) PER_SHARED_ARCH;
+
     // ===============================================================
     // Logical instructions
 
@@ -709,14 +721,19 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void orPtr(Register src, Register dest) PER_ARCH;
     inline void orPtr(Imm32 imm, Register dest) PER_ARCH;
 
+    inline void and64(Register64 src, Register64 dest) DEFINED_ON(x86, arm);
     inline void or64(Register64 src, Register64 dest) PER_ARCH;
     inline void xor64(Register64 src, Register64 dest) PER_ARCH;
 
-    inline void xor32(Register src, Register dest) DEFINED_ON(x86_shared);
+    inline void xor32(Register src, Register dest) PER_SHARED_ARCH;
     inline void xor32(Imm32 imm, Register dest) PER_SHARED_ARCH;
 
     inline void xorPtr(Register src, Register dest) PER_ARCH;
     inline void xorPtr(Imm32 imm, Register dest) PER_ARCH;
+
+    inline void and64(const Operand& src, Register64 dest) DEFINED_ON(x64);
+    inline void or64(const Operand& src, Register64 dest) DEFINED_ON(x64);
+    inline void xor64(const Operand& src, Register64 dest) DEFINED_ON(x64);
 
     // ===============================================================
     // Arithmetic functions
@@ -738,8 +755,10 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     inline void add64(Register64 src, Register64 dest) PER_ARCH;
     inline void add64(Imm32 imm, Register64 dest) PER_ARCH;
+    inline void add64(Imm64 imm, Register64 dest) DEFINED_ON(x86, x64, arm);
+    inline void add64(const Operand& src, Register64 dest) DEFINED_ON(x64);
 
-    inline void addFloat32(FloatRegister src, FloatRegister dest) DEFINED_ON(x86_shared);
+    inline void addFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
 
     inline void addDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
     inline void addConstantDouble(double d, FloatRegister dest) DEFINED_ON(x86);
@@ -754,18 +773,50 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void subPtr(ImmWord imm, Register dest) DEFINED_ON(x64);
     inline void subPtr(const Address& addr, Register dest) DEFINED_ON(mips_shared, arm, arm64, x86, x64);
 
+    inline void sub64(Register64 src, Register64 dest) DEFINED_ON(x86, x64, arm);
+    inline void sub64(Imm64 imm, Register64 dest) DEFINED_ON(x86, x64, arm);
+    inline void sub64(const Operand& src, Register64 dest) DEFINED_ON(x64);
+
+    inline void subFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+
     inline void subDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+
+    // On x86-shared, srcDest must be eax and edx will be clobbered.
+    inline void mul32(Register rhs, Register srcDest) PER_SHARED_ARCH;
 
     inline void mul32(Register src1, Register src2, Register dest, Label* onOver, Label* onZero) DEFINED_ON(arm64);
 
+    inline void mul64(const Operand& src, const Register64& dest) DEFINED_ON(x64);
+    inline void mul64(const Operand& src, const Register64& dest, const Register temp)
+        DEFINED_ON(x64);
     inline void mul64(Imm64 imm, const Register64& dest) PER_ARCH;
+    inline void mul64(Imm64 imm, const Register64& dest, const Register temp)
+        DEFINED_ON(x86, x64, arm);
+    inline void mul64(const Register64& src, const Register64& dest, const Register temp)
+        DEFINED_ON(x86, x64, arm);
 
     inline void mulBy3(Register src, Register dest) PER_ARCH;
 
+    inline void mulFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
     inline void mulDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
 
     inline void mulDoublePtr(ImmPtr imm, Register temp, FloatRegister dest) DEFINED_ON(mips_shared, arm, arm64, x86, x64);
 
+    // Perform an integer division, returning the integer part rounded toward zero.
+    // rhs must not be zero, and the division must not overflow.
+    //
+    // On x86_shared, srcDest must be eax and edx will be clobbered.
+    // On ARM, the chip must have hardware division instructions.
+    inline void quotient32(Register rhs, Register srcDest, bool isUnsigned) PER_SHARED_ARCH;
+
+    // Perform an integer division, returning the remainder part.
+    // rhs must not be zero, and the division must not overflow.
+    //
+    // On x86_shared, srcDest must be eax and edx will be clobbered.
+    // On ARM, the chip must have hardware division instructions.
+    inline void remainder32(Register rhs, Register srcDest, bool isUnsigned) PER_SHARED_ARCH;
+
+    inline void divFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
     inline void divDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
 
     inline void inc32(RegisterOrInt32Constant* key);
@@ -774,29 +825,105 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void dec32(RegisterOrInt32Constant* key);
 
     inline void neg32(Register reg) PER_SHARED_ARCH;
+    inline void neg64(Register64 reg) DEFINED_ON(x86, x64, arm);
 
-    inline void negateFloat(FloatRegister reg) DEFINED_ON(arm64, x86_shared);
+    inline void negateFloat(FloatRegister reg) PER_SHARED_ARCH;
 
     inline void negateDouble(FloatRegister reg) PER_SHARED_ARCH;
+
+    inline void absFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+    inline void absDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+
+    inline void sqrtFloat32(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+    inline void sqrtDouble(FloatRegister src, FloatRegister dest) PER_SHARED_ARCH;
+
+    // srcDest = {min,max}{Float32,Double}(srcDest, other)
+    // For min and max, handle NaN specially if handleNaN is true.
+
+    inline void minFloat32(FloatRegister other, FloatRegister srcDest, bool handleNaN) PER_SHARED_ARCH;
+    inline void minDouble(FloatRegister other, FloatRegister srcDest, bool handleNaN) PER_SHARED_ARCH;
+
+    inline void maxFloat32(FloatRegister other, FloatRegister srcDest, bool handleNaN) PER_SHARED_ARCH;
+    inline void maxDouble(FloatRegister other, FloatRegister srcDest, bool handleNaN) PER_SHARED_ARCH;
 
     // ===============================================================
     // Shift functions
 
+    // For shift-by-register there may be platform-specific
+    // variations, for example, x86 will perform the shift mod 32 but
+    // ARM will perform the shift mod 256.
+    //
+    // For shift-by-immediate the platform assembler may restrict the
+    // immediate, for example, the ARM assembler requires the count
+    // for 32-bit shifts to be in the range [0,31].
+
+    inline void lshift32(Imm32 shift, Register srcDest) PER_SHARED_ARCH;
+    inline void rshift32(Imm32 shift, Register srcDest) PER_SHARED_ARCH;
+    inline void rshift32Arithmetic(Imm32 shift, Register srcDest) PER_SHARED_ARCH;
+
     inline void lshiftPtr(Imm32 imm, Register dest) PER_ARCH;
-
-    inline void lshift64(Imm32 imm, Register64 dest) PER_ARCH;
-
     inline void rshiftPtr(Imm32 imm, Register dest) PER_ARCH;
     inline void rshiftPtr(Imm32 imm, Register src, Register dest) DEFINED_ON(arm64);
-
     inline void rshiftPtrArithmetic(Imm32 imm, Register dest) PER_ARCH;
 
+    inline void lshift64(Imm32 imm, Register64 dest) PER_ARCH;
     inline void rshift64(Imm32 imm, Register64 dest) PER_ARCH;
+    inline void rshift64Arithmetic(Imm32 imm, Register64 dest) DEFINED_ON(x86, x64, arm);
+
+    // On x86_shared these have the constraint that shift must be in CL.
+    inline void lshift32(Register shift, Register srcDest) PER_SHARED_ARCH;
+    inline void rshift32(Register shift, Register srcDest) PER_SHARED_ARCH;
+    inline void rshift32Arithmetic(Register shift, Register srcDest) PER_SHARED_ARCH;
+
+    inline void lshift64(Register shift, Register64 srcDest) DEFINED_ON(x86, x64, arm);
+    inline void rshift64(Register shift, Register64 srcDest) DEFINED_ON(x86, x64, arm);
+    inline void rshift64Arithmetic(Register shift, Register64 srcDest) DEFINED_ON(x86, x64, arm);
+
+    // ===============================================================
+    // Rotation functions
+    // Note: - on x86 and x64 the count register must be in CL.
+    //       - on x64 the temp register should be InvalidReg.
+
+    inline void rotateLeft(Imm32 count, Register input, Register dest) PER_SHARED_ARCH;
+    inline void rotateLeft(Register count, Register input, Register dest) PER_SHARED_ARCH;
+    inline void rotateLeft64(Imm32 count, Register64 input, Register64 dest) DEFINED_ON(x64);
+    inline void rotateLeft64(Register count, Register64 input, Register64 dest) DEFINED_ON(x64);
+    inline void rotateLeft64(Imm32 count, Register64 input, Register64 dest, Register temp)
+        DEFINED_ON(x86, x64, arm);
+    inline void rotateLeft64(Register count, Register64 input, Register64 dest, Register temp)
+        DEFINED_ON(x86, x64, arm);
+
+    inline void rotateRight(Imm32 count, Register input, Register dest) PER_SHARED_ARCH;
+    inline void rotateRight(Register count, Register input, Register dest) PER_SHARED_ARCH;
+    inline void rotateRight64(Imm32 count, Register64 input, Register64 dest) DEFINED_ON(x64);
+    inline void rotateRight64(Register count, Register64 input, Register64 dest) DEFINED_ON(x64);
+    inline void rotateRight64(Imm32 count, Register64 input, Register64 dest, Register temp)
+        DEFINED_ON(x86, x64, arm);
+    inline void rotateRight64(Register count, Register64 input, Register64 dest, Register temp)
+        DEFINED_ON(x86, x64, arm);
+
+    // ===============================================================
+    // Bit counting functions
+
+    // knownNotZero may be true only if the src is known not to be zero.
+    inline void clz32(Register src, Register dest, bool knownNotZero) PER_SHARED_ARCH;
+    inline void ctz32(Register src, Register dest, bool knownNotZero) PER_SHARED_ARCH;
+
+    inline void clz64(Register64 src, Register dest) DEFINED_ON(x86, x64, arm);
+    inline void ctz64(Register64 src, Register dest) DEFINED_ON(x86, x64, arm);
+
+    // On x86_shared, temp may be Invalid only if the chip has the POPCNT instruction.
+    // On ARM, temp may never be Invalid.
+    inline void popcnt32(Register src, Register dest, Register temp) DEFINED_ON(arm, x86_shared);
+
+    // temp may be invalid only if the chip has the POPCNT instruction.
+    inline void popcnt64(Register64 src, Register64 dest, Register temp) DEFINED_ON(x86, x64, arm);
 
     // ===============================================================
     // Branch functions
 
-    inline void branch32(Condition cond, Register lhs, Register rhs, Label* label) PER_SHARED_ARCH;
+    template <class L>
+    inline void branch32(Condition cond, Register lhs, Register rhs, L label) PER_SHARED_ARCH;
     template <class L>
     inline void branch32(Condition cond, Register lhs, Imm32 rhs, L label) PER_SHARED_ARCH;
     inline void branch32(Condition cond, Register length, const RegisterOrInt32Constant& key,
@@ -816,12 +943,22 @@ class MacroAssembler : public MacroAssemblerSpecific
         DEFINED_ON(x86_shared);
     inline void branch32(Condition cond, const BaseIndex& lhs, Imm32 rhs, Label* label) PER_SHARED_ARCH;
 
-    inline void branch32(Condition cond, const Operand& lhs, Register rhs, Label* label) PER_SHARED_ARCH;
-    inline void branch32(Condition cond, const Operand& lhs, Imm32 rhs, Label* label) PER_SHARED_ARCH;
+    inline void branch32(Condition cond, const Operand& lhs, Register rhs, Label* label) DEFINED_ON(x86_shared);
+    inline void branch32(Condition cond, const Operand& lhs, Imm32 rhs, Label* label) DEFINED_ON(x86_shared);
 
     inline void branch32(Condition cond, wasm::SymbolicAddress lhs, Imm32 rhs, Label* label)
         DEFINED_ON(arm, arm64, mips_shared, x86, x64);
 
+    // The supported condition are Equal, NotEqual, LessThan(orEqual), GreaterThan(orEqual),
+    // Below(orEqual) and Above(orEqual).
+    // When a fail label is not defined it will fall through to next instruction,
+    // else jump to the fail label.
+    inline void branch64(Condition cond, Register64 lhs, Imm64 val, Label* success,
+                         Label* fail = nullptr) DEFINED_ON(x86, x64, arm);
+    inline void branch64(Condition cond, Register64 lhs, Register64 rhs, Label* success,
+                         Label* fail = nullptr) DEFINED_ON(x86, x64, arm);
+    // On x86 and x64 NotEqual and Equal conditions are allowed for the branch64 variants
+    // with Address as lhs. On others only the NotEqual condition.
     inline void branch64(Condition cond, const Address& lhs, Imm64 val, Label* label) PER_ARCH;
 
     // Compare the value at |lhs| with the value at |rhs|.  The scratch
@@ -855,6 +992,9 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void branchPtrInNurseryRange(Condition cond, Register ptr, Register temp, Label* label)
         DEFINED_ON(arm, arm64, mips_shared, x86, x64);
+    void branchPtrInNurseryRange(Condition cond, const Address& address, Register temp, Label* label)
+        DEFINED_ON(x86);
+    void branchValueIsNurseryObject(Condition cond, const Address& address, Register temp, Label* label) PER_ARCH;
     void branchValueIsNurseryObject(Condition cond, ValueOperand value, Register temp, Label* label) PER_ARCH;
 
     // This function compares a Value (lhs) which is having a private pointer
@@ -863,13 +1003,35 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     inline void branchFloat(DoubleCondition cond, FloatRegister lhs, FloatRegister rhs,
                             Label* label) PER_SHARED_ARCH;
-    inline void branchTruncateFloat32(FloatRegister src, Register dest, Label* fail)
+
+    // Truncate a double/float32 to int32 and when it doesn't fit an int32 it will jump to
+    // the failure label. This particular variant is allowed to return the value module 2**32,
+    // which isn't implemented on all architectures.
+    // E.g. the x64 variants will do this only in the int64_t range.
+    inline void branchTruncateFloat32MaybeModUint32(FloatRegister src, Register dest, Label* fail)
+        DEFINED_ON(arm, arm64, mips_shared, x86, x64);
+    inline void branchTruncateDoubleMaybeModUint32(FloatRegister src, Register dest, Label* fail)
+        DEFINED_ON(arm, arm64, mips_shared, x86, x64);
+
+    // Truncate a double/float32 to intptr and when it doesn't fit jump to the failure label.
+    inline void branchTruncateFloat32ToPtr(FloatRegister src, Register dest, Label* fail)
+        DEFINED_ON(x86, x64);
+    inline void branchTruncateDoubleToPtr(FloatRegister src, Register dest, Label* fail)
+        DEFINED_ON(x86, x64);
+
+    // Truncate a double/float32 to int32 and when it doesn't fit jump to the failure label.
+    inline void branchTruncateFloat32ToInt32(FloatRegister src, Register dest, Label* fail)
+        DEFINED_ON(arm, arm64, mips_shared, x86, x64);
+    inline void branchTruncateDoubleToInt32(FloatRegister src, Register dest, Label* fail)
         DEFINED_ON(arm, arm64, mips_shared, x86, x64);
 
     inline void branchDouble(DoubleCondition cond, FloatRegister lhs, FloatRegister rhs,
                              Label* label) PER_SHARED_ARCH;
-    inline void branchTruncateDouble(FloatRegister src, Register dest, Label* fail)
-        DEFINED_ON(arm, arm64, mips_shared, x86, x64);
+
+    inline void branchDoubleNotInInt64Range(Address src, Register temp, Label* fail);
+    inline void branchDoubleNotInUInt64Range(Address src, Register temp, Label* fail);
+    inline void branchFloat32NotInInt64Range(Address src, Register temp, Label* fail);
+    inline void branchFloat32NotInUInt64Range(Address src, Register temp, Label* fail);
 
     template <typename T>
     inline void branchAdd32(Condition cond, T src, Register dest, Label* label) PER_SHARED_ARCH;
@@ -886,12 +1048,14 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void branchTest32(Condition cond, const AbsoluteAddress& lhs, Imm32 rhs, Label* label)
         DEFINED_ON(arm, arm64, mips_shared, x86, x64);
 
-    inline void branchTestPtr(Condition cond, Register lhs, Register rhs, Label* label) PER_SHARED_ARCH;
+    template <class L>
+    inline void branchTestPtr(Condition cond, Register lhs, Register rhs, L label) PER_SHARED_ARCH;
     inline void branchTestPtr(Condition cond, Register lhs, Imm32 rhs, Label* label) PER_SHARED_ARCH;
     inline void branchTestPtr(Condition cond, const Address& lhs, Imm32 rhs, Label* label) PER_SHARED_ARCH;
 
+    template <class L>
     inline void branchTest64(Condition cond, Register64 lhs, Register64 rhs, Register temp,
-                             Label* label) PER_ARCH;
+                             L label) PER_ARCH;
 
     // Branches to |label| if |reg| is false. |reg| should be a C++ bool.
     template <class L>
@@ -1012,6 +1176,8 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void branchTestMagic(Condition cond, const ValueOperand& value, L label)
         DEFINED_ON(arm, arm64, mips32, mips64, x86_shared);
 
+    inline void branchTestMagic(Condition cond, const Address& valaddr, JSWhyMagic why, Label* label) PER_ARCH;
+
     inline void branchTestMagicValue(Condition cond, const ValueOperand& val, JSWhyMagic why,
                                      Label* label);
 
@@ -1037,6 +1203,13 @@ class MacroAssembler : public MacroAssemblerSpecific
     template <typename T, typename S>
     inline void branchPtrImpl(Condition cond, const T& lhs, const S& rhs, Label* label)
         DEFINED_ON(x86_shared);
+
+    template <typename T>
+    void branchPtrInNurseryRangeImpl(Condition cond, const T& ptr, Register temp, Label* label)
+        DEFINED_ON(x86);
+    template <typename T>
+    void branchValueIsNurseryObjectImpl(Condition cond, const T& value, Register temp, Label* label)
+        DEFINED_ON(arm64, mips64, x64);
 
     template <typename T>
     inline void branchTestUndefinedImpl(Condition cond, const T& t, Label* label)
@@ -1075,6 +1248,65 @@ class MacroAssembler : public MacroAssemblerSpecific
     inline void branchTestMagicImpl(Condition cond, const T& t, L label)
         DEFINED_ON(arm, arm64, x86_shared);
 
+  public:
+    // ========================================================================
+    // Canonicalization primitives.
+    inline void canonicalizeDouble(FloatRegister reg);
+    inline void canonicalizeDoubleIfDeterministic(FloatRegister reg);
+
+    inline void canonicalizeFloat(FloatRegister reg);
+    inline void canonicalizeFloatIfDeterministic(FloatRegister reg);
+
+    inline void canonicalizeFloat32x4(FloatRegister reg, FloatRegister scratch)
+        DEFINED_ON(x86_shared);
+
+  public:
+    // ========================================================================
+    // Memory access primitives.
+    inline void storeUncanonicalizedDouble(FloatRegister src, const Address& dest)
+        DEFINED_ON(x86_shared, arm, arm64, mips32, mips64);
+    inline void storeUncanonicalizedDouble(FloatRegister src, const BaseIndex& dest)
+        DEFINED_ON(x86_shared, arm, arm64, mips32, mips64);
+    inline void storeUncanonicalizedDouble(FloatRegister src, const Operand& dest)
+        DEFINED_ON(x86_shared);
+
+    template<class T>
+    inline void storeDouble(FloatRegister src, const T& dest);
+
+    inline void storeUncanonicalizedFloat32(FloatRegister src, const Address& dest)
+        DEFINED_ON(x86_shared, arm, arm64, mips32, mips64);
+    inline void storeUncanonicalizedFloat32(FloatRegister src, const BaseIndex& dest)
+        DEFINED_ON(x86_shared, arm, arm64, mips32, mips64);
+    inline void storeUncanonicalizedFloat32(FloatRegister src, const Operand& dest)
+        DEFINED_ON(x86_shared);
+
+    template<class T>
+    inline void storeFloat32(FloatRegister src, const T& dest);
+
+    inline void storeFloat32x3(FloatRegister src, const Address& dest) PER_SHARED_ARCH;
+    inline void storeFloat32x3(FloatRegister src, const BaseIndex& dest) PER_SHARED_ARCH;
+
+    template <typename T>
+    void storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T& dest,
+                           MIRType slotType) PER_ARCH;
+
+  public:
+    // ========================================================================
+    // Truncate floating point.
+
+    // Undefined behaviour when truncation is outside Int64 range.
+    // Needs a temp register if SSE3 is not present.
+    inline void truncateFloat32ToInt64(Address src, Address dest, Register temp)
+        DEFINED_ON(x86_shared);
+    inline void truncateFloat32ToUInt64(Address src, Address dest, Register temp,
+                                        FloatRegister floatTemp)
+        DEFINED_ON(x86, x64);
+    inline void truncateDoubleToInt64(Address src, Address dest, Register temp)
+        DEFINED_ON(x86_shared);
+    inline void truncateDoubleToUInt64(Address src, Address dest, Register temp,
+                                       FloatRegister floatTemp)
+        DEFINED_ON(x86, x64);
+
     //}}} check_macroassembler_style
   public:
 
@@ -1089,7 +1321,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void guardTypeSetMightBeIncomplete(TypeSet* types, Register obj, Register scratch, Label* label);
 
     void loadObjShape(Register objReg, Register dest) {
-        loadPtr(Address(objReg, JSObject::offsetOfShape()), dest);
+        loadPtr(Address(objReg, ShapedObject::offsetOfShape()), dest);
     }
     void loadObjGroup(Register objReg, Register dest) {
         loadPtr(Address(objReg, JSObject::offsetOfGroup()), dest);
@@ -1120,10 +1352,13 @@ class MacroAssembler : public MacroAssemblerSpecific
     void loadStringChar(Register str, Register index, Register output);
 
     void loadJSContext(Register dest) {
-        loadPtr(AbsoluteAddress(GetJitContext()->runtime->addressOfJSContext()), dest);
+        movePtr(ImmPtr(GetJitContext()->runtime->getJSContext()), dest);
     }
     void loadJitActivation(Register dest) {
         loadPtr(AbsoluteAddress(GetJitContext()->runtime->addressOfActivation()), dest);
+    }
+    void loadWasmActivation(Register dest) {
+        loadWasmGlobalPtr(wasm::ActivationGlobalDataOffset, dest);
     }
 
     template<typename T>
@@ -1154,7 +1389,7 @@ class MacroAssembler : public MacroAssemblerSpecific
             storeValue(src.valueReg(), dest);
         } else if (IsFloatingPointType(src.type())) {
             FloatRegister reg = src.typedReg().fpu();
-            if (src.type() == MIRType_Float32) {
+            if (src.type() == MIRType::Float32) {
                 convertFloat32ToDouble(reg, ScratchDoubleReg);
                 reg = ScratchDoubleReg;
             }
@@ -1234,7 +1469,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void callPreBarrier(const T& address, MIRType type) {
         Label done;
 
-        if (type == MIRType_Value)
+        if (type == MIRType::Value)
             branchTestGCThing(Assembler::NotEqual, address, &done);
 
         Push(PreBarrierReg);
@@ -1264,10 +1499,6 @@ class MacroAssembler : public MacroAssemblerSpecific
         haltingAlign(8);
         bind(&done);
     }
-
-    inline void canonicalizeDouble(FloatRegister reg);
-
-    inline void canonicalizeFloat(FloatRegister reg);
 
     template<typename T>
     void loadFromTypedArray(Scalar::Type arrayType, const T& src, AnyRegister dest, Register temp, Label* fail,
@@ -1336,7 +1567,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     Register extractObject(const TypedOrValueRegister& reg, Register scratch) {
         if (reg.hasValue())
             return extractObject(reg.valueReg(), scratch);
-        MOZ_ASSERT(reg.type() == MIRType_Object);
+        MOZ_ASSERT(reg.type() == MIRType::Object);
         return reg.typedReg().gpr();
     }
 
@@ -1377,6 +1608,7 @@ class MacroAssembler : public MacroAssemblerSpecific
                                     const Value& v);
     void fillSlotsWithUndefined(Address addr, Register temp, uint32_t start, uint32_t end);
     void fillSlotsWithUninitialized(Address addr, Register temp, uint32_t start, uint32_t end);
+
     void initGCSlots(Register obj, Register temp, NativeObject* templateObj, bool initContents);
 
   public:
@@ -1388,6 +1620,9 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void initGCThing(Register obj, Register temp, JSObject* templateObj,
                      bool initContents = true, bool convertDoubleElements = false);
+    void initTypedArraySlots(Register obj, Register temp, Register lengthReg,
+                             LiveRegisterSet liveRegs, Label* fail,
+                             TypedArrayObject* templateObj);
 
     void initUnboxedObjectContents(Register object, UnboxedPlainObject* templateObject);
 
@@ -1527,7 +1762,7 @@ class MacroAssembler : public MacroAssemblerSpecific
 
 #define DISPATCH_FLOATING_POINT_OP(method, type, arg1d, arg1f, arg2)    \
     MOZ_ASSERT(IsFloatingPointType(type));                              \
-    if (type == MIRType_Double)                                         \
+    if (type == MIRType::Double)                                        \
         method##Double(arg1d, arg2);                                    \
     else                                                                \
         method##Float32(arg1f, arg2);                                   \
@@ -1549,43 +1784,50 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void convertValueToFloatingPoint(ValueOperand value, FloatRegister output, Label* fail,
                                      MIRType outputType);
-    bool convertValueToFloatingPoint(JSContext* cx, const Value& v, FloatRegister output,
-                                     Label* fail, MIRType outputType);
-    bool convertConstantOrRegisterToFloatingPoint(JSContext* cx, ConstantOrRegister src,
+    MOZ_MUST_USE bool convertValueToFloatingPoint(JSContext* cx, const Value& v,
                                                   FloatRegister output, Label* fail,
                                                   MIRType outputType);
+    MOZ_MUST_USE bool convertConstantOrRegisterToFloatingPoint(JSContext* cx,
+                                                               ConstantOrRegister src,
+                                                               FloatRegister output, Label* fail,
+                                                               MIRType outputType);
     void convertTypedOrValueToFloatingPoint(TypedOrValueRegister src, FloatRegister output,
                                             Label* fail, MIRType outputType);
 
+    void outOfLineTruncateSlow(FloatRegister src, Register dest, bool widenFloatToDouble,
+                               bool compilingAsmJS);
+
     void convertInt32ValueToDouble(const Address& address, Register scratch, Label* done);
     void convertValueToDouble(ValueOperand value, FloatRegister output, Label* fail) {
-        convertValueToFloatingPoint(value, output, fail, MIRType_Double);
+        convertValueToFloatingPoint(value, output, fail, MIRType::Double);
     }
-    bool convertValueToDouble(JSContext* cx, const Value& v, FloatRegister output, Label* fail) {
-        return convertValueToFloatingPoint(cx, v, output, fail, MIRType_Double);
+    MOZ_MUST_USE bool convertValueToDouble(JSContext* cx, const Value& v, FloatRegister output,
+                                           Label* fail) {
+        return convertValueToFloatingPoint(cx, v, output, fail, MIRType::Double);
     }
-    bool convertConstantOrRegisterToDouble(JSContext* cx, ConstantOrRegister src,
-                                           FloatRegister output, Label* fail)
+    MOZ_MUST_USE bool convertConstantOrRegisterToDouble(JSContext* cx, ConstantOrRegister src,
+                                                        FloatRegister output, Label* fail)
     {
-        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType_Double);
+        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType::Double);
     }
     void convertTypedOrValueToDouble(TypedOrValueRegister src, FloatRegister output, Label* fail) {
-        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType_Double);
+        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType::Double);
     }
 
     void convertValueToFloat(ValueOperand value, FloatRegister output, Label* fail) {
-        convertValueToFloatingPoint(value, output, fail, MIRType_Float32);
+        convertValueToFloatingPoint(value, output, fail, MIRType::Float32);
     }
-    bool convertValueToFloat(JSContext* cx, const Value& v, FloatRegister output, Label* fail) {
-        return convertValueToFloatingPoint(cx, v, output, fail, MIRType_Float32);
+    MOZ_MUST_USE bool convertValueToFloat(JSContext* cx, const Value& v, FloatRegister output,
+                                          Label* fail) {
+        return convertValueToFloatingPoint(cx, v, output, fail, MIRType::Float32);
     }
-    bool convertConstantOrRegisterToFloat(JSContext* cx, ConstantOrRegister src,
-                                          FloatRegister output, Label* fail)
+    MOZ_MUST_USE bool convertConstantOrRegisterToFloat(JSContext* cx, ConstantOrRegister src,
+                                                       FloatRegister output, Label* fail)
     {
-        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType_Float32);
+        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType::Float32);
     }
     void convertTypedOrValueToFloat(TypedOrValueRegister src, FloatRegister output, Label* fail) {
-        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType_Float32);
+        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType::Float32);
     }
 
     enum IntConversionBehavior {
@@ -1623,10 +1865,11 @@ class MacroAssembler : public MacroAssemblerSpecific
         convertValueToInt(value, nullptr, nullptr, nullptr, nullptr, InvalidReg, temp, output,
                           fail, behavior);
     }
-    bool convertValueToInt(JSContext* cx, const Value& v, Register output, Label* fail,
-                           IntConversionBehavior behavior);
-    bool convertConstantOrRegisterToInt(JSContext* cx, ConstantOrRegister src, FloatRegister temp,
-                                        Register output, Label* fail, IntConversionBehavior behavior);
+    MOZ_MUST_USE bool convertValueToInt(JSContext* cx, const Value& v, Register output, Label* fail,
+                                        IntConversionBehavior behavior);
+    MOZ_MUST_USE bool convertConstantOrRegisterToInt(JSContext* cx, ConstantOrRegister src,
+                                                     FloatRegister temp, Register output,
+                                                     Label* fail, IntConversionBehavior behavior);
     void convertTypedOrValueToInt(TypedOrValueRegister src, FloatRegister temp, Register output,
                                   Label* fail, IntConversionBehavior behavior);
 
@@ -1650,15 +1893,16 @@ class MacroAssembler : public MacroAssemblerSpecific
                           : IntConversion_Normal,
                           conversion);
     }
-    bool convertValueToInt32(JSContext* cx, const Value& v, Register output, Label* fail,
-                             bool negativeZeroCheck)
+    MOZ_MUST_USE bool convertValueToInt32(JSContext* cx, const Value& v, Register output,
+                                          Label* fail, bool negativeZeroCheck)
     {
         return convertValueToInt(cx, v, output, fail, negativeZeroCheck
                                  ? IntConversion_NegativeZeroCheck
                                  : IntConversion_Normal);
     }
-    bool convertConstantOrRegisterToInt32(JSContext* cx, ConstantOrRegister src, FloatRegister temp,
-                                          Register output, Label* fail, bool negativeZeroCheck)
+    MOZ_MUST_USE bool convertConstantOrRegisterToInt32(JSContext* cx, ConstantOrRegister src,
+                                                       FloatRegister temp, Register output,
+                                                       Label* fail, bool negativeZeroCheck)
     {
         return convertConstantOrRegisterToInt(cx, src, temp, output, fail, negativeZeroCheck
                                               ? IntConversion_NegativeZeroCheck
@@ -1692,11 +1936,13 @@ class MacroAssembler : public MacroAssemblerSpecific
         convertValueToInt(value, input, nullptr, nullptr, nullptr, InvalidReg, temp, output, fail,
                           IntConversion_Truncate);
     }
-    bool truncateValueToInt32(JSContext* cx, const Value& v, Register output, Label* fail) {
+    MOZ_MUST_USE bool truncateValueToInt32(JSContext* cx, const Value& v, Register output,
+                                           Label* fail) {
         return convertValueToInt(cx, v, output, fail, IntConversion_Truncate);
     }
-    bool truncateConstantOrRegisterToInt32(JSContext* cx, ConstantOrRegister src, FloatRegister temp,
-                                           Register output, Label* fail)
+    MOZ_MUST_USE bool truncateConstantOrRegisterToInt32(JSContext* cx, ConstantOrRegister src,
+                                                        FloatRegister temp, Register output,
+                                                        Label* fail)
     {
         return convertConstantOrRegisterToInt(cx, src, temp, output, fail, IntConversion_Truncate);
     }
@@ -1723,11 +1969,13 @@ class MacroAssembler : public MacroAssemblerSpecific
         convertValueToInt(value, input, nullptr, nullptr, nullptr, InvalidReg, temp, output, fail,
                           IntConversion_ClampToUint8);
     }
-    bool clampValueToUint8(JSContext* cx, const Value& v, Register output, Label* fail) {
+    MOZ_MUST_USE bool clampValueToUint8(JSContext* cx, const Value& v, Register output,
+                                        Label* fail) {
         return convertValueToInt(cx, v, output, fail, IntConversion_ClampToUint8);
     }
-    bool clampConstantOrRegisterToUint8(JSContext* cx, ConstantOrRegister src, FloatRegister temp,
-                                        Register output, Label* fail)
+    MOZ_MUST_USE bool clampConstantOrRegisterToUint8(JSContext* cx, ConstantOrRegister src,
+                                                     FloatRegister temp, Register output,
+                                                     Label* fail)
     {
         return convertConstantOrRegisterToInt(cx, src, temp, output, fail,
                                               IntConversion_ClampToUint8);
@@ -1758,7 +2006,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void restoreFrameAlignmentForICArguments(AfterICSaveLive& aic) PER_ARCH;
 
     AfterICSaveLive icSaveLive(LiveRegisterSet& liveRegs);
-    bool icBuildOOLFakeExitFrame(void* fakeReturnAddr, AfterICSaveLive& aic);
+    MOZ_MUST_USE bool icBuildOOLFakeExitFrame(void* fakeReturnAddr, AfterICSaveLive& aic);
     void icRestoreLive(LiveRegisterSet& liveRegs, AfterICSaveLive& aic);
 
     // Align the stack pointer based on the number of arguments which are pushed

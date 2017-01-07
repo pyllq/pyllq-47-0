@@ -50,7 +50,8 @@ CSSPseudoElement::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 }
 
 void
-CSSPseudoElement::GetAnimations(nsTArray<RefPtr<Animation>>& aRetVal)
+CSSPseudoElement::GetAnimations(const AnimationFilter& filter,
+                                nsTArray<RefPtr<Animation>>& aRetVal)
 {
   nsIDocument* doc = mParentElement->GetComposedDoc();
   if (doc) {
@@ -64,13 +65,13 @@ CSSPseudoElement::GetAnimations(nsTArray<RefPtr<Animation>>& aRetVal)
 already_AddRefed<Animation>
 CSSPseudoElement::Animate(
     JSContext* aContext,
-    JS::Handle<JSObject*> aFrames,
+    JS::Handle<JSObject*> aKeyframes,
     const UnrestrictedDoubleOrKeyframeAnimationOptions& aOptions,
     ErrorResult& aError)
 {
-  // Bug 1241784: Implement this API.
-  NS_NOTREACHED("CSSPseudoElement::Animate() is not implemented yet.");
-  return nullptr;
+  Nullable<ElementOrCSSPseudoElement> target;
+  target.SetValue().SetAsCSSPseudoElement() = this;
+  return Element::Animate(target, aContext, aKeyframes, aOptions, aError);
 }
 
 /* static */ already_AddRefed<CSSPseudoElement>

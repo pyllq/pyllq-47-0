@@ -30,12 +30,12 @@ const TEST_DATA = [
   },
 ];
 
-add_task(function*() {
+add_task(function* () {
   let { inspector } = yield openInspectorForURL(TEST_URL);
 
   let markupContainer = yield getContainerForSelector("#events", inspector);
   let evHolder = markupContainer.elt.querySelector(".markupview-events");
-  let tooltip = inspector.markup.tooltip;
+  let tooltip = inspector.markup.eventDetailsTooltip;
 
   info("Clicking to open event tooltip.");
   EventUtils.synthesizeMouseAtCenter(evHolder, {},
@@ -43,7 +43,7 @@ add_task(function*() {
   yield tooltip.once("shown");
   info("EventTooltip visible.");
 
-  let container = tooltip.content;
+  let container = tooltip.panel;
   let containerRect = container.getBoundingClientRect();
   let headers = container.querySelectorAll(".event-header");
 

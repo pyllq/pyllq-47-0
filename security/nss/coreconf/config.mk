@@ -162,6 +162,10 @@ ifdef BUILD_LIBPKIX_TESTS
 DEFINES += -DBUILD_LIBPKIX_TESTS
 endif
 
+ifdef NSS_DISABLE_LIBPKIX
+DEFINES += -DNSS_DISABLE_LIBPKIX
+endif
+
 ifdef NSS_DISABLE_DBM
 DEFINES += -DNSS_DISABLE_DBM
 endif
@@ -172,6 +176,17 @@ endif
 
 ifdef NSS_PKIX_NO_LDAP
 DEFINES += -DNSS_PKIX_NO_LDAP
+endif
+
+# FIPS support requires startup tests to be executed at load time of shared modules.
+# For performance reasons, these tests are disabled by default.
+# When compiling binaries that must support FIPS mode, 
+# you should define NSS_FORCE_FIPS
+#
+# NSS_NO_INIT_SUPPORT is always defined on platforms that don't support
+# executing the startup tests at library load time.
+ifndef NSS_FORCE_FIPS
+DEFINES += -DNSS_NO_INIT_SUPPORT
 endif
 
 # Avoid building object leak test code for optimized library
@@ -197,6 +212,11 @@ DEFINES += -DSSL_DISABLE_DEPRECATED_CIPHER_SUITE_NAMES
 # exported symbols, which causes problem when NSS is built as part of Mozilla.
 # So we add a NSS_SSL_ENABLE_ZLIB variable to allow Mozilla to turn this off.
 NSS_SSL_ENABLE_ZLIB = 1
+
+# Allow disabling PKCS11 bypass.
+ifdef NSS_NO_PKCS11_BYPASS
+DEFINES += -DNO_PKCS11_BYPASS
+endif
 
 # Allow build-time configuration of TLS 1.3 (Experimental)
 ifdef NSS_ENABLE_TLS_1_3

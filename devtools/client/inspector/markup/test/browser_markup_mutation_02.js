@@ -7,7 +7,9 @@
 // Test that markup-containers in the markup-view do flash when their
 // corresponding DOM nodes mutate
 
-const {clearTimeout} = require("sdk/timers");
+// Have to use the same timer functions used by the inspector.
+const {clearTimeout} = Cu.import("resource://gre/modules/Timer.jsm", {});
+
 const TEST_URL = URL_ROOT + "doc_markup_flashing.html";
 
 // The test data contains a list of mutations to test.
@@ -21,7 +23,7 @@ const TEST_URL = URL_ROOT + "doc_markup_flashing.html";
 //   If missing, the rootNode (".list") will be expected to flash
 const TEST_DATA = [{
   desc: "Adding a new node should flash the new node",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.eval(`
       let newLi = content.document.createElement("LI");
       newLi.textContent = "new list item";
@@ -31,7 +33,7 @@ const TEST_DATA = [{
   flashedNode: ".list li:nth-child(3)"
 }, {
   desc: "Removing a node should flash its parent",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.eval(`
       let root = content.document.querySelector(".list");
       root.removeChild(root.lastElementChild);
@@ -39,7 +41,7 @@ const TEST_DATA = [{
   }
 }, {
   desc: "Re-appending an existing node should only flash this node",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.eval(`
       let root = content.document.querySelector(".list");
       root.appendChild(root.firstElementChild);
@@ -49,26 +51,26 @@ const TEST_DATA = [{
 }, {
   desc: "Adding an attribute should flash the attribute",
   attribute: "test-name",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.setAttribute(".list", "test-name", "value-" + Date.now());
   }
 }, {
   desc: "Adding an attribute with css reserved characters should flash the " +
         "attribute",
   attribute: "one:two",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.setAttribute(".list", "one:two", "value-" + Date.now());
   }
 }, {
   desc: "Editing an attribute should flash the attribute",
   attribute: "class",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.setAttribute(".list", "class", "list value-" + Date.now());
   }
 }, {
   desc: "Multiple changes to an attribute should flash the attribute",
   attribute: "class",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.eval(`
       let root = content.document.querySelector(".list");
       root.removeAttribute("class");
@@ -81,7 +83,7 @@ const TEST_DATA = [{
   }
 }, {
   desc: "Removing an attribute should flash the node",
-  mutate: function*(testActor) {
+  mutate: function* (testActor) {
     yield testActor.eval(`
       let root = content.document.querySelector(".list");
       root.removeAttribute("class");
@@ -89,7 +91,7 @@ const TEST_DATA = [{
   }
 }];
 
-add_task(function*() {
+add_task(function* () {
   let {inspector, testActor} = yield openInspectorForURL(TEST_URL);
 
   // Make sure mutated nodes flash for a very long time so we can more easily

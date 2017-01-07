@@ -199,7 +199,7 @@ public class FaviconView extends ImageView {
      */
     private void updateImageInternal(Bitmap bitmap, String key, boolean allowScaling) {
         if (bitmap == null) {
-            showDefaultFavicon();
+            showDefaultFavicon(null);
             return;
         }
 
@@ -216,7 +216,7 @@ public class FaviconView extends ImageView {
         formatImage();
     }
 
-    public void showDefaultFavicon() {
+    public void showDefaultFavicon(final String pageURL) {
         // We handle the default favicon as any other favicon to avoid the complications of special
         // casing it. This means that the icon can be scaled both up and down, and the dominant
         // color box can used if it is enabled in XML attrs.

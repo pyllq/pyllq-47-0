@@ -4,13 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "vm/Runtime-inl.h"
-
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ThreadLocal.h"
+#include "mozilla/unused.h"
 
 #if defined(XP_DARWIN)
 #include <mach/mach.h>
@@ -40,8 +39,11 @@
 #include "jswrapper.h"
 
 #include "asmjs/WasmSignalHandlers.h"
+#include "builtin/Promise.h"
+#include "gc/GCInternals.h"
 #include "jit/arm/Simulator-arm.h"
 #include "jit/arm64/vixl/Simulator-vixl.h"
+#include "jit/IonBuilder.h"
 #include "jit/JitCompartment.h"
 #include "jit/mips32/Simulator-mips32.h"
 #include "jit/mips64/Simulator-mips64.h"
@@ -128,17 +130,19 @@ ReturnZeroSize(const void* p)
 JSRuntime::JSRuntime(JSRuntime* parentRuntime)
   : mainThread(this),
     jitTop(nullptr),
-    jitJSContext(nullptr),
     jitActivation(nullptr),
     jitStackLimit_(0xbad),
     jitStackLimitNoInterrupt_(0xbad),
+#ifdef DEBUG
+    ionBailAfter_(0),
+#endif
     activation_(nullptr),
     profilingActivation_(nullptr),
     profilerSampleBufferGen_(0),
     profilerSampleBufferLapCount_(1),
     wasmActivationStack_(nullptr),
     asyncStackForNewActivations(this),
-    asyncCauseForNewActivations(this),
+    asyncCauseForNewActivations(nullptr),
     asyncCallIsExplicit(false),
     entryMonitor(nullptr),
     noExecuteDebuggerTop(nullptr),
@@ -151,9 +155,15 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     handlingSegFault(false),
     handlingJitInterrupt_(false),
     interruptCallback(nullptr),
-    exclusiveAccessLock(nullptr),
+    getIncumbentGlobalCallback(nullptr),
+    enqueuePromiseJobCallback(nullptr),
+    enqueuePromiseJobCallbackData(nullptr),
+    promiseRejectionTrackerCallback(nullptr),
+    promiseRejectionTrackerCallbackData(nullptr),
+#ifdef DEBUG
     exclusiveAccessOwner(nullptr),
     mainThreadHasExclusiveAccess(false),
+#endif
     numExclusiveThreads(0),
     numCompartments(0),
     localeCallbacks(nullptr),
@@ -165,7 +175,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     jitRuntime_(nullptr),
     selfHostingGlobal_(nullptr),
     nativeStackBase(GetNativeStackBase()),
-    cxCallback(nullptr),
     destroyCompartmentCallback(nullptr),
     sizeOfIncludingThisCompartmentCallback(nullptr),
     destroyZoneCallback(nullptr),
@@ -176,7 +185,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     requestDepth(0),
 #ifdef DEBUG
     checkRequestDepth(0),
-    activeContext(nullptr),
 #endif
     gc(thisFromCtor()),
     gcInitialized(false),
@@ -193,26 +201,24 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     profilingScripts(false),
     suppressProfilerSampling(false),
     hadOutOfMemory(false),
-    handlingInitFailure(false),
-    haveCreatedContext(false),
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+    runningOOMTest(false),
+#endif
     allowRelazificationForTesting(false),
-    data(nullptr),
-    signalHandlersInstalled_(false),
-    canUseSignalHandlers_(false),
     defaultFreeOp_(thisFromCtor()),
     debuggerMutations(0),
     securityCallbacks(&NullSecurityCallbacks),
     DOMcallbacks(nullptr),
     destroyPrincipals(nullptr),
     readPrincipals(nullptr),
-    errorReporter(nullptr),
+    warningReporter(nullptr),
+    buildIdOp(nullptr),
     propertyRemovals(0),
 #if !EXPOSE_INTL_API
     thousandsSeparator(0),
     decimalSeparator(0),
     numGrouping(0),
 #endif
-    mathCache_(nullptr),
     activeCompilations_(0),
     keepAtoms_(0),
     trustedPrincipals_(nullptr),
@@ -226,6 +232,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     wrapObjectCallbacks(&DefaultWrapObjectCallbacks),
     preserveWrapperCallback(nullptr),
     jitSupportsFloatingPoint(false),
+    jitSupportsUnalignedAccesses(false),
     jitSupportsSimd(false),
     ionPcScriptCache(nullptr),
     scriptEnvironmentPreparer(nullptr),
@@ -241,7 +248,8 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     oomCallback(nullptr),
     debuggerMallocSizeOf(ReturnZeroSize),
     lastAnimationTime(0),
-    performanceMonitoring(thisFromCtor())
+    performanceMonitoring(thisFromCtor()),
+    ionLazyLinkListSize_(0)
 {
     setGCStoreBufferPtr(&gc.storeBuffer);
 
@@ -253,14 +261,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     PodArrayZero(nativeStackQuota);
     PodZero(&asmJSCacheOps);
     lcovOutput.init();
-}
-
-static bool
-SignalBasedTriggersDisabled()
-{
-  // Don't bother trying to cache the getenv lookup; this should be called
-  // infrequently.
-  return !!getenv("JS_DISABLE_SLOW_SCRIPT_SIGNALS") || !!getenv("JS_NO_SIGNALS");
 }
 
 bool
@@ -282,10 +282,6 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     static_assert(sizeof(pthread_t) <= sizeof(ownerThreadNative_), "need bigger field");
     ownerThreadNative_ = (size_t)pthread_self();
 #endif
-
-    exclusiveAccessLock = PR_NewLock();
-    if (!exclusiveAccessLock)
-        return false;
 
     if (!mainThread.init())
         return false;
@@ -316,6 +312,7 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
         return false;
 
     atomsCompartment->setIsSystem(true);
+    atomsCompartment->setIsAtomsCompartment();
 
     atomsZone.forget();
     this->atomsCompartment_ = atomsCompartment.forget();
@@ -324,12 +321,6 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
         return false;
 
     if (!scriptDataTable_.init())
-        return false;
-
-    if (!evalCache.init())
-        return false;
-
-    if (!compressedSourceSet.init())
         return false;
 
     /* The garbage collector depends on everything before this point being initialized. */
@@ -347,10 +338,11 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
 #endif
 
     jitSupportsFloatingPoint = js::jit::JitSupportsFloatingPoint();
+    jitSupportsUnalignedAccesses = js::jit::JitSupportsUnalignedAccesses();
     jitSupportsSimd = js::jit::JitSupportsSimd();
 
-    signalHandlersInstalled_ = wasm::EnsureSignalHandlersInstalled(this);
-    canUseSignalHandlers_ = signalHandlersInstalled_ && !SignalBasedTriggersDisabled();
+    if (!wasm::EnsureSignalHandlers(this))
+        return false;
 
     if (!spsProfiler.init())
         return false;
@@ -358,10 +350,17 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     if (!fx.initInstance())
         return false;
 
+    if (!parentRuntime) {
+        sharedImmutableStrings_ = js::SharedImmutableStringsCache::Create();
+        if (!sharedImmutableStrings_)
+            return false;
+    }
+
     return true;
 }
 
-JSRuntime::~JSRuntime()
+void
+JSRuntime::destroyRuntime()
 {
     MOZ_ASSERT(!isHeapBusy());
     MOZ_ASSERT(childRuntimeCount == 0);
@@ -369,6 +368,14 @@ JSRuntime::~JSRuntime()
     fx.destroyInstance();
 
     if (gcInitialized) {
+        /*
+         * Finish any in-progress GCs first. This ensures the parseWaitingOnGC
+         * list is empty in CancelOffThreadParses.
+         */
+        JSContext* cx = contextFromMainThread();
+        if (JS::IsIncrementalGCInProgress(cx))
+            FinishGC(cx);
+
         /* Free source hook early, as its destructor may want to delete roots. */
         sourceHook = nullptr;
 
@@ -413,9 +420,12 @@ JSRuntime::~JSRuntime()
         /* Set the profiler sampler buffer generation to invalid. */
         profilerSampleBufferGen_ = UINT32_MAX;
 
-        JS::PrepareForFullGC(this);
+        JS::PrepareForFullGC(contextFromMainThread());
         gc.gc(GC_NORMAL, JS::gcreason::DESTROY_RUNTIME);
     }
+
+    MOZ_ASSERT(ionLazyLinkListSize_ == 0);
+    MOZ_ASSERT(ionLazyLinkList_.isEmpty());
 
     /*
      * Clear the self-hosted global and delete self-hosted classes *after*
@@ -424,34 +434,15 @@ JSRuntime::~JSRuntime()
     finishSelfHosting();
 
     MOZ_ASSERT(!exclusiveAccessOwner);
-    if (exclusiveAccessLock)
-        PR_DestroyLock(exclusiveAccessLock);
 
-    // Avoid bogus asserts during teardown.
     MOZ_ASSERT(!numExclusiveThreads);
-    mainThreadHasExclusiveAccess = true;
+    AutoLockForExclusiveAccess lock(this);
 
     /*
      * Even though all objects in the compartment are dead, we may have keep
      * some filenames around because of gcKeepAtoms.
      */
-    FreeScriptData(this);
-
-#ifdef DEBUG
-    /* Don't hurt everyone in leaky ol' Mozilla with a fatal MOZ_ASSERT! */
-    if (hasContexts()) {
-        unsigned cxcount = 0;
-        for (ContextIter acx(this); !acx.done(); acx.next()) {
-            fprintf(stderr,
-"JS API usage error: found live context at %p\n",
-                    (void*) acx.get());
-            cxcount++;
-        }
-        fprintf(stderr,
-"JS API usage error: %u context%s left in runtime upon JS_DestroyRuntime.\n",
-                cxcount, (cxcount == 1) ? "" : "s");
-    }
-#endif
+    FreeScriptData(this, lock);
 
 #if !EXPOSE_INTL_API
     FinishRuntimeNumberState(this);
@@ -461,7 +452,6 @@ JSRuntime::~JSRuntime()
     atomsCompartment_ = nullptr;
 
     js_free(defaultLocale);
-    js_delete(mathCache_);
     js_delete(jitRuntime_);
 
     js_delete(ionPcScriptCache);
@@ -498,29 +488,18 @@ JSRuntime::setTelemetryCallback(JSRuntime* rt, JSAccumulateTelemetryDataCallback
 }
 
 void
-NewObjectCache::clearNurseryObjects(JSRuntime* rt)
-{
-    for (unsigned i = 0; i < mozilla::ArrayLength(entries); ++i) {
-        Entry& e = entries[i];
-        NativeObject* obj = reinterpret_cast<NativeObject*>(&e.templateObject);
-        if (IsInsideNursery(e.key) ||
-            rt->gc.nursery.isInside(obj->slots_) ||
-            rt->gc.nursery.isInside(obj->elements_))
-        {
-            PodZero(&e);
-        }
-    }
-}
-
-void
 JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::RuntimeSizes* rtSizes)
 {
     // Several tables in the runtime enumerated below can be used off thread.
     AutoLockForExclusiveAccess lock(this);
 
-    rtSizes->object += mallocSizeOf(this);
+    // For now, measure the size of the derived class (JSContext).
+    // TODO (bug 1281529): make memory reporting reflect the new
+    // JSContext/JSRuntime world better.
+    JSContext* cx = unsafeContextFromAnyThread();
+    rtSizes->object += mallocSizeOf(cx);
 
-    rtSizes->atomsTable += atoms().sizeOfIncludingThis(mallocSizeOf);
+    rtSizes->atomsTable += atoms(lock).sizeOfIncludingThis(mallocSizeOf);
 
     if (!parentRuntime) {
         rtSizes->atomsTable += mallocSizeOf(staticStrings);
@@ -528,21 +507,26 @@ JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::Runtim
         rtSizes->atomsTable += permanentAtoms->sizeOfIncludingThis(mallocSizeOf);
     }
 
-    for (ContextIter acx(this); !acx.done(); acx.next())
-        rtSizes->contexts += acx->sizeOfIncludingThis(mallocSizeOf);
+    rtSizes->contexts += cx->sizeOfExcludingThis(mallocSizeOf);
 
     rtSizes->temporary += tempLifoAlloc.sizeOfExcludingThis(mallocSizeOf);
 
     rtSizes->interpreterStack += interpreterStack_.sizeOfExcludingThis(mallocSizeOf);
 
-    rtSizes->mathCache += mathCache_ ? mathCache_->sizeOfIncludingThis(mallocSizeOf) : 0;
+    if (MathCache* cache = cx->caches.maybeGetMathCache())
+        rtSizes->mathCache += cache->sizeOfIncludingThis(mallocSizeOf);
 
-    rtSizes->uncompressedSourceCache += uncompressedSourceCache.sizeOfExcludingThis(mallocSizeOf);
+    if (sharedImmutableStrings_) {
+        rtSizes->sharedImmutableStringsCache +=
+            sharedImmutableStrings_->sizeOfExcludingThis(mallocSizeOf);
+    }
 
-    rtSizes->compressedSourceSet += compressedSourceSet.sizeOfExcludingThis(mallocSizeOf);
+    rtSizes->uncompressedSourceCache +=
+        cx->caches.uncompressedSourceCache.sizeOfExcludingThis(mallocSizeOf);
 
-    rtSizes->scriptData += scriptDataTable().sizeOfExcludingThis(mallocSizeOf);
-    for (ScriptDataTable::Range r = scriptDataTable().all(); !r.empty(); r.popFront())
+
+    rtSizes->scriptData += scriptDataTable(lock).sizeOfExcludingThis(mallocSizeOf);
+    for (ScriptDataTable::Range r = scriptDataTable(lock).all(); !r.empty(); r.popFront())
         rtSizes->scriptData += mallocSizeOf(r.front());
 
     if (jitRuntime_) {
@@ -580,7 +564,10 @@ InvokeInterruptCallback(JSContext* cx)
         // invoke the onStep handler.
         if (cx->compartment()->isDebuggee()) {
             ScriptFrameIter iter(cx);
-            if (!iter.done() && iter.script()->stepModeEnabled()) {
+            if (!iter.done() &&
+                cx->compartment() == iter.compartment() &&
+                iter.script()->stepModeEnabled())
+            {
                 RootedValue rval(cx);
                 switch (Debugger::onSingleStep(cx, &rval)) {
                   case JSTRAP_ERROR:
@@ -612,7 +599,7 @@ InvokeInterruptCallback(JSContext* cx)
     if (flat && stableChars.initTwoByte(cx, flat))
         chars = stableChars.twoByteRange().start().get();
     else
-        chars = MOZ_UTF16("(stack not available)");
+        chars = u"(stack not available)";
     JS_ReportErrorFlagsAndNumberUC(cx, JSREPORT_WARNING, GetErrorMessage, nullptr,
                                    JSMSG_TERMINATED, chars);
 
@@ -650,7 +637,7 @@ JSRuntime::requestInterrupt(InterruptMode mode)
         // collection among others), take additional steps to
         // interrupt corner cases where the above fields are not
         // regularly polled.  Wake both ilooping JIT code and
-        // futexWait.
+        // Atomics.wait().
         fx.lock();
         if (fx.isWaiting())
             fx.wake(FutexRuntime::WakeForJSInterrupt);
@@ -669,22 +656,6 @@ JSRuntime::handleInterrupt(JSContext* cx)
         return InvokeInterruptCallback(cx);
     }
     return true;
-}
-
-MathCache*
-JSRuntime::createMathCache(JSContext* cx)
-{
-    MOZ_ASSERT(!mathCache_);
-    MOZ_ASSERT(cx->runtime() == this);
-
-    MathCache* newMathCache = js_new<MathCache>();
-    if (!newMathCache) {
-        ReportOutOfMemory(cx);
-        return nullptr;
-    }
-
-    mathCache_ = newMathCache;
-    return mathCache_;
 }
 
 bool
@@ -747,7 +718,7 @@ JSRuntime::triggerActivityCallback(bool active)
      * suppression serves to inform the exact rooting hazard analysis of this
      * property and ensures that it remains true in the future.
      */
-    AutoSuppressGC suppress(this);
+    AutoSuppressGC suppress(contextFromMainThread());
 
     activityCallback(activityCallbackArg, active);
 }
@@ -759,6 +730,61 @@ FreeOp::~FreeOp()
 
     if (!jitPoisonRanges.empty())
         jit::ExecutableAllocator::poisonCode(runtime(), jitPoisonRanges);
+}
+
+JSObject*
+JSRuntime::getIncumbentGlobal(JSContext* cx)
+{
+    MOZ_ASSERT(cx->runtime()->getIncumbentGlobalCallback,
+               "Must set a callback using JS_SetGetIncumbentGlobalCallback before using Promises");
+
+    return cx->runtime()->getIncumbentGlobalCallback(cx);
+}
+
+bool
+JSRuntime::enqueuePromiseJob(JSContext* cx, HandleFunction job, HandleObject promise,
+                             HandleObject incumbentGlobal)
+{
+    MOZ_ASSERT(cx->runtime()->enqueuePromiseJobCallback,
+               "Must set a callback using JS_SetEnqeueuPromiseJobCallback before using Promises");
+    MOZ_ASSERT_IF(incumbentGlobal, !IsWrapper(incumbentGlobal) && !IsWindowProxy(incumbentGlobal));
+
+    void* data = cx->runtime()->enqueuePromiseJobCallbackData;
+    RootedObject allocationSite(cx);
+    if (promise) {
+        RootedObject unwrappedPromise(cx, promise);
+        // While the job object is guaranteed to be unwrapped, the promise
+        // might be wrapped. See the comments in
+        // intrinsic_EnqueuePromiseReactionJob for details.
+        if (IsWrapper(promise))
+            unwrappedPromise = UncheckedUnwrap(promise);
+        allocationSite = JS::GetPromiseAllocationSite(unwrappedPromise);
+    }
+    return cx->runtime()->enqueuePromiseJobCallback(cx, job, allocationSite, incumbentGlobal, data);
+}
+
+void
+JSRuntime::addUnhandledRejectedPromise(JSContext* cx, js::HandleObject promise)
+{
+    MOZ_ASSERT(promise->is<PromiseObject>());
+    if (!cx->runtime()->promiseRejectionTrackerCallback)
+        return;
+
+    void* data = cx->runtime()->promiseRejectionTrackerCallbackData;
+    cx->runtime()->promiseRejectionTrackerCallback(cx, promise,
+                                                   PromiseRejectionHandlingState::Unhandled, data);
+}
+
+void
+JSRuntime::removeUnhandledRejectedPromise(JSContext* cx, js::HandleObject promise)
+{
+    MOZ_ASSERT(promise->is<PromiseObject>());
+    if (!cx->runtime()->promiseRejectionTrackerCallback)
+        return;
+
+    void* data = cx->runtime()->promiseRejectionTrackerCallbackData;
+    cx->runtime()->promiseRejectionTrackerCallback(cx, promise,
+                                                   PromiseRejectionHandlingState::Handled, data);
 }
 
 void
@@ -824,7 +850,8 @@ bool
 JSRuntime::activeGCInAtomsZone()
 {
     Zone* zone = atomsCompartment_->zone();
-    return zone->needsIncrementalBarrier() || zone->isGCScheduled() || zone->wasGCStarted();
+    return (zone->needsIncrementalBarrier() && !gc.isVerifyPreBarriersEnabled()) ||
+           zone->wasGCStarted();
 }
 
 void
@@ -909,4 +936,40 @@ JS::IsProfilingEnabledForRuntime(JSRuntime* runtime)
 {
     MOZ_ASSERT(runtime);
     return runtime->spsProfiler.enabled();
+}
+
+JSRuntime::IonBuilderList&
+JSRuntime::ionLazyLinkList()
+{
+    MOZ_ASSERT(TlsPerThreadData.get()->runtimeFromMainThread(),
+            "Should only be mutated by the main thread.");
+    return ionLazyLinkList_;
+}
+
+void
+JSRuntime::ionLazyLinkListRemove(jit::IonBuilder* builder)
+{
+    MOZ_ASSERT(TlsPerThreadData.get()->runtimeFromMainThread(),
+            "Should only be mutated by the main thread.");
+    MOZ_ASSERT(ionLazyLinkListSize_ > 0);
+
+    builder->removeFrom(ionLazyLinkList());
+    ionLazyLinkListSize_--;
+
+    MOZ_ASSERT(ionLazyLinkList().isEmpty() == (ionLazyLinkListSize_ == 0));
+}
+
+void
+JSRuntime::ionLazyLinkListAdd(jit::IonBuilder* builder)
+{
+    MOZ_ASSERT(TlsPerThreadData.get()->runtimeFromMainThread(),
+            "Should only be mutated by the main thread.");
+    ionLazyLinkList().insertFront(builder);
+    ionLazyLinkListSize_++;
+}
+
+JSContext*
+PerThreadData::contextFromMainThread()
+{
+    return runtime_->contextFromMainThread();
 }

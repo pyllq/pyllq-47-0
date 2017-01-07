@@ -1,14 +1,21 @@
-FROM          node:4.2
-MAINTAINER    Dave Townsend <dtownsend@oxymoronical.com>
+FROM          ubuntu:16.04
+MAINTAINER    Andrew Halberstadt <ahalberstadt@mozilla.com>
 
 RUN useradd -d /home/worker -s /bin/bash -m worker
 WORKDIR /home/worker
 
-# install necessary npm packages
-RUN           npm install -g taskcluster-vcs@2.3.12
-RUN           npm install -g eslint@1.10.3
-RUN           npm install -g eslint-plugin-html@1.1.0
-RUN           npm install -g eslint-plugin-react@3.13.1
+RUN mkdir /build
+# %include testing/docker/decision/tooltool.py
+ADD topsrcdir/testing/docker/decision/tooltool.py /build/tooltool.py
+
+# %include testing/docker/recipes/install-mercurial.sh
+ADD topsrcdir/testing/docker/recipes/install-mercurial.sh /build/install-mercurial.sh
+ADD system-setup.sh /tmp/system-setup.sh
+RUN bash /tmp/system-setup.sh
+
+# %include testing/docker/recipes/checkout-gecko-and-run
+ADD topsrcdir/testing/docker/recipes/checkout-gecko-and-run /home/worker/bin/checkout-gecko-and-run
+RUN chown -R worker:worker /home/worker/bin && chmod 755 /home/worker/bin/*
 
 # Set variable normally configured at login, by the shells parent process, these
 # are taken from GNU su manual

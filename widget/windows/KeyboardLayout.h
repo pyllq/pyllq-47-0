@@ -6,13 +6,16 @@
 #ifndef KeyboardLayout_h__
 #define KeyboardLayout_h__
 
+#include "mozilla/RefPtr.h"
 #include "nscore.h"
-#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "nsWindowBase.h"
 #include "nsWindowDefs.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/TextEventDispatcher.h"
+#include "mozilla/widget/WinMessages.h"
+#include "mozilla/widget/WinModifierKeyState.h"
 #include <windows.h>
 
 #define NS_NUM_OF_KEYS          70
@@ -53,43 +56,6 @@ static const uint32_t sModifierKeyMap[][3] = {
 };
 
 class KeyboardLayout;
-
-class ModifierKeyState
-{
-public:
-  ModifierKeyState();
-  ModifierKeyState(bool aIsShiftDown, bool aIsControlDown, bool aIsAltDown);
-  ModifierKeyState(Modifiers aModifiers);
-
-  void Update();
-
-  void Unset(Modifiers aRemovingModifiers);
-  void Set(Modifiers aAddingModifiers);
-
-  void InitInputEvent(WidgetInputEvent& aInputEvent) const;
-
-  bool IsShift() const;
-  bool IsControl() const;
-  bool IsAlt() const;
-  bool IsAltGr() const;
-  bool IsWin() const;
-
-  bool IsCapsLocked() const;
-  bool IsNumLocked() const;
-  bool IsScrollLocked() const;
-
-  MOZ_ALWAYS_INLINE Modifiers GetModifiers() const
-  {
-    return mModifiers;
-  }
-
-private:
-  Modifiers mModifiers;
-
-  MOZ_ALWAYS_INLINE void EnsureAltGr();
-
-  void InitMouseEvent(WidgetInputEvent& aMouseEvent) const;
-};
 
 struct UniCharsAndModifiers
 {
@@ -205,7 +171,7 @@ public:
   UniCharsAndModifiers GetUniChars(ShiftState aShiftState) const;
 };
 
-class MOZ_STACK_CLASS NativeKey
+class MOZ_STACK_CLASS NativeKey final
 {
   friend class KeyboardLayout;
 
@@ -214,11 +180,16 @@ public:
   {
     UINT mCharCode;
     UINT mScanCode;
+    bool mIsSysKey;
     bool mIsDeadKey;
     bool mConsumed;
 
-    FakeCharMsg() :
-      mCharCode(0), mScanCode(0), mIsDeadKey(false), mConsumed(false)
+    FakeCharMsg()
+      : mCharCode(0)
+      , mScanCode(0)
+      , mIsSysKey(false)
+      , mIsDeadKey(false)
+      , mConsumed(false)
     {
     }
 
@@ -226,7 +197,10 @@ public:
     {
       MSG msg;
       msg.hwnd = aWnd;
-      msg.message = mIsDeadKey ? WM_DEADCHAR : WM_CHAR;
+      msg.message = mIsDeadKey && mIsSysKey ? WM_SYSDEADCHAR :
+                                 mIsDeadKey ? WM_DEADCHAR :
+                                  mIsSysKey ? WM_SYSCHAR :
+                                              WM_CHAR;
       msg.wParam = static_cast<WPARAM>(mCharCode);
       msg.lParam = static_cast<LPARAM>(mScanCode << 16);
       msg.time = 0;
@@ -238,7 +212,10 @@ public:
   NativeKey(nsWindowBase* aWidget,
             const MSG& aMessage,
             const ModifierKeyState& aModKeyState,
+            HKL aOverrideKeyboardLayout = 0,
             nsTArray<FakeCharMsg>* aFakeCharMsgs = nullptr);
+
+  ~NativeKey();
 
   /**
    * Handle WM_KEYDOWN message or WM_SYSKEYDOWN message.  The instance must be
@@ -268,8 +245,22 @@ public:
    */
   bool HandleAppCommandMessage() const;
 
+  /**
+   * Callback of TextEventDispatcherListener::WillDispatchKeyboardEvent().
+   * This method sets alternative char codes of aKeyboardEvent.
+   */
+  void WillDispatchKeyboardEvent(WidgetKeyboardEvent& aKeyboardEvent,
+                                 uint32_t aIndex);
+
+  /**
+   * Returns true if aChar is a control character which shouldn't be inputted
+   * into focused text editor.
+   */
+  static bool IsControlChar(char16_t aChar);
+
 private:
   RefPtr<nsWindowBase> mWidget;
+  RefPtr<TextEventDispatcher> mDispatcher;
   HKL mKeyboardLayout;
   MSG mMsg;
 
@@ -291,6 +282,26 @@ private:
   // indicates both the dead characters and the base characters.
   UniCharsAndModifiers mCommittedCharsAndModifiers;
 
+  // Following strings are computed by
+  // ComputeInputtingStringWithKeyboardLayout() which is typically called
+  // before dispatching keydown event.
+  // mInputtingStringAndModifiers's string is the string to be
+  // inputted into the focused editor and its modifier state is proper
+  // modifier state for inputting the string into the editor.
+  UniCharsAndModifiers mInputtingStringAndModifiers;
+  // mShiftedString is the string to be inputted into the editor with
+  // current modifier state with active shift state.
+  UniCharsAndModifiers mShiftedString;
+  // mUnshiftedString is the string to be inputted into the editor with
+  // current modifier state without shift state.
+  UniCharsAndModifiers mUnshiftedString;
+  // Following integers are computed by
+  // ComputeInputtingStringWithKeyboardLayout() which is typically called
+  // before dispatching keydown event.  The meaning of these values is same
+  // as charCode.
+  uint32_t mShiftedLatinChar;
+  uint32_t mUnshiftedLatinChar;
+
   WORD    mScanCode;
   bool    mIsExtended;
   bool    mIsDeadKey;
@@ -299,6 +310,13 @@ private:
   // Please note that the event may not cause any text input even if this
   // is true.  E.g., it might be dead key state or Ctrl key may be pressed.
   bool    mIsPrintableKey;
+  // mIsOverridingKeyboardLayout is true if the instance temporarily overriding
+  // keyboard layout with specified by the constructor.
+  bool    mIsOverridingKeyboardLayout;
+  // mIsFollowedByNonControlCharMessage may be true when mMsg is a keydown
+  // message.  When the keydown message is followed by a char message, this
+  // is true.
+  bool    mIsFollowedByNonControlCharMessage;
 
   nsTArray<FakeCharMsg>* mFakeCharMsgs;
 
@@ -327,6 +345,7 @@ private:
       case WM_SYSCHAR:
       case WM_DEADCHAR:
       case WM_SYSDEADCHAR:
+      case MOZ_WM_KEYDOWN:
         return ((mMsg.lParam & (1 << 30)) != 0);
       case WM_APPCOMMAND:
         if (mVirtualKeyCode) {
@@ -362,11 +381,15 @@ private:
 
   bool IsKeyDownMessage() const
   {
-    return (mMsg.message == WM_KEYDOWN || mMsg.message == WM_SYSKEYDOWN);
+    return (mMsg.message == WM_KEYDOWN ||
+            mMsg.message == WM_SYSKEYDOWN ||
+            mMsg.message == MOZ_WM_KEYDOWN);
   }
   bool IsKeyUpMessage() const
   {
-    return (mMsg.message == WM_KEYUP || mMsg.message == WM_SYSKEYUP);
+    return (mMsg.message == WM_KEYUP ||
+            mMsg.message == WM_SYSKEYUP ||
+            mMsg.message == MOZ_WM_KEYUP);
   }
   bool IsPrintableCharMessage(const MSG& aMSG) const
   {
@@ -401,7 +424,13 @@ private:
     return (aMessage == WM_SYSCHAR || aMessage == WM_SYSDEADCHAR);
   }
   bool MayBeSameCharMessage(const MSG& aCharMsg1, const MSG& aCharMsg2) const;
+  bool IsFollowedByNonControlCharMessage() const;
   bool IsFollowedByDeadCharMessage() const;
+  bool IsKeyMessageOnPlugin() const
+  {
+    return (mMsg.message == MOZ_WM_KEYDOWN ||
+            mMsg.message == MOZ_WM_KEYUP);
+  }
 
   /**
    * GetFollowingCharMessage() returns following char message of handling
@@ -410,8 +439,11 @@ private:
    *
    * WARNING: Even if this returns true, aCharMsg may be WM_NULL or its
    *          hwnd may be different window.
+   *
+   * @param aRemove     true if the found message should be removed from the
+   *                    queue.  Otherwise, false.
    */
-  bool GetFollowingCharMessage(MSG& aCharMsg) const;
+  bool GetFollowingCharMessage(MSG& aCharMsg, bool aRemove = true) const;
 
   /**
    * Whether the key event can compute virtual keycode from the scancode value.
@@ -441,9 +473,11 @@ private:
   /**
    * Initializes the aKeyEvent with the information stored in the instance.
    */
-  void InitKeyEvent(WidgetKeyboardEvent& aKeyEvent,
-                    const ModifierKeyState& aModKeyState) const;
-  void InitKeyEvent(WidgetKeyboardEvent& aKeyEvent) const;
+  nsEventStatus InitKeyEvent(WidgetKeyboardEvent& aKeyEvent,
+                             const ModifierKeyState& aModKeyState,
+                             const MSG* aMsgSentToPlugin = nullptr) const;
+  nsEventStatus InitKeyEvent(WidgetKeyboardEvent& aKeyEvent,
+                             const MSG* aMsgSentToPlugin = nullptr) const;
 
   /**
    * Dispatches a command event for aEventCommand.
@@ -452,17 +486,11 @@ private:
   bool DispatchCommandEvent(uint32_t aEventCommand) const;
 
   /**
-   * Dispatches the key event.  Returns true if the event is consumed.
-   * Otherwise, false.
+   * DispatchKeyPressEventsWithoutCharMessage() dispatches keypress event(s)
+   * without char messages.  So, this should be used only when there are no
+   * following char messages.
    */
-  bool DispatchKeyEvent(WidgetKeyboardEvent& aKeyEvent,
-                        const MSG* aMsgSentToPlugin = nullptr) const;
-
-  /**
-   * DispatchKeyPressEventsWithKeyboardLayout() dispatches keypress event(s)
-   * with the information provided by KeyboardLayout class.
-   */
-  bool DispatchKeyPressEventsWithKeyboardLayout() const;
+  bool DispatchKeyPressEventsWithoutCharMessage() const;
 
   /**
    * Remove all following WM_CHAR, WM_SYSCHAR and WM_DEADCHAR messages for the
@@ -487,6 +515,13 @@ private:
    * or Backspace.
    */
   bool NeedsToHandleWithoutFollowingCharMessages() const;
+
+  /**
+   * ComputeInputtingStringWithKeyboardLayout() computes string to be inputted
+   * with the key and the modifier state, without shift state and with shift
+   * state.
+   */
+  void ComputeInputtingStringWithKeyboardLayout();
 };
 
 class KeyboardLayout
@@ -561,6 +596,22 @@ public:
    */
   bool IsDeadKey(uint8_t aVirtualKey,
                  const ModifierKeyState& aModKeyState) const;
+
+  /**
+   * IsSysKey() returns true if aVirtualKey with aModKeyState causes WM_SYSKEY*
+   * or WM_SYS*CHAR messages.
+   */
+  bool IsSysKey(uint8_t aVirtualKey,
+                const ModifierKeyState& aModKeyState) const;
+
+  /**
+   * MaybeInitNativeKeyWithCompositeChar() may initialize aNativeKey with
+   * proper composite character when dead key produces a composite character.
+   * Otherwise, just returns false.
+   */
+  bool MaybeInitNativeKeyWithCompositeChar(
+         NativeKey& aNativeKey,
+         const ModifierKeyState& aModKeyState);
 
   /**
    * GetUniCharsAndModifiers() returns characters which is inputted by the

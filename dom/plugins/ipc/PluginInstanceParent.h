@@ -18,13 +18,13 @@
 #endif
 
 #include "npfunctions.h"
-#include "nsAutoPtr.h"
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRect.h"
 #include "PluginDataResolver.h"
 
 #include "mozilla/unused.h"
+#include "mozilla/EventForwards.h"
 
 class gfxASurface;
 class gfxContext;
@@ -331,8 +331,8 @@ public:
                                    DrawTarget** aDrawTarget);
     nsresult EndUpdateBackground(const nsIntRect& aRect);
 #if defined(XP_WIN)
+    nsresult SetScrollCaptureId(uint64_t aScrollCaptureId);
     nsresult GetScrollCaptureContainer(mozilla::layers::ImageContainer** aContainer);
-    nsresult UpdateScrollState(bool aIsScrolling);
 #endif
     void DidComposite();
 
@@ -355,6 +355,14 @@ public:
         const mozilla::widget::CandidateWindowPosition& aPosition) override;
     virtual bool
     RecvRequestCommitOrCancel(const bool& aCommitted) override;
+
+    // for reserved shortcut key handling with windowed plugin on Windows
+    nsresult HandledWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData,
+      bool aIsConsumed);
+    virtual bool
+    RecvOnWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData) override;
 
 private:
     // Create an appropriate platform surface for a background of size
@@ -392,7 +400,6 @@ private:
     nsCString mSrcAttribute;
     NPWindowType mWindowType;
     int16_t mDrawingModel;
-    IntSize mWindowSize;
 
     // Since plugins may request different drawing models to find a compatible
     // one, we only record the drawing model after a SetWindow call and if the
@@ -457,18 +464,6 @@ private:
     RefPtr<gfxASurface>    mBackground;
 
     RefPtr<ImageContainer> mImageContainer;
-
-#if defined(XP_WIN)
-    void ScheduleScrollCapture(int aTimeout);
-    void ScheduledUpdateScrollCaptureCallback();
-    bool UpdateScrollCapture(bool& aRequestNewCapture);
-    void CancelScheduledScrollCapture();
-
-    RefPtr<gfxASurface> mScrollCapture;
-    CancelableTask* mCaptureRefreshTask;
-    bool mValidFirstCapture;
-    bool mIsScrolling;
-#endif
 };
 
 

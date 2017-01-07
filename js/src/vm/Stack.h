@@ -23,6 +23,7 @@
 #include "jit/Registers.h" // for RegisterDump
 #endif
 #include "js/RootingAPI.h"
+#include "vm/ArgumentsObject.h"
 #include "vm/SavedFrame.h"
 
 struct JSCompartment;
@@ -35,7 +36,6 @@ class AutoEntryMonitor;
 
 namespace js {
 
-class ArgumentsObject;
 class InterpreterRegs;
 class CallObject;
 class FrameIter;
@@ -52,6 +52,9 @@ class SavedFrame;
 
 namespace jit {
 class CommonFrameLayout;
+}
+namespace wasm {
+class Instance;
 }
 
 // VM stack layout
@@ -233,7 +236,7 @@ class AbstractFramePtr
     inline void initArgsObj(ArgumentsObject& argsobj) const;
     inline bool createSingleton() const;
 
-    inline bool copyRawFrameSlots(AutoValueVector* vec) const;
+    inline bool copyRawFrameSlots(MutableHandle<GCVector<Value>> vec) const;
 
     inline Value& unaliasedLocal(uint32_t i);
     inline Value& unaliasedFormal(unsigned i, MaybeCheckAliasing checkAliasing = CHECK_ALIASING);
@@ -500,7 +503,7 @@ class InterpreterFrame
     inline Value& unaliasedActual(unsigned i, MaybeCheckAliasing = CHECK_ALIASING);
     template <class Op> inline void unaliasedForEachActual(Op op);
 
-    bool copyRawFrameSlots(AutoValueVector* v);
+    bool copyRawFrameSlots(MutableHandle<GCVector<Value>> v);
 
     unsigned numFormalArgs() const { MOZ_ASSERT(hasArgs()); return callee().nargs(); }
     unsigned numActualArgs() const { MOZ_ASSERT(hasArgs()); return nactual_; }
@@ -925,46 +928,111 @@ void MarkInterpreterActivations(JSRuntime* rt, JSTracer* trc);
 
 /*****************************************************************************/
 
+/** Base class for all function call args. */
+class AnyInvokeArgs : public JS::CallArgs
+{
+};
+
+/** Base class for all function construction args. */
+class AnyConstructArgs : public JS::CallArgs
+{
+    // Only js::Construct (or internal methods that call the qualified CallArgs
+    // versions) should do these things!
+    void setCallee(Value v) = delete;
+    void setThis(Value v) = delete;
+    MutableHandleValue newTarget() const = delete;
+    MutableHandleValue rval() const = delete;
+};
+
 namespace detail {
 
-class GenericInvokeArgs : public JS::CallArgs
+/** Function call/construct args of statically-unknown count. */
+template <MaybeConstruct Construct>
+class GenericArgsBase
+  : public mozilla::Conditional<Construct, AnyConstructArgs, AnyInvokeArgs>::Type
 {
   protected:
     AutoValueVector v_;
 
-    explicit GenericInvokeArgs(JSContext* cx) : v_(cx) {}
+    explicit GenericArgsBase(JSContext* cx) : v_(cx) {}
 
-    bool init(unsigned argc, bool construct) {
-        MOZ_ASSERT(2 + argc + construct > argc);  // no overflow
-        if (!v_.resize(2 + argc + construct))
+  public:
+    bool init(JSContext* cx, unsigned argc) {
+        if (argc > ARGS_LENGTH_MAX) {
+            JS_ReportErrorNumber(cx, GetErrorMessage, nullptr, JSMSG_TOO_MANY_ARGUMENTS);
+            return false;
+        }
+
+        // callee, this, arguments[, new.target iff constructing]
+        size_t len = 2 + argc + uint32_t(Construct);
+        MOZ_ASSERT(len > argc);  // no overflow
+        if (!v_.resize(len))
             return false;
 
         *static_cast<JS::CallArgs*>(this) = CallArgsFromVp(argc, v_.begin());
-        constructing_ = construct;
+        this->constructing_ = Construct;
+        if (Construct)
+            this->CallArgs::setThis(MagicValue(JS_IS_CONSTRUCTING));
         return true;
+    }
+};
+
+/** Function call/construct args of statically-known count. */
+template <MaybeConstruct Construct, size_t N>
+class FixedArgsBase
+  : public mozilla::Conditional<Construct, AnyConstructArgs, AnyInvokeArgs>::Type
+{
+    static_assert(N <= ARGS_LENGTH_MAX, "o/~ too many args o/~");
+
+  protected:
+    JS::AutoValueArray<2 + N + uint32_t(Construct)> v_;
+
+    explicit FixedArgsBase(JSContext* cx) : v_(cx) {
+        *static_cast<JS::CallArgs*>(this) = CallArgsFromVp(N, v_.begin());
+        this->constructing_ = Construct;
+        if (Construct)
+            this->CallArgs::setThis(MagicValue(JS_IS_CONSTRUCTING));
     }
 };
 
 } // namespace detail
 
-class InvokeArgs : public detail::GenericInvokeArgs
+/** Function call args of statically-unknown count. */
+class InvokeArgs : public detail::GenericArgsBase<NO_CONSTRUCT>
 {
-  public:
-    explicit InvokeArgs(JSContext* cx) : detail::GenericInvokeArgs(cx) {}
+    using Base = detail::GenericArgsBase<NO_CONSTRUCT>;
 
-    bool init(unsigned argc) {
-        return detail::GenericInvokeArgs::init(argc, false);
-    }
+  public:
+    explicit InvokeArgs(JSContext* cx) : Base(cx) {}
 };
 
-class ConstructArgs : public detail::GenericInvokeArgs
+/** Function call args of statically-known count. */
+template <size_t N>
+class FixedInvokeArgs : public detail::FixedArgsBase<NO_CONSTRUCT, N>
 {
-  public:
-    explicit ConstructArgs(JSContext* cx) : detail::GenericInvokeArgs(cx) {}
+    using Base = detail::FixedArgsBase<NO_CONSTRUCT, N>;
 
-    bool init(unsigned argc) {
-        return detail::GenericInvokeArgs::init(argc, true);
-    }
+  public:
+    explicit FixedInvokeArgs(JSContext* cx) : Base(cx) {}
+};
+
+/** Function construct args of statically-unknown count. */
+class ConstructArgs : public detail::GenericArgsBase<CONSTRUCT>
+{
+    using Base = detail::GenericArgsBase<CONSTRUCT>;
+
+  public:
+    explicit ConstructArgs(JSContext* cx) : Base(cx) {}
+};
+
+/** Function call args of statically-known count. */
+template <size_t N>
+class FixedConstructArgs : public detail::FixedArgsBase<CONSTRUCT, N>
+{
+    using Base = detail::FixedArgsBase<CONSTRUCT, N>;
+
+  public:
+    explicit FixedConstructArgs(JSContext* cx) : Base(cx) {}
 };
 
 template <class Args, class Arraylike>
@@ -972,7 +1040,7 @@ inline bool
 FillArgumentsFromArraylike(JSContext* cx, Args& args, const Arraylike& arraylike)
 {
     uint32_t len = arraylike.length();
-    if (!args.init(len))
+    if (!args.init(cx, len))
         return false;
 
     for (uint32_t i = 0; i < len; i++)
@@ -1059,9 +1127,9 @@ class LiveSavedFrameCache
   private:
     struct Entry
     {
-        FramePtr                    framePtr;
-        jsbytecode*                 pc;
-        RelocatablePtr<SavedFrame*> savedFrame;
+        FramePtr             framePtr;
+        jsbytecode*          pc;
+        HeapPtr<SavedFrame*> savedFrame;
 
         Entry(FramePtr& framePtr, jsbytecode* pc, SavedFrame* savedFrame)
           : framePtr(framePtr)
@@ -1157,12 +1225,6 @@ class Activation
     Activation* prev_;
     Activation* prevProfiling_;
 
-    // Counter incremented by JS_SaveFrameChain on the top-most activation and
-    // decremented by JS_RestoreFrameChain. If > 0, ScriptFrameIter should stop
-    // iterating when it reaches this activation (if GO_THROUGH_SAVED is not
-    // set).
-    size_t savedFrameChain_;
-
     // Counter incremented by JS::HideScriptedCaller and decremented by
     // JS::UnhideScriptedCaller. If > 0 for the top activation,
     // DescribeScriptedCaller will return null instead of querying that
@@ -1183,7 +1245,7 @@ class Activation
     Rooted<SavedFrame*> asyncStack_;
 
     // Value of asyncCause to be attached to asyncStack_.
-    RootedString asyncCause_;
+    const char* asyncCause_;
 
     // True if the async call was explicitly requested, e.g. via
     // callFunctionWithAsyncStack.
@@ -1235,17 +1297,6 @@ class Activation
         return (WasmActivation*)this;
     }
 
-    void saveFrameChain() {
-        savedFrameChain_++;
-    }
-    void restoreFrameChain() {
-        MOZ_ASSERT(savedFrameChain_ > 0);
-        savedFrameChain_--;
-    }
-    bool hasSavedFrameChain() const {
-        return savedFrameChain_ > 0;
-    }
-
     void hideScriptedCaller() {
         hideScriptedCallerCount_++;
     }
@@ -1265,7 +1316,7 @@ class Activation
         return asyncStack_;
     }
 
-    JSString* asyncCause() {
+    const char* asyncCause() const {
         return asyncCause_;
     }
 
@@ -1387,7 +1438,6 @@ class JitActivation : public Activation
 {
     uint8_t* prevJitTop_;
     JitActivation* prevJitActivation_;
-    JSContext* prevJitJSContext_;
     bool active_;
 
     // Rematerialized Ion frames which has info copied out of snapshots. Maps
@@ -1453,9 +1503,6 @@ class JitActivation : public Activation
     }
     static size_t offsetOfPrevJitTop() {
         return offsetof(JitActivation, prevJitTop_);
-    }
-    static size_t offsetOfPrevJitJSContext() {
-        return offsetof(JitActivation, prevJitJSContext_);
     }
     static size_t offsetOfPrevJitActivation() {
         return offsetof(JitActivation, prevJitActivation_);
@@ -1623,19 +1670,19 @@ class InterpreterFrameIterator
 // all kinds of jit code.
 class WasmActivation : public Activation
 {
-    wasm::Module& module_;
+    wasm::Instance& instance_;
     WasmActivation* prevWasm_;
-    WasmActivation* prevWasmForModule_;
+    WasmActivation* prevWasmForInstance_;
     void* entrySP_;
     void* resumePC_;
     uint8_t* fp_;
     wasm::ExitReason exitReason_;
 
   public:
-    WasmActivation(JSContext* cx, wasm::Module& module);
+    WasmActivation(JSContext* cx, wasm::Instance& instance);
     ~WasmActivation();
 
-    wasm::Module& module() const { return module_; }
+    wasm::Instance& instance() const { return instance_; }
     WasmActivation* prevWasm() const { return prevWasm_; }
 
     bool isProfiling() const {
@@ -1668,11 +1715,6 @@ class WasmActivation : public Activation
 // different modes of compiled code.
 //
 // FrameIter is parameterized by what it includes in the stack iteration:
-//  - The SavedOption controls whether FrameIter stops when it finds an
-//    activation that was set aside via JS_SaveFrameChain (and not yet restored
-//    by JS_RestoreFrameChain). (Hopefully this will go away.)
-//  - The ContextOption determines whether the iteration will view frames from
-//    all JSContexts or just the given JSContext. (Hopefully this will go away.)
 //  - When provided, the optional JSPrincipal argument will cause FrameIter to
 //    only show frames in globals whose JSPrincipals are subsumed (via
 //    JSSecurityCallbacks::subsume) by the given JSPrincipal.
@@ -1688,8 +1730,6 @@ class WasmActivation : public Activation
 class FrameIter
 {
   public:
-    enum SavedOption { STOP_AT_SAVED, GO_THROUGH_SAVED };
-    enum ContextOption { CURRENT_CONTEXT, ALL_CONTEXTS };
     enum DebuggerEvalOption { FOLLOW_DEBUGGER_EVAL_PREV_LINK,
                               IGNORE_DEBUGGER_EVAL_PREV_LINK };
     enum State { DONE, INTERP, JIT, WASM };
@@ -1699,8 +1739,6 @@ class FrameIter
     struct Data
     {
         JSContext * cx_;
-        SavedOption         savedOption_;
-        ContextOption       contextOption_;
         DebuggerEvalOption  debuggerEvalOption_;
         JSPrincipals *      principals_;
 
@@ -1715,15 +1753,13 @@ class FrameIter
         unsigned ionInlineFrameNo_;
         wasm::FrameIterator wasmFrames_;
 
-        Data(JSContext* cx, SavedOption savedOption, ContextOption contextOption,
-             DebuggerEvalOption debuggerEvalOption, JSPrincipals* principals);
+        Data(JSContext* cx, DebuggerEvalOption debuggerEvalOption, JSPrincipals* principals);
         Data(const Data& other);
     };
 
-    MOZ_IMPLICIT FrameIter(JSContext* cx, SavedOption = STOP_AT_SAVED);
-    FrameIter(JSContext* cx, ContextOption, SavedOption,
-              DebuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK);
-    FrameIter(JSContext* cx, ContextOption, SavedOption, DebuggerEvalOption, JSPrincipals*);
+    explicit FrameIter(JSContext* cx,
+                       DebuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK);
+    FrameIter(JSContext* cx, DebuggerEvalOption, JSPrincipals*);
     FrameIter(const FrameIter& iter);
     MOZ_IMPLICIT FrameIter(const Data& data);
     MOZ_IMPLICIT FrameIter(AbstractFramePtr frame);
@@ -1754,6 +1790,7 @@ class FrameIter
     inline bool hasCachedSavedFrame() const;
     inline void setHasCachedSavedFrame();
 
+    ScriptSource* scriptSource() const;
     const char* filename() const;
     const char16_t* displayURL() const;
     unsigned computeLine(uint32_t* column = nullptr) const;
@@ -1860,27 +1897,17 @@ class ScriptFrameIter : public FrameIter
     }
 
   public:
-    explicit ScriptFrameIter(JSContext* cx, SavedOption savedOption = STOP_AT_SAVED)
-      : FrameIter(cx, savedOption)
+    explicit ScriptFrameIter(JSContext* cx,
+                             DebuggerEvalOption debuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK)
+      : FrameIter(cx, debuggerEvalOption)
     {
         settle();
     }
 
     ScriptFrameIter(JSContext* cx,
-                    ContextOption cxOption,
-                    SavedOption savedOption,
-                    DebuggerEvalOption debuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK)
-      : FrameIter(cx, cxOption, savedOption, debuggerEvalOption)
-    {
-        settle();
-    }
-
-    ScriptFrameIter(JSContext* cx,
-                    ContextOption cxOption,
-                    SavedOption savedOption,
                     DebuggerEvalOption debuggerEvalOption,
                     JSPrincipals* prin)
-      : FrameIter(cx, cxOption, savedOption, debuggerEvalOption, prin)
+      : FrameIter(cx, debuggerEvalOption, prin)
     {
         settle();
     }
@@ -1913,35 +1940,23 @@ class NonBuiltinFrameIter : public FrameIter
 
   public:
     explicit NonBuiltinFrameIter(JSContext* cx,
-                                 FrameIter::SavedOption opt = FrameIter::STOP_AT_SAVED)
-      : FrameIter(cx, opt)
+                                 FrameIter::DebuggerEvalOption debuggerEvalOption =
+                                 FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK)
+      : FrameIter(cx, debuggerEvalOption)
     {
         settle();
     }
 
     NonBuiltinFrameIter(JSContext* cx,
-                        FrameIter::ContextOption contextOption,
-                        FrameIter::SavedOption savedOption,
-                        FrameIter::DebuggerEvalOption debuggerEvalOption =
-                        FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK)
-      : FrameIter(cx, contextOption, savedOption, debuggerEvalOption)
-    {
-        settle();
-    }
-
-    NonBuiltinFrameIter(JSContext* cx,
-                        FrameIter::ContextOption contextOption,
-                        FrameIter::SavedOption savedOption,
                         FrameIter::DebuggerEvalOption debuggerEvalOption,
                         JSPrincipals* principals)
-      : FrameIter(cx, contextOption, savedOption, debuggerEvalOption, principals)
+      : FrameIter(cx, debuggerEvalOption, principals)
     {
         settle();
     }
 
     NonBuiltinFrameIter(JSContext* cx, JSPrincipals* principals)
-        : FrameIter(cx, FrameIter::ALL_CONTEXTS, FrameIter::GO_THROUGH_SAVED,
-                    FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK, principals)
+      : FrameIter(cx, FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK, principals)
     {
         settle();
     }
@@ -1964,29 +1979,17 @@ class NonBuiltinScriptFrameIter : public ScriptFrameIter
 
   public:
     explicit NonBuiltinScriptFrameIter(JSContext* cx,
-                                       ScriptFrameIter::SavedOption opt =
-                                       ScriptFrameIter::STOP_AT_SAVED)
-      : ScriptFrameIter(cx, opt)
+                                       ScriptFrameIter::DebuggerEvalOption debuggerEvalOption =
+                                       ScriptFrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK)
+      : ScriptFrameIter(cx, debuggerEvalOption)
     {
         settle();
     }
 
     NonBuiltinScriptFrameIter(JSContext* cx,
-                              ScriptFrameIter::ContextOption contextOption,
-                              ScriptFrameIter::SavedOption savedOption,
-                              ScriptFrameIter::DebuggerEvalOption debuggerEvalOption =
-                              ScriptFrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK)
-      : ScriptFrameIter(cx, contextOption, savedOption, debuggerEvalOption)
-    {
-        settle();
-    }
-
-    NonBuiltinScriptFrameIter(JSContext* cx,
-                              ScriptFrameIter::ContextOption contextOption,
-                              ScriptFrameIter::SavedOption savedOption,
                               ScriptFrameIter::DebuggerEvalOption debuggerEvalOption,
                               JSPrincipals* principals)
-      : ScriptFrameIter(cx, contextOption, savedOption, debuggerEvalOption, principals)
+      : ScriptFrameIter(cx, debuggerEvalOption, principals)
     {
         settle();
     }
@@ -2010,8 +2013,7 @@ class AllFramesIter : public ScriptFrameIter
 {
   public:
     explicit AllFramesIter(JSContext* cx)
-      : ScriptFrameIter(cx, ScriptFrameIter::ALL_CONTEXTS, ScriptFrameIter::GO_THROUGH_SAVED,
-                        ScriptFrameIter::IGNORE_DEBUGGER_EVAL_PREV_LINK)
+      : ScriptFrameIter(cx, ScriptFrameIter::IGNORE_DEBUGGER_EVAL_PREV_LINK)
     {}
 };
 

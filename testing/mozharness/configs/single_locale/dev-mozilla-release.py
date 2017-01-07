@@ -13,17 +13,13 @@ config = {
     "repos": [{
         "vcs": "hg",
         "repo": "https://hg.mozilla.org/build/tools",
-        "revision": "default",
+        "branch": "default",
         "dest": "tools",
     }, {
         "vcs": "hgtool",
         "repo": "https://hg.mozilla.org/projects/jamun",
         "revision": "default",
         "dest": "jamun",
-    }, {
-        "vcs": "hgtool",
-        "repo": "https://hg.mozilla.org/build/compare-locales",
-        "revision": "RELEASE_AUTOMATION"
     }],
     # purge options
     'purge_minsize': 12,
@@ -31,6 +27,7 @@ config = {
     'default_actions': [
         "clobber",
         "pull",
+        "clone-locales",
         "list-locales",
         "setup",
         "repack",

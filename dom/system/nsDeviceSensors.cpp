@@ -9,7 +9,6 @@
 
 #include "nsDeviceSensors.h"
 
-#include "nsAutoPtr.h"
 #include "nsIDOMEvent.h"
 #include "nsIDOMWindow.h"
 #include "nsPIDOMWindow.h"
@@ -137,7 +136,7 @@ NS_IMETHODIMP nsDeviceSensors::HasWindowListener(uint32_t aType, nsIDOMWindow *a
   return NS_OK;
 }
 
-class DeviceSensorTestEvent : public nsRunnable
+class DeviceSensorTestEvent : public Runnable
 {
 public:
   DeviceSensorTestEvent(nsDeviceSensors* aTarget,
@@ -332,6 +331,7 @@ nsDeviceSensors::Notify(const mozilla::hal::SensorData& aSensorData)
   double y = len > 1 ? values[1] : 0.0;
   double z = len > 2 ? values[2] : 0.0;
   double w = len > 3 ? values[3] : 0.0;
+  PRTime timestamp = aSensorData.timestamp();
 
   nsCOMArray<nsIDOMWindow> windowListeners;
   for (uint32_t i = 0; i < mWindowListeners[type]->Length(); i++) {
@@ -351,7 +351,7 @@ nsDeviceSensors::Notify(const mozilla::hal::SensorData& aSensorData)
       if (type == nsIDeviceSensorData::TYPE_ACCELERATION ||
         type == nsIDeviceSensorData::TYPE_LINEAR_ACCELERATION ||
         type == nsIDeviceSensorData::TYPE_GYROSCOPE) {
-        FireDOMMotionEvent(domDoc, target, type, x, y, z);
+        FireDOMMotionEvent(domDoc, target, type, timestamp, x, y, z);
       } else if (type == nsIDeviceSensorData::TYPE_ORIENTATION) {
         FireDOMOrientationEvent(target, x, y, z, Orientation::kAbsolute);
       } else if (type == nsIDeviceSensorData::TYPE_ROTATION_VECTOR) {
@@ -488,6 +488,7 @@ void
 nsDeviceSensors::FireDOMMotionEvent(nsIDOMDocument *domdoc,
                                     EventTarget* target,
                                     uint32_t type,
+                                    PRTime timestamp,
                                     double x,
                                     double y,
                                     double z)
@@ -553,7 +554,8 @@ nsDeviceSensors::FireDOMMotionEvent(nsIDOMDocument *domdoc,
                             *mLastAcceleration,
                             *mLastAccelerationIncludingGravity,
                             *mLastRotationRate,
-                            Nullable<double>(DEFAULT_SENSOR_POLL));
+                            Nullable<double>(DEFAULT_SENSOR_POLL),
+                            Nullable<uint64_t>(timestamp));
 
   event->SetTrusted(true);
 

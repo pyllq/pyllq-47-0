@@ -108,6 +108,7 @@ var gWindowUtils;
 
 var gSlowestTestTime = 0;
 var gSlowestTestURL;
+var gFailedUseWidgetLayers = false;
 
 var gDrawWindowFlags;
 
@@ -178,6 +179,12 @@ function HasUnexpectedResult()
 
 // By default we just log to stdout
 var gLogFile = null;
+var gDumpFn = function(line) {
+  dump(line);
+  if (gLogFile) {
+    gLogFile.write(line, line.length);
+  }
+}
 var gDumpRawLog = function(record) {
   // Dump JSON representation of data on a single line
   var line = "\n" + JSON.stringify(record) + "\n";
@@ -204,6 +211,12 @@ function FlushTestBuffer()
     }
   }
   gTestLog = [];
+}
+
+function LogWidgetLayersFailure()
+{
+  logger.error("USE_WIDGET_LAYERS disabled because the screen resolution is too low. This falls back to an alternate rendering path (that may not be representative) and is not implemented with e10s enabled.");
+  logger.error("Consider increasing your screen resolution, or adding '--disable-e10s' to your './mach reftest' command");
 }
 
 function AllocateCanvas()
@@ -1024,7 +1037,7 @@ function ReadManifest(aURL, inherited_status, aFilter)
             }
         }
 
-        var principal = secMan.getSimpleCodebasePrincipal(aURL);
+        var principal = secMan.createCodebasePrincipal(aURL, {});
 
         if (items[0] == "include") {
             if (items.length != 2)
@@ -1365,8 +1378,8 @@ function StartCurrentURI(aState)
         var currentTest = gTotalTests - gURLs.length;
         // Log this to preserve the same overall log format,
         // should be removed if the format is updated
-        dump("REFTEST TEST-LOAD | " + gCurrentURL + " | " + currentTest + " / " + gTotalTests +
-             " (" + Math.floor(100 * (currentTest / gTotalTests)) + "%)\n");
+        gDumpFn("REFTEST TEST-LOAD | " + gCurrentURL + " | " + currentTest + " / " + gTotalTests +
+                " (" + Math.floor(100 * (currentTest / gTotalTests)) + "%)\n");
         TestBuffer("START " + gCurrentURL);
         var type = gURLs[0].type
         if (TYPE_SCRIPT == type) {
@@ -1382,6 +1395,9 @@ function DoneTests()
     logger.suiteEnd(extra={'results': gTestResults});
     logger.info("Slowest test took " + gSlowestTestTime + "ms (" + gSlowestTestURL + ")");
     logger.info("Total canvas count = " + gRecycledCanvases.length);
+    if (gFailedUseWidgetLayers) {
+        LogWidgetLayersFailure();
+    }
 
     function onStopped() {
         let appStartup = CC["@mozilla.org/toolkit/app-startup;1"].getService(CI.nsIAppStartup);
@@ -1443,7 +1459,8 @@ function DoDrawWindow(ctx, x, y, w, h)
         } else {
             // Output a special warning because we need to be able to detect
             // this whenever it happens.
-            logger.error("WARNING: USE_WIDGET_LAYERS disabled");
+            LogWidgetLayersFailure();
+            gFailedUseWidgetLayers = true;
         }
         logger.info("drawWindow flags = " + flagsStr +
                     "; window size = " + gContainingWindow.innerWidth + "," + gContainingWindow.innerHeight +
@@ -1818,19 +1835,19 @@ function DoAssertionCheck(numAsserts)
 
         if (numAsserts < minAsserts) {
             ++gTestResults.AssertionUnexpectedFixed;
-            dump("REFTEST TEST-UNEXPECTED-PASS | " + gURLs[0].prettyPath +
-                 " | assertion count" + numAsserts + " is less than " +
-                    expectedAssertions + "\n");
+            gDumpFn("REFTEST TEST-UNEXPECTED-PASS | " + gURLs[0].prettyPath +
+                    " | assertion count " + numAsserts + " is less than " +
+                       expectedAssertions + "\n");
         } else if (numAsserts > maxAsserts) {
             ++gTestResults.AssertionUnexpected;
-            dump("REFTEST TEST-UNEXPECTED-FAIL | " + gURLs[0].prettyPath +
-                 " | assertion count " + numAsserts + " is more than " +
-                    expectedAssertions + "\n");
+            gDumpFn("REFTEST TEST-UNEXPECTED-FAIL | " + gURLs[0].prettyPath +
+                    " | assertion count " + numAsserts + " is more than " +
+                       expectedAssertions + "\n");
         } else if (numAsserts != 0) {
             ++gTestResults.AssertionKnown;
-            dump("REFTEST TEST-KNOWN-FAIL | " + gURLs[0].prettyPath +
-                 "assertion count " + numAsserts + " matches " +
-                 expectedAssertions + "\n");
+            gDumpFn("REFTEST TEST-KNOWN-FAIL | " + gURLs[0].prettyPath +
+                    "assertion count " + numAsserts + " matches " +
+                    expectedAssertions + "\n");
         }
     }
 

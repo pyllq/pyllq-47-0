@@ -87,9 +87,10 @@ SetFrameArgumentsObject(JSContext* cx, AbstractFramePtr frame,
 inline JSFunction*
 LazyScript::functionDelazifying(JSContext* cx) const
 {
-    if (function_ && !function_->getOrCreateScript(cx))
+    Rooted<const LazyScript*> self(cx, this);
+    if (self->function_ && !self->function_->getOrCreateScript(cx))
         return nullptr;
-    return function_;
+    return self->function_;
 }
 
 } // namespace js
@@ -184,14 +185,14 @@ JSScript::principals()
 }
 
 inline void
-JSScript::setBaselineScript(JSContext* maybecx, js::jit::BaselineScript* baselineScript)
+JSScript::setBaselineScript(JSRuntime* maybeRuntime, js::jit::BaselineScript* baselineScript)
 {
     if (hasBaselineScript())
         js::jit::BaselineScript::writeBarrierPre(zone(), baseline);
     MOZ_ASSERT(!hasIonScript());
     baseline = baselineScript;
     resetWarmUpResetCounter();
-    updateBaselineOrIonRaw(maybecx);
+    updateBaselineOrIonRaw(maybeRuntime);
 }
 
 inline bool

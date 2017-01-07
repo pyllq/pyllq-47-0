@@ -100,48 +100,15 @@ APZChild::RecvUpdateFrame(const FrameMetrics& aFrameMetrics)
 }
 
 bool
-APZChild::RecvRequestFlingSnap(const FrameMetrics::ViewID& aScrollId,
-                               const mozilla::CSSPoint& aDestination)
+APZChild::RecvHandleTap(const TapType& aType,
+                        const LayoutDevicePoint& aPoint,
+                        const Modifiers& aModifiers,
+                        const ScrollableLayerGuid& aGuid,
+                        const uint64_t& aInputBlockId,
+                        const bool& aCallTakeFocusForClickFromTap)
 {
-  APZCCallbackHelper::RequestFlingSnap(aScrollId, aDestination);
-  return true;
-}
-
-bool
-APZChild::RecvAcknowledgeScrollUpdate(const ViewID& aScrollId,
-                                      const uint32_t& aScrollGeneration)
-{
-  APZCCallbackHelper::AcknowledgeScrollUpdate(aScrollId, aScrollGeneration);
-  return true;
-}
-
-bool
-APZChild::RecvHandleDoubleTap(const CSSPoint& aPoint,
-                              const Modifiers& aModifiers,
-                              const ScrollableLayerGuid& aGuid)
-{
-  mBrowser->HandleDoubleTap(aPoint, aModifiers, aGuid);
-  return true;
-}
-
-bool
-APZChild::RecvHandleSingleTap(const CSSPoint& aPoint,
-                              const Modifiers& aModifiers,
-                              const ScrollableLayerGuid& aGuid,
-                              const bool& aCallTakeFocusForClickFromTap)
-{
-  mBrowser->HandleSingleTap(aPoint, aModifiers, aGuid,
-                            aCallTakeFocusForClickFromTap);
-  return true;
-}
-
-bool
-APZChild::RecvHandleLongTap(const CSSPoint& aPoint,
-                            const Modifiers& aModifiers,
-                            const ScrollableLayerGuid& aGuid,
-                            const uint64_t& aInputBlockId)
-{
-  mBrowser->HandleLongTap(aPoint, aModifiers, aGuid, aInputBlockId);
+  mBrowser->HandleTap(aType, aPoint, aModifiers, aGuid,
+      aInputBlockId, aCallTakeFocusForClickFromTap);
   return true;
 }
 

@@ -21,16 +21,16 @@ const TEST_URI = `
   <div id="testid2">Styled Node</div>
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {inspector, view} = yield openRuleView();
 
   yield selectNode("#testid", inspector);
-  is(view.element.querySelectorAll("#noResults").length, 0,
+  is(view.element.querySelectorAll("#ruleview-no-results").length, 0,
     "After a highlight, no longer has a no-results element.");
 
   yield clearCurrentNodeSelection(inspector);
-  is(view.element.querySelectorAll("#noResults").length, 1,
+  is(view.element.querySelectorAll("#ruleview-no-results").length, 1,
     "After highlighting null, has a no-results element again.");
 
   yield selectNode("#testid", inspector);

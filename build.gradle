@@ -9,8 +9,10 @@ allprojects {
     }
 
     repositories {
-        maven {
-            url gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY
+        if (gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY) {
+            maven {
+                url gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY
+            }
         }
     }
 }
@@ -19,17 +21,25 @@ buildDir "${topobjdir}/gradle/build"
 
 buildscript {
     repositories {
+        if (gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY) {
+            maven {
+                url gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY
+            }
+        }
+        // For android-sdk-manager SNAPSHOT releases.
         maven {
-            url gradle.mozconfig.substs.GRADLE_MAVEN_REPOSITORY
+            url "file://${gradle.mozconfig.topsrcdir}/mobile/android/gradle/m2repo"
         }
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:1.5.0'
+        classpath 'com.android.tools.build:gradle:2.1.0'
         classpath('com.stanfy.spoon:spoon-gradle-plugin:1.0.4') {
             // Without these, we get errors linting.
             exclude module: 'guava'
         }
+        // Provided in tree.
+        classpath 'com.jakewharton.sdkmanager:gradle-plugin:1.5.0-SNAPSHOT'
     }
 }
 

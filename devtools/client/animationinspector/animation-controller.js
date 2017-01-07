@@ -14,17 +14,17 @@
 
 var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
-Cu.import("resource://gre/modules/Task.jsm");
-var { loader, require } = Cu.import("resource://devtools/shared/Loader.jsm");
-Cu.import("resource://gre/modules/Console.jsm");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+var { loader, require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+var { Task } = require("devtools/shared/task");
 
 loader.lazyRequireGetter(this, "promise");
 loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
-loader.lazyRequireGetter(this, "AnimationsFront", "devtools/server/actors/animation", true);
+loader.lazyRequireGetter(this, "AnimationsFront", "devtools/shared/fronts/animation", true);
+
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 
 const STRINGS_URI = "chrome://devtools/locale/animationinspector.properties";
-const L10N = new ViewHelpers.L10N(STRINGS_URI);
+const L10N = new LocalizationHelper(STRINGS_URI);
 
 // Global toolbox/inspector, set when startup is called.
 var gToolbox, gInspector;
@@ -33,7 +33,7 @@ var gToolbox, gInspector;
  * Startup the animationinspector controller and view, called by the sidebar
  * widget when loading/unloading the iframe into the tab.
  */
-var startup = Task.async(function*(inspector) {
+var startup = Task.async(function* (inspector) {
   gInspector = inspector;
   gToolbox = inspector.toolbox;
 
@@ -54,7 +54,7 @@ var startup = Task.async(function*(inspector) {
  * Shutdown the animationinspector controller and view, called by the sidebar
  * widget when loading/unloading the iframe into the tab.
  */
-var shutdown = Task.async(function*() {
+var shutdown = Task.async(function* () {
   yield AnimationsController.destroy();
   // Don't assume that AnimationsPanel is defined here, it's in another file.
   if (typeof AnimationsPanel !== "undefined") {
@@ -77,7 +77,7 @@ function destroy() {
  * @param {Target} target The current toolbox target.
  * @return {Object} An object with boolean properties.
  */
-var getServerTraits = Task.async(function*(target) {
+var getServerTraits = Task.async(function* (target) {
   let config = [
     { name: "hasToggleAll", actor: "animations",
       method: "toggleAll" },
@@ -97,6 +97,8 @@ var getServerTraits = Task.async(function*(target) {
       method: "setCurrentTimes" },
     { name: "hasGetFrames", actor: "animationplayer",
       method: "getFrames" },
+    { name: "hasGetProperties", actor: "animationplayer",
+      method: "getProperties" },
     { name: "hasSetWalkerActor", actor: "animations",
       method: "setWalkerActor" },
   ];
@@ -131,7 +133,7 @@ var AnimationsController = {
   PLAYERS_UPDATED_EVENT: "players-updated",
   ALL_ANIMATIONS_TOGGLED_EVENT: "all-animations-toggled",
 
-  initialize: Task.async(function*() {
+  initialize: Task.async(function* () {
     if (this.initialized) {
       yield this.initialized.promise;
       return;
@@ -165,7 +167,7 @@ var AnimationsController = {
     this.initialized.resolve();
   }),
 
-  destroy: Task.async(function*() {
+  destroy: Task.async(function* () {
     if (!this.initialized) {
       return;
     }
@@ -188,7 +190,7 @@ var AnimationsController = {
     this.destroyed.resolve();
   }),
 
-  startListeners: function() {
+  startListeners: function () {
     // Re-create the list of players when a new node is selected, except if the
     // sidebar isn't visible.
     gInspector.selection.on("new-node-front", this.onNewNodeFront);
@@ -196,7 +198,7 @@ var AnimationsController = {
     gToolbox.on("select", this.onPanelVisibilityChange);
   },
 
-  stopListeners: function() {
+  stopListeners: function () {
     gInspector.selection.off("new-node-front", this.onNewNodeFront);
     gInspector.sidebar.off("select", this.onPanelVisibilityChange);
     gToolbox.off("select", this.onPanelVisibilityChange);
@@ -205,25 +207,26 @@ var AnimationsController = {
     }
   },
 
-  isPanelVisible: function() {
+  isPanelVisible: function () {
     return gToolbox.currentToolId === "inspector" &&
            gInspector.sidebar &&
            gInspector.sidebar.getCurrentTabID() == "animationinspector";
   },
 
-  onPanelVisibilityChange: Task.async(function*() {
+  onPanelVisibilityChange: Task.async(function* () {
     if (this.isPanelVisible()) {
       this.onNewNodeFront();
     }
   }),
 
-  onNewNodeFront: Task.async(function*() {
+  onNewNodeFront: Task.async(function* () {
     // Ignore if the panel isn't visible or the node selection hasn't changed.
     if (!this.isPanelVisible() ||
         this.nodeFront === gInspector.selection.nodeFront) {
       return;
     }
 
+    this.nodeFront = gInspector.selection.nodeFront;
     let done = gInspector.updating("animationscontroller");
 
     if (!gInspector.selection.isConnected() ||
@@ -234,7 +237,6 @@ var AnimationsController = {
       return;
     }
 
-    this.nodeFront = gInspector.selection.nodeFront;
     yield this.refreshAnimationPlayers(this.nodeFront);
     this.emit(this.PLAYERS_UPDATED_EVENT, this.animationPlayers);
 
@@ -244,7 +246,7 @@ var AnimationsController = {
   /**
    * Toggle (pause/play) all animations in the current target.
    */
-  toggleAll: function() {
+  toggleAll: function () {
     if (!this.traits.hasToggleAll) {
       return promise.resolve();
     }
@@ -261,7 +263,7 @@ var AnimationsController = {
    * if they should be played.
    * @return {Promise} Resolves when the playState has been changed.
    */
-  toggleCurrentAnimations: Task.async(function*(shouldPause) {
+  toggleCurrentAnimations: Task.async(function* (shouldPause) {
     if (this.traits.hasToggleSeveral) {
       yield this.animationsFront.toggleSeveral(this.animationPlayers,
                                                shouldPause);
@@ -284,7 +286,7 @@ var AnimationsController = {
    * @param {Boolean} shouldPause Should the animations be paused too.
    * @return {Promise} Resolves when the current time has been set.
    */
-  setCurrentTimeAll: Task.async(function*(time, shouldPause) {
+  setCurrentTimeAll: Task.async(function* (time, shouldPause) {
     if (this.traits.hasSetCurrentTimes) {
       yield this.animationsFront.setCurrentTimes(this.animationPlayers, time,
                                                  shouldPause);
@@ -305,7 +307,7 @@ var AnimationsController = {
    * @param {Number} rate.
    * @return {Promise} Resolves when the rate has been set.
    */
-  setPlaybackRateAll: Task.async(function*(rate) {
+  setPlaybackRateAll: Task.async(function* (rate) {
     if (this.traits.hasSetPlaybackRates) {
       // If the backend can set all playback rates at the same time, use that.
       yield this.animationsFront.setPlaybackRates(this.animationPlayers, rate);
@@ -323,7 +325,7 @@ var AnimationsController = {
   // called again.
   animationPlayers: [],
 
-  refreshAnimationPlayers: Task.async(function*(nodeFront) {
+  refreshAnimationPlayers: Task.async(function* (nodeFront) {
     this.destroyAnimationPlayers();
 
     this.animationPlayers = yield this.animationsFront
@@ -337,7 +339,7 @@ var AnimationsController = {
     }
   }),
 
-  onAnimationMutations: function(changes) {
+  onAnimationMutations: function (changes) {
     // Insert new players into this.animationPlayers when new animations are
     // added.
     for (let {type, player} of changes) {
@@ -374,7 +376,7 @@ var AnimationsController = {
     return time;
   },
 
-  destroyAnimationPlayers: function() {
+  destroyAnimationPlayers: function () {
     this.animationPlayers = [];
   }
 };

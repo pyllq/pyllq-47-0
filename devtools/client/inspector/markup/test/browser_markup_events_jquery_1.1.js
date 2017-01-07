@@ -23,8 +23,7 @@ const TEST_DATA = [
         attributes: [
           "jQuery"
         ],
-        handler: "// Handle when the DOM is ready\n" +
-                 "ready: function() {\n" +
+        handler: "ready: function() {\n" +
                  "  // Make sure that the DOM is not already loaded\n" +
                  "  if (!jQuery.isReady) {\n" +
                  "    // Remember that the DOM is ready\n" +
@@ -267,6 +266,6 @@ const TEST_DATA = [
 ];
 /*eslint-enable */
 
-add_task(function*() {
+add_task(function* () {
   yield runEventPopupTests(TEST_URL, TEST_DATA);
 });

@@ -6,6 +6,7 @@
 // that aren't initialized outside of a XUL app environment like AddonManager
 // and the "@mozilla.org/xre/app-info;1" component.
 
+Components.utils.import("resource://gre/modules/AppConstants.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/Troubleshoot.jsm");
 
@@ -36,7 +37,7 @@ var tests = [
         ok(true, "The snapshot should conform to the schema.");
       }
       catch (err) {
-        ok(false, err);
+        ok(false, "Schema mismatch, " + err);
       }
       done();
     });
@@ -113,10 +114,6 @@ const SNAPSHOT_SCHEMA = {
           type: "string",
         },
         osVersion: {
-          required: true,
-          type: "string",
-        },
-        arch: {
           required: true,
           type: "string",
         },
@@ -232,6 +229,9 @@ const SNAPSHOT_SCHEMA = {
         supportsHardwareH264: {
           type: "string",
         },
+        currentAudioBackend: {
+          type: "string",
+        },
         numAcceleratedWindowsMessage: {
           type: "array",
         },
@@ -301,6 +301,9 @@ const SNAPSHOT_SCHEMA = {
         webglRenderer: {
           type: "string",
         },
+        webgl2Renderer: {
+          type: "string",
+        },
         info: {
           type: "object",
         },
@@ -310,10 +313,13 @@ const SNAPSHOT_SCHEMA = {
             type: "string",
           },
         },
-        direct2DEnabledMessage: {
+        featureLog: {
+          type: "object",
+        },
+        crashGuards: {
           type: "array",
         },
-        webglRendererMessage: {
+        direct2DEnabledMessage: {
           type: "array",
         },
       },
@@ -434,19 +440,19 @@ const SNAPSHOT_SCHEMA = {
       type: "object",
       properties: {
         hasSeccompBPF: {
-          required: true,
+          required: AppConstants.platform == "linux",
           type: "boolean"
         },
         hasSeccompTSync: {
-          required: true,
+          required: AppConstants.platform == "linux",
           type: "boolean"
         },
         hasUserNamespaces: {
-          required: true,
+          required: AppConstants.platform == "linux",
           type: "boolean"
         },
         hasPrivilegedUserNamespaces: {
-          required: true,
+          required: AppConstants.platform == "linux",
           type: "boolean"
         },
         canSandboxContent: {
@@ -456,6 +462,10 @@ const SNAPSHOT_SCHEMA = {
         canSandboxMedia: {
           required: false,
           type: "boolean"
+        },
+        contentSandboxLevel: {
+          required: AppConstants.MOZ_CONTENT_SANDBOX,
+          type: "number"
         },
       },
     },

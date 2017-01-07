@@ -4,17 +4,22 @@
 
 // Tests that mosue interaction works fine with the table widget
 
+"use strict";
+
 const TEST_URI = "data:text/xml;charset=UTF-8,<?xml version='1.0'?>" +
   "<?xml-stylesheet href='chrome://global/skin/global.css'?>" +
-  "<?xml-stylesheet href='chrome://devtools/skin/light-theme.css'?>" +
-  "<?xml-stylesheet href='chrome://devtools/skin/widgets.css'?>" +
+
+  // Uncomment these lines to help with visual debugging. When uncommented they
+  // dump a couple of thousand errors in the log (bug 1258285)
+  // "<?xml-stylesheet href='chrome://devtools/skin/light-theme.css'?>" +
+  // "<?xml-stylesheet href='chrome://devtools/skin/widgets.css'?>" +
+
   "<window xmlns='http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul'" +
   " title='Table Widget' width='600' height='500'>" +
   "<box flex='1' class='theme-light'/></window>";
 const TEST_OPT = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
 
 const {TableWidget} = require("devtools/client/shared/widgets/TableWidget");
-const Promise = require("promise");
 
 var doc, table;
 
@@ -51,7 +56,7 @@ function endTests() {
   finish();
 }
 
-var startTests = Task.async(function*() {
+var startTests = Task.async(function* () {
   populateTable();
   yield testMouseInteraction();
   endTests();
@@ -120,7 +125,8 @@ function populateTable() {
 // Sends a click event on the passed DOM node in an async manner
 function click(node, button = 0) {
   if (button == 0) {
-    executeSoon(() => EventUtils.synthesizeMouseAtCenter(node, {}, doc.defaultView));
+    executeSoon(() => EventUtils.synthesizeMouseAtCenter(node, {},
+                                                         doc.defaultView));
   } else {
     executeSoon(() => EventUtils.synthesizeMouseAtCenter(node, {
       button: button,
@@ -132,7 +138,7 @@ function click(node, button = 0) {
 /**
  * Tests if clicking the table items does the expected behavior
  */
-var testMouseInteraction = Task.async(function*() {
+var testMouseInteraction = Task.async(function* () {
   info("Testing mouse interaction with the table");
   ok(!table.selectedRow, "Nothing should be selected beforehand");
 
@@ -143,7 +149,8 @@ var testMouseInteraction = Task.async(function*() {
      "Node should not have selected class before clicking");
   click(node);
   let id = yield event;
-  ok(node.classList.contains("theme-selected"), "Node has selected class after click");
+  ok(node.classList.contains("theme-selected"),
+     "Node has selected class after click");
   is(id, "id1", "Correct row was selected");
 
   info("clicking on third row to select it");
@@ -156,7 +163,7 @@ var testMouseInteraction = Task.async(function*() {
   id = yield event;
   ok(node2.classList.contains("theme-selected"),
      "New node has selected class after clicking");
-  is(id, "id3", "Correct table path is emitted for new node")
+  is(id, "id3", "Correct table path is emitted for new node");
   isnot(node, node2, "Old and new node are different");
   ok(!node.classList.contains("theme-selected"),
      "Old node should not have selected class after the click on new node");
@@ -167,7 +174,8 @@ var testMouseInteraction = Task.async(function*() {
   info("clicking on the 4th coulmn header to sort the table by it");
   ok(!node.hasAttribute("sorted"),
      "Node should not have sorted attribute before clicking");
-  ok(doc.querySelector("[sorted]"), "Although, something else should be sorted on");
+  ok(doc.querySelector("[sorted]"),
+     "Although, something else should be sorted on");
   isnot(doc.querySelector("[sorted]"), node, "Which is not equal to this node");
   click(node);
   id = yield event;
@@ -181,15 +189,12 @@ var testMouseInteraction = Task.async(function*() {
   // test context menu opening.
   // hiding second column
   // event listener for popupshown
-  event = Promise.defer();
-  table.menupopup.addEventListener("popupshown", function onPopupShown(e) {
-    table.menupopup.removeEventListener("popupshown", onPopupShown);
-    event.resolve();
-  })
-  info("right clicking on the first column header");
+  info("right click on the first column header");
   node = table.tbody.firstChild.firstChild.firstChild;
+  let onPopupShown = once(table.menupopup, "popupshown");
   click(node, 2);
-  yield event.promise;
+  yield onPopupShown;
+
   is(table.menupopup.querySelectorAll("[disabled]").length, 1,
      "Only 1 menuitem is disabled");
   is(table.menupopup.querySelector("[disabled]"),
@@ -197,6 +202,7 @@ var testMouseInteraction = Task.async(function*() {
      "Which is the unique column");
   // popup should be open now
   // clicking on second column label
+  let onPopupHidden = once(table.menupopup, "popuphidden");
   event = table.once(TableWidget.EVENTS.HEADER_CONTEXT_MENU);
   node = table.menupopup.querySelector("[data-id='col2']");
   info("selecting to hide the second column");
@@ -204,25 +210,24 @@ var testMouseInteraction = Task.async(function*() {
      "Column is not hidden before hiding it");
   click(node);
   id = yield event;
+  yield onPopupHidden;
   is(id, "col2", "Correct column was triggered to be hidden");
   is(table.tbody.children[2].getAttribute("hidden"), "true",
      "Column is hidden after hiding it");
 
   // hiding third column
   // event listener for popupshown
-  event = Promise.defer();
-  table.menupopup.addEventListener("popupshown", function onPopupShown(e) {
-    table.menupopup.removeEventListener("popupshown", onPopupShown);
-    event.resolve();
-  })
   info("right clicking on the first column header");
   node = table.tbody.firstChild.firstChild.firstChild;
+  onPopupShown = once(table.menupopup, "popupshown");
   click(node, 2);
-  yield event.promise;
+  yield onPopupShown;
+
   is(table.menupopup.querySelectorAll("[disabled]").length, 1,
      "Only 1 menuitem is disabled");
   // popup should be open now
   // clicking on second column label
+  onPopupHidden = once(table.menupopup, "popuphidden");
   event = table.once(TableWidget.EVENTS.HEADER_CONTEXT_MENU);
   node = table.menupopup.querySelector("[data-id='col3']");
   info("selecting to hide the second column");
@@ -230,21 +235,19 @@ var testMouseInteraction = Task.async(function*() {
      "Column is not hidden before hiding it");
   click(node);
   id = yield event;
+  yield onPopupHidden;
   is(id, "col3", "Correct column was triggered to be hidden");
   is(table.tbody.children[4].getAttribute("hidden"), "true",
      "Column is hidden after hiding it");
 
   // opening again to see if 2 items are disabled now
   // event listener for popupshown
-  event = Promise.defer();
-  table.menupopup.addEventListener("popupshown", function onPopupShown(e) {
-    table.menupopup.removeEventListener("popupshown", onPopupShown);
-    event.resolve();
-  })
   info("right clicking on the first column header");
   node = table.tbody.firstChild.firstChild.firstChild;
+  onPopupShown = once(table.menupopup, "popupshown");
   click(node, 2);
-  yield event.promise;
+  yield onPopupShown;
+
   is(table.menupopup.querySelectorAll("[disabled]").length, 2,
      "2 menuitems are disabled now as only 2 columns remain visible");
   is(table.menupopup.querySelectorAll("[disabled]")[0],
@@ -257,6 +260,7 @@ var testMouseInteraction = Task.async(function*() {
   // showing back 2nd column
   // popup should be open now
   // clicking on second column label
+  onPopupHidden = once(table.menupopup, "popuphidden");
   event = table.once(TableWidget.EVENTS.HEADER_CONTEXT_MENU);
   node = table.menupopup.querySelector("[data-id='col2']");
   info("selecting to hide the second column");
@@ -264,23 +268,22 @@ var testMouseInteraction = Task.async(function*() {
      "Column is hidden before unhiding it");
   click(node);
   id = yield event;
+  yield onPopupHidden;
   is(id, "col2", "Correct column was triggered to be hidden");
   ok(!table.tbody.children[2].hasAttribute("hidden"),
      "Column is not hidden after unhiding it");
 
   // showing back 3rd column
   // event listener for popupshown
-  event = Promise.defer();
-  table.menupopup.addEventListener("popupshown", function onPopupShown(e) {
-    table.menupopup.removeEventListener("popupshown", onPopupShown);
-    event.resolve();
-  })
   info("right clicking on the first column header");
   node = table.tbody.firstChild.firstChild.firstChild;
+  onPopupShown = once(table.menupopup, "popupshown");
   click(node, 2);
-  yield event.promise;
+  yield onPopupShown;
+
   // popup should be open now
   // clicking on second column label
+  onPopupHidden = once(table.menupopup, "popuphidden");
   event = table.once(TableWidget.EVENTS.HEADER_CONTEXT_MENU);
   node = table.menupopup.querySelector("[data-id='col3']");
   info("selecting to hide the second column");
@@ -288,6 +291,7 @@ var testMouseInteraction = Task.async(function*() {
      "Column is hidden before unhiding it");
   click(node);
   id = yield event;
+  yield onPopupHidden;
   is(id, "col3", "Correct column was triggered to be hidden");
   ok(!table.tbody.children[4].hasAttribute("hidden"),
      "Column is not hidden after unhiding it");

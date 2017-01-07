@@ -29,6 +29,9 @@
 #include "ScaledFontMac.h"
 #endif
 
+#ifdef MOZ_WIDGET_GTK
+#include "ScaledFontFontconfig.h"
+#endif
 
 #ifdef XP_DARWIN
 #include "DrawTargetCG.h"
@@ -50,7 +53,6 @@
 
 #include "DrawEventRecorder.h"
 
-#include "Preferences.h"
 #include "Logging.h"
 
 #include "mozilla/CheckedInt.h"
@@ -87,9 +89,8 @@ HasCPUIDBit(unsigned int level, CPUIDRegister reg, unsigned int bit)
 #define HAVE_CPU_DETECTION
 #else
 
-#if defined(_MSC_VER) && _MSC_VER >= 1600 && (defined(_M_IX86) || defined(_M_AMD64))
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_AMD64))
 // MSVC 2005 or later supports __cpuid by intrin.h
-// But it does't work on MSVC 2005 with SDK 7.1 (Bug 753772)
 #include <intrin.h>
 
 #define HAVE_CPU_DETECTION
@@ -155,9 +156,8 @@ HasCPUIDBit(unsigned int level, CPUIDRegister reg, unsigned int bit)
 namespace mozilla {
 namespace gfx {
 
-int32_t LoggingPrefs::sGfxLogLevel =
-  PreferenceAccess::RegisterLivePref("gfx.logging.level", &sGfxLogLevel,
-                                     LOG_DEFAULT);
+// In Gecko, this value is managed by gfx.logging.level in gfxPrefs.
+int32_t LoggingPrefs::sGfxLogLevel = LOG_DEFAULT;
 
 #ifdef WIN32
 ID3D11Device *Factory::mD3D11Device;
@@ -266,29 +266,28 @@ Factory::CheckSurfaceSize(const IntSize &sz,
     return false;
   }
 
-  // make sure the surface area doesn't overflow a int32_t
-  CheckedInt<int32_t> tmp = sz.width;
-  tmp *= sz.height;
-  if (!tmp.isValid()) {
-    gfxDebug() << "Surface size too large (would overflow)!";
+#if defined(XP_MACOSX)
+  // CoreGraphics is limited to images < 32K in *height*,
+  // so clamp all surfaces on the Mac to that height
+  if (sz.height > SHRT_MAX) {
+    gfxDebug() << "Surface size too large (exceeds CoreGraphics limit)!";
     return false;
   }
+#endif
 
   // assuming 4 bytes per pixel, make sure the allocation size
   // doesn't overflow a int32_t either
   CheckedInt<int32_t> stride = sz.width;
   stride *= 4;
-
-  // When aligning the stride to 16 bytes, it can grow by up to 15 bytes.
-  stride += 16 - 1;
-
+  if (stride.isValid()) {
+    stride = GetAlignedStride<16>(stride.value());
+  }
   if (!stride.isValid()) {
     gfxDebug() << "Surface size too large (stride overflows int32_t)!";
     return false;
   }
 
-  CheckedInt<int32_t> numBytes = GetAlignedStride<16>(sz.width * 4);
-  numBytes *= sz.height;
+  CheckedInt<int32_t> numBytes = stride * sz.height;
   if (!numBytes.isValid()) {
     gfxDebug() << "Surface size too large (allocation size would overflow int32_t)!";
     return false;
@@ -357,7 +356,6 @@ Factory::CreateDrawTarget(BackendType aBackend, const IntSize &aSize, SurfaceFor
     }
 #endif
   default:
-    gfxDebug() << "Invalid draw target type specified.";
     return nullptr;
   }
 
@@ -384,7 +382,8 @@ Factory::CreateDrawTargetForData(BackendType aBackend,
                                  unsigned char *aData,
                                  const IntSize &aSize,
                                  int32_t aStride,
-                                 SurfaceFormat aFormat)
+                                 SurfaceFormat aFormat,
+                                 bool aUninitialized)
 {
   MOZ_ASSERT(aData);
   if (!AllowedSurfaceSize(aSize)) {
@@ -400,7 +399,7 @@ Factory::CreateDrawTargetForData(BackendType aBackend,
     {
       RefPtr<DrawTargetSkia> newTarget;
       newTarget = new DrawTargetSkia();
-      newTarget->Init(aData, aSize, aStride, aFormat);
+      newTarget->Init(aData, aSize, aStride, aFormat, aUninitialized);
       retVal = newTarget;
       break;
     }
@@ -435,7 +434,7 @@ Factory::CreateDrawTargetForData(BackendType aBackend,
   }
 
   if (!retVal) {
-    gfxCriticalNote << "Failed to create DrawTarget, Type: " << int(aBackend) << " Size: " << aSize << ", Data: " << hexa(aData) << ", Stride: " << aStride;
+    gfxCriticalNote << "Failed to create DrawTarget, Type: " << int(aBackend) << " Size: " << aSize << ", Data: " << hexa((void *)aData) << ", Stride: " << aStride;
   }
 
   return retVal.forget();
@@ -578,6 +577,14 @@ Factory::CreateScaledFontWithCairo(const NativeFont& aNativeFont, Float aSize, c
   return nullptr;
 #endif
 }
+
+#ifdef MOZ_WIDGET_GTK
+already_AddRefed<ScaledFont>
+Factory::CreateScaledFontForFontconfigFont(cairo_scaled_font_t* aScaledFont, FcPattern* aPattern, Float aSize)
+{
+  return MakeAndAddRef<ScaledFontFontconfig>(aScaledFont, aPattern, aSize);
+}
+#endif
 
 already_AddRefed<DrawTarget>
 Factory::CreateDualDrawTarget(DrawTarget *targetA, DrawTarget *targetB)
@@ -728,20 +735,6 @@ Factory::PurgeAllCaches()
 {
 }
 
-#ifdef USE_SKIA_FREETYPE
-already_AddRefed<GlyphRenderingOptions>
-Factory::CreateCairoGlyphRenderingOptions(FontHinting aHinting, bool aAutoHinting, AntialiasMode aAntialiasMode)
-{
-  RefPtr<GlyphRenderingOptionsCairo> options =
-    new GlyphRenderingOptionsCairo();
-
-  options->SetHinting(aHinting);
-  options->SetAutoHinting(aAutoHinting);
-  options->SetAntialiasMode(aAntialiasMode);
-  return options.forget();
-}
-#endif
-
 already_AddRefed<DrawTarget>
 Factory::CreateDrawTargetForCairoSurface(cairo_surface_t* aSurface, const IntSize& aSize, SurfaceFormat* aFormat)
 {
@@ -802,18 +795,25 @@ Factory::CreateCGGlyphRenderingOptions(const Color &aFontSmoothingBackgroundColo
 #endif
 
 already_AddRefed<DataSourceSurface>
-Factory::CreateWrappingDataSourceSurface(uint8_t *aData, int32_t aStride,
+Factory::CreateWrappingDataSourceSurface(uint8_t *aData,
+                                         int32_t aStride,
                                          const IntSize &aSize,
-                                         SurfaceFormat aFormat)
+                                         SurfaceFormat aFormat,
+                                         SourceSurfaceDeallocator aDeallocator /* = nullptr */,
+                                         void* aClosure /* = nullptr */)
 {
   if (aSize.width <= 0 || aSize.height <= 0) {
     return nullptr;
   }
+  if (!aDeallocator && aClosure) {
+    return nullptr;
+  }
+
   MOZ_ASSERT(aData);
 
   RefPtr<SourceSurfaceRawData> newSurf = new SourceSurfaceRawData();
+  newSurf->InitWrappingData(aData, aSize, aStride, aFormat, aDeallocator, aClosure);
 
-  newSurf->InitWrappingData(aData, aSize, aStride, aFormat, false);
   return newSurf.forget();
 }
 
@@ -827,8 +827,12 @@ Factory::CreateDataSourceSurface(const IntSize &aSize,
     return nullptr;
   }
 
+  // Skia doesn't support RGBX, so memset RGBX to 0xFF
+  bool clearSurface = aZero || aFormat == SurfaceFormat::B8G8R8X8;
+  uint8_t clearValue = aFormat == SurfaceFormat::B8G8R8X8 ? 0xFF : 0;
+
   RefPtr<SourceSurfaceAlignedRawData> newSurf = new SourceSurfaceAlignedRawData();
-  if (newSurf->Init(aSize, aFormat, aZero)) {
+  if (newSurf->Init(aSize, aFormat, clearSurface, clearValue)) {
     return newSurf.forget();
   }
 
@@ -847,8 +851,12 @@ Factory::CreateDataSourceSurfaceWithStride(const IntSize &aSize,
     return nullptr;
   }
 
+  // Skia doesn't support RGBX, so memset RGBX to 0xFF
+  bool clearSurface = aZero || aFormat == SurfaceFormat::B8G8R8X8;
+  uint8_t clearValue = aFormat == SurfaceFormat::B8G8R8X8 ? 0xFF : 0;
+
   RefPtr<SourceSurfaceAlignedRawData> newSurf = new SourceSurfaceAlignedRawData();
-  if (newSurf->InitWithStride(aSize, aFormat, aStride, aZero)) {
+  if (newSurf->Init(aSize, aFormat, clearSurface, clearValue, aStride)) {
     return newSurf.forget();
   }
 

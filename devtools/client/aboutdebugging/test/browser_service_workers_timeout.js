@@ -5,10 +5,8 @@
 
 // Service workers can't be loaded from chrome://,
 // but http:// is ok with dom.serviceWorkers.testing.enabled turned on.
-const HTTP_ROOT = CHROME_ROOT.replace("chrome://mochitests/content/",
-                                      "http://mochi.test:8888/");
-const SERVICE_WORKER = HTTP_ROOT + "service-workers/empty-sw.js";
-const TAB_URL = HTTP_ROOT + "service-workers/empty-sw.html";
+const SERVICE_WORKER = URL_ROOT + "service-workers/empty-sw.js";
+const TAB_URL = URL_ROOT + "service-workers/empty-sw.html";
 
 const SW_TIMEOUT = 1000;
 
@@ -29,7 +27,7 @@ add_task(function* () {
 
   let swTab = yield addTab(TAB_URL);
 
-  let serviceWorkersElement = document.getElementById("service-workers");
+  let serviceWorkersElement = getServiceWorkerList(document);
   yield waitForMutation(serviceWorkersElement, { childList: true });
 
   assertHasTarget(true, document, "service-workers", SERVICE_WORKER);
@@ -48,7 +46,7 @@ add_task(function* () {
 
   // Click on it and wait for the toolbox to be ready
   let onToolboxReady = new Promise(done => {
-    gDevTools.once("toolbox-ready", function(e, toolbox) {
+    gDevTools.once("toolbox-ready", function (e, toolbox) {
       done(toolbox);
     });
   });
@@ -78,8 +76,12 @@ add_task(function* () {
     "The debug button was removed when the worker was killed");
 
   // Finally, unregister the service worker itself.
-  yield unregisterServiceWorker(swTab);
-  ok(true, "Service worker registration unregistered");
+  try {
+    yield unregisterServiceWorker(swTab);
+    ok(true, "Service worker registration unregistered");
+  } catch (e) {
+    ok(false, "SW not unregistered; " + e);
+  }
 
   // Now ensure that the worker registration is correctly removed.
   // The list should update once the registration is destroyed.

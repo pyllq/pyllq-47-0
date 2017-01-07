@@ -70,15 +70,15 @@ typedef mozilla::docshell::OfflineCacheUpdateChild OfflineCacheUpdateChild;
 typedef mozilla::docshell::OfflineCacheUpdateGlue OfflineCacheUpdateGlue;
 
 //
-// To enable logging (see prlog.h for full details):
+// To enable logging (see mozilla/Logging.h for full details):
 //
-//    set NSPR_LOG_MODULES=nsOfflineCacheUpdate:5
-//    set NSPR_LOG_FILE=offlineupdate.log
+//    set MOZ_LOG=nsOfflineCacheUpdate:5
+//    set MOZ_LOG_FILE=offlineupdate.log
 //
 // this enables LogLevel::Debug level information and places all output in
 // the file offlineupdate.log
 //
-PRLogModuleInfo *gOfflineCacheUpdateLog;
+LazyLogModule gOfflineCacheUpdateLog("nsOfflineCacheUpdate");
 
 #undef LOG
 #define LOG(args) MOZ_LOG(gOfflineCacheUpdateLog, mozilla::LogLevel::Debug, args)
@@ -262,9 +262,6 @@ nsOfflineCacheUpdateService::~nsOfflineCacheUpdateService()
 nsresult
 nsOfflineCacheUpdateService::Init()
 {
-    if (!gOfflineCacheUpdateLog)
-        gOfflineCacheUpdateLog = PR_NewLogModule("nsOfflineCacheUpdate");
-
     // Observe xpcom-shutdown event
     nsCOMPtr<nsIObserverService> observerService =
       mozilla::services::GetObserverService();
@@ -383,6 +380,7 @@ nsOfflineCacheUpdateService::UpdateFinished(nsOfflineCacheUpdate *aUpdate)
 
     // keep this item alive until we're done notifying observers
     RefPtr<nsOfflineCacheUpdate> update = mUpdates[0];
+    Unused << update;
     mUpdates.RemoveElementAt(0);
     mUpdateRunning = false;
 

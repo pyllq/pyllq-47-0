@@ -50,7 +50,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Preferences.h"
 
-PRLogModuleInfo* nsURILoader::mLog = nullptr;
+mozilla::LazyLogModule nsURILoader::mLog("URILoader");
 
 #define LOG(args) MOZ_LOG(nsURILoader::mLog, mozilla::LogLevel::Debug, args)
 #define LOG_ERROR(args) MOZ_LOG(nsURILoader::mLog, mozilla::LogLevel::Error, args)
@@ -384,8 +384,6 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest *request, nsISupports * 
 
   LOG(("  forceExternalHandling: %s", forceExternalHandling ? "yes" : "no"));
 
-  // We're going to try to find a contentListener that can handle our data
-  nsCOMPtr<nsIURIContentListener> contentListener;
   // The type or data the contentListener wants.
   nsXPIDLCString desiredContentType;
 
@@ -753,9 +751,6 @@ nsDocumentOpenInfo::TryContentListener(nsIURIContentListener* aListener,
 
 nsURILoader::nsURILoader()
 {
-  if (!mLog) {
-    mLog = PR_NewLogModule("URILoader");
-  }
 }
 
 nsURILoader::~nsURILoader()

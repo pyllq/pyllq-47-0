@@ -41,6 +41,17 @@ XPCOMUtils.defineLazyGetter(this, "SimpleServiceDiscovery", function() {
 var global = this;
 
 
+addEventListener("MozDOMPointerLock:Entered", function(aEvent) {
+  sendAsyncMessage("PointerLock:Entered", {
+    originNoSuffix: aEvent.target.nodePrincipal.originNoSuffix
+  });
+});
+
+addEventListener("MozDOMPointerLock:Exited", function(aEvent) {
+  sendAsyncMessage("PointerLock:Exited");
+});
+
+
 addMessageListener("Browser:HideSessionRestoreButton", function (message) {
   // Hide session restore button on about:home
   let doc = content.document;
@@ -148,6 +159,7 @@ var AboutHomeListener = {
     addEventListener("click", this, true);
     addEventListener("pagehide", this, true);
 
+    sendAsyncMessage("AboutHome:MaybeShowAutoMigrationUndoNotification");
     sendAsyncMessage("AboutHome:RequestUpdate");
   },
 
@@ -246,20 +258,28 @@ var AboutReaderListener = {
 
   _articlePromise: null,
 
+  _isLeavingReaderMode: false,
+
   init: function() {
     addEventListener("AboutReaderContentLoaded", this, false, true);
     addEventListener("DOMContentLoaded", this, false);
     addEventListener("pageshow", this, false);
     addEventListener("pagehide", this, false);
-    addMessageListener("Reader:ParseDocument", this);
+    addMessageListener("Reader:ToggleReaderMode", this);
     addMessageListener("Reader:PushState", this);
   },
 
   receiveMessage: function(message) {
     switch (message.name) {
-      case "Reader:ParseDocument":
-        this._articlePromise = ReaderMode.parseDocument(content.document).catch(Cu.reportError);
-        content.document.location = "about:reader?url=" + encodeURIComponent(message.data.url);
+      case "Reader:ToggleReaderMode":
+        let url = content.document.location.href;
+        if (!this.isAboutReader) {
+          this._articlePromise = ReaderMode.parseDocument(content.document).catch(Cu.reportError);
+          ReaderMode.enterReaderMode(docShell, content);
+        } else {
+          this._isLeavingReaderMode = true;
+          ReaderMode.leaveReaderMode(docShell, content);
+        }
         break;
 
       case "Reader:PushState":
@@ -296,7 +316,13 @@ var AboutReaderListener = {
 
       case "pagehide":
         this.cancelPotentialPendingReadabilityCheck();
-        sendAsyncMessage("Reader:UpdateReaderButton", { isArticle: false });
+        // this._isLeavingReaderMode is used here to keep the Reader Mode icon
+        // visible in the location bar when transitioning from reader-mode page
+        // back to the source page.
+        sendAsyncMessage("Reader:UpdateReaderButton", { isArticle: this._isLeavingReaderMode });
+        if (this._isLeavingReaderMode) {
+          this._isLeavingReaderMode = false;
+        }
         break;
 
       case "pageshow":
@@ -346,7 +372,16 @@ var AboutReaderListener = {
     addEventListener("MozAfterPaint", this._pendingReadabilityCheck);
   },
 
-  onPaintWhenWaitedFor: function(forceNonArticle) {
+  onPaintWhenWaitedFor: function(forceNonArticle, event) {
+    // In non-e10s, we'll get called for paints other than ours, and so it's
+    // possible that this page hasn't been laid out yet, in which case we
+    // should wait until we get an event that does relate to our layout. We
+    // determine whether any of our content got painted by checking if there
+    // are any painted rects.
+    if (!event.clientRects.length) {
+      return;
+    }
+
     this.cancelPotentialPendingReadabilityCheck();
     // Only send updates when there are articles; there's no point updating with
     // |false| all the time.
@@ -502,24 +537,27 @@ var PageStyleHandler = {
 
       let URI;
       try {
-        URI = Services.io.newURI(currentStyleSheet.href, null, null);
+        if (!currentStyleSheet.ownerNode ||
+            // special-case style nodes, which have no href
+            currentStyleSheet.ownerNode.nodeName.toLowerCase() != "style") {
+          URI = Services.io.newURI(currentStyleSheet.href, null, null);
+        }
       } catch(e) {
         if (e.result != Cr.NS_ERROR_MALFORMED_URI) {
           throw e;
         }
+        continue;
       }
 
-      if (URI) {
-        // We won't send data URIs all of the way up to the parent, as these
-        // can be arbitrarily large.
-        let sentURI = URI.scheme == "data" ? null : URI.spec;
+      // We won't send data URIs all of the way up to the parent, as these
+      // can be arbitrarily large.
+      let sentURI = (!URI || URI.scheme == "data") ? null : URI.spec;
 
-        result.push({
-          title: currentStyleSheet.title,
-          disabled: currentStyleSheet.disabled,
-          href: sentURI,
-        });
-      }
+      result.push({
+        title: currentStyleSheet.title,
+        disabled: currentStyleSheet.disabled,
+        href: sentURI,
+      });
     }
 
     return result;
@@ -594,7 +632,6 @@ if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
 
 
 var DOMFullscreenHandler = {
-  _fullscreenDoc: null,
 
   init: function() {
     addMessageListener("DOMFullscreen:Entered", this);
@@ -615,9 +652,11 @@ var DOMFullscreenHandler = {
   },
 
   receiveMessage: function(aMessage) {
+    let windowUtils = this._windowUtils;
     switch(aMessage.name) {
       case "DOMFullscreen:Entered": {
-        if (!this._windowUtils.handleFullscreenRequests() &&
+        this._lastTransactionId = windowUtils.lastTransactionId;
+        if (!windowUtils.handleFullscreenRequests() &&
             !content.document.fullscreenElement) {
           // If we don't actually have any pending fullscreen request
           // to handle, neither we have been in fullscreen, tell the
@@ -627,10 +666,14 @@ var DOMFullscreenHandler = {
         break;
       }
       case "DOMFullscreen:CleanUp": {
-        if (this._windowUtils) {
-          this._windowUtils.exitFullscreen();
+        // If we've exited fullscreen at this point, no need to record
+        // transaction id or call exit fullscreen. This is especially
+        // important for non-e10s, since in that case, it is possible
+        // that no more paint would be triggered after this point.
+        if (content.document.fullscreenElement && windowUtils) {
+          this._lastTransactionId = windowUtils.lastTransactionId;
+          windowUtils.exitFullscreen();
         }
-        this._fullscreenDoc = null;
         break;
       }
     }
@@ -643,9 +686,8 @@ var DOMFullscreenHandler = {
         break;
       }
       case "MozDOMFullscreen:NewOrigin": {
-        this._fullscreenDoc = aEvent.target;
         sendAsyncMessage("DOMFullscreen:NewOrigin", {
-          originNoSuffix: this._fullscreenDoc.nodePrincipal.originNoSuffix,
+          originNoSuffix: aEvent.target.nodePrincipal.originNoSuffix,
         });
         break;
       }
@@ -665,8 +707,15 @@ var DOMFullscreenHandler = {
         break;
       }
       case "MozAfterPaint": {
-        removeEventListener("MozAfterPaint", this);
-        sendAsyncMessage("DOMFullscreen:Painted");
+        // Only send Painted signal after we actually finish painting
+        // the transition for the fullscreen change.
+        // Note that this._lastTransactionId is not set when in non-e10s
+        // mode, so we need to check that explicitly.
+        if (!this._lastTransactionId ||
+            aEvent.transactionId > this._lastTransactionId) {
+          removeEventListener("MozAfterPaint", this);
+          sendAsyncMessage("DOMFullscreen:Painted");
+        }
         break;
       }
     }
@@ -848,8 +897,40 @@ var RefreshBlocker = {
 
 RefreshBlocker.init();
 
+var UserContextIdNotifier = {
+  init() {
+    addEventListener("DOMWindowCreated", this);
+  },
+
+  uninit() {
+    removeEventListener("DOMWindowCreated", this);
+  },
+
+  handleEvent(aEvent) {
+    // When the window is created, we want to inform the tabbrowser about
+    // the userContextId in use in order to update the UI correctly.
+    // Just because we cannot change the userContextId from an active docShell,
+    // we don't need to check DOMContentLoaded again.
+    this.uninit();
+
+    // We use the docShell because content.document can have been loaded before
+    // setting the originAttributes.
+    let loadContext = docShell.QueryInterface(Ci.nsILoadContext);
+    let userContextId = loadContext.originAttributes.userContextId;
+
+    sendAsyncMessage("Browser:WindowCreated", { userContextId });
+  }
+};
+
+UserContextIdNotifier.init();
+
 ExtensionContent.init(this);
 addEventListener("unload", () => {
   ExtensionContent.uninit(this);
   RefreshBlocker.uninit();
+});
+
+addEventListener("MozAfterPaint", function onFirstPaint() {
+  removeEventListener("MozAfterPaint", onFirstPaint);
+  sendAsyncMessage("Browser:FirstPaint");
 });

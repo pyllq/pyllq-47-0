@@ -22,14 +22,43 @@
 #include "mozilla/LoadContext.h"
 #include "mozilla/Telemetry.h"
 #include "nsContentUtils.h"
+#include "nsIURLFormatter.h"
 
 static const char* gQuitApplicationMessage = "quit-application";
 
+// Limit the list file size to 32mb
+const uint32_t MAX_FILE_SIZE = (32 * 1024 * 1024);
+
 #undef LOG
 
-// NSPR_LOG_MODULES=UrlClassifierStreamUpdater:5
-static const PRLogModuleInfo *gUrlClassifierStreamUpdaterLog = nullptr;
-#define LOG(args) MOZ_LOG(gUrlClassifierStreamUpdaterLog, mozilla::LogLevel::Debug, args)
+// MOZ_LOG=UrlClassifierStreamUpdater:5
+static mozilla::LazyLogModule gUrlClassifierStreamUpdaterLog("UrlClassifierStreamUpdater");
+#define LOG(args) TrimAndLog args
+
+// Calls nsIURLFormatter::TrimSensitiveURLs to remove sensitive
+// info from the logging message.
+static void TrimAndLog(const char* aFmt, ...)
+{
+  nsString raw;
+
+  va_list ap;
+  va_start(ap, aFmt);
+  raw.AppendPrintf(aFmt, ap);
+  va_end(ap);
+
+  nsCOMPtr<nsIURLFormatter> urlFormatter =
+    do_GetService("@mozilla.org/toolkit/URLFormatterService;1");
+
+  nsString trimmed;
+  nsresult rv = urlFormatter->TrimSensitiveURLs(raw, trimmed);
+  if (NS_FAILED(rv)) {
+    trimmed = EmptyString();
+  }
+
+  MOZ_LOG(gUrlClassifierStreamUpdaterLog,
+          mozilla::LogLevel::Debug,
+          (NS_ConvertUTF16toUTF8(trimmed).get()));
+}
 
 // This class does absolutely nothing, except pass requests onto the DBService.
 
@@ -41,8 +70,6 @@ nsUrlClassifierStreamUpdater::nsUrlClassifierStreamUpdater()
   : mIsUpdating(false), mInitialized(false), mDownloadError(false),
     mBeganStream(false), mChannel(nullptr)
 {
-  if (!gUrlClassifierStreamUpdaterLog)
-    gUrlClassifierStreamUpdaterLog = PR_NewLogModule("UrlClassifierStreamUpdater");
   LOG(("nsUrlClassifierStreamUpdater init [this=%p]", this));
 }
 
@@ -351,8 +378,10 @@ nsUrlClassifierStreamUpdater::StreamFinished(nsresult status,
     return NS_OK;
   }
 
-  // Wait the requested amount of time before starting a new stream.
-  // This appears to be a duplicate timer (see bug 1110891)
+  // This timer is for fetching indirect updates ("forwards") from any "u:" lines
+  // that we encountered while processing the server response. It is NOT for
+  // scheduling the next time we pull the list from the server. That's a different
+  // timer in listmanager.js (see bug 1110891).
   nsresult rv;
   mTimer = do_CreateInstance("@mozilla.org/timer;1", &rv);
   if (NS_SUCCEEDED(rv)) {
@@ -645,6 +674,11 @@ nsUrlClassifierStreamUpdater::OnDataAvailable(nsIRequest *request,
     return NS_ERROR_NOT_INITIALIZED;
 
   LOG(("OnDataAvailable (%d bytes)", aLength));
+
+  if (aSourceOffset > MAX_FILE_SIZE) {
+    LOG(("OnDataAvailable::Abort because exceeded the maximum file size(%lld)", aSourceOffset));
+    return NS_ERROR_FILE_TOO_BIG;
+  }
 
   nsresult rv;
 

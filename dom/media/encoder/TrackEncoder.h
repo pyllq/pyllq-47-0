@@ -10,7 +10,7 @@
 
 #include "AudioSegment.h"
 #include "EncodedFrameContainer.h"
-#include "StreamBuffer.h"
+#include "StreamTracks.h"
 #include "TrackMetadataBase.h"
 #include "VideoSegment.h"
 #include "MediaStreamGraph.h"
@@ -48,12 +48,7 @@ public:
    * MediaStreamGraph. Called on the MediaStreamGraph thread.
    */
   void NotifyEvent(MediaStreamGraph* aGraph,
-                   MediaStreamListener::MediaStreamGraphEvent event)
-  {
-    if (event == MediaStreamListener::MediaStreamGraphEvent::EVENT_REMOVED) {
-      NotifyEndOfStream();
-    }
-  }
+                   MediaStreamGraphEvent event);
 
   /**
    * Creates and sets up meta data for a specific codec, called on the worker
@@ -261,6 +256,7 @@ public:
     , mDisplayHeight(0)
     , mTrackRate(0)
     , mTotalFrameDuration(0)
+    , mLastFrameDuration(0)
     , mVideoBitrate(0)
   {}
 
@@ -337,10 +333,11 @@ protected:
   StreamTime mTotalFrameDuration;
 
   /**
-   * The last unique frame we've sent to track encoder, kept track of in
-   * subclasses.
+   * The last unique frame and duration we've sent to track encoder,
+   * kept track of in subclasses.
    */
   VideoFrame mLastFrame;
+  StreamTime mLastFrameDuration;
 
   /**
    * A segment queue of audio track data, protected by mReentrantMonitor.

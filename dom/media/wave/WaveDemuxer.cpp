@@ -10,7 +10,8 @@
 #include <algorithm>
 
 #include "mozilla/Assertions.h"
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
+#include "nsAutoPtr.h"
 #include "VideoUtils.h"
 #include "TimeUnits.h"
 #include "prenv.h"
@@ -112,8 +113,6 @@ WAVTrackDemuxer::Init()
     uint32_t aChunkName = mHeaderParser.GiveHeader().ChunkName();
     uint32_t aChunkSize = mHeaderParser.GiveHeader().ChunkSize();
 
-    aChunkSize += aChunkSize % 2;
-
     if (aChunkName == FRMT_CODE) {
       if (!FmtChunkParserInit()) {
         return false;
@@ -134,7 +133,8 @@ WAVTrackDemuxer::Init()
       }
       break;
     } else {
-      mOffset += aChunkSize; // Skip other irrelevant chunks.
+      // Wave files are 2-byte aligned so we need to round up
+      mOffset += (aChunkSize + 1) & ~1; // Skip other irrelevant chunks.
     }
     mHeaderParser.Reset();
   }
@@ -628,8 +628,6 @@ WAVTrackDemuxer::Read(uint8_t* aBuffer, int64_t aOffset, int32_t aSize)
 uint32_t
 RIFFParser::Parse(ByteReader& aReader)
 {
-  MOZ_ASSERT(&aReader);
-
   while (aReader.CanRead8() && !mRiffHeader.ParseNext(aReader.ReadU8())) { }
 
   if (mRiffHeader.IsValid()) {
@@ -784,8 +782,6 @@ HeaderParser::ChunkHeader::Update(uint8_t c)
 uint32_t
 FormatParser::Parse(ByteReader& aReader)
 {
-  MOZ_ASSERT(&aReader);
-
   while (aReader.CanRead8() && !mFmtChunk.ParseNext(aReader.ReadU8())) { }
 
   if (mFmtChunk.IsValid()) {

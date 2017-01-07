@@ -10,7 +10,7 @@
  * nsWindow - Native window management and event handling.
  */
 
-#include "nsAutoPtr.h"
+#include "mozilla/RefPtr.h"
 #include "nsBaseWidget.h"
 #include "nsWindowBase.h"
 #include "nsdefs.h"
@@ -25,7 +25,6 @@
 #include "nsITimer.h"
 #include "nsRegion.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/gfx/CriticalSection.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/TimeStamp.h"
 #include "nsMargin.h"
@@ -58,6 +57,7 @@ class imgIContainer;
 namespace mozilla {
 namespace widget {
 class NativeKey;
+class WinCompositorWidget;
 struct MSGResult;
 } // namespace widget
 } // namespacw mozilla;
@@ -86,6 +86,7 @@ public:
   // nsWindowBase
   virtual void InitEvent(mozilla::WidgetGUIEvent& aEvent,
                          LayoutDeviceIntPoint* aPoint = nullptr) override;
+  virtual WidgetEventTime CurrentMessageWidgetEventTime() const override;
   virtual bool DispatchWindowEvent(mozilla::WidgetGUIEvent* aEvent) override;
   virtual bool DispatchKeyboardEvent(mozilla::WidgetKeyboardEvent* aEvent) override;
   virtual bool DispatchWheelEvent(mozilla::WidgetWheelEvent* aEvent) override;
@@ -170,8 +171,7 @@ public:
   virtual bool            HasPendingInputEvent() override;
   virtual LayerManager*   GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) override;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
   NS_IMETHOD              OnDefaultButtonLoaded(const LayoutDeviceIntRect& aButtonRect) override;
   virtual nsresult        SynthesizeNativeKeyEvent(int32_t aNativeKeyboardLayout,
                                                    int32_t aNativeKeyCode,
@@ -199,6 +199,8 @@ public:
   NS_IMETHOD_(void)       SetInputContext(const InputContext& aContext,
                                           const InputContextAction& aAction) override;
   NS_IMETHOD_(InputContext) GetInputContext() override;
+  NS_IMETHOD_(TextEventDispatcherListener*)
+    GetNativeTextEventDispatcherListener() override;
 #ifdef MOZ_XUL
   virtual void            SetTransparencyMode(nsTransparencyMode aMode) override;
   virtual nsTransparencyMode GetTransparencyMode() override;
@@ -208,8 +210,6 @@ public:
   NS_IMETHOD              GetNonClientMargins(LayoutDeviceIntMargin& aMargins) override;
   NS_IMETHOD              SetNonClientMargins(LayoutDeviceIntMargin& aMargins) override;
   void                    SetDrawsInTitlebar(bool aState) override;
-  already_AddRefed<mozilla::gfx::DrawTarget> StartRemoteDrawing() override;
-  virtual void            EndRemoteDrawing() override;
   virtual void            UpdateWindowDraggingRegion(const LayoutDeviceIntRegion& aRegion) override;
 
   virtual void            UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries) override;
@@ -301,8 +301,6 @@ public:
   bool IsPopup();
   virtual bool ShouldUseOffMainThreadCompositing() override;
 
-  bool CaptureWidgetOnScreen(RefPtr<mozilla::gfx::DrawTarget> aDT) override;
-
   const IMEContext& DefaultIMC() const { return mDefaultIMC; }
 
   virtual void SetCandidateWindowForPlugin(
@@ -310,15 +308,17 @@ public:
                    aPosition) override;
   virtual void DefaultProcOfPluginEvent(
                  const mozilla::WidgetPluginEvent& aEvent) override;
+  virtual nsresult OnWindowedPluginKeyEvent(
+                     const mozilla::NativeEventData& aKeyEventData,
+                     nsIKeyEventInPluginCallback* aCallback) override;
+
+  void GetCompositorWidgetInitData(mozilla::widget::CompositorWidgetInitData* aInitData) override;
 
 protected:
   virtual ~nsWindow();
 
   virtual void WindowUsesOMTC() override;
   virtual void RegisterTouchWindow() override;
-
-  virtual nsresult NotifyIMEInternal(
-                     const IMENotification& aIMENotification) override;
 
   // A magic number to identify the FAKETRACKPOINTSCROLLABLE window created
   // when the trackpoint hack is enabled.
@@ -407,7 +407,7 @@ protected:
   static bool             ConvertStatus(nsEventStatus aStatus);
   static void             PostSleepWakeNotification(const bool aIsSleepMode);
   int32_t                 ClientMarginHitTestPoint(int32_t mx, int32_t my);
-  TimeStamp               GetMessageTimeStamp(LONG aEventTime);
+  TimeStamp               GetMessageTimeStamp(LONG aEventTime) const;
   static void             UpdateFirstEventTime(DWORD aEventTime);
   void                    FinishLiveResizing(ResizeState aNewState);
 
@@ -467,10 +467,6 @@ protected:
 private:
   void                    SetWindowTranslucencyInner(nsTransparencyMode aMode);
   nsTransparencyMode      GetWindowTranslucencyInner() const { return mTransparencyMode; }
-  void                    ResizeTranslucentWindow(int32_t aNewWidth, int32_t aNewHeight, bool force = false);
-  nsresult                UpdateTranslucentWindow();
-  void                    ClearTranslucentWindow();
-  void                    SetupTranslucentWindowMemoryBitmap(nsTransparencyMode aMode);
   void                    UpdateGlass();
 protected:
 #endif // MOZ_XUL
@@ -485,14 +481,30 @@ protected:
   static bool             IsTopLevelMouseExit(HWND aWnd);
   virtual nsresult        SetWindowClipRegion(const nsTArray<LayoutDeviceIntRect>& aRects,
                                               bool aIntersectWithExisting) override;
-  nsIntRegion             GetRegionToPaint(bool aForceFullRepaint, 
+  nsIntRegion             GetRegionToPaint(bool aForceFullRepaint,
                                            PAINTSTRUCT ps, HDC aDC);
   static void             ActivateOtherWindowHelper(HWND aWnd);
   void                    ClearCachedResources();
   nsIWidgetListener*      GetPaintListener();
-  static bool             IsRenderMode(gfxWindowsPlatform::RenderMode aMode);
-  virtual bool            PreRender(LayerManagerComposite*) override;
-  virtual void            PostRender(LayerManagerComposite*) override;
+
+  already_AddRefed<SourceSurface> CreateScrollSnapshot() override;
+
+  struct ScrollSnapshot
+  {
+    RefPtr<gfxWindowsSurface> surface;
+    bool surfaceHasSnapshot = false;
+    RECT clip;
+  };
+
+  ScrollSnapshot* EnsureSnapshotSurface(ScrollSnapshot& aSnapshotData,
+                                        const mozilla::gfx::IntSize& aSize);
+
+  ScrollSnapshot mFullSnapshot;
+  ScrollSnapshot mPartialSnapshot;
+  ScrollSnapshot* mCurrentSnapshot = nullptr;
+
+  already_AddRefed<SourceSurface>
+    GetFallbackScrollSnapshot(const RECT& aRequiredClip);
 
 protected:
   nsCOMPtr<nsIWidget>   mParent;
@@ -555,7 +567,7 @@ protected:
 
   // Indicates custom frames are enabled
   bool                  mCustomNonClient;
-  // Cached copy of L&F's resize border  
+  // Cached copy of L&F's resize border
   int32_t               mHorResizeMargin;
   int32_t               mVertResizeMargin;
   // Height of the caption plus border
@@ -589,7 +601,6 @@ protected:
 
   // Graphics
   HDC                   mPaintDC; // only set during painting
-  HDC                   mCompositeDC; // only set during StartRemoteDrawing
 
   LayoutDeviceIntRect   mLastPaintBounds;
 
@@ -597,9 +608,6 @@ protected:
 
   // Transparency
 #ifdef MOZ_XUL
-  // Use layered windows to support full 256 level alpha translucency
-  RefPtr<gfxASurface> mTransparentSurface;
-  HDC                   mMemoryDC;
   nsTransparencyMode    mTransparencyMode;
   nsIntRegion           mPossiblyTransparentRegion;
   MARGINS               mGlassMargins;
@@ -630,10 +638,10 @@ protected:
   TimeStamp mCachedHitTestTime;
   int32_t mCachedHitTestResult;
 
+  RefPtr<mozilla::widget::WinCompositorWidget> mBasicLayersSurface;
+
   static bool sNeedsToInitMouseWheelSettings;
   static void InitMouseWheelScrollData();
-
-  mozilla::gfx::CriticalSection mPresentLock;
 
   double mSizeConstraintsScale; // scale in effect when setting constraints
 };

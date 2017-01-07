@@ -31,6 +31,7 @@ class Test(object):
     desktop = True
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
     lower_is_better = True
+    alert_threshold = 2.0
 
     @classmethod
     def name(cls):
@@ -103,7 +104,6 @@ class TsBase(Test):
         'xperf_user_providers',
         'xperf_stackwalk',
         'tpmozafterpaint',
-        'test_name_extension',
         'extensions',
         'filters',
         'setup',
@@ -235,7 +235,7 @@ class PageloaderTest(Test):
             'timeout', 'shutdown', 'responsiveness', 'profile_path',
             'xperf_providers', 'xperf_user_providers', 'xperf_stackwalk',
             'filters', 'preferences', 'extensions', 'setup', 'cleanup',
-            'test_name_extension', 'lower_is_better', 'unit']
+            'lower_is_better', 'alert_threshold', 'unit']
 
 
 @register_test()
@@ -542,6 +542,29 @@ class kraken(PageloaderTest):
 
 
 @register_test()
+class basic_compositor_video(PageloaderTest):
+    """
+    Video test
+    """
+    tpmanifest = '${talos}/tests/video/video.manifest'
+    tpcycles = 1
+    tppagecycles = 12
+    timeout = 10000
+    sps_profile_interval = 1
+    sps_profile_entries = 2000000
+    preferences = {'full-screen-api.allow-trusted-requests-only': False,
+                   'layers.acceleration.force-enabled': False,
+                   'layers.acceleration.disabled': True,
+                   'layout.frame_rate': 0,
+                   'docshell.event_starvation_delay_hint': 1,
+                   'full-screen-api.warning.timeout': 500,
+                   'media.ruin-av-sync.enabled': True}
+    filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = 'ms/frame'
+    lower_is_better = True
+
+
+@register_test()
 class tcanvasmark(PageloaderTest):
     """
     CanvasMark benchmark v0.6
@@ -564,6 +587,7 @@ class dromaeo(PageloaderTest):
     """abstract base class for dramaeo tests"""
     filters = filter.dromaeo.prepare()
     lower_is_better = False
+    alert_threshold = 5.0
 
 
 @register_test()
@@ -681,3 +705,4 @@ class a11yr(PageloaderTest):
     tpmozafterpaint = True
     preferences = {'dom.send_after_paint_to_content': False}
     unit = 'ms'
+    alert_threshold = 5.0

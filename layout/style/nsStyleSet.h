@@ -24,7 +24,6 @@
 #include "nsRuleNode.h"
 #include "nsTArray.h"
 #include "nsCOMArray.h"
-#include "nsAutoPtr.h"
 #include "nsIStyleRule.h"
 
 class gfxFontFeatureValueSet;
@@ -162,15 +161,28 @@ class nsStyleSet final
                                  nsStyleContext* aStyleContext,
                                  nsRestyleHint aWhichToRemove);
 
-  // Get a style context for a non-element (which no rules will match),
-  // such as text nodes, placeholder frames, and the nsFirstLetterFrame
-  // for everything after the first letter.
+  // Get a style context for a text node (which no rules will match).
   //
-  // Perhaps this should go away and we shouldn't even create style
-  // contexts for such content nodes.  However, not doing any rule
-  // matching for them is a first step.
+  // The returned style context will have nsCSSAnonBoxes::mozText as its pseudo.
+  //
+  // (Perhaps mozText should go away and we shouldn't even create style
+  // contexts for such content nodes, when text-combine-upright is not
+  // present.  However, not doing any rule matching for them is a first step.)
   already_AddRefed<nsStyleContext>
-  ResolveStyleForNonElement(nsStyleContext* aParentContext);
+  ResolveStyleForText(nsIContent* aTextNode, nsStyleContext* aParentContext);
+
+  // Get a style context for a non-element (which no rules will match)
+  // other than a text node, such as placeholder frames, and the
+  // nsFirstLetterFrame for everything after the first letter.
+  //
+  // The returned style context will have nsCSSAnonBoxes::mozOtherNonElement as
+  // its pseudo.
+  //
+  // (Perhaps mozOtherNonElement should go away and we shouldn't even
+  // create style contexts for such content nodes.  However, not doing
+  // any rule matching for them is a first step.)
+  already_AddRefed<nsStyleContext>
+  ResolveStyleForOtherNonElement(nsStyleContext* aParentContext);
 
   // Get a style context for a pseudo-element.  aParentElement must be
   // non-null.  aPseudoID is the CSSPseudoElementType for the
@@ -449,14 +461,14 @@ private:
   // aLastPrevLevelNode.
   void AssertNoImportantRules(nsRuleNode* aCurrLevelNode,
                               nsRuleNode* aLastPrevLevelNode);
-  
+
   // Just like AddImportantRules except it doesn't actually add anything; it
   // just asserts that there are no CSS rules between aCurrLevelNode and
   // aLastPrevLevelNode.  Mostly useful for the preshint level.
   void AssertNoCSSRules(nsRuleNode* aCurrLevelNode,
                         nsRuleNode* aLastPrevLevelNode);
 #endif
-  
+
   // Enumerate the rules in a way that cares about the order of the
   // rules.
   // aElement is the element the rules are for.  It might be null.  aData

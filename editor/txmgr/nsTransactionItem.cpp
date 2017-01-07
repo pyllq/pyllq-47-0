@@ -4,7 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/mozalloc.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsError.h"
@@ -237,7 +236,7 @@ nsTransactionItem::UndoChildren(nsTransactionManager *aTxMgr)
 
       if (NS_SUCCEEDED(result)) {
         item = mUndoStack->Pop();
-        mRedoStack->Push(item);
+        mRedoStack->Push(item.forget());
       }
 
       nsresult result2 = aTxMgr->DidUndoNotify(t, result);
@@ -256,9 +255,9 @@ nsTransactionItem::RedoTransaction(nsTransactionManager *aTxMgr)
 {
   nsresult result;
 
-  nsCOMPtr<nsITransaction> kungfuDeathGrip(mTransaction);
-  if (mTransaction) {
-    result = mTransaction->RedoTransaction();
+  nsCOMPtr<nsITransaction> transaction(mTransaction);
+  if (transaction) {
+    result = transaction->RedoTransaction();
 
     NS_ENSURE_SUCCESS(result, result);
   }
@@ -310,7 +309,7 @@ nsTransactionItem::RedoChildren(nsTransactionManager *aTxMgr)
 
     if (NS_SUCCEEDED(result)) {
       item = mRedoStack->Pop();
-      mUndoStack->Push(item);
+      mUndoStack->Push(item.forget());
     }
 
     nsresult result2 = aTxMgr->DidUndoNotify(t, result);

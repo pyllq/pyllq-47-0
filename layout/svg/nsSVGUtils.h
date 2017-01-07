@@ -47,6 +47,7 @@ struct nsStyleSVGPaint;
 struct nsRect;
 
 namespace mozilla {
+struct SVGTextContextPaint;
 namespace dom {
 class Element;
 class UserSpaceMetrics;
@@ -59,7 +60,7 @@ class GeneralPattern;
 
 // maximum dimension of an offscreen surface - choose so that
 // the surface size doesn't overflow a 32-bit signed int using
-// 4 bytes per pixel; in line with gfxASurface::CheckSurfaceSize
+// 4 bytes per pixel; in line with Factory::CheckSurfaceSize
 // In fact Macs can't even manage that
 #define NS_SVG_OFFSCREEN_MAX_DIMENSION 4096
 
@@ -179,9 +180,12 @@ class nsSVGUtils
 public:
   typedef mozilla::dom::Element Element;
   typedef mozilla::gfx::AntialiasMode AntialiasMode;
+  typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::FillRule FillRule;
   typedef mozilla::gfx::GeneralPattern GeneralPattern;
   typedef mozilla::gfx::Size Size;
+  typedef mozilla::SVGTextContextPaint SVGTextContextPaint;
+  typedef mozilla::image::DrawResult DrawResult;
 
   static void Init();
 
@@ -279,7 +283,7 @@ public:
 
   /* Paint SVG frame with SVG effects - aDirtyRect is the area being
    * redrawn, in device pixel coordinates relative to the outer svg */
-  static void
+  static DrawResult
   PaintFrameWithEffects(nsIFrame *aFrame,
                         gfxContext& aContext,
                         const gfxMatrix& aTransform,
@@ -493,6 +497,13 @@ public:
   static nscolor GetFallbackOrPaintColor(nsStyleContext *aStyleContext,
                                          nsStyleSVGPaint nsStyleSVG::*aFillOrStroke);
 
+  static DrawMode
+  SetupContextPaint(const DrawTarget* aDrawTarget,
+                    const gfxMatrix& aContextMatrix,
+                    nsIFrame* aFrame,
+                    gfxTextContextPaint* aOuterContextPaint,
+                    SVGTextContextPaint* aThisContextPaint);
+
   static void
   MakeFillPatternFor(nsIFrame *aFrame,
                      gfxContext* aContext,
@@ -547,11 +558,9 @@ public:
    * Render a SVG glyph.
    * @param aElement the SVG glyph element to render
    * @param aContext the thebes aContext to draw to
-   * @param aDrawMode fill or stroke or both (see DrawMode)
    * @return true if rendering succeeded
    */
   static bool PaintSVGGlyph(Element* aElement, gfxContext* aContext,
-                            DrawMode aDrawMode,
                             gfxTextContextPaint* aContextPaint);
   /**
    * Get the extents of a SVG glyph.

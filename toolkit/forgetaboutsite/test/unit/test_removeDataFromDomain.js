@@ -83,7 +83,7 @@ function add_cookie(aDomain)
   check_cookie_exists(aDomain, false);
   let cm = Cc["@mozilla.org/cookiemanager;1"].getService(Ci.nsICookieManager2);
   cm.add(aDomain, COOKIE_PATH, COOKIE_NAME, "", false, false, false,
-         COOKIE_EXPIRY);
+         COOKIE_EXPIRY, {});
   check_cookie_exists(aDomain, true);
 }
 
@@ -359,7 +359,7 @@ function test_login_manager_logins_cleared_with_subdomain()
   check_login_exists(TEST_HOST, false);
 }
 
-function tets_login_manager_logins_not_cleared_with_uri_contains_domain()
+function test_login_manager_logins_not_cleared_with_uri_contains_domain()
 {
   const TEST_HOST = "http://ilovemozilla.org";
   add_login(TEST_HOST);
@@ -481,24 +481,6 @@ function* test_push_cleared()
   const channelID = '0ef2ad4a-6c49-41ad-af6e-95d2425276bf';
 
   let db = PushServiceWebSocket.newPushDB();
-  do_register_cleanup(() => {return db.drop().then(_ => db.close());});
-
-  PushService.init({
-    serverURI: "wss://push.example.org/",
-    networkInfo: new MockDesktopNetworkInfo(),
-    db,
-    makeWebSocket(uri) {
-      return new MockWebSocket(uri, {
-        onHello(request) {
-          this.serverSendMsg(JSON.stringify({
-            messageType: 'hello',
-            status: 200,
-            uaid: userAgentID,
-          }));
-        },
-      });
-    }
-  });
 
   function push_registration_exists(aURL, ps)
   {
@@ -516,20 +498,43 @@ function* test_push_cleared()
     });
   }
 
-  const TEST_URL = "https://www.mozilla.org/scope/";
-  do_check_false(yield push_registration_exists(TEST_URL, ps));
-  yield db.put({
-    channelID,
-    pushEndpoint: 'https://example.org/update/clear-success',
-    scope: TEST_URL,
-    version: 1,
-    originAttributes: '',
-    quota: Infinity,
-  });
-  do_check_true(yield push_registration_exists(TEST_URL, ps));
-  ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  yield waitForPurgeNotification();
-  do_check_false(yield push_registration_exists(TEST_URL, ps));
+  try {
+    PushService.init({
+      serverURI: "wss://push.example.org/",
+      db,
+      makeWebSocket(uri) {
+        return new MockWebSocket(uri, {
+          onHello(request) {
+            this.serverSendMsg(JSON.stringify({
+              messageType: 'hello',
+              status: 200,
+              uaid: userAgentID,
+            }));
+          },
+        });
+      }
+    });
+
+    const TEST_URL = "https://www.mozilla.org/scope/";
+    do_check_false(yield push_registration_exists(TEST_URL, ps));
+    yield db.put({
+      channelID,
+      pushEndpoint: 'https://example.org/update/clear-success',
+      scope: TEST_URL,
+      version: 1,
+      originAttributes: '',
+      quota: Infinity,
+    });
+    do_check_true(yield push_registration_exists(TEST_URL, ps));
+
+    let promisePurgeNotification = waitForPurgeNotification();
+    yield ForgetAboutSite.removeDataFromDomain("mozilla.org");
+    yield promisePurgeNotification;
+
+    do_check_false(yield push_registration_exists(TEST_URL, ps));
+  } finally {
+    yield PushService._shutdownService();
+  }
 }
 
 // Cache
@@ -614,7 +619,7 @@ var tests = [
   test_login_manager_disabled_hosts_not_cleared_with_uri_contains_domain,
   test_login_manager_logins_cleared_with_direct_match,
   test_login_manager_logins_cleared_with_subdomain,
-  tets_login_manager_logins_not_cleared_with_uri_contains_domain,
+  test_login_manager_logins_not_cleared_with_uri_contains_domain,
 
   // Permission Manager
   test_permission_manager_cleared_with_direct_match,

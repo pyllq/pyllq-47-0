@@ -60,8 +60,9 @@ public:
   virtual mozilla::a11y::role NativeRole() override;
   virtual uint64_t NativeState() override;
 
-  virtual void InvalidateChildren() override;
+  virtual void Shutdown() override;
   virtual bool RemoveChild(Accessible* aAccessible) override;
+  virtual bool InsertChildAt(uint32_t aIndex, Accessible* aChild) override;
   virtual Relation RelationByType(RelationType aType) override;
 
   // HyperTextAccessible (static helper method)
@@ -517,7 +518,8 @@ protected:
   /**
    * Return selection ranges within the accessible subtree.
    */
-  void GetSelectionDOMRanges(int16_t aType, nsTArray<nsRange*>* aRanges);
+  void GetSelectionDOMRanges(SelectionType aSelectionType,
+                             nsTArray<nsRange*>* aRanges);
 
   nsresult SetSelectionRange(int32_t aStartPos, int32_t aEndPos);
 

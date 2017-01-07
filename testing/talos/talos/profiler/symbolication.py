@@ -118,6 +118,7 @@ class ProfileSymbolicator:
         self.options = options
         self.sym_file_manager = SymFileManager(self.options)
         self.symbol_dumper = self.get_symbol_dumper()
+        self.main_start_time = None
 
     def get_symbol_dumper(self):
         try:
@@ -248,11 +249,31 @@ class ProfileSymbolicator:
             self.symbolicate_profile_v3(profile_json)
         else:
             self.symbolicate_profile_v2(profile_json)
+
+        profile_start_time = profile_json["meta"].get("startTime", 0)
+        delta_time = 0
+
+        # The profile in the main process will have the startTime that
+        # we'll offset our markers by, and also happens to be the one
+        # we'll see first when recursively symbolicating, so we'll stash
+        # it in main_start_time.
+        if self.main_start_time is None:
+            self.main_start_time = profile_start_time
+        else:
+            # We're a subprocess, so our markers will need to be offset
+            # by the difference between the parent process start time
+            # and this process's start time.
+            delta_time = profile_start_time - self.main_start_time
+
         for i, thread in enumerate(profile_json["threads"]):
-            if isinstance(thread, basestring):
+            if isinstance(thread, str):
                 thread_json = json.loads(thread)
                 self.symbolicate_profile(thread_json)
                 profile_json["threads"][i] = json.dumps(thread_json)
+            else:
+                for marker in thread["markers"]["data"]:
+                    if marker[1]:
+                        marker[1] += delta_time
 
     def symbolicate_profile_v2(self, profile_json):
         shared_libraries = json.loads(profile_json["libs"])
@@ -276,7 +297,7 @@ class ProfileSymbolicator:
     def _find_addresses_v3(self, profile_json):
         addresses = set()
         for thread in profile_json["threads"]:
-            if isinstance(thread, basestring):
+            if isinstance(thread, str):
                 continue
             for s in thread["stringTable"]:
                 if s[0:2] == "0x":
@@ -285,7 +306,7 @@ class ProfileSymbolicator:
 
     def _substitute_symbols_v3(self, profile_json, symbolication_table):
         for thread in profile_json["threads"]:
-            if isinstance(thread, basestring):
+            if isinstance(thread, str):
                 continue
             for i, s in enumerate(thread["stringTable"]):
                 thread["stringTable"][i] = symbolication_table.get(s, s)

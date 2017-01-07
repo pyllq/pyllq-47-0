@@ -112,7 +112,14 @@ function testHarnessSteps() {
 
     let worker = new Worker(workerScriptURL);
 
+    worker._expectingUncaughtException = false;
     worker.onerror = function(event) {
+      if (worker._expectingUncaughtException) {
+        ok(true, "Worker had an expected error: " + event.message);
+        worker._expectingUncaughtException = false;
+        event.preventDefault();
+        return;
+      }
       ok(false, "Worker had an error: " + event.message);
       worker.terminate();
       nextTestHarnessStep();
@@ -146,6 +153,16 @@ function testHarnessSteps() {
           nextTestHarnessStep();
           break;
 
+        case "expectUncaughtException":
+          worker._expectingUncaughtException = message.expecting;
+          break;
+
+        case "clearAllDatabases":
+          clearAllDatabases(function(){
+            worker.postMessage({ op: "clearAllDatabasesDone" });
+          });
+          break;
+
         default:
           ok(false,
              "Received a bad message from worker: " + JSON.stringify(message));
@@ -156,6 +173,11 @@ function testHarnessSteps() {
     URL.revokeObjectURL(workerScriptURL);
 
     yield undefined;
+
+    if (worker._expectingUncaughtException) {
+      ok(false, "expectUncaughtException was called but no uncaught " +
+                "exception was detected!");
+    }
 
     worker.terminate();
     worker = null;
@@ -231,6 +253,11 @@ function errorHandler(event)
 {
   ok(false, "indexedDB error, '" + event.target.error.name + "'");
   finishTest();
+}
+
+function expectUncaughtException(expecting)
+{
+  SimpleTest.expectUncaughtException(expecting);
 }
 
 function browserErrorHandler(event)
@@ -318,7 +345,7 @@ function gc()
 
 function scheduleGC()
 {
-  SpecialPowers.exactGC(window, continueToNextStep);
+  SpecialPowers.exactGC(continueToNextStep);
 }
 
 function workerScript() {
@@ -385,6 +412,10 @@ function workerScript() {
   };
 
   self.finishTest = function() {
+    if (self._expectingUncaughtException) {
+      self.ok(false, "expectUncaughtException was called but no uncaught "
+                     + "exception was detected!");
+    }
     self.postMessage({ op: "done" });
   };
 
@@ -480,7 +511,25 @@ function workerScript() {
     return buffer;
   };
 
+  self._expectingUncaughtException = false;
+  self.expectUncaughtException = function(_expecting_) {
+    self._expectingUncaughtException = !!_expecting_;
+    self.postMessage({ op: "expectUncaughtException", expecting: !!_expecting_ });
+  };
+
+  self._clearAllDatabasesCallback = undefined;
+  self.clearAllDatabases = function(_callback_) {
+    self._clearAllDatabasesCallback = _callback_;
+    self.postMessage({ op: "clearAllDatabases" });
+  }
+
   self.onerror = function(_message_, _file_, _line_) {
+    if (self._expectingUncaughtException) {
+      self._expectingUncaughtException = false;
+      ok(true, "Worker: expected exception [" + _file_ + ":" + _line_ + "]: '" +
+         _message_ + "'");
+      return;
+    }
     ok(false,
        "Worker: uncaught exception [" + _file_ + ":" + _line_ + "]: '" +
          _message_ + "'");
@@ -503,6 +552,13 @@ function workerScript() {
           info("Worker: starting tests");
           testGenerator.next();
         });
+        break;
+
+      case "clearAllDatabasesDone":
+        info("Worker: all databases are cleared");
+        if (self._clearAllDatabasesCallback) {
+          self._clearAllDatabasesCallback();
+        }
         break;
 
       default:

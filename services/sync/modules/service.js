@@ -32,6 +32,7 @@ Cu.import("resource://services-sync/rest.js");
 Cu.import("resource://services-sync/stages/enginesync.js");
 Cu.import("resource://services-sync/stages/declined.js");
 Cu.import("resource://services-sync/status.js");
+Cu.import("resource://services-sync/telemetry.js");
 Cu.import("resource://services-sync/userapi.js");
 Cu.import("resource://services-sync/util.js");
 
@@ -63,6 +64,9 @@ Sync11Service.prototype = {
   storageURL: null,
   metaURL: null,
   cryptoKeyURL: null,
+  // The cluster URL comes via the ClusterManager object, which in the FxA
+  // world is ebbedded in the token returned from the token server.
+  _clusterURL: null,
 
   get serverURL() {
     return Svc.Prefs.get("serverURL");
@@ -76,16 +80,20 @@ Sync11Service.prototype = {
     if (value == this.serverURL)
       return;
 
-    // A new server most likely uses a different cluster, so clear that
     Svc.Prefs.set("serverURL", value);
-    Svc.Prefs.reset("clusterURL");
+
+    // A new server most likely uses a different cluster, so clear that.
+    this._clusterURL = null;
   },
 
   get clusterURL() {
-    return Svc.Prefs.get("clusterURL", "");
+    return this._clusterURL || "";
   },
   set clusterURL(value) {
-    Svc.Prefs.set("clusterURL", value);
+    if (value != null && typeof value != "string") {
+      throw new Error("cluster must be a string, got " + (typeof value));
+    }
+    this._clusterURL = value;
     this._updateCachedURLs();
   },
 
@@ -163,8 +171,16 @@ Sync11Service.prototype = {
 
   _updateCachedURLs: function _updateCachedURLs() {
     // Nothing to cache yet if we don't have the building blocks
-    if (!this.clusterURL || !this.identity.username)
+    if (!this.clusterURL || !this.identity.username) {
+      // Also reset all other URLs used by Sync to ensure we aren't accidentally
+      // using one cached earlier - if there's no cluster URL any cached ones
+      // are invalid.
+      this.infoURL = undefined;
+      this.storageURL = undefined;
+      this.metaURL = undefined;
+      this.cryptoKeysURL = undefined;
       return;
+    }
 
     this._log.debug("Caching URLs under storage user base: " + this.userBaseURL);
 
@@ -533,7 +549,8 @@ Sync11Service.prototype = {
     // Always check for errors; this is also where we look for X-Weave-Alert.
     this.errorHandler.checkServerError(info);
     if (!info.success) {
-      throw "Aborting sync: failed to get collections.";
+      this._log.error("Aborting sync: failed to get collections.")
+      throw info;
     }
     return info;
   },
@@ -889,6 +906,7 @@ Sync11Service.prototype = {
     this._ignorePrefObserver = true;
     Svc.Prefs.resetBranch("");
     this._ignorePrefObserver = false;
+    this.clusterURL = null;
 
     Svc.Prefs.set("lastversion", WEAVE_VERSION);
 
@@ -1069,7 +1087,7 @@ Sync11Service.prototype = {
         return false;
       }
 
-      if (!this.recordManager.response.success || !newMeta) {
+      if (this.recordManager.response.status == 404) {
         this._log.debug("No meta/global record on the server. Creating one.");
         newMeta = new WBORecord("meta", "global");
         newMeta.payload.syncID = this.syncID;
@@ -1085,6 +1103,10 @@ Sync11Service.prototype = {
           this.errorHandler.checkServerError(uploadRes);
           return false;
         }
+      } else if (!newMeta) {
+        this._log.warn("Unable to get meta/global. Failing remote setup.");
+        this.errorHandler.checkServerError(this.recordManager.response);
+        return false;
       } else {
         // If newMeta, then it stands to reason that meta != null.
         newMeta.isNew   = meta.isNew;
@@ -1227,7 +1249,7 @@ Sync11Service.prototype = {
 
   sync: function sync(engineNamesToSync) {
     let dateStr = new Date().toLocaleFormat(LOG_DATE_FORMAT);
-    this._log.debug("User-Agent: " + SyncStorageRequest.prototype.userAgent);
+    this._log.debug("User-Agent: " + Utils.userAgent);
     this._log.info("Starting sync at " + dateStr);
     this._catch(function () {
       // Make sure we're logged in.
@@ -1276,21 +1298,24 @@ Sync11Service.prototype = {
         this.identity.prefetchMigrationSentinel(this);
       }
 
-      // Now let's update our declined engines.
-      let meta = this.recordManager.get(this.metaURL);
-      if (!meta) {
-        this._log.warn("No meta/global; can't update declined state.");
-        return;
-      }
+      // Now let's update our declined engines (but only if we have a metaURL;
+      // if Sync failed due to no node we will not have one)
+      if (this.metaURL) {
+        let meta = this.recordManager.get(this.metaURL);
+        if (!meta) {
+          this._log.warn("No meta/global; can't update declined state.");
+          return;
+        }
 
-      let declinedEngines = new DeclinedEngines(this);
-      let didChange = declinedEngines.updateDeclined(meta, this.engineManager);
-      if (!didChange) {
-        this._log.info("No change to declined engines. Not reuploading meta/global.");
-        return;
-      }
+        let declinedEngines = new DeclinedEngines(this);
+        let didChange = declinedEngines.updateDeclined(meta, this.engineManager);
+        if (!didChange) {
+          this._log.info("No change to declined engines. Not reuploading meta/global.");
+          return;
+        }
 
-      this.uploadMetaGlobal(meta);
+        this.uploadMetaGlobal(meta);
+      }
     }))();
   },
 

@@ -37,7 +37,7 @@ class SRGBTextureTest : public ANGLETest
 
 TEST_P(SRGBTextureTest, SRGBValidation)
 {
-    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientVersion() == 3;
+    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientMajorVersion() == 3;
 
     GLuint tex = 0;
     glGenTextures(1, &tex);
@@ -65,7 +65,7 @@ TEST_P(SRGBTextureTest, SRGBValidation)
 
 TEST_P(SRGBTextureTest, SRGBAValidation)
 {
-    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientVersion() == 3;
+    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientMajorVersion() == 3;
 
     GLuint tex = 0;
     glGenTextures(1, &tex);
@@ -81,7 +81,7 @@ TEST_P(SRGBTextureTest, SRGBAValidation)
         EXPECT_GL_NO_ERROR();
 
         glGenerateMipmap(GL_TEXTURE_2D);
-        if (getClientVersion() == 2)
+        if (getClientMajorVersion() == 2)
         {
             EXPECT_GL_ERROR(GL_INVALID_OPERATION);
         }
@@ -100,7 +100,7 @@ TEST_P(SRGBTextureTest, SRGBAValidation)
 
 TEST_P(SRGBTextureTest, SRGBARenderbuffer)
 {
-    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientVersion() == 3;
+    bool supported = extensionEnabled("GL_EXT_sRGB") || getClientMajorVersion() == 3;
 
     GLuint rbo = 0;
     glGenRenderbuffers(1, &rbo);
@@ -144,6 +144,11 @@ TEST_P(SRGBTextureTest, SRGBARenderbuffer)
 }
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.
-ANGLE_INSTANTIATE_TEST(SRGBTextureTest, ES2_D3D9(), ES2_D3D11(), ES3_D3D11(), ES2_OPENGL());
+ANGLE_INSTANTIATE_TEST(SRGBTextureTest,
+                       ES2_D3D9(),
+                       ES2_D3D11(),
+                       ES3_D3D11(),
+                       ES2_OPENGL(),
+                       ES2_OPENGLES());
 
 } // namespace

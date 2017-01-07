@@ -86,9 +86,12 @@ class RemoteAutomation(Automation):
         # Don't override the user's choice here.  See bug 1049688.
         env.setdefault('MOZ_DISABLE_NONLOCAL_CONNECTIONS', '1')
 
-        # Disable Switchboard by default. This will prevent nonlocal
-        # network connections to the Switchboard server.
-        env.setdefault('MOZ_DISABLE_SWITCHBOARD', '1')
+        # Send an env var noting that we are in automation. Passing any
+        # value except the empty string will declare the value to exist.
+        #
+        # This may be used to disabled network connections during testing, e.g.
+        # Switchboard & telemetry uploads.
+        env.setdefault('MOZ_IN_AUTOMATION', '1')
 
         # Set WebRTC logging in case it is not set yet.
         # On Android, environment variables cannot contain ',' so the
@@ -342,9 +345,13 @@ class RemoteAutomation(Automation):
             lines = [l for l in lines if l]
 
             if lines:
-                # We only keep the last (unfinished) line in the buffer
-                self.logBuffer = lines[-1]
-                del lines[-1]
+                if self.logBuffer.endswith('\n'):
+                    # all lines are complete; no need to buffer
+                    self.logBuffer = ""
+                else:
+                    # keep the last (unfinished) line in the buffer
+                    self.logBuffer = lines[-1]
+                    del lines[-1]
 
             if not lines:
                 return False

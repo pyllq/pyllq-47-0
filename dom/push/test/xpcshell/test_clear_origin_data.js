@@ -84,7 +84,6 @@ add_task(function* test_webapps_cleardata() {
 
   PushService.init({
     serverURI: "wss://push.example.org",
-    networkInfo: new MockDesktopNetworkInfo(),
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
@@ -108,6 +107,7 @@ add_task(function* test_webapps_cleardata() {
           }));
         },
         onUnregister(data) {
+          equal(data.code, 200, 'Expected manual unregister reason');
           unregisterDone();
         },
       });

@@ -61,6 +61,12 @@
 #define IF_SAB(real,imaginary) imaginary
 #endif
 
+#ifdef SPIDERMONKEY_PROMISE
+#define IF_PROMISE(real,imaginary) real
+#else
+#define IF_PROMISE(real,imaginary) imaginary
+#endif
+
 #define JS_FOR_PROTOTYPES(real,imaginary) \
     imaginary(Null,              0,     InitNullClass,          dummy) \
     real(Object,                 1,     InitViaClassSpec,       OCLASP(Plain)) \
@@ -110,6 +116,12 @@ IF_SIMD(real,imaginary)(SIMD,                   42,     InitSimdClass, OCLASP(Si
 IF_SAB(real,imaginary)(Atomics, 45,     InitAtomicsClass, OCLASP(Atomics)) \
     real(SavedFrame,            46,     InitViaClassSpec,       &js::SavedFrame::class_) \
     real(Wasm,                  47,     InitWasmClass,          CLASP(Wasm)) \
+    real(WebAssembly,           48,     InitWebAssemblyClass,   CLASP(WebAssembly)) \
+    imaginary(WasmModule,       49,     dummy,                  dummy) \
+    imaginary(WasmInstance,     50,     dummy,                  dummy) \
+    imaginary(WasmMemory,       51,     dummy,                  dummy) \
+    imaginary(WasmTable,        52,     dummy,                  dummy) \
+IF_PROMISE(real,imaginary)(Promise,             53,     InitViaClassSpec, OCLASP(Promise)) \
 
 #define JS_FOR_EACH_PROTOTYPE(macro) JS_FOR_PROTOTYPES(macro,macro)
 

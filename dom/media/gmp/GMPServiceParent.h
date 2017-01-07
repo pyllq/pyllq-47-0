@@ -12,6 +12,7 @@
 #include "nsClassHashtable.h"
 #include "nsDataHashtable.h"
 #include "mozilla/Atomics.h"
+#include "nsIAsyncShutdown.h"
 #include "nsThreadUtils.h"
 #include "mozilla/MozPromise.h"
 #include "GMPStorage.h"
@@ -23,10 +24,9 @@ namespace gmp {
 
 class GMPParent;
 
-#define GMP_DEFAULT_ASYNC_SHUTDONW_TIMEOUT 3000
-
 class GeckoMediaPluginServiceParent final : public GeckoMediaPluginService
                                           , public mozIGeckoMediaPluginChromeService
+                                          , public nsIAsyncShutdownBlocker
 {
 public:
   static already_AddRefed<GeckoMediaPluginServiceParent> GetSingleton();
@@ -35,6 +35,7 @@ public:
   nsresult Init() override;
 
   NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_NSIASYNCSHUTDOWNBLOCKER
 
   // mozIGeckoMediaPluginService
   NS_IMETHOD GetPluginVersionForAPI(const nsACString& aAPI,
@@ -60,10 +61,14 @@ public:
   RefPtr<GenericPromise> EnsureInitialized();
   RefPtr<GenericPromise> AsyncAddPluginDirectory(const nsAString& aDirectory);
 
-  already_AddRefed<GMPStorage> GetMemoryStorageFor(const nsACString& aNodeId);
-
   // GMP thread access only
   bool IsShuttingDown();
+
+  already_AddRefed<GMPStorage> GetMemoryStorageFor(const nsACString& aNodeId);
+
+  // Notifies that some user of this class is created/destroyed.
+  void ServiceUserCreated();
+  void ServiceUserDestroyed();
 
 private:
   friend class GMPServiceParent;
@@ -108,6 +113,8 @@ private:
   void ForgetThisSiteOnGMPThread(const nsACString& aOrigin);
   void ClearRecentHistoryOnGMPThread(PRTime aSince);
 
+  already_AddRefed<GMPParent> GetById(uint32_t aPluginId);
+
 protected:
   friend class GMPParent;
   void ReAddOnGMPThread(const RefPtr<GMPParent>& aOld);
@@ -115,7 +122,8 @@ protected:
   void InitializePlugins(AbstractThread* aAbstractGMPThread) override;
   RefPtr<GenericPromise::AllPromiseType> LoadFromEnvironment();
   RefPtr<GenericPromise> AddOnGMPThread(nsString aDirectory);
-  bool GetContentParentFrom(const nsACString& aNodeId,
+  bool GetContentParentFrom(GMPCrashHelper* aHelper,
+                            const nsACString& aNodeId,
                             const nsCString& aAPI,
                             const nsTArray<nsCString>& aTags,
                             UniquePtr<GetGMPContentParentCallback>&& aCallback)
@@ -127,7 +135,7 @@ private:
   nsresult EnsurePluginsOnDiskScanned();
   nsresult InitStorage();
 
-  class PathRunnable : public nsRunnable
+  class PathRunnable : public Runnable
   {
   public:
     enum EOperation {
@@ -213,6 +221,10 @@ private:
 
   // Hashes nodeId to the hashtable of storage for that nodeId.
   nsRefPtrHashtable<nsCStringHashKey, GMPStorage> mTempGMPStorage;
+
+  // Tracks how many users are running (on the GMP thread). Only when this count
+  // drops to 0 can we safely shut down the thread.
+  MainThreadOnly<int32_t> mServiceUserCount;
 };
 
 nsresult ReadSalt(nsIFile* aPath, nsACString& aOutData);
@@ -224,17 +236,10 @@ public:
   explicit GMPServiceParent(GeckoMediaPluginServiceParent* aService)
     : mService(aService)
   {
+    mService->ServiceUserCreated();
   }
   virtual ~GMPServiceParent();
 
-  bool RecvLoadGMP(const nsCString& aNodeId,
-                   const nsCString& aApi,
-                   nsTArray<nsCString>&& aTags,
-                   nsTArray<ProcessId>&& aAlreadyBridgedTo,
-                   base::ProcessId* aID,
-                   nsCString* aDisplayName,
-                   uint32_t* aPluginId,
-                   nsresult* aRv) override;
   bool RecvGetGMPNodeId(const nsString& aOrigin,
                         const nsString& aTopLevelOrigin,
                         const nsString& aGMPName,
@@ -248,7 +253,21 @@ public:
 
   static PGMPServiceParent* Create(Transport* aTransport, ProcessId aOtherPid);
 
+  bool RecvSelectGMP(const nsCString& aNodeId,
+                     const nsCString& aAPI,
+                     nsTArray<nsCString>&& aTags,
+                     uint32_t* aOutPluginId,
+                     nsresult* aOutRv) override;
+
+  bool RecvLaunchGMP(const uint32_t& aPluginId,
+                     nsTArray<ProcessId>&& aAlreadyBridgedTo,
+                     ProcessId* aOutID,
+                     nsCString* aOutDisplayName,
+                     nsresult* aOutRv) override;
+
 private:
+  void CloseTransport(Monitor* aSyncMonitor, bool* aCompleted);
+
   RefPtr<GeckoMediaPluginServiceParent> mService;
 };
 

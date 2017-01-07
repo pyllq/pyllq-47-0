@@ -16,7 +16,7 @@ const UPDATED_SRC = URL_ROOT + "doc_markup_tooltip.png";
 const INITIAL_SRC_SIZE = "64" + " \u00D7 " + "64";
 const UPDATED_SRC_SIZE = "22" + " \u00D7 " + "23";
 
-add_task(function*() {
+add_task(function* () {
   let { inspector } = yield openInspectorForURL(
     "data:text/html,<p>markup view tooltip test</p><img>");
 
@@ -37,7 +37,7 @@ add_task(function*() {
   ok(target, "Found the src attribute in the markup view.");
 
   info("Showing tooltip on the src link.");
-  yield inspector.markup.tooltip.isValidHoverTarget(target);
+  yield isHoverTooltipTarget(inspector.markup.imagePreviewTooltip, target);
 
   checkImageTooltip(INITIAL_SRC_SIZE, inspector);
 
@@ -48,7 +48,7 @@ add_task(function*() {
   ok(target, "Found the src attribute in the markup view after mutation.");
 
   info("Showing tooltip on the src link.");
-  yield inspector.markup.tooltip.isValidHoverTarget(target);
+  yield isHoverTooltipTarget(inspector.markup.imagePreviewTooltip, target);
 
   info("Checking that the new image was shown.");
   checkImageTooltip(UPDATED_SRC_SIZE, inspector);
@@ -72,11 +72,12 @@ function updateImageSrc(img, newSrc, inspector) {
  * size.
  */
 function checkImageTooltip(size, {markup}) {
-  let images = markup.tooltip.panel.getElementsByTagName("image");
+  let panel = markup.imagePreviewTooltip.panel;
+  let images = panel.getElementsByTagName("img");
   is(images.length, 1, "Tooltip contains an image");
 
-  let label = markup.tooltip.panel.querySelector(".devtools-tooltip-caption");
+  let label = panel.querySelector(".devtools-tooltip-caption");
   is(label.textContent, size, "Tooltip label displays the right image size");
 
-  markup.tooltip.hide();
+  markup.imagePreviewTooltip.hide();
 }

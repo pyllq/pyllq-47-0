@@ -14,14 +14,13 @@
  */
 
 interface Element : Node {
-/*
-  We haven't moved these from Node to Element like the spec wants.
-
-  [Throws]
+  [Constant]
   readonly attribute DOMString? namespaceURI;
+  [Constant]
   readonly attribute DOMString? prefix;
+  [Constant]
   readonly attribute DOMString localName;
-*/
+
   // Not [Constant] because it depends on which document we're in
   [Pure]
   readonly attribute DOMString tagName;
@@ -70,6 +69,12 @@ interface Element : Node {
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
   [Pure]
   HTMLCollection getElementsByClassName(DOMString classNames);
+
+  [Throws, Pure]
+  Element? insertAdjacentElement(DOMString where, Element element); // historical
+
+  [Throws]
+  void insertAdjacentText(DOMString where, DOMString data); // historical
 
   /**
    * The ratio of font-size-inflated text font size to computed font
@@ -125,15 +130,6 @@ interface Element : Node {
 
   // Mozilla extensions
 
-  /**
-   * Requests that this element be made the pointer-locked element, as per the DOM
-   * pointer lock api.
-   *
-   * @see <http://dvcs.w3.org/hg/pointerlock/raw-file/default/index.html>
-   */
-  [UnsafeInPrerendering]
-  void mozRequestPointerLock();
-
   // Obsolete methods.
   Attr? getAttributeNode(DOMString name);
   [Throws]
@@ -150,6 +146,16 @@ interface Element : Node {
    * layout flushing.
    */
   boolean scrollByNoFlush(long dx, long dy);
+
+  // Support reporting of Grid properties
+
+  /**
+   * If this element has a display:grid or display:inline-grid style,
+   * this property returns an object with computed values for grid
+   * tracks and lines.
+   */
+  [ChromeOnly, Pure]
+  sequence<Grid> getGridFragments();
 };
 
 // http://dev.w3.org/csswg/cssom-view/
@@ -256,6 +262,14 @@ partial interface Element {
    */
   [Throws, UnsafeInPrerendering, Func="nsDocument::IsUnprefixedFullscreenEnabled"]
   void requestFullscreen(optional any options);
-  [Throws, UnsafeInPrerendering, BinaryName="requestFullscreen", Deprecated="PrefixedFullscreenAPI"]
+  [Throws, UnsafeInPrerendering, BinaryName="requestFullscreen"]
   void mozRequestFullScreen(optional any options);
+};
+
+// https://w3c.github.io/pointerlock/#extensions-to-the-element-interface
+partial interface Element {
+  [UnsafeInPrerendering]
+  void requestPointerLock();
+  [UnsafeInPrerendering, BinaryName="requestPointerLock", Pref="pointer-lock-api.prefixed.enabled"]
+  void mozRequestPointerLock();
 };

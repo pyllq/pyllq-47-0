@@ -7,11 +7,9 @@
 #ifndef mozilla_MediaUtils_h
 #define mozilla_MediaUtils_h
 
-#include "nsAutoPtr.h"
 #include "nsThreadUtils.h"
 #include "nsIAsyncShutdown.h"
 #include "mozilla/UniquePtr.h"
-#include "base/task.h"
 
 namespace mozilla {
 namespace media {
@@ -82,8 +80,8 @@ public:
     class Functors : public FunctorsBase
     {
     public:
-      Functors(OnSuccessType&& aOnSuccess, OnFailureType&& aOnFailure)
-        : mOnSuccess(Move(aOnSuccess)), mOnFailure(Move(aOnFailure)) {}
+      Functors(OnSuccessType&& aOnSuccessRef, OnFailureType&& aOnFailureRef)
+        : mOnSuccess(Move(aOnSuccessRef)), mOnFailure(Move(aOnFailureRef)) {}
 
       void Succeed(ValueType& result)
       {
@@ -146,14 +144,13 @@ private:
   UniquePtr<FunctorsBase> mFunctors;
 };
 
-/* media::NewRunnableFrom() - Create an nsRunnable from a lambda.
- * media::NewTaskFrom()     - Create a Task from a lambda.
+/* media::NewRunnableFrom() - Create a Runnable from a lambda.
  *
- * Passing variables (closures) to an async function is clunky with nsRunnable:
+ * Passing variables (closures) to an async function is clunky with Runnable:
  *
  *   void Foo()
  *   {
- *     class FooRunnable : public nsRunnable
+ *     class FooRunnable : public Runnable
  *     {
  *     public:
  *       FooRunnable(const Bar &aBar) : mBar(aBar) {}
@@ -186,7 +183,7 @@ private:
  */
 
 template<typename OnRunType>
-class LambdaRunnable : public nsRunnable
+class LambdaRunnable : public Runnable
 {
 public:
   explicit LambdaRunnable(OnRunType&& aOnRun) : mOnRun(Move(aOnRun)) {}
@@ -200,31 +197,12 @@ private:
 };
 
 template<typename OnRunType>
-LambdaRunnable<OnRunType>*
+already_AddRefed<LambdaRunnable<OnRunType>>
 NewRunnableFrom(OnRunType&& aOnRun)
 {
-  return new LambdaRunnable<OnRunType>(Forward<OnRunType>(aOnRun));
-}
-
-template<typename OnRunType>
-class LambdaTask : public Task
-{
-public:
-  explicit LambdaTask(OnRunType&& aOnRun) : mOnRun(Move(aOnRun)) {}
-private:
-  void
-  Run()
-  {
-    return mOnRun();
-  }
-  OnRunType mOnRun;
-};
-
-template<typename OnRunType>
-LambdaTask<OnRunType>*
-NewTaskFrom(OnRunType&& aOnRun)
-{
-  return new LambdaTask<OnRunType>(Forward<OnRunType>(aOnRun));
+  typedef LambdaRunnable<OnRunType> LambdaType;
+  RefPtr<LambdaType> lambda = new LambdaType(Forward<OnRunType>(aOnRun));
+  return lambda.forget();
 }
 
 /* media::CoatCheck - There and back again. Park an object in exchange for an id.

@@ -173,8 +173,6 @@ protected:
     JNIEnv* const mEnv;
 
 public:
-    static const char name[];
-
     static jclass RawClassRef()
     {
         return sClassRef;
@@ -193,7 +191,7 @@ public:
     jclass ClassRef() const
     {
         if (!sClassRef) {
-            sClassRef = GetClassGlobalRef(mEnv, name);
+            sClassRef = GetClassGlobalRef(mEnv, Cls::name);
         }
         return sClassRef;
     }
@@ -251,6 +249,7 @@ public:
     using Param = const Ref&;
 
     static const bool isMultithreaded = true;
+    static const char name[];
 
     explicit ObjectBase(const Context& ctx) : mCtx(ctx) {}
 
@@ -491,7 +490,7 @@ public:
 
     // Copy constructor
     GlobalRef(const GlobalRef& ref)
-        : Ref(NewGlobalRef(Ref::FindEnv(), ref.mInstance))
+        : Ref(NewGlobalRef(GetEnvForThread(), ref.mInstance))
     {}
 
     // Move constructor
@@ -502,7 +501,7 @@ public:
     }
 
     MOZ_IMPLICIT GlobalRef(const Ref& ref)
-        : Ref(NewGlobalRef(Ref::FindEnv(), ref.Get()))
+        : Ref(NewGlobalRef(GetEnvForThread(), ref.Get()))
     {}
 
     GlobalRef(JNIEnv* env, const Ref& ref)
@@ -521,7 +520,7 @@ public:
     ~GlobalRef()
     {
         if (Ref::mInstance) {
-            Clear(Ref::FindEnv());
+            Clear(GetEnvForThread());
         }
     }
 
@@ -681,9 +680,16 @@ public:
         , mEnv(env)
     {}
 
+    StringParam(StringParam&& other)
+        : Ref(other.Get())
+        , mEnv(other.mEnv)
+    {
+        other.mInstance = nullptr;
+    }
+
     ~StringParam()
     {
-        if (mEnv) {
+        if (mEnv && Get()) {
             mEnv->DeleteLocalRef(Get());
         }
     }
@@ -774,6 +780,38 @@ DEFINE_PRIMITIVE_ARRAY_REF(jfloatArray,   float);
 DEFINE_PRIMITIVE_ARRAY_REF(jdoubleArray,  double);
 
 #undef DEFINE_PRIMITIVE_ARRAY_REF
+
+
+class ByteBuffer : public ObjectBase<ByteBuffer, jobject>
+{
+public:
+    explicit ByteBuffer(const Context& ctx)
+        : ObjectBase<ByteBuffer, jobject>(ctx)
+    {}
+
+    static LocalRef New(void* data, size_t capacity)
+    {
+        JNIEnv* const env = GetEnvForThread();
+        const auto ret = LocalRef::Adopt(
+                env, env->NewDirectByteBuffer(data, jlong(capacity)));
+        MOZ_CATCH_JNI_EXCEPTION(env);
+        return ret;
+    }
+
+    void* Address()
+    {
+        void* const ret = Env()->GetDirectBufferAddress(Instance());
+        MOZ_CATCH_JNI_EXCEPTION(Env());
+        return ret;
+    }
+
+    size_t Capacity()
+    {
+        const size_t ret = size_t(Env()->GetDirectBufferCapacity(Instance()));
+        MOZ_CATCH_JNI_EXCEPTION(Env());
+        return ret;
+    }
+};
 
 
 template<>

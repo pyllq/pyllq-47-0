@@ -231,8 +231,12 @@ static void SetSampleContext(TickSample* sample, void* context)
 namespace {
 
 void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
+  // Avoid TSan warning about clobbering errno.
+  int savedErrno = errno;
+
   if (!Sampler::GetActiveSampler()) {
     sem_post(&sSignalHandlingDone);
+    errno = savedErrno;
     return;
   }
 
@@ -253,6 +257,7 @@ void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
 
   sCurrentThreadProfile = NULL;
   sem_post(&sSignalHandlingDone);
+  errno = savedErrno;
 }
 
 } // namespace
@@ -672,7 +677,7 @@ static void DoStartTask() {
 }
 
 static void StartSignalHandler(int signal, siginfo_t* info, void* context) {
-  class StartTask : public nsRunnable {
+  class StartTask : public Runnable {
   public:
     NS_IMETHOD Run() {
       DoStartTask();

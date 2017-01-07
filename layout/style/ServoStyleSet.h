@@ -11,11 +11,12 @@
 #include "mozilla/EventStates.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ServoBindingHelpers.h"
+#include "mozilla/ServoElementSnapshot.h"
 #include "mozilla/ServoStyleSheet.h"
 #include "mozilla/SheetType.h"
 #include "mozilla/UniquePtr.h"
-#include "nsChangeHint.h"
 #include "nsCSSPseudoElements.h"
+#include "nsChangeHint.h"
 #include "nsIAtom.h"
 #include "nsTArray.h"
 
@@ -24,6 +25,7 @@ namespace dom {
 class Element;
 } // namespace dom
 class CSSStyleSheet;
+class ServoRestyleManager;
 class ServoStyleSheet;
 } // namespace mozilla
 class nsIDocument;
@@ -39,6 +41,7 @@ namespace mozilla {
  */
 class ServoStyleSet
 {
+  friend class ServoRestyleManager;
 public:
   ServoStyleSet();
 
@@ -52,7 +55,8 @@ public:
   void BeginUpdate();
   nsresult EndUpdate();
 
-  // resolve a style context
+  void StartStyling(nsPresContext* aPresContext);
+
   already_AddRefed<nsStyleContext>
   ResolveStyleFor(dom::Element* aElement,
                   nsStyleContext* aParentContext);
@@ -63,7 +67,11 @@ public:
                   TreeMatchContext& aTreeMatchContext);
 
   already_AddRefed<nsStyleContext>
-  ResolveStyleForNonElement(nsStyleContext* aParentContext);
+  ResolveStyleForText(nsIContent* aTextNode,
+                      nsStyleContext* aParentContext);
+
+  already_AddRefed<nsStyleContext>
+  ResolveStyleForOtherNonElement(nsStyleContext* aParentContext);
 
   already_AddRefed<nsStyleContext>
   ResolvePseudoElementStyle(dom::Element* aParentElement,
@@ -108,16 +116,40 @@ public:
   // Test if style is dependent on content state
   nsRestyleHint HasStateDependentStyle(dom::Element* aElement,
                                        EventStates aStateMask);
-  nsRestyleHint HasStateDependentStyle(dom::Element* aElement,
-                                       mozilla::CSSPseudoElementType aPseudoType,
-                                       dom::Element* aPseudoElement,
-                                       EventStates aStateMask);
+  nsRestyleHint HasStateDependentStyle(
+    dom::Element* aElement, mozilla::CSSPseudoElementType aPseudoType,
+    dom::Element* aPseudoElement, EventStates aStateMask);
+
+  /**
+   * Computes a restyle hint given a element and a previous element snapshot.
+   */
+  nsRestyleHint ComputeRestyleHint(dom::Element* aElement,
+                                   ServoElementSnapshot* aSnapshot);
+
+  /**
+   * Restyles a whole subtree of nodes.
+   */
+  void RestyleSubtree(nsINode* aNode);
+
+  bool StylingStarted() const { return mStylingStarted; }
 
 private:
+  already_AddRefed<nsStyleContext> GetContext(already_AddRefed<ServoComputedValues>,
+                                              nsStyleContext* aParentContext,
+                                              nsIAtom* aPseudoTag,
+                                              CSSPseudoElementType aPseudoType);
+
+  already_AddRefed<nsStyleContext> GetContext(nsIContent* aContent,
+                                              nsStyleContext* aParentContext,
+                                              nsIAtom* aPseudoTag,
+                                              CSSPseudoElementType aPseudoType);
+
+  nsPresContext* mPresContext;
   UniquePtr<RawServoStyleSet> mRawSet;
   EnumeratedArray<SheetType, SheetType::Count,
                   nsTArray<RefPtr<ServoStyleSheet>>> mSheets;
   int32_t mBatching;
+  bool mStylingStarted;
 };
 
 } // namespace mozilla

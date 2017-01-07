@@ -544,7 +544,8 @@ FT2FontEntry::GetFontTable(uint32_t aTableTag)
         FTUserFontData *userFontData = static_cast<FTUserFontData*>(
             cairo_font_face_get_user_data(mFontFace, &sFTUserFontDataKey));
         if (userFontData && userFontData->FontData()) {
-            return GetTableFromFontData(userFontData->FontData(), aTableTag);
+            return gfxFontUtils::GetTableFromFontData(userFontData->FontData(),
+                                                      aTableTag);
         }
     }
 
@@ -759,13 +760,12 @@ private:
         bool      mFileExists;
     } FNCMapEntry;
 
-    static PLDHashNumber StringHash(PLDHashTable *table, const void *key)
+    static PLDHashNumber StringHash(const void *key)
     {
         return HashString(reinterpret_cast<const char*>(key));
     }
 
-    static bool HashMatchEntry(PLDHashTable *table,
-                                 const PLDHashEntryHdr *aHdr, const void *key)
+    static bool HashMatchEntry(const PLDHashEntryHdr *aHdr, const void *key)
     {
         const FNCMapEntry* entry =
             static_cast<const FNCMapEntry*>(aHdr);
@@ -808,15 +808,13 @@ gfxFT2FontList::AppendFacesFromCachedFaceList(
     const char *beginning = aFaceList.get();
     const char *end = strchr(beginning, ',');
     while (end) {
-        nsString familyName =
-            NS_ConvertUTF8toUTF16(beginning, end - beginning);
+        NS_ConvertUTF8toUTF16 familyName(beginning, end - beginning);
         ToLowerCase(familyName);
         beginning = end + 1;
         if (!(end = strchr(beginning, ','))) {
             break;
         }
-        nsString faceName =
-            NS_ConvertUTF8toUTF16(beginning, end - beginning);
+        NS_ConvertUTF8toUTF16 faceName(beginning, end - beginning);
         beginning = end + 1;
         if (!(end = strchr(beginning, ','))) {
             break;
@@ -1167,24 +1165,60 @@ gfxFT2FontList::FindFonts()
     // Chrome process: get the cached list (if any)
     FontNameCache fnc;
 
-    // ANDROID_ROOT is the root of the android system, typically /system;
-    // font files are in /$ANDROID_ROOT/fonts/
-    nsCString root;
-    char *androidRoot = PR_GetEnv("ANDROID_ROOT");
-    if (androidRoot) {
-        root = androidRoot;
-    } else {
-        root = NS_LITERAL_CSTRING("/system");
+    static const char* sFaultyFonts[] = {
+//        "NotoSansJP-Black.otf",
+//        "NotoSansJP-Bold.otf",
+//        "NotoSansJP-DemiLight.otf",
+//        "NotoSansJP-Light.otf",
+//        "NotoSansJP-Medium.otf",
+//        "NotoSansJP-Thin.otf",
+        "NotoSansJP-Regular.otf",
+        "NotoSansTC-Regular.otf",
+        0
+    };
+
+    // look for fonts in the sdcard/sysfonts
+    // if fonts are found here, the system fonts will be by-passed
+    nsCString sysfonts; sysfonts = "/sdcard/sysfonts";
+    FindFontsInDir(sysfonts, &fnc, FT2FontFamily::kVisible);
+
+    // if fonts are loaded in /sdcard/fonts, we bypass the system fonts
+    bool bLoadRootFonts = (mFontFamilies.Count() == 0)?true:false;
+
+    // look for fonts in the sdcard
+    nsCString sdcard; sdcard = "/sdcard/fonts";
+    FindFontsInDir(sdcard, &fnc, FT2FontFamily::kVisible);
+
+    nsCString distribution;
+    char *envdistribution = PR_GetEnv("PYXDB_EXT_DIR");
+    if (envdistribution) {
+        distribution = envdistribution;
+        FindFontsInDir(distribution, &fnc, FT2FontFamily::kVisible);
     }
-    root.AppendLiteral("/fonts");
 
-    FindFontsInDir(root, &fnc, FT2FontFamily::kVisible);
+#if 1
+    if (bLoadRootFonts) {
+        // ANDROID_ROOT is the root of the android system, typically /system;
+        // font files are in /$ANDROID_ROOT/fonts/
+        nsCString root;
+        char *androidRoot = PR_GetEnv("ANDROID_ROOT");
+        if (androidRoot) {
+            root = androidRoot;
+        } else {
+            root = NS_LITERAL_CSTRING("/system");
+        }
+        root.AppendLiteral("/fonts");
 
-    if (mFontFamilies.Count() == 0) {
-        // if we can't find/read the font directory, we are doomed!
-        NS_RUNTIMEABORT("Could not read the system fonts directory");
+        FindFontsInDir(root, &fnc, FT2FontFamily::kVisible, sFaultyFonts);
+
+//    if (mFontFamilies.Count() == 0) {
+//        // if we can't find/read the font directory, we are doomed!
+//        NS_RUNTIMEABORT("Could not read the system fonts directory");
+//    }
     }
+#endif
 
+#if 0
 #ifdef MOZ_WIDGET_GONK
     // Look for fonts in /system/fonts/hidden and preload them to the
     // user-font cache as data: URIs
@@ -1231,10 +1265,7 @@ gfxFT2FontList::FindFonts()
             FindFontsInDir(localPath, &fnc, FT2FontFamily::kVisible);
         }
     }
-
-    // look for fonts in the sdcard
-    nsCString sdcard; sdcard = "/sdcard/fonts";
-    FindFontsInDir(sdcard, &fnc, FT2FontFamily::kVisible);
+#endif
 
     // Finalize the families by sorting faces into standard order
     // and marking "simple" families.
@@ -1251,10 +1282,21 @@ gfxFT2FontList::FindFonts()
     }
 }
 
+bool isInList(const char* sFaultyFonts[], const char *name) {
+    unsigned int i = 0;
+    while(sFaultyFonts[i]) {
+        if (strcmp(sFaultyFonts[i], name) == 0)
+            return true;
+        i++;
+    }
+    return false;
+}
+
 void
 gfxFT2FontList::FindFontsInDir(const nsCString& aDir,
                                FontNameCache *aFNC,
-                               FT2FontFamily::Visibility aVisibility)
+                               FT2FontFamily::Visibility aVisibility,
+                               const char* sFaultyFonts[])
 {
     static const char* sStandardFonts[] = {
         "DroidSans.ttf",
@@ -1285,6 +1327,10 @@ gfxFT2FontList::FindFontsInDir(const nsCString& aDir,
         if (!ext) {
             continue;
         }
+        if (sFaultyFonts && isInList(sFaultyFonts,ent->d_name)) {
+            ALOG("faulty font: %s",ent->d_name);
+            continue;
+        }        
         if (strcasecmp(ext, ".ttf") == 0 ||
             strcasecmp(ext, ".otf") == 0 ||
             strcasecmp(ext, ".woff") == 0 ||
@@ -1411,7 +1457,7 @@ PreloadAsUserFontFaces(nsStringHashKey::KeyType aKey,
              crc);
 #endif
 
-        fe->mUserFontData = new gfxUserFontData;
+        fe->mUserFontData = MakeUnique<gfxUserFontData>();
         fe->mUserFontData->mRealName = fe->Name();
         fe->mUserFontData->mCRC32 = crc;
         fe->mUserFontData->mLength = buf.st_size;

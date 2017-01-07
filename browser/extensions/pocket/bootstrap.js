@@ -14,8 +14,6 @@ XPCOMUtils.defineLazyModuleGetter(this, "RecentWindow",
                                   "resource:///modules/RecentWindow.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "CustomizableUI",
                                   "resource:///modules/CustomizableUI.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "SocialService",
-                                  "resource://gre/modules/SocialService.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AddonManager",
                                   "resource://gre/modules/AddonManager.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ReaderMode",
@@ -93,12 +91,13 @@ PocketAboutPage.prototype = {
   getURIFlags: function(aURI) {
     return Ci.nsIAboutModule.ALLOW_SCRIPT |
            Ci.nsIAboutModule.URI_SAFE_FOR_UNTRUSTED_CONTENT |
-           Ci.nsIAboutModule.HIDE_FROM_ABOUTABOUT |
-           Ci.nsIAboutModule.MAKE_UNLINKABLE;
+           Ci.nsIAboutModule.HIDE_FROM_ABOUTABOUT;
   },
 
-  newChannel: function(aURI) {
-    let channel = Services.io.newChannel(this.chromeURL, null, null);
+  newChannel: function(aURI, aLoadInfo) {
+    let newURI = Services.io.newURI(this.chromeURL, null, null);
+    let channel = Services.io.newChannelFromURIWithLoadInfo(newURI,
+                                                            aLoadInfo);
     channel.originalURI = aURI;
     return channel;
   },
@@ -183,6 +182,14 @@ function CreatePocketWidget(reason) {
   // already uninstalled it in this manner.  That way the user can reinstall
   // it if they prefer it without its being uninstalled every time they start
   // the browser.
+  let SocialService;
+  try {
+    // For Firefox 51+
+    SocialService = Cu.import("resource:///modules/SocialService.jsm", {}).SocialService;
+  } catch (e) {
+    SocialService = Cu.import("resource://gre/modules/SocialService.jsm", {}).SocialService;
+  }
+
   let origin = "https://getpocket.com";
   SocialService.getProvider(origin, provider => {
     if (provider) {

@@ -5,11 +5,17 @@
 package org.mozilla.gecko.tests;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
-import org.mozilla.gecko.background.db.CursorDumper;
 import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.db.BrowserContract.UrlAnnotations.SyncStatus;
+import org.mozilla.gecko.db.URLMetadata;
+import org.mozilla.gecko.db.URLMetadataTable;
 
 import android.content.ContentProviderOperation;
 import android.content.ContentProviderResult;
@@ -188,6 +194,16 @@ public class testBrowserProvider extends ContentProviderTest {
         return thumbnailEntry;
     }
 
+    private ContentValues createUrlMetadataEntry(final String url, final String tileImage, final String tileColor,
+                final String touchIcon) {
+        final ContentValues values = new ContentValues();
+        values.put(URLMetadataTable.URL_COLUMN, url);
+        values.put(URLMetadataTable.TILE_IMAGE_URL_COLUMN, tileImage);
+        values.put(URLMetadataTable.TILE_COLOR_COLUMN, tileColor);
+        values.put(URLMetadataTable.TOUCH_ICON_COLUMN, touchIcon);
+        return values;
+    }
+
     private ContentValues createUrlAnnotationEntry(final String url, final String key, final String value,
                 final long dateCreated) {
         final ContentValues values = new ContentValues();
@@ -243,6 +259,13 @@ public class testBrowserProvider extends ContentProviderTest {
                 null);
     }
 
+    private Cursor getUrlMetadataByUrl(final String url) throws Exception {
+        return mProvider.query(URLMetadataTable.CONTENT_URI, null,
+                URLMetadataTable.URL_COLUMN + " = ?",
+                new String[] { url },
+                null);
+    }
+
     @Override
     public void setUp() throws Exception {
         super.setUp(sBrowserProviderCallable, BrowserContract.AUTHORITY, "browser.db");
@@ -269,13 +292,13 @@ public class testBrowserProvider extends ContentProviderTest {
         mTests.add(new TestDeleteHistoryThumbnails());
 
         mTests.add(new TestInsertUrlAnnotations());
+        mTests.add(new TestInsertUrlMetadata());
 
         mTests.add(new TestBatchOperations());
 
         mTests.add(new TestCombinedView());
         mTests.add(new TestCombinedViewDisplay());
         mTests.add(new TestCombinedViewWithDeletedBookmark());
-        mTests.add(new TestExpireHistory());
 
         mTests.add(new TestBrowserProviderNotifications());
     }
@@ -1324,7 +1347,10 @@ public class testBrowserProvider extends ContentProviderTest {
             mAsserter.is(c.getString(c.getColumnIndex(BrowserContract.History.TITLE)), TEST_TITLE,
                          "Inserted history entry has correct specified title");
 
-            // Update the history entry, specifying additional visit count
+            // Update the history entry, specifying additional visit count.
+            // The expectation is that the value is ignored, and count is bumped by 1 only.
+            // At the same time, a visit is inserted into the visits table.
+            // See junit4 tests in BrowserProviderHistoryVisitsTest.
             values = new ContentValues();
             values.put(BrowserContract.History.VISITS, 10);
 
@@ -1341,7 +1367,7 @@ public class testBrowserProvider extends ContentProviderTest {
                          "Updated history entry has correct unchanged title");
             mAsserter.is(c.getString(c.getColumnIndex(BrowserContract.History.URL)), TEST_URL_2,
                          "Updated history entry has correct unchanged URL");
-            mAsserter.is(c.getLong(c.getColumnIndex(BrowserContract.History.VISITS)), 20L,
+            mAsserter.is(c.getLong(c.getColumnIndex(BrowserContract.History.VISITS)), 11L,
                          "Updated history entry has correct number of visits");
             mAsserter.is(c.getLong(c.getColumnIndex(BrowserContract.History.DATE_CREATED)), dateCreated,
                          "Updated history entry has same creation date");
@@ -1487,6 +1513,116 @@ public class testBrowserProvider extends ContentProviderTest {
                     "Inserted url annotation has correct value");
             mAsserter.is(c.getInt(c.getColumnIndex(BrowserContract.UrlAnnotations.SYNC_STATUS)), SyncStatus.NEW.getDBValue(),
                     "Inserted url annotation has default sync status");
+        }
+    }
+
+    private class TestInsertUrlMetadata extends TestCase {
+        @Override
+        public void test() throws Exception {
+            testInsertionViaContentProvider();
+            testInsertionViaUrlMetadata();
+            // testRetrievalViaUrlMetadata depends on data added in the previous two tests
+            testRetrievalViaUrlMetadata();
+        }
+
+        final String url1 = "http://mozilla.org";
+        final String url2 = "http://hello.org";
+
+        private void testInsertionViaContentProvider() throws Exception {
+            final String tileImage = "http://mozilla.org/tileImage.png";
+            final String tileColor = "#FF0000";
+            final String touchIcon = "http://mozilla.org/touchIcon.png";
+
+            // We can only use update since the redirection machinery doesn't exist for insert
+            mProvider.update(URLMetadataTable.CONTENT_URI.buildUpon().appendQueryParameter(BrowserContract.PARAM_INSERT_IF_NEEDED, "true").build(),
+                    createUrlMetadataEntry(url1, tileImage, tileColor, touchIcon),
+                    URLMetadataTable.URL_COLUMN + "=?",
+                    new String[] {url1}
+            );
+
+            final Cursor c = getUrlMetadataByUrl(url1);
+            try {
+                mAsserter.is(c.getCount(), 1, "URL metadata inserted via Content Provider not found");
+            } finally {
+                c.close();
+            }
+        }
+
+        private void testInsertionViaUrlMetadata() throws Exception {
+            final String tileImage = "http://hello.org/tileImage.png";
+            final String tileColor = "#FF0000";
+            final String touchIcon = "http://hello.org/touchIcon.png";
+
+            final Map<String, Object> data = new HashMap<>();
+            data.put(URLMetadataTable.URL_COLUMN, url2);
+            data.put(URLMetadataTable.TILE_IMAGE_URL_COLUMN, tileImage);
+            data.put(URLMetadataTable.TILE_COLOR_COLUMN, tileColor);
+            data.put(URLMetadataTable.TOUCH_ICON_COLUMN, touchIcon);
+
+            getTestProfile().getDB().getURLMetadata().save(mResolver, data);
+
+            final Cursor c = getUrlMetadataByUrl(url2);
+            try {
+                mAsserter.is(c.moveToFirst(), true, "URL metadata inserted via UrlMetadata not found");
+            } finally {
+                c.close();
+            }
+        }
+
+        private void testRetrievalViaUrlMetadata() {
+            // LocalURLMetadata has some caching of results: we need to test that this caching
+            // doesn't prevent us from accessing data that might not have been loaded into the cache.
+            // We do this by first doing queries with a subset of data, then later querying additional
+            // data for a given URL. E.g. even if the first query results in only the requested
+            // column being cached, the subsequent query should still retrieve all requested columns.
+            // (In this case the URL may be cached but without all data, we need to make sure that
+            // this state is correctly handled.)
+            URLMetadata metadata = getTestProfile().getDB().getURLMetadata();
+
+            Map<String, Map<String, Object>> results;
+            Map<String, Object> urlData;
+
+            // 1: retrieve just touch Icons for URL 1
+            results = metadata.getForURLs(mResolver,
+                    Collections.singletonList(url1),
+                    Collections.singletonList(URLMetadataTable.TOUCH_ICON_COLUMN));
+
+            mAsserter.is(results.containsKey(url1), true, "URL 1 not found in results");
+
+            urlData = results.get(url1);
+            mAsserter.is(urlData.containsKey(URLMetadataTable.TOUCH_ICON_COLUMN), true, "touchIcon column missing in UrlMetadata results");
+
+            // 2: retrieve just tile color for URL 2
+            results = metadata.getForURLs(mResolver,
+                    Collections.singletonList(url2),
+                    Collections.singletonList(URLMetadataTable.TILE_COLOR_COLUMN));
+
+            mAsserter.is(results.containsKey(url2), true, "URL 2 not found in results");
+
+            urlData = results.get(url2);
+            mAsserter.is(urlData.containsKey(URLMetadataTable.TILE_COLOR_COLUMN), true, "touchIcon column missing in UrlMetadata results");
+
+
+            // 3: retrieve all columns for both URLs
+            final List<String> urls = Arrays.asList(url1, url2);
+
+            results = metadata.getForURLs(mResolver,
+                    urls,
+                    Arrays.asList(URLMetadataTable.TILE_IMAGE_URL_COLUMN,
+                            URLMetadataTable.TILE_COLOR_COLUMN,
+                            URLMetadataTable.TOUCH_ICON_COLUMN
+                    ));
+
+            mAsserter.is(results.containsKey(url1), true, "URL 1 not found in results");
+            mAsserter.is(results.containsKey(url2), true, "URL 2 not found in results");
+
+
+            for (final String url : urls) {
+                urlData = results.get(url);
+                mAsserter.is(urlData.containsKey(URLMetadataTable.TILE_IMAGE_URL_COLUMN), true, "touchIcon column missing in UrlMetadata results");
+                mAsserter.is(urlData.containsKey(URLMetadataTable.TILE_COLOR_COLUMN), true, "touchIcon column missing in UrlMetadata results");
+                mAsserter.is(urlData.containsKey(URLMetadataTable.TOUCH_ICON_COLUMN), true, "touchIcon column missing in UrlMetadata results");
+            }
         }
     }
 
@@ -1681,121 +1817,6 @@ public class testBrowserProvider extends ContentProviderTest {
             mAsserter.is(c.getLong(c.getColumnIndex(BrowserContract.Combined.BOOKMARK_ID)), 0L,
                          "Bookmark id should not be set to removed bookmark id");
             c.close();
-        }
-    }
-
-    private class TestExpireHistory extends TestCase {
-        private void createFakeHistory(long timeShift, int count) {
-            // Insert a bunch of very new entries
-            ContentValues[] allVals = new ContentValues[count];
-            long time = System.currentTimeMillis() - timeShift;
-            for (int i = 0; i < count; i++) {
-                allVals[i] = new ContentValues();
-                allVals[i].put(BrowserContract.History.TITLE, "Test " + i);
-                allVals[i].put(BrowserContract.History.URL, "http://www.test.org/" + i);
-                allVals[i].put(BrowserContract.History.VISITS, i);
-                allVals[i].put(BrowserContract.History.DATE_LAST_VISITED, time);
-            }
-
-            int inserts = mProvider.bulkInsert(BrowserContract.History.CONTENT_URI, allVals);
-            mAsserter.is(inserts, count, "Expected number of inserts matches");
-
-            // inserting a new entry sets the date created and modified automatically
-            // reset all of them
-            for (int i = 0; i < count; i++) {
-                ContentValues cv = new ContentValues();
-                cv.put(BrowserContract.History.DATE_CREATED, time);
-                cv.put(BrowserContract.History.DATE_MODIFIED, time);
-                mProvider.update(BrowserContract.History.CONTENT_URI, cv, BrowserContract.History.URL + " = ?",
-                                 new String[] { "http://www.test.org/" + i });
-            }
-
-            Cursor c = mProvider.query(BrowserContract.History.CONTENT_URI, null, "", null, null);
-
-            assertCountIsAndClose(c, count, count + " history entries found");
-
-            // add thumbnails for each entry
-            allVals = new ContentValues[count];
-            for (int i = 0; i < count; i++) {
-                allVals[i] = new ContentValues();
-                allVals[i].put(BrowserContract.Thumbnails.DATA, i);
-                allVals[i].put(BrowserContract.Thumbnails.URL, "http://www.test.org/" + i);
-            }
-
-            inserts = mProvider.bulkInsert(BrowserContract.Thumbnails.CONTENT_URI, allVals);
-            mAsserter.is(inserts, count, "Expected number of inserts matches");
-
-            c = mProvider.query(BrowserContract.Thumbnails.CONTENT_URI, null, null, null, null);
-            assertCountIsAndClose(c, count, count + " thumbnails entries found");
-        }
-
-        @Override
-        public void test() throws Exception {
-            final int count = 3000;
-            final int thumbCount = 15;
-
-            // insert a bunch of new entries
-            createFakeHistory(0, count);
-
-            // expiring with a normal priority should not delete new entries
-            Uri url = appendUriParam(BrowserContract.History.CONTENT_OLD_URI, BrowserContract.PARAM_EXPIRE_PRIORITY, "NORMAL");
-            mProvider.delete(url, null, null);
-            Cursor c = mProvider.query(BrowserContract.History.CONTENT_URI, null, "", null, null);
-            assertCountIsAndClose(c, count, count + " history entries found");
-
-            // expiring with a normal priority should delete all but 10 thumbnails
-            c = mProvider.query(BrowserContract.Thumbnails.CONTENT_URI, null, null, null, null);
-            assertCountIsAndClose(c, thumbCount, thumbCount + " thumbnails found");
-
-            ensureEmptyDatabase();
-
-            // Insert a bunch of new entries.
-            createFakeHistory(0, count);
-
-            // Expiring with a aggressive priority should leave 500 entries.
-            url = appendUriParam(BrowserContract.History.CONTENT_OLD_URI, BrowserContract.PARAM_EXPIRE_PRIORITY, "AGGRESSIVE");
-            mProvider.delete(url, null, null);
-
-            c = mProvider.query(BrowserContract.History.CONTENT_URI, null, "", null, null);
-            assertCountIsAndClose(c, 500, "500 history entries found");
-
-            // Expiring with a aggressive priority should delete all but 10 thumbnails.
-            c = mProvider.query(BrowserContract.Thumbnails.CONTENT_URI, null, null, null, null);
-            assertCountIsAndClose(c, thumbCount, thumbCount + " thumbnails found");
-
-            ensureEmptyDatabase();
-
-            // Insert a bunch of entries with an old time created/modified.
-            long time = 1000L * 60L * 60L * 24L * 30L * 3L;
-            createFakeHistory(time, count);
-
-            // Expiring with an normal priority should remove at most 1000 entries,
-            // entries leaving at least 2000.
-            url = appendUriParam(BrowserContract.History.CONTENT_OLD_URI, BrowserContract.PARAM_EXPIRE_PRIORITY, "NORMAL");
-            mProvider.delete(url, null, null);
-
-            c = mProvider.query(BrowserContract.History.CONTENT_URI, null, "", null, null);
-            assertCountIsAndClose(c, 2000, "2000 history entries found");
-
-            // Expiring with a normal priority should delete all but 10 thumbnails.
-            c = mProvider.query(BrowserContract.Thumbnails.CONTENT_URI, null, null, null, null);
-            assertCountIsAndClose(c, thumbCount, thumbCount + " thumbnails found");
-
-            ensureEmptyDatabase();
-            // insert a bunch of entries with an old time created/modified
-            time = 1000L * 60L * 60L * 24L * 30L * 3L;
-            createFakeHistory(time, count);
-
-            // Expiring with an aggressive priority should remove old
-            // entries, leaving at least 500.
-            url = appendUriParam(BrowserContract.History.CONTENT_OLD_URI, BrowserContract.PARAM_EXPIRE_PRIORITY, "AGGRESSIVE");
-            mProvider.delete(url, null, null);
-            c = mProvider.query(BrowserContract.History.CONTENT_URI, null, "", null, null);
-            assertCountIsAndClose(c, 500, "500 history entries found");
-
-            // expiring with an aggressive priority should delete all but 10 thumbnails
-            c = mProvider.query(BrowserContract.Thumbnails.CONTENT_URI, null, null, null, null);
-            assertCountIsAndClose(c, thumbCount, thumbCount + " thumbnails found");
         }
     }
 

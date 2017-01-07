@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
 #include "nsISupports.h"
 #include "nsIDOMNodeList.h"
 #include "nsIContentIterator.h"
@@ -933,7 +934,7 @@ void
 nsContentIterator::First()
 {
   if (mFirst) {
-    DebugOnly<nsresult> rv = PositionAt(mFirst);
+    mozilla::DebugOnly<nsresult> rv = PositionAt(mFirst);
     NS_ASSERTION(NS_SUCCEEDED(rv), "Failed to position iterator!");
   }
 
@@ -947,7 +948,7 @@ nsContentIterator::Last()
   NS_ASSERTION(mLast, "No last node!");
 
   if (mLast) {
-    DebugOnly<nsresult> rv = PositionAt(mLast);
+    mozilla::DebugOnly<nsresult> rv = PositionAt(mLast);
     NS_ASSERTION(NS_SUCCEEDED(rv), "Failed to position iterator!");
   }
 
@@ -1337,8 +1338,8 @@ nsContentSubtreeIterator::Init(nsIDOMRange* aRange)
   // we have a range that does not fully contain any node.
 
   bool nodeBefore, nodeAfter;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    nsRange::CompareNodeToRange(firstCandidate, mRange, &nodeBefore, &nodeAfter)));
+  MOZ_ALWAYS_SUCCEEDS(
+    nsRange::CompareNodeToRange(firstCandidate, mRange, &nodeBefore, &nodeAfter));
 
   if (nodeBefore || nodeAfter) {
     MakeEmpty();
@@ -1381,8 +1382,8 @@ nsContentSubtreeIterator::Init(nsIDOMRange* aRange)
   // confirm that this last possible contained node is indeed contained.  Else
   // we have a range that does not fully contain any node.
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    nsRange::CompareNodeToRange(lastCandidate, mRange, &nodeBefore, &nodeAfter)));
+  MOZ_ALWAYS_SUCCEEDS(
+    nsRange::CompareNodeToRange(lastCandidate, mRange, &nodeBefore, &nodeAfter));
 
   if (nodeBefore || nodeAfter) {
     MakeEmpty();
@@ -1534,8 +1535,8 @@ nsContentSubtreeIterator::GetTopAncestorInRange(nsINode* aNode)
     if (!parent || !parent->GetParentNode()) {
       return content;
     }
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      nsRange::CompareNodeToRange(parent, mRange, &nodeBefore, &nodeAfter)));
+    MOZ_ALWAYS_SUCCEEDS(
+      nsRange::CompareNodeToRange(parent, mRange, &nodeBefore, &nodeAfter));
 
     if (nodeBefore || nodeAfter) {
       return content;

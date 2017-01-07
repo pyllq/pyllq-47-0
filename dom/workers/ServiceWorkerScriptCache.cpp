@@ -19,8 +19,11 @@
 #include "nsIThreadRetargetableRequest.h"
 
 #include "nsIPrincipal.h"
+#include "nsIScriptError.h"
+#include "nsContentUtils.h"
 #include "nsNetUtil.h"
 #include "nsScriptLoader.h"
+#include "ServiceWorkerManager.h"
 #include "Workers.h"
 #include "nsStringStream.h"
 
@@ -287,7 +290,7 @@ public:
     return NS_OK;
   }
 
-  const nsAString&
+  const nsString&
   URL() const
   {
     AssertIsOnMainThread();
@@ -535,7 +538,8 @@ private:
 
     ErrorResult result;
     nsCOMPtr<nsIInputStream> body;
-    result = NS_NewStringInputStream(getter_AddRefs(body), mCN->Buffer());
+    result = NS_NewCStringInputStream(getter_AddRefs(body),
+                                      NS_ConvertUTF16toUTF8(mCN->Buffer()));
     if (NS_WARN_IF(result.Failed())) {
       MOZ_ASSERT(!result.IsErrorWithMessage());
       Fail(result.StealNSResult());
@@ -544,7 +548,7 @@ private:
 
     RefPtr<InternalResponse> ir =
       new InternalResponse(200, NS_LITERAL_CSTRING("OK"));
-    ir->SetBody(body);
+    ir->SetBody(body, mCN->Buffer().Length());
 
     ir->InitChannelInfo(mChannelInfo);
     if (mPrincipalInfo) {
@@ -734,6 +738,18 @@ CompareNetwork::OnStreamComplete(nsIStreamLoader* aLoader, nsISupports* aContext
   }
 
   if (NS_WARN_IF(!requestSucceeded)) {
+    // Get the stringified numeric status code, not statusText which could be
+    // something misleading like OK for a 404.
+    uint32_t status = 0;
+    httpChannel->GetResponseStatus(&status); // don't care if this fails, use 0.
+    nsAutoString statusAsText;
+    statusAsText.AppendInt(status);
+
+    RefPtr<ServiceWorkerRegistrationInfo> registration = mManager->GetRegistration();
+    ServiceWorkerManager::LocalizeAndReportToAllClients(
+      registration->mScope, "ServiceWorkerRegisterNetworkError",
+      nsTArray<nsString> { NS_ConvertUTF8toUTF16(registration->mScope),
+        statusAsText, mManager->URL() });
     mManager->NetworkFinished(NS_ERROR_FAILURE);
     return NS_OK;
   }
@@ -763,6 +779,10 @@ CompareNetwork::OnStreamComplete(nsIStreamLoader* aLoader, nsISupports* aContext
   nsAutoCString mimeType;
   rv = httpChannel->GetContentType(mimeType);
   if (NS_WARN_IF(NS_FAILED(rv))) {
+    // We should only end up here if !mResponseHead in the channel.  If headers
+    // were received but no content type was specified, we'll be given
+    // UNKNOWN_CONTENT_TYPE "application/x-unknown-content-type" and so fall
+    // into the next case with its better error message.
     mManager->NetworkFinished(NS_ERROR_DOM_SECURITY_ERR);
     return rv;
   }
@@ -770,6 +790,11 @@ CompareNetwork::OnStreamComplete(nsIStreamLoader* aLoader, nsISupports* aContext
   if (!mimeType.LowerCaseEqualsLiteral("text/javascript") &&
       !mimeType.LowerCaseEqualsLiteral("application/x-javascript") &&
       !mimeType.LowerCaseEqualsLiteral("application/javascript")) {
+    RefPtr<ServiceWorkerRegistrationInfo> registration = mManager->GetRegistration();
+    ServiceWorkerManager::LocalizeAndReportToAllClients(
+      registration->mScope, "ServiceWorkerRegisterMimeTypeError",
+      nsTArray<nsString> { NS_ConvertUTF8toUTF16(registration->mScope),
+        NS_ConvertUTF8toUTF16(mimeType), mManager->URL() });
     mManager->NetworkFinished(NS_ERROR_DOM_SECURITY_ERR);
     return rv;
   }

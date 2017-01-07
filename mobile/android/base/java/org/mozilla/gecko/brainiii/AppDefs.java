@@ -1,6 +1,5 @@
 /*
 Copyright (C) 2016 Brainiii (Singapore)
-All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
@@ -36,11 +35,7 @@ POSSIBILITY OF SUCH DAMAGE.
 package com.brainiii;
 
 public class AppDefs {
-    public static boolean SHOW_AD = false;
-    public static boolean SHOW_SG50 = false;
-    public static boolean SHOW_SPACER = false;
-
-    public static String PINYINCIDIAN_PACKAGENAME = "com.brainiii.cidian";
+    public static String PINYINCIDIAN_PACKAGENAME = "com.brainiii.cidian.android.free";
 
     public static String UPDATE_URL = "http://www.chinesebrowser.com/updates/android-4700.json";
     public static int APP_VERSION = 47;

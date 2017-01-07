@@ -61,7 +61,7 @@ enum XrayType {
 class XrayTraits
 {
 public:
-    MOZ_CONSTEXPR XrayTraits() {}
+    constexpr XrayTraits() {}
 
     static JSObject* getTargetObject(JSObject* wrapper) {
         return js::UncheckedUnwrap(wrapper, /* stopAtWindowProxy = */ false);
@@ -160,7 +160,7 @@ public:
 class DOMXrayTraits : public XrayTraits
 {
 public:
-    MOZ_CONSTEXPR DOMXrayTraits() = default;
+    constexpr DOMXrayTraits() = default;
 
     enum {
         HasPrototype = 1
@@ -251,17 +251,7 @@ public:
     }
 
     static bool construct(JSContext* cx, JS::HandleObject wrapper,
-                          const JS::CallArgs& args, const js::Wrapper& baseInstance)
-    {
-        JSXrayTraits& self = JSXrayTraits::singleton;
-        JS::RootedObject holder(cx, self.ensureHolder(cx, wrapper));
-        if (self.getProtoKey(holder) == JSProto_Function)
-            return baseInstance.construct(cx, wrapper, args);
-
-        JS::RootedValue v(cx, JS::ObjectValue(*wrapper));
-        js::ReportIsNotFunction(cx, v);
-        return false;
-    }
+                          const JS::CallArgs& args, const js::Wrapper& baseInstance);
 
     bool getPrototype(JSContext* cx, JS::HandleObject wrapper,
                       JS::HandleObject target,
@@ -421,7 +411,7 @@ XrayTraits* GetXrayTraits(JSObject* obj);
 template <typename Base, typename Traits = XPCWrappedNativeXrayTraits >
 class XrayWrapper : public Base {
   public:
-    MOZ_CONSTEXPR explicit XrayWrapper(unsigned flags)
+    constexpr explicit XrayWrapper(unsigned flags)
       : Base(flags | WrapperFactory::IS_XRAY_WRAPPER_FLAG, Traits::HasPrototype)
     { };
 
@@ -441,6 +431,8 @@ class XrayWrapper : public Base {
                               JS::MutableHandleObject protop) const override;
     virtual bool setPrototype(JSContext* cx, JS::HandleObject wrapper,
                               JS::HandleObject proto, JS::ObjectOpResult& result) const override;
+    virtual bool getPrototypeIfOrdinary(JSContext* cx, JS::HandleObject wrapper, bool* isOrdinary,
+                                        JS::MutableHandleObject protop) const override;
     virtual bool setImmutablePrototype(JSContext* cx, JS::HandleObject wrapper,
                                        bool* succeeded) const override;
     virtual bool preventExtensions(JSContext* cx, JS::Handle<JSObject*> wrapper,
@@ -505,9 +497,17 @@ class XrayWrapper : public Base {
 #define PermissiveXrayOpaque xpc::XrayWrapper<js::CrossCompartmentWrapper, xpc::OpaqueXrayTraits>
 #define SCSecurityXrayXPCWN xpc::XrayWrapper<js::SameCompartmentSecurityWrapper, xpc::XPCWrappedNativeXrayTraits>
 
+extern template class PermissiveXrayXPCWN;
+extern template class SecurityXrayXPCWN;
+extern template class PermissiveXrayDOM;
+extern template class SecurityXrayDOM;
+extern template class PermissiveXrayJS;
+extern template class PermissiveXrayOpaque;
+extern template class PermissiveXrayXPCWN;
+
 class SandboxProxyHandler : public js::Wrapper {
 public:
-    MOZ_CONSTEXPR SandboxProxyHandler() : js::Wrapper(0)
+    constexpr SandboxProxyHandler() : js::Wrapper(0)
     {
     }
 
@@ -543,7 +543,7 @@ extern const SandboxProxyHandler sandboxProxyHandler;
 // to them directly.
 class SandboxCallableProxyHandler : public js::Wrapper {
 public:
-    MOZ_CONSTEXPR SandboxCallableProxyHandler() : js::Wrapper(0)
+    constexpr SandboxCallableProxyHandler() : js::Wrapper(0)
     {
     }
 

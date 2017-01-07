@@ -163,20 +163,9 @@ nsDOMAttributeMap::NamedGetter(const nsAString& aAttrName, bool& aFound)
   return GetAttribute(ni);
 }
 
-bool
-nsDOMAttributeMap::NameIsEnumerable(const nsAString& aName)
-{
-  return false;
-}
-
 void
-nsDOMAttributeMap::GetSupportedNames(unsigned aFlags,
-                                     nsTArray<nsString>& aNames)
+nsDOMAttributeMap::GetSupportedNames(nsTArray<nsString>& aNames)
 {
-  if (!(aFlags & JSITER_HIDDEN)) {
-    return;
-  }
-
   // For HTML elements in HTML documents, only include names that are still the
   // same after ASCII-lowercasing, since our named getter will end up
   // ASCII-lowercasing the given string.
@@ -271,7 +260,7 @@ nsDOMAttributeMap::SetNamedItemNS(Attr& aAttr, ErrorResult& aError)
 
   nsresult rv;
   if (mContent->OwnerDoc() != aAttr.OwnerDoc()) {
-    nsCOMPtr<nsINode> adoptedNode =
+    DebugOnly<void*> adoptedNode =
       mContent->OwnerDoc()->AdoptNode(aAttr, aError);
     if (aError.Failed()) {
       return nullptr;

@@ -21,8 +21,8 @@ using media::TimeUnit;
 using media::TimeIntervals;
 
 MediaSourceDemuxer::MediaSourceDemuxer()
-  : mTaskQueue(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
-                             /* aSupportsTailDispatch = */ false))
+  : mTaskQueue(new AutoTaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
+                                 /* aSupportsTailDispatch = */ false))
   , mMonitor("MediaSourceDemuxer")
 {
   MOZ_ASSERT(NS_IsMainThread());
@@ -149,7 +149,6 @@ MediaSourceDemuxer::GetTrackDemuxer(TrackType aType, uint32_t aTrackNumber)
 {
   RefPtr<TrackBuffersManager> manager = GetManager(aType);
   if (!manager) {
-    MOZ_CRASH("TODO: sourcebuffer was deleted from under us");
     return nullptr;
   }
   RefPtr<MediaSourceTrackDemuxer> e =
@@ -177,7 +176,7 @@ void
 MediaSourceDemuxer::AttachSourceBuffer(TrackBuffersManager* aSourceBuffer)
 {
   nsCOMPtr<nsIRunnable> task =
-    NS_NewRunnableMethodWithArg<TrackBuffersManager*>(
+    NewRunnableMethod<TrackBuffersManager*>(
       this, &MediaSourceDemuxer::DoAttachSourceBuffer,
       aSourceBuffer);
   GetTaskQueue()->Dispatch(task.forget());
@@ -195,7 +194,7 @@ void
 MediaSourceDemuxer::DetachSourceBuffer(TrackBuffersManager* aSourceBuffer)
 {
   nsCOMPtr<nsIRunnable> task =
-    NS_NewRunnableMethodWithArg<TrackBuffersManager*>(
+    NewRunnableMethod<TrackBuffersManager*>(
       this, &MediaSourceDemuxer::DoDetachSourceBuffer,
       aSourceBuffer);
   GetTaskQueue()->Dispatch(task.forget());
@@ -250,8 +249,6 @@ MediaSourceDemuxer::GetManager(TrackType aTrack)
 MediaSourceDemuxer::~MediaSourceDemuxer()
 {
   mInitPromise.RejectIfExists(DemuxerFailureReason::SHUTDOWN, __func__);
-  mTaskQueue->BeginShutdown();
-  mTaskQueue = nullptr;
 }
 
 void
@@ -390,8 +387,9 @@ MediaSourceTrackDemuxer::DoSeek(media::TimeUnit aTime)
   if (!buffered.Contains(seekTime)) {
     if (!buffered.Contains(aTime)) {
       // We don't have the data to seek to.
-      return SeekPromise::CreateAndReject(DemuxerFailureReason::WAITING_FOR_DATA,
-                                          __func__);
+      return SeekPromise::CreateAndReject(
+        mManager->IsEnded() ? DemuxerFailureReason::END_OF_STREAM :
+                              DemuxerFailureReason::WAITING_FOR_DATA, __func__);
     }
     // Theorically we should reject the promise with WAITING_FOR_DATA,
     // however, to avoid unwanted regressions we assume that if at this time
@@ -470,8 +468,10 @@ MediaSourceTrackDemuxer::DoSkipToNextRandomAccessPoint(media::TimeUnit aTimeThre
   buffered.SetFuzz(MediaSourceDemuxer::EOS_FUZZ);
   if (buffered.Contains(aTimeThreadshold)) {
     bool found;
-    parsed =
-      mManager->SkipToNextRandomAccessPoint(mType, aTimeThreadshold, found);
+    parsed = mManager->SkipToNextRandomAccessPoint(mType,
+                                                   aTimeThreadshold,
+                                                   MediaSourceDemuxer::EOS_FUZZ,
+                                                   found);
     if (found) {
       return SkipAccessPointPromise::CreateAndResolve(parsed, __func__);
     }

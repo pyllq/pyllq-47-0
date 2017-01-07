@@ -5,6 +5,7 @@ Cu.import("resource://testing-common/ContentTaskUtils.jsm", this);
 
 registerCleanupFunction(function* cleanup_removeAllLoginsAndResetRecipes() {
   Services.logins.removeAllLogins();
+
   let recipeParent = LoginTestUtils.recipes.getRecipeParent();
   if (!recipeParent) {
     // No need to reset the recipes if the recipe module wasn't even loaded.
@@ -19,10 +20,10 @@ registerCleanupFunction(function* cleanup_removeAllLoginsAndResetRecipes() {
  *
  * @param {String} aPageFile - test page file name which auto-submits to formsubmit.sjs
  * @param {Function} aTaskFn - task which can be run before the tab closes.
- * @param {String} [aOrigin="http://mochi.test:8888"] - origin of the server to
- *                                                      use to load `aPageFile`.
+ * @param {String} [aOrigin="http://example.com"] - origin of the server to use
+ *                                                  to load `aPageFile`.
  */
-function testSubmittingLoginForm(aPageFile, aTaskFn, aOrigin = "http://mochi.test:8888") {
+function testSubmittingLoginForm(aPageFile, aTaskFn, aOrigin = "http://example.com") {
   return BrowserTestUtils.withNewTab({
     gBrowser,
     url: aOrigin + DIRECTORY_PATH + aPageFile,
@@ -76,11 +77,12 @@ const DONT_CHANGE_BUTTON = 1;
  * of the right type and with the right label.
  *
  * @param {String} aKind The desired `passwordNotificationType`
+ * @param {Object} [popupNotifications = PopupNotifications]
  * @return the found password popup notification.
  */
-function getCaptureDoorhanger(aKind) {
+function getCaptureDoorhanger(aKind, popupNotifications = PopupNotifications) {
   ok(true, "Looking for " + aKind + " popup notification");
-  let notification = PopupNotifications.getNotification("password");
+  let notification = popupNotifications.getNotification("password");
   if (notification) {
     is(notification.options.passwordNotificationType, aKind, "Notification type matches.");
     if (aKind == "password-change") {
@@ -114,6 +116,22 @@ function clickDoorhangerButton(aPopup, aButtonIndex) {
     ok(true, "Triggering secondary action " + aButtonIndex);
     notification.childNodes[aButtonIndex].doCommand();
   }
+}
+
+/**
+ * Checks the doorhanger's username and password.
+ *
+ * @param {String} username The username.
+ * @param {String} password The password.
+ */
+function* checkDoorhangerUsernamePassword(username, password) {
+  yield BrowserTestUtils.waitForCondition(() => {
+    return document.getElementById("password-notification-username").value == username;
+  }, "Wait for nsLoginManagerPrompter writeDataToUI()");
+  is(document.getElementById("password-notification-username").value, username,
+     "Check doorhanger username");
+  is(document.getElementById("password-notification-password").value, password,
+     "Check doorhanger password");
 }
 
 // End popup notification (doorhanger) functions //

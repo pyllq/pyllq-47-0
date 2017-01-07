@@ -29,6 +29,7 @@ enum class VRHMDType : uint16_t {
   Oculus,
   Cardboard,
   Oculus050,
+  OSVR,
   NumHMDTypes
 };
 
@@ -236,7 +237,6 @@ public:
     RefPtr<layers::Compositor> compositor;
     IntSize size;
     nsTArray<RefPtr<layers::CompositingRenderTarget>> renderTargets;
-    int32_t currentRenderTarget;
 
     virtual already_AddRefed<layers::CompositingRenderTarget> GetNextRenderTarget() = 0;
   protected:

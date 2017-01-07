@@ -1,5 +1,6 @@
 pinyincidian
 google:hidden
+google-nocodes
 taobao
 baidu
 twitter
@@ -7,4 +8,3 @@ wikipedia
 yahoo
 bing
 duckduckgo
-google-nocodes

@@ -208,14 +208,13 @@ BookmarkImporter.prototype = {
 
       let uri = NetUtil.newURI(spec);
       let channel = NetUtil.newChannel({
-        uri,
-        loadingPrincipal: Services.scriptSecurityManager.createCodebasePrincipal(uri, {}),
-        contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_XMLHTTPREQUEST
+        uri: uri,
+        loadUsingSystemPrincipal: true
       });
       let streamLoader = Cc["@mozilla.org/network/stream-loader;1"]
                            .createInstance(Ci.nsIStreamLoader);
       streamLoader.init(streamObserver);
-      channel.asyncOpen(streamLoader, channel);
+      channel.asyncOpen2(streamLoader);
     });
   },
 
@@ -420,7 +419,8 @@ BookmarkImporter.prototype = {
               parentId: aContainer,
               index: aIndex,
               lastModified: aData.lastModified,
-              siteURI: siteURI
+              siteURI: siteURI,
+              guid: aData.guid
             }).then(function (aLivemark) {
               let id = aLivemark.id;
               if (aData.dateAdded)
@@ -432,7 +432,7 @@ BookmarkImporter.prototype = {
           }
         } else {
           id = PlacesUtils.bookmarks.createFolder(
-                 aContainer, aData.title, aIndex);
+                 aContainer, aData.title, aIndex, aData.guid);
           folderIdMap[aData.id] = id;
           // Process children
           if (aData.children) {
@@ -451,7 +451,7 @@ BookmarkImporter.prototype = {
         break;
       case PlacesUtils.TYPE_X_MOZ_PLACE:
         id = PlacesUtils.bookmarks.insertBookmark(
-               aContainer, NetUtil.newURI(aData.uri), aIndex, aData.title);
+               aContainer, NetUtil.newURI(aData.uri), aIndex, aData.title, aData.guid);
         if (aData.keyword) {
           // POST data could be set in 2 ways:
           // 1. new backups have a postData property
@@ -510,7 +510,7 @@ BookmarkImporter.prototype = {
         }
         break;
       case PlacesUtils.TYPE_X_MOZ_PLACE_SEPARATOR:
-        id = PlacesUtils.bookmarks.insertSeparator(aContainer, aIndex);
+        id = PlacesUtils.bookmarks.insertSeparator(aContainer, aIndex, aData.guid);
         break;
       default:
         // Unknown node type

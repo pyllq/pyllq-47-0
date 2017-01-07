@@ -183,6 +183,10 @@ private:
   void SaveNetworkStats(bool aEnforce);
 #endif
 
+  // Helper for FireDataStringEvent/FireDataArrayEvent.
+  nsresult FireDataEvent(JSContext* aCx, const nsAString& aType,
+                         JS::Handle<JS::Value> aData);
+
   TCPReadyState mReadyState;
   // Whether to use strings or array buffers for the "data" event.
   bool mUseArrayBuffers;
@@ -234,6 +238,9 @@ private:
   bool mWaitingForStartTLS;
   // The buffered data awaiting the TLS upgrade to finish.
   nsTArray<nsCOMPtr<nsIInputStream>> mPendingDataAfterStartTLS;
+
+  // The data to be sent while AsyncCopier is still active.
+  nsTArray<nsCOMPtr<nsIInputStream>> mPendingDataWhileCopierActive;
 
   bool mObserversActive;
 

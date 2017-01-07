@@ -127,10 +127,15 @@ public:
 
   virtual void *GetNativeSurface(NativeSurfaceType aType) override { return nullptr; }
 
+  virtual void DetachAllSnapshots() override { MarkChanged(); }
+
   bool Init(const IntSize &aSize, SurfaceFormat aFormat);
   bool Init(ID3D11Texture2D* aTexture, SurfaceFormat aFormat);
   uint32_t GetByteSize() const;
 
+  // This function will get an image for a surface, it may adjust the source
+  // transform for any transformation of the resulting image relative to the
+  // oritingal SourceSurface.
   already_AddRefed<ID2D1Image> GetImageForSurface(SourceSurface *aSurface, Matrix &aSourceTransform,
                                               ExtendMode aExtendMode, const IntRect* aSourceRect = nullptr);
 
@@ -268,6 +273,12 @@ private:
   TargetSet mDependingOnTargets;
 
   uint32_t mUsedCommandListsSincePurge;
+  // When a BlendEffect has been drawn to a command list, and that command list is
+  // subsequently used -again- as an input to a blend effect for a command list,
+  // this causes an infinite recursion inside D2D as it tries to resolve the bounds.
+  // If we resolve the current command list before this happens
+  // we can avoid the subsequent hang. (See bug 1293586)
+  bool mDidComplexBlendWithListInList;
 
   static ID2D1Factory1 *mFactory;
   static IDWriteFactory *mDWriteFactory;

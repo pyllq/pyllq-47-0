@@ -1,3 +1,4 @@
+
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
@@ -23,7 +24,7 @@
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "nsAppDirectoryServiceDefs.h"
-#include "nsAutoPtr.h"
+#include "nsContentUtils.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
@@ -179,19 +180,7 @@ ServiceWorkerRegistrar::RegisterServiceWorker(
   {
     MonitorAutoLock lock(mMonitor);
     MOZ_ASSERT(mDataLoaded);
-
-    bool found = false;
-    for (uint32_t i = 0, len = mData.Length(); i < len; ++i) {
-      if (Equivalent(aData, mData[i])) {
-        mData[i] = aData;
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      mData.AppendElement(aData);
-    }
+    RegisterServiceWorkerInternal(aData);
   }
 
   ScheduleSaveData();
@@ -515,7 +504,24 @@ ServiceWorkerRegistrar::DeleteData()
   }
 }
 
-class ServiceWorkerRegistrarSaveDataRunnable final : public nsRunnable
+void
+ServiceWorkerRegistrar::RegisterServiceWorkerInternal(const ServiceWorkerRegistrationData& aData)
+{
+  bool found = false;
+  for (uint32_t i = 0, len = mData.Length(); i < len; ++i) {
+    if (Equivalent(aData, mData[i])) {
+      mData[i] = aData;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    mData.AppendElement(aData);
+  }
+}
+
+class ServiceWorkerRegistrarSaveDataRunnable final : public Runnable
 {
 public:
   ServiceWorkerRegistrarSaveDataRunnable()
@@ -532,8 +538,8 @@ public:
 
     service->SaveData();
 
-    RefPtr<nsRunnable> runnable =
-      NS_NewRunnableMethod(service, &ServiceWorkerRegistrar::DataSaved);
+    RefPtr<Runnable> runnable =
+      NewRunnableMethod(service, &ServiceWorkerRegistrar::DataSaved);
     nsresult rv = mThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
@@ -556,7 +562,7 @@ ServiceWorkerRegistrar::ScheduleSaveData()
     do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
   MOZ_ASSERT(target, "Must have stream transport service");
 
-  RefPtr<nsRunnable> runnable =
+  RefPtr<Runnable> runnable =
     new ServiceWorkerRegistrarSaveDataRunnable();
   nsresult rv = target->Dispatch(runnable, NS_DISPATCH_NORMAL);
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -606,8 +612,8 @@ ServiceWorkerRegistrar::MaybeScheduleShutdownCompleted()
     return;
   }
 
-  RefPtr<nsRunnable> runnable =
-     NS_NewRunnableMethod(this, &ServiceWorkerRegistrar::ShutdownCompleted);
+  RefPtr<Runnable> runnable =
+     NewRunnableMethod(this, &ServiceWorkerRegistrar::ShutdownCompleted);
   nsresult rv = NS_DispatchToMainThread(runnable);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
@@ -737,7 +743,7 @@ ServiceWorkerRegistrar::ProfileStarted()
   MOZ_ASSERT(target, "Must have stream transport service");
 
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethod(this, &ServiceWorkerRegistrar::LoadData);
+    NewRunnableMethod(this, &ServiceWorkerRegistrar::LoadData);
   rv = target->Dispatch(runnable, NS_DISPATCH_NORMAL);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch the LoadDataRunnable.");

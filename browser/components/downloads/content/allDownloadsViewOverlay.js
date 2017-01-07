@@ -72,16 +72,23 @@ HistoryDownload.prototype = {
 
     if ("state" in metaData) {
       this.succeeded = metaData.state == nsIDM.DOWNLOAD_FINISHED;
-      this.error = metaData.state == nsIDM.DOWNLOAD_FAILED
-                   ? { message: "History download failed." }
-                   : metaData.state == nsIDM.DOWNLOAD_BLOCKED_PARENTAL
-                   ? { becauseBlockedByParentalControls: true }
-                   : metaData.state == nsIDM.DOWNLOAD_DIRTY
-                   ? { becauseBlockedByReputationCheck: true }
-                   : null;
       this.canceled = metaData.state == nsIDM.DOWNLOAD_CANCELED ||
                       metaData.state == nsIDM.DOWNLOAD_PAUSED;
       this.endTime = metaData.endTime;
+
+      // Recreate partial error information from the state saved in history.
+      if (metaData.state == nsIDM.DOWNLOAD_FAILED) {
+        this.error = { message: "History download failed." };
+      } else if (metaData.state == nsIDM.DOWNLOAD_BLOCKED_PARENTAL) {
+        this.error = { becauseBlockedByParentalControls: true };
+      } else if (metaData.state == nsIDM.DOWNLOAD_DIRTY) {
+        this.error = {
+          becauseBlockedByReputationCheck: true,
+          reputationCheckVerdict: metaData.reputationCheckVerdict || "",
+        };
+      } else {
+        this.error = null;
+      }
 
       // Normal history downloads are assumed to exist until the user interface
       // is refreshed, at which point these values may be updated.
@@ -291,13 +298,13 @@ HistoryDownloadElementShell.prototype = {
   },
 
   onStateChanged() {
-    this.element.setAttribute("image", this.image);
-    this.element.setAttribute("state",
-                              DownloadsCommon.stateOfDownload(this.download));
+    this._updateState();
 
     if (this.element.selected) {
       goUpdateDownloadCommands();
     } else {
+      // If a state change occurs in an item that is not currently selected,
+      // this is the only command that may be affected.
       goUpdateCommand("downloadsCmd_clearDownloads");
     }
   },
@@ -372,12 +379,15 @@ HistoryDownloadElementShell.prototype = {
   },
 
   downloadsCmd_unblock() {
-    DownloadsCommon.confirmUnblockDownload(DownloadsCommon.BLOCK_VERDICT_MALWARE,
-                                           window).then((confirmed) => {
-      if (confirmed) {
-        return this.download.unblock();
-      }
-    }).catch(Cu.reportError);
+    this.confirmUnblock(window, "unblock");
+  },
+
+  downloadsCmd_chooseUnblock() {
+    this.confirmUnblock(window, "chooseUnblock");
+  },
+
+  downloadsCmd_chooseOpen() {
+    this.confirmUnblock(window, "chooseOpen");
   },
 
   // Returns whether or not the download handled by this shell should
@@ -494,7 +504,7 @@ function DownloadsPlacesView(aRichListBox, aActive = true) {
 
   // Get the Download button out of the attention state since we're about to
   // view all downloads.
-  DownloadsCommon.getIndicatorData(window).attention = false;
+  DownloadsCommon.getIndicatorData(window).attention = DownloadsCommon.ATTENTION_NONE;
 
   // Make sure to unregister the view if the window is closed.
   window.addEventListener("unload", () => {
@@ -1129,8 +1139,7 @@ DownloadsPlacesView.prototype = {
   // nsIController
   supportsCommand(aCommand) {
     // Firstly, determine if this is a command that we can handle.
-    if (!aCommand.startsWith("cmd_") &&
-        !aCommand.startsWith("downloadsCmd_")) {
+    if (!DownloadsViewUI.isCommandName(aCommand)) {
       return false;
     }
     if (!(aCommand in this) &&
@@ -1226,6 +1235,11 @@ DownloadsPlacesView.prototype = {
 
   // nsIController
   doCommand(aCommand) {
+    // Commands may be invoked with keyboard shortcuts even if disabled.
+    if (!this.isCommandEnabled(aCommand)) {
+      return;
+    }
+
     // If this command is not selection-specific, execute it.
     if (aCommand in this) {
       this[aCommand]();
@@ -1411,11 +1425,11 @@ for (let methodName of ["load", "applyFilter", "selectNode", "selectItems"]) {
 function goUpdateDownloadCommands() {
   function updateCommandsForObject(object) {
     for (let name in object) {
-      if (name.startsWith("cmd_") || name.startsWith("downloadsCmd_")) {
+      if (DownloadsViewUI.isCommandName(name)) {
         goUpdateCommand(name);
       }
     }
   }
-  updateCommandsForObject(this);
+  updateCommandsForObject(DownloadsPlacesView.prototype);
   updateCommandsForObject(HistoryDownloadElementShell.prototype);
 }

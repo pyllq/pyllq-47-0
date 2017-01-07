@@ -16,11 +16,10 @@
 //
 // Some listeners do not send a response message back.
 
-var {classes: Cc, interfaces: Ci, utils: Cu} = Components;
+var {utils: Cu} = Components;
 
 var {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
-var {CssLogic} = require("devtools/shared/inspector/css-logic");
-var promise = require("promise");
+var defer = require("devtools/shared/defer");
 
 /**
  * Get a value for a given property name in a css rule in a stylesheet, given
@@ -31,7 +30,7 @@ var promise = require("promise");
  * - {String} name
  * @return {String} The value, if found, null otherwise
  */
-addMessageListener("Test:GetRulePropertyValue", function(msg) {
+addMessageListener("Test:GetRulePropertyValue", function (msg) {
   let {name, styleSheetIndex, ruleIndex} = msg.data;
   let value = null;
 
@@ -50,32 +49,6 @@ addMessageListener("Test:GetRulePropertyValue", function(msg) {
 });
 
 /**
- * Get information about all the stylesheets that contain rules that apply to
- * a given node. The information contains the sheet href and whether or not the
- * sheet is a content sheet or not
- * @param {Object} objects Expects a 'target' CPOW object
- * @return {Array} A list of stylesheet info objects
- */
-addMessageListener("Test:GetStyleSheetsInfoForNode", function(msg) {
-  let target = msg.objects.target;
-  let sheets = [];
-
-  let domUtils = Cc["@mozilla.org/inspector/dom-utils;1"]
-    .getService(Ci.inIDOMUtils);
-  let domRules = domUtils.getCSSStyleRules(target);
-
-  for (let i = 0, n = domRules.Count(); i < n; i++) {
-    let sheet = domRules.GetElementAt(i).parentStyleSheet;
-    sheets.push({
-      href: sheet.href,
-      isContentSheet: CssLogic.isContentStylesheet(sheet)
-    });
-  }
-
-  sendAsyncMessage("Test:GetStyleSheetsInfoForNode", sheets);
-});
-
-/**
  * Get the property value from the computed style for an element.
  * @param {Object} data Expects a data object with the following properties
  * - {String} selector: The selector used to obtain the element.
@@ -83,7 +56,7 @@ addMessageListener("Test:GetStyleSheetsInfoForNode", function(msg) {
  * - {String} name: name of the property
  * @return {String} The value, if found, null otherwise
  */
-addMessageListener("Test:GetComputedStylePropertyValue", function(msg) {
+addMessageListener("Test:GetComputedStylePropertyValue", function (msg) {
   let {selector, pseudo, name} = msg.data;
   let element = content.document.querySelector(selector);
   let value = content.document.defaultView.getComputedStyle(element, pseudo)
@@ -100,7 +73,7 @@ addMessageListener("Test:GetComputedStylePropertyValue", function(msg) {
  * - {String} name: name of the property
  * - {String} expected: the expected value for property
  */
-addMessageListener("Test:WaitForComputedStylePropertyValue", function(msg) {
+addMessageListener("Test:WaitForComputedStylePropertyValue", function (msg) {
   let {selector, pseudo, name, expected} = msg.data;
   let element = content.document.querySelector(selector);
   waitForSuccess(() => {
@@ -125,7 +98,7 @@ var dumpn = msg => dump(msg + "\n");
  * if the timeout is reached
  */
 function waitForSuccess(validatorFn) {
-  let def = promise.defer();
+  let def = defer();
 
   function wait(fn) {
     if (fn()) {

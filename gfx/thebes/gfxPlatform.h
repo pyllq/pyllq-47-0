@@ -11,11 +11,12 @@
 #include "nsTArray.h"
 #include "nsString.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
+#include "nsUnicodeScriptCodes.h"
 
 #include "gfxTypes.h"
 #include "gfxFontFamilyList.h"
 #include "gfxBlur.h"
+#include "gfxSkipChars.h"
 #include "nsRect.h"
 
 #include "qcms.h"
@@ -68,8 +69,6 @@ BackendTypeBit(BackendType b)
     } \
   } while (0)
 
-extern cairo_user_data_key_t kDrawTarget;
-
 enum eCMSMode {
     eCMSMode_Off          = 0,     // No color management
     eCMSMode_All          = 1,     // Color manage everything
@@ -94,8 +93,6 @@ enum eGfxLog {
 
 // when searching through pref langs, max number of pref langs
 const uint32_t kMaxLenPrefLangList = 32;
-
-extern bool gANGLESupportsD3D11;
 
 #define UNINITIALIZED_VALUE  (-1)
 
@@ -138,7 +135,8 @@ enum class DeviceResetReason
 
 enum class ForcedDeviceResetReason
 {
-  OPENSHAREDHANDLE = 0
+  OPENSHAREDHANDLE = 0,
+  COMPOSITOR_UPDATED,
 };
 
 class gfxPlatform {
@@ -150,6 +148,7 @@ public:
     typedef mozilla::gfx::DrawTarget DrawTarget;
     typedef mozilla::gfx::IntSize IntSize;
     typedef mozilla::gfx::SourceSurface SourceSurface;
+    typedef mozilla::unicode::Script Script;
 
     /**
      * Return a pointer to the current active platform.
@@ -173,6 +172,11 @@ public:
 
     static void InitLayersIPC();
     static void ShutdownLayersIPC();
+
+    /**
+     * Initialize ScrollMetadata statics. Does not depend on gfxPlatform.
+     */
+    static void InitNullMetadata();
 
     /**
      * Create an offscreen surface of the given dimensions
@@ -221,6 +225,9 @@ public:
 
     already_AddRefed<DrawTarget>
       CreateOffscreenCanvasDrawTarget(const mozilla::gfx::IntSize& aSize, mozilla::gfx::SurfaceFormat aFormat);
+
+    already_AddRefed<DrawTarget>
+      CreateSimilarSoftwareDrawTarget(DrawTarget* aDT, const IntSize &aSize, mozilla::gfx::SurfaceFormat aFormat);
 
     virtual already_AddRefed<DrawTarget>
       CreateDrawTargetForData(unsigned char* aData, const mozilla::gfx::IntSize& aSize, 
@@ -271,6 +278,7 @@ public:
       aObj.DefineProperty("AzureContentBackend", GetBackendName(mContentBackend));
     }
     void GetApzSupportInfo(mozilla::widget::InfoObject& aObj);
+    void GetTilesSupportInfo(mozilla::widget::InfoObject& aObj);
 
     // Get the default content backend that will be used with the default
     // compositor. If the compositor is known when calling this function,
@@ -329,7 +337,7 @@ public:
      * Resolving a font name to family name. The result MUST be in the result of GetFontList().
      * If the name doesn't in the system, aFamilyName will be empty string, but not failed.
      */
-    virtual nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName) = 0;
+    virtual nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
 
     /**
      * Create the appropriate platform font group
@@ -350,8 +358,7 @@ public:
     virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
                                           uint16_t aWeight,
                                           int16_t aStretch,
-                                          uint8_t aStyle)
-    { return nullptr; }
+                                          uint8_t aStyle);
 
     /**
      * Activate a platform font.  (Needed to support @font-face src url().)
@@ -399,6 +406,12 @@ public:
     virtual bool RequiresLinearZoom() { return false; }
 
     /**
+     * Whether the frame->StyleFont().mFont.smoothing field is respected by
+     * text rendering on this platform.
+     */
+    virtual bool RespectsFontStyleSmoothing() const { return false; }
+
+    /**
      * Whether to check all font cmaps during system font fallback
      */
     bool UseCmapsDuringSystemFallback();
@@ -432,7 +445,7 @@ public:
     // returns a list of commonly used fonts for a given character
     // these are *possible* matches, no cmap-checking is done at this level
     virtual void GetCommonFallbackFonts(uint32_t /*aCh*/, uint32_t /*aNextCh*/,
-                                        int32_t /*aRunScript*/,
+                                        Script /*aRunScript*/,
                                         nsTArray<const char*>& /*aFontList*/)
     {
         // platform-specific override, by default do nothing
@@ -443,14 +456,7 @@ public:
 
     static bool OffMainThreadCompositingEnabled();
 
-    static bool CanUseDirect3D9();
-    static bool CanUseDirect3D11();
     virtual bool CanUseHardwareVideoDecoding();
-    virtual bool CanUseDirect3D11ANGLE() { return false; }
-
-    // Returns whether or not layers acceleration should be used. This should
-    // only be called on the parent process.
-    bool ShouldUseLayersAcceleration();
 
     // Returns a prioritized list of all available compositor backends.
     void GetCompositorBackends(bool useAcceleration, nsTArray<mozilla::layers::LayersBackend>& aBackends);
@@ -524,6 +530,12 @@ public:
      * for measuring text etc as if they will be rendered to the screen
      */
     gfxASurface* ScreenReferenceSurface() { return mScreenReferenceSurface; }
+
+    /**
+     * Returns a 1x1 DrawTarget that can be used for measuring text etc. as
+     * it would measure if rendered on-screen.  Guaranteed to return a
+     * non-null and valid DrawTarget.
+     */
     mozilla::gfx::DrawTarget* ScreenReferenceDrawTarget() { return mScreenReferenceDrawTarget; }
 
     virtual mozilla::gfx::SurfaceFormat Optimal2DFormatForContent(gfxContentType aContent);
@@ -553,7 +565,8 @@ public:
     }
 
     mozilla::gl::SkiaGLGlue* GetSkiaGLGlue();
-    void PurgeSkiaCache();
+    void PurgeSkiaGPUCache();
+    static void PurgeSkiaFontCache();
 
     virtual bool IsInGonkEmulator() const { return false; }
 
@@ -610,11 +623,6 @@ public:
     // widget. This should only be used within nsRefreshDriver.
     virtual void SchedulePaintIfDeviceReset() {}
 
-    // Immediately update all platform bits if a device reset has occurred.
-    // This should only be used at the top of the callstack (i.e. within
-    // a task, OS event, or IPDL message).
-    virtual void UpdateRenderModeIfDeviceReset() {}
-
     /**
      * Helper method, creates a draw target for a specific Azure backend.
      * Used by CreateOffscreenDrawTarget.
@@ -635,6 +643,8 @@ public:
       return mCompositorBackend;
     }
 
+    virtual void CompositorUpdated() {}
+
     // Return information on how child processes should initialize graphics
     // devices. Currently this is only used on Windows.
     virtual void GetDeviceInitData(mozilla::gfx::DeviceInitData* aOut);
@@ -654,9 +664,25 @@ public:
       return mDeviceCounter;
     }
 
+    /**
+     * Check the blocklist for a feature. Returns false if the feature is blocked
+     * with an appropriate message and failure ID.
+     * */
+    static bool IsGfxInfoStatusOkay(int32_t aFeature, nsCString* aOutMessage,
+                                    nsCString& aFailureId);
+
+    const gfxSkipChars& EmptySkipChars() const { return kEmptySkipChars; }
+
 protected:
     gfxPlatform();
     virtual ~gfxPlatform();
+
+    virtual void InitAcceleration();
+
+    /**
+     * Called immediately before deleting the gfxPlatform object.
+     */
+    virtual void WillShutdown();
 
     /**
      * Initialized hardware vsync based on each platform.
@@ -679,20 +705,15 @@ protected:
                           uint32_t aContentBitmask, mozilla::gfx::BackendType aContentDefault);
 
     /**
-     * If in a child process, triggers a refresh of device preferences.
+     * If in a child process, triggers a refresh of device preferences, then returns true.
+     * In a parent process, nothing happens and false is returned.
      */
-    void UpdateDeviceInitData();
+    virtual bool UpdateDeviceInitData();
 
     /**
      * Increase the global device counter after a device has been removed/reset.
      */
     void BumpDeviceCounter();
-
-    /**
-     * Called when new device preferences are available.
-     */
-    virtual void SetDeviceInitData(mozilla::gfx::DeviceInitData& aData)
-    {}
 
     /**
      * returns the first backend named in the pref gfx.canvas.azure.backends
@@ -721,6 +742,8 @@ protected:
 
     static already_AddRefed<mozilla::gfx::ScaledFont>
       GetScaledFontForFontWithCairoSkia(mozilla::gfx::DrawTarget* aTarget, gfxFont* aFont);
+
+    static mozilla::gfx::DeviceInitData& GetParentDevicePrefs();
 
     int8_t  mAllowDownloadableFonts;
     int8_t  mGraphiteShapingEnabled;
@@ -751,6 +774,7 @@ private:
      */
     static void Init();
 
+    static void InitOpenGLConfig();
     static void CreateCMSOutputProfile();
 
     static void GetCMSOutputProfileData(void *&mem, size_t &size);
@@ -771,6 +795,8 @@ private:
      */
     void PopulateScreenInfo();
 
+    void InitCompositorAccelerationPrefs();
+
     RefPtr<gfxASurface> mScreenReferenceSurface;
     nsCOMPtr<nsIObserver> mSRGBOverrideObserver;
     nsCOMPtr<nsIObserver> mFontPrefsObserver;
@@ -790,6 +816,7 @@ private:
 
     mozilla::widget::GfxInfoCollector<gfxPlatform> mAzureCanvasBackendCollector;
     mozilla::widget::GfxInfoCollector<gfxPlatform> mApzSupportCollector;
+    mozilla::widget::GfxInfoCollector<gfxPlatform> mTilesInfoCollector;
 
     RefPtr<mozilla::gfx::DrawEventRecorder> mRecorder;
     RefPtr<mozilla::gl::SkiaGLGlue> mSkiaGlue;
@@ -803,6 +830,10 @@ private:
 
     // Generation number for devices that ClientLayerManagers might depend on.
     uint64_t mDeviceCounter;
+
+    // An instance of gfxSkipChars which is empty. It is used as the
+    // basis for error-case iterators.
+    const gfxSkipChars kEmptySkipChars;
 };
 
 #endif /* GFX_PLATFORM_H */

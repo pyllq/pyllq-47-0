@@ -27,6 +27,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "SyncedTabs",
   "resource://services-sync/SyncedTabs.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "ContextualIdentityService",
+  "resource://gre/modules/ContextualIdentityService.jsm");
 
 XPCOMUtils.defineLazyGetter(this, "CharsetBundle", function() {
   const kCharsetBundle = "chrome://global/locale/charsetMenu.properties";
@@ -259,7 +261,7 @@ const CustomizableWidgets = [
       let elementCount = tabsFragment.childElementCount;
       separator.hidden = !elementCount;
       while (--elementCount >= 0) {
-        tabsFragment.children[elementCount].classList.add("subviewbutton");
+        tabsFragment.children[elementCount].classList.add("subviewbutton", "cui-withicon");
       }
       recentlyClosedTabs.appendChild(tabsFragment);
 
@@ -269,7 +271,7 @@ const CustomizableWidgets = [
       elementCount = windowsFragment.childElementCount;
       separator.hidden = !elementCount;
       while (--elementCount >= 0) {
-        windowsFragment.children[elementCount].classList.add("subviewbutton");
+        windowsFragment.children[elementCount].classList.add("subviewbutton", "cui-withicon");
       }
       recentlyClosedWindows.appendChild(windowsFragment);
     },
@@ -292,7 +294,7 @@ const CustomizableWidgets = [
   }, {
     id: "sync-button",
     label: "remotetabs-panelmenu.label",
-    tooltiptext: "remotetabs-panelmenu.tooltiptext",
+    tooltiptext: "remotetabs-panelmenu.tooltiptext2",
     type: "view",
     viewId: "PanelUI-remotetabs",
     defaultArea: CustomizableUI.AREA_PANEL,
@@ -317,14 +319,14 @@ const CustomizableWidgets = [
       let bundle = doc.getElementById("bundle_browser");
       let formatArgs = ["android", "ios"].map(os => {
         let link = doc.createElement("label");
-        link.textContent = bundle.getString(`appMenuRemoteTabs.mobilePromo.${os}`)
+        link.textContent = bundle.getString(`appMenuRemoteTabs.mobilePromo.${os}`);
         link.setAttribute("mobile-promo-os", os);
         link.className = "text-link remotetabs-promo-link";
         return link.outerHTML;
       });
-      // Put it all together...
-      let contents = bundle.getFormattedString("appMenuRemoteTabs.mobilePromo", formatArgs);
       let promoParentElt = doc.getElementById("PanelUI-remotetabs-mobile-promo");
+      // Put it all together...
+      let contents = bundle.getFormattedString("appMenuRemoteTabs.mobilePromo.text2", formatArgs);
       promoParentElt.innerHTML = contents;
       // We manually manage the "click" event to open the promo links because
       // allowing the "text-link" widget handle it has 2 problems: (1) it only
@@ -420,7 +422,7 @@ const CustomizableWidgets = [
 
         this.setDeckIndex(this.deckIndices.DECKINDEX_TABS);
         this._clearTabList();
-        this._sortFilterClientsAndTabs(clients);
+        SyncedTabs.sortTabClientsByLastUsed(clients, 50 /* maxTabs */);
         let fragment = doc.createDocumentFragment();
 
         for (let client of clients) {
@@ -481,53 +483,29 @@ const CustomizableWidgets = [
     _createTabElement(doc, tabInfo) {
       let win = doc.defaultView;
       let item = doc.createElementNS(kNSXUL, "toolbarbutton");
+      let tooltipText = (tabInfo.title ? tabInfo.title + "\n" : "") + tabInfo.url;
       item.setAttribute("itemtype", "tab");
       item.setAttribute("class", "subviewbutton");
       item.setAttribute("targetURI", tabInfo.url);
       item.setAttribute("label", tabInfo.title != "" ? tabInfo.title : tabInfo.url);
       item.setAttribute("image", tabInfo.icon);
+      item.setAttribute("tooltiptext", tooltipText);
       // We need to use "click" instead of "command" here so openUILink
       // respects different buttons (eg, to open in a new tab).
       item.addEventListener("click", e => {
         doc.defaultView.openUILink(tabInfo.url, e);
         CustomizableUI.hidePanelForNode(item);
+        BrowserUITelemetry.countSyncedTabEvent("open", "toolbarbutton-subview");
       });
       return item;
-    },
-    _sortFilterClientsAndTabs(clients) {
-      // First sort and filter the list of tabs for each client. Note that the
-      // SyncedTabs module promises that the objects it returns are never
-      // shared, so we are free to mutate those objects directly.
-      const maxTabs = 50;
-      for (let client of clients) {
-        let tabs = client.tabs;
-        tabs.sort((a, b) => b.lastUsed - a.lastUsed);
-        client.tabs = tabs.slice(0, maxTabs);
-      }
-      // Now sort the clients - the clients are sorted in the order of the
-      // most recent tab for that client (ie, it is important the tabs for
-      // each client are already sorted.)
-      clients.sort((a, b) => {
-        if (a.tabs.length == 0) {
-          return 1; // b comes first.
-        }
-        if (b.tabs.length == 0) {
-          return -1; // a comes first.
-        }
-        return b.tabs[0].lastUsed - a.tabs[0].lastUsed;
-      });
     },
   }, {
     id: "privatebrowsing-button",
     shortcutId: "key_privatebrowsing",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(e) {
-      if (e.target && e.target.ownerDocument && e.target.ownerDocument.defaultView) {
-        let win = e.target.ownerDocument.defaultView;
-        if (typeof win.OpenBrowserWindow == "function") {
-          win.OpenBrowserWindow({private: true});
-        }
-      }
+      let win = e.target.ownerGlobal;
+      win.OpenBrowserWindow({private: true});
     }
   }, {
     id: "save-page-button",
@@ -535,12 +513,8 @@ const CustomizableWidgets = [
     tooltiptext: "save-page-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
-      let win = aEvent.target &&
-                aEvent.target.ownerDocument &&
-                aEvent.target.ownerDocument.defaultView;
-      if (win && typeof win.saveBrowser == "function") {
-        win.saveBrowser(win.gBrowser.selectedBrowser);
-      }
+      let win = aEvent.target.ownerGlobal;
+      win.saveBrowser(win.gBrowser.selectedBrowser);
     }
   }, {
     id: "find-button",
@@ -548,10 +522,8 @@ const CustomizableWidgets = [
     tooltiptext: "find-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
-      let win = aEvent.target &&
-                aEvent.target.ownerDocument &&
-                aEvent.target.ownerDocument.defaultView;
-      if (win && win.gFindBar) {
+      let win = aEvent.target.ownerGlobal;
+      if (win.gFindBar) {
         win.gFindBar.onFindCommand();
       }
     }
@@ -561,39 +533,8 @@ const CustomizableWidgets = [
     tooltiptext: "open-file-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
-      let win = aEvent.target
-                && aEvent.target.ownerDocument
-                && aEvent.target.ownerDocument.defaultView;
-      if (win && typeof win.BrowserOpenFileWindow == "function") {
-        win.BrowserOpenFileWindow();
-      }
-    }
-  }, {
-    id: "developer-button",
-    type: "view",
-    viewId: "PanelUI-developer",
-    shortcutId: "key_devToolboxMenuItem",
-    tooltiptext: "developer-button.tooltiptext2",
-    defaultArea: AppConstants.MOZ_DEV_EDITION ?
-                   CustomizableUI.AREA_NAVBAR :
-                   CustomizableUI.AREA_PANEL,
-    onViewShowing: function(aEvent) {
-      // Populate the subview with whatever menuitems are in the developer
-      // menu. We skip menu elements, because the menu panel has no way
-      // of dealing with those right now.
-      let doc = aEvent.target.ownerDocument;
-      let win = doc.defaultView;
-
-      let menu = doc.getElementById("menuWebDeveloperPopup");
-
-      let itemsToDisplay = [...menu.children];
-      // Hardcode the addition of the "work offline" menuitem at the bottom:
-      itemsToDisplay.push({localName: "menuseparator", getAttribute: () => {}});
-      itemsToDisplay.push(doc.getElementById("goOfflineMenuitem"));
-
-      let developerItems = doc.getElementById("PanelUI-developerItems");
-      clearSubview(developerItems);
-      fillSubviewFromMenuItems(itemsToDisplay, developerItems);
+      let win = aEvent.target.ownerGlobal;
+      win.BrowserOpenFileWindow();
     }
   }, {
     id: "sidebar-button",
@@ -601,8 +542,6 @@ const CustomizableWidgets = [
     viewId: "PanelUI-sidebar",
     tooltiptext: "sidebar-button.tooltiptext2",
     onViewShowing: function(aEvent) {
-      // Largely duplicated from the developer-button above with a couple minor
-      // alterations.
       // Populate the subview with whatever menuitems are in the
       // sidebar menu. We skip menu elements, because the menu panel has no way
       // of dealing with those right now.
@@ -669,12 +608,8 @@ const CustomizableWidgets = [
     tooltiptext: "add-ons-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
-      let win = aEvent.target &&
-                aEvent.target.ownerDocument &&
-                aEvent.target.ownerDocument.defaultView;
-      if (win && typeof win.BrowserOpenAddonsMgr == "function") {
-        win.BrowserOpenAddonsMgr();
-      }
+      let win = aEvent.target.ownerGlobal;
+      win.BrowserOpenAddonsMgr();
     }
   }, {
     id: "zoom-controls",
@@ -805,6 +740,13 @@ const CustomizableWidgets = [
           updateZoomResetButton();
         }.bind(this),
 
+        onWidgetUndoMove: function(aWidgetNode) {
+          if (aWidgetNode != node)
+            return;
+          updateCombinedWidgetStyle(node, this.currentArea, true);
+          updateZoomResetButton();
+        }.bind(this),
+
         onWidgetMoved: function(aWidgetId, aArea) {
           if (aWidgetId != this.id)
             return;
@@ -916,6 +858,12 @@ const CustomizableWidgets = [
           updateCombinedWidgetStyle(node, this.currentArea);
         }.bind(this),
 
+        onWidgetUndoMove: function(aWidgetNode) {
+          if (aWidgetNode != node)
+            return;
+          updateCombinedWidgetStyle(node, this.currentArea);
+        }.bind(this),
+
         onWidgetMoved: function(aWidgetId, aArea) {
           if (aWidgetId != this.id)
             return;
@@ -947,7 +895,7 @@ const CustomizableWidgets = [
     tooltiptext: "feed-button.tooltiptext2",
     defaultArea: CustomizableUI.AREA_PANEL,
     onClick: function(aEvent) {
-      let win = aEvent.target.ownerDocument.defaultView;
+      let win = aEvent.target.ownerGlobal;
       let feeds = win.gBrowser.selectedBrowser.feeds;
 
       // Here, we only care about the case where we have exactly 1 feed and the
@@ -973,7 +921,7 @@ const CustomizableWidgets = [
       }
     },
     onCreated: function(node) {
-      let win = node.ownerDocument.defaultView;
+      let win = node.ownerGlobal;
       let selectedBrowser = win.gBrowser.selectedBrowser;
       let feeds = selectedBrowser && selectedBrowser.feeds;
       if (!feeds || !feeds.length) {
@@ -1074,7 +1022,7 @@ const CustomizableWidgets = [
         return;
       }
 
-      let window = node.ownerDocument.defaultView;
+      let window = node.ownerGlobal;
       let section = node.section;
       let value = node.value;
 
@@ -1151,18 +1099,86 @@ const CustomizableWidgets = [
       let win = aEvent.view;
       win.MailIntegration.sendLinkForBrowser(win.gBrowser.selectedBrowser)
     }
+  }, {
+    id: "containers-panelmenu",
+    type: "view",
+    viewId: "PanelUI-containers",
+    hasObserver: false,
+    onCreated: function(aNode) {
+      let doc = aNode.ownerDocument;
+      let win = doc.defaultView;
+      let items = doc.getElementById("PanelUI-containersItems");
+
+      let onItemCommand = function (aEvent) {
+        let item = aEvent.target;
+        let userContextId = parseInt(item.getAttribute("usercontextid"));
+        win.openUILinkIn(win.BROWSER_NEW_TAB_URL, "tab", {userContextId});
+      };
+      items.addEventListener("command", onItemCommand);
+
+      if (PrivateBrowsingUtils.isWindowPrivate(win)) {
+        aNode.setAttribute("disabled", "true");
+      }
+
+      this.updateVisibility(aNode);
+
+      if (!this.hasObserver) {
+        Services.prefs.addObserver("privacy.userContext.enabled", this, true);
+        this.hasObserver = true;
+      }
+    },
+    onViewShowing: function(aEvent) {
+      let doc = aEvent.detail.ownerDocument;
+
+      let items = doc.getElementById("PanelUI-containersItems");
+
+      while (items.firstChild) {
+        items.firstChild.remove();
+      }
+
+      let fragment = doc.createDocumentFragment();
+
+      ContextualIdentityService.getIdentities().forEach(identity => {
+        let bundle = doc.getElementById("bundle_browser");
+        let label = ContextualIdentityService.getUserContextLabel(identity.userContextId);
+
+        let item = doc.createElementNS(kNSXUL, "toolbarbutton");
+        item.setAttribute("label", label);
+        item.setAttribute("usercontextid", identity.userContextId);
+        item.setAttribute("class", "subviewbutton");
+        item.setAttribute("image", identity.icon);
+
+        fragment.appendChild(item);
+      });
+
+      items.appendChild(fragment);
+    },
+
+    updateVisibility(aNode) {
+      aNode.hidden = !Services.prefs.getBoolPref("privacy.userContext.enabled");
+    },
+
+    observe(aSubject, aTopic, aData) {
+      let {instances} = CustomizableUI.getWidget("containers-panelmenu");
+      for (let {node} of instances) {
+	if (node) {
+	  this.updateVisibility(node);
+	}
+      }
+    },
+
+    QueryInterface: XPCOMUtils.generateQI([
+      Ci.nsISupportsWeakReference,
+      Ci.nsIObserver
+    ]),
   }];
 
 let preferencesButton = {
   id: "preferences-button",
   defaultArea: CustomizableUI.AREA_PANEL,
   onCommand: function(aEvent) {
-    let win = aEvent.target &&
-              aEvent.target.ownerDocument &&
-              aEvent.target.ownerDocument.defaultView;
-    if (win && typeof win.openPreferences == "function") {
-      win.openPreferences();
-    }
+    let win = aEvent.target.ownerGlobal;
+    win.openPreferences();
   }
 };
 if (AppConstants.platform == "win") {
@@ -1251,9 +1267,7 @@ if (AppConstants.E10S_TESTING_ONLY) {
       },
       onCommand: function(aEvent) {
         let win = aEvent.view;
-        if (win && typeof win.OpenBrowserWindow == "function") {
-          win.OpenBrowserWindow({remote: false});
-        }
+        win.OpenBrowserWindow({remote: false});
       },
     });
   }

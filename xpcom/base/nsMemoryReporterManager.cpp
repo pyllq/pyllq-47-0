@@ -756,15 +756,14 @@ struct SegmentKind
 
 struct SegmentEntry : public PLDHashEntryHdr
 {
-  static PLDHashNumber HashKey(PLDHashTable* aTable, const void* aKey)
+  static PLDHashNumber HashKey(const void* aKey)
   {
     auto kind = static_cast<const SegmentKind*>(aKey);
     return mozilla::HashGeneric(kind->mState, kind->mType, kind->mProtect,
                                 kind->mIsStack);
   }
 
-  static bool MatchEntry(PLDHashTable* aTable,
-                         const PLDHashEntryHdr* aEntry, const void* aKey)
+  static bool MatchEntry(const PLDHashEntryHdr* aEntry, const void* aKey)
   {
     auto kind = static_cast<const SegmentKind*>(aKey);
     auto entry = static_cast<const SegmentEntry*>(aEntry);
@@ -1694,8 +1693,9 @@ nsMemoryReporterManager::GetReportsExtended(
                                                      aDMDDumpIdent);
 
   if (aMinimize) {
-    rv = MinimizeMemoryUsage(NS_NewRunnableMethod(
-      this, &nsMemoryReporterManager::StartGettingReports));
+    nsCOMPtr<nsIRunnable> callback =
+      NewRunnableMethod(this, &nsMemoryReporterManager::StartGettingReports);
+    rv = MinimizeMemoryUsage(callback);
   } else {
     rv = StartGettingReports();
   }
@@ -2521,7 +2521,7 @@ namespace {
  * When this sequence finishes, we invoke the callback function passed to the
  * runnable's constructor.
  */
-class MinimizeMemoryUsageRunnable : public nsRunnable
+class MinimizeMemoryUsageRunnable : public Runnable
 {
 public:
   explicit MinimizeMemoryUsageRunnable(nsIRunnable* aCallback)
@@ -2539,15 +2539,14 @@ public:
 
     if (mRemainingIters == 0) {
       os->NotifyObservers(nullptr, "after-minimize-memory-usage",
-                          MOZ_UTF16("MinimizeMemoryUsageRunnable"));
+                          u"MinimizeMemoryUsageRunnable");
       if (mCallback) {
         mCallback->Run();
       }
       return NS_OK;
     }
 
-    os->NotifyObservers(nullptr, "memory-pressure",
-                        MOZ_UTF16("heap-minimize"));
+    os->NotifyObservers(nullptr, "memory-pressure", u"heap-minimize");
     mRemainingIters--;
     NS_DispatchToMainThread(this);
 

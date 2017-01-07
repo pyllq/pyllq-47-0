@@ -22,7 +22,7 @@ var AnimationsPanel = {
   UI_UPDATED_EVENT: "ui-updated",
   PANEL_INITIALIZED: "panel-initialized",
 
-  initialize: Task.async(function*() {
+  initialize: Task.async(function* () {
     if (AnimationsController.destroyed) {
       console.warn("Could not initialize the animation-panel, controller " +
                    "was destroyed");
@@ -62,7 +62,8 @@ var AnimationsPanel = {
     let hUtils = gToolbox.highlighterUtils;
     this.togglePicker = hUtils.togglePicker.bind(hUtils);
 
-    this.animationsTimelineComponent = new AnimationsTimeline(gInspector);
+    this.animationsTimelineComponent = new AnimationsTimeline(gInspector,
+      AnimationsController.traits);
     this.animationsTimelineComponent.init(this.playersEl);
 
     if (AnimationsController.traits.hasSetPlaybackRate) {
@@ -78,7 +79,7 @@ var AnimationsPanel = {
     this.emit(this.PANEL_INITIALIZED);
   }),
 
-  destroy: Task.async(function*() {
+  destroy: Task.async(function* () {
     if (!this.initialized) {
       return;
     }
@@ -107,7 +108,7 @@ var AnimationsPanel = {
     this.destroyed.resolve();
   }),
 
-  startListeners: function() {
+  startListeners: function () {
     AnimationsController.on(AnimationsController.PLAYERS_UPDATED_EVENT,
       this.refreshAnimationsUI);
 
@@ -133,7 +134,7 @@ var AnimationsPanel = {
     }
   },
 
-  stopListeners: function() {
+  stopListeners: function () {
     AnimationsController.off(AnimationsController.PLAYERS_UPDATED_EVENT,
       this.refreshAnimationsUI);
 
@@ -160,7 +161,7 @@ var AnimationsPanel = {
     }
   },
 
-  onKeyDown: function(event) {
+  onKeyDown: function (event) {
     let keyEvent = Ci.nsIDOMKeyEvent;
 
     // If the space key is pressed, it should toggle the play state of
@@ -176,25 +177,27 @@ var AnimationsPanel = {
     }
   },
 
-  togglePlayers: function(isVisible) {
+  togglePlayers: function (isVisible) {
     if (isVisible) {
       document.body.removeAttribute("empty");
       document.body.setAttribute("timeline", "true");
     } else {
       document.body.setAttribute("empty", "true");
       document.body.removeAttribute("timeline");
+      $("#error-type").textContent =
+        L10N.getStr("panel.invalidElementSelected");
     }
   },
 
-  onPickerStarted: function() {
+  onPickerStarted: function () {
     this.pickerButtonEl.setAttribute("checked", "true");
   },
 
-  onPickerStopped: function() {
+  onPickerStopped: function () {
     this.pickerButtonEl.removeAttribute("checked");
   },
 
-  onToggleAllClicked: function() {
+  onToggleAllClicked: function () {
     this.toggleAll().catch(ex => console.error(ex));
   },
 
@@ -202,12 +205,12 @@ var AnimationsPanel = {
    * Toggle (pause/play) all animations in the current target
    * and update the UI the toggleAll button.
    */
-  toggleAll: Task.async(function*() {
+  toggleAll: Task.async(function* () {
     this.toggleAllButtonEl.classList.toggle("paused");
     yield AnimationsController.toggleAll();
   }),
 
-  onTimelinePlayClicked: function() {
+  onTimelinePlayClicked: function () {
     this.playPauseTimeline().catch(ex => console.error(ex));
   },
 
@@ -221,13 +224,13 @@ var AnimationsPanel = {
    * @return {Promise} Resolves when the playState is changed and the UI
    * is refreshed
    */
-  playPauseTimeline: function() {
+  playPauseTimeline: function () {
     return AnimationsController
       .toggleCurrentAnimations(this.timelineData.isMoving)
       .then(() => this.refreshAnimationsStateAndUI());
   },
 
-  onTimelineRewindClicked: function() {
+  onTimelineRewindClicked: function () {
     this.rewindTimeline().catch(ex => console.error(ex));
   },
 
@@ -237,7 +240,7 @@ var AnimationsPanel = {
    *
    * @return {Promise} Resolves when currentTime is set and the UI is refreshed
    */
-  rewindTimeline: function() {
+  rewindTimeline: function () {
     return AnimationsController
       .setCurrentTimeAll(0, true)
       .then(() => this.refreshAnimationsStateAndUI());
@@ -247,17 +250,17 @@ var AnimationsPanel = {
    * Set the playback rate of all current animations shown in the timeline to
    * the value of this.rateSelectorEl.
    */
-  onRateChanged: function(e, rate) {
+  onRateChanged: function (e, rate) {
     AnimationsController.setPlaybackRateAll(rate)
                         .then(() => this.refreshAnimationsStateAndUI())
                         .catch(ex => console.error(ex));
   },
 
-  onTabNavigated: function() {
+  onTabNavigated: function () {
     this.toggleAllButtonEl.classList.remove("paused");
   },
 
-  onTimelineDataChanged: function(e, data) {
+  onTimelineDataChanged: function (e, data) {
     this.timelineData = data;
     let {isMoving, isUserDrag, time} = data;
 
@@ -277,13 +280,15 @@ var AnimationsPanel = {
       this.setCurrentTimeAllPromise =
         AnimationsController.setCurrentTimeAll(time, true)
                             .catch(error => console.error(error))
-                            .then(() => this.setCurrentTimeAllPromise = null);
+                            .then(() => {
+                              this.setCurrentTimeAllPromise = null;
+                            });
     }
 
     this.displayTimelineCurrentTime();
   },
 
-  displayTimelineCurrentTime: function() {
+  displayTimelineCurrentTime: function () {
     let {time} = this.timelineData;
     this.timelineCurrentTimeEl.textContent = formatStopwatchTime(time);
   },
@@ -293,7 +298,7 @@ var AnimationsPanel = {
    * useful after the playState or currentTime has been changed and in case the
    * animations aren't auto-refreshing), and then refresh the UI.
    */
-  refreshAnimationsStateAndUI: Task.async(function*() {
+  refreshAnimationsStateAndUI: Task.async(function* () {
     for (let player of AnimationsController.animationPlayers) {
       yield player.refreshState();
     }
@@ -304,7 +309,7 @@ var AnimationsPanel = {
    * Refresh the list of animations UI. This will empty the panel and re-render
    * the various components again.
    */
-  refreshAnimationsUI: Task.async(function*() {
+  refreshAnimationsUI: Task.async(function* () {
     // Empty the whole panel first.
     this.togglePlayers(true);
 

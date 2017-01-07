@@ -15,11 +15,7 @@
 #include "OggWriter.h"
 #include "OpusTrackEncoder.h"
 
-#ifdef MOZ_VORBIS
-#include "VorbisTrackEncoder.h"
-#endif
 #ifdef MOZ_WEBM_ENCODER
-#include "VorbisTrackEncoder.h"
 #include "VP8TrackEncoder.h"
 #include "WebMWriter.h"
 #endif
@@ -70,7 +66,7 @@ void
 MediaEncoder::NotifyQueuedTrackChanges(MediaStreamGraph* aGraph,
                                        TrackID aID,
                                        StreamTime aTrackOffset,
-                                       uint32_t aTrackEvents,
+                                       TrackEventCommand aTrackEvents,
                                        const MediaSegment& aQueuedMedia,
                                        MediaStream* aInputStream,
                                        TrackID aInputTrackID)
@@ -78,7 +74,7 @@ MediaEncoder::NotifyQueuedTrackChanges(MediaStreamGraph* aGraph,
   if (!mDirectConnected) {
     NotifyRealtimeData(aGraph, aID, aTrackOffset, aTrackEvents, aQueuedMedia);
   } else {
-    if (aTrackEvents != 0) {
+    if (aTrackEvents != TrackEventCommand::TRACK_EVENT_NONE) {
       // forward events (TRACK_EVENT_ENDED) but not the media
       if (aQueuedMedia.GetType() == MediaSegment::VIDEO) {
         VideoSegment segment;
@@ -95,7 +91,8 @@ MediaEncoder::NotifyQueuedTrackChanges(MediaStreamGraph* aGraph,
           // after Resume(), so it'll get added to one of the DirectListener frames
           VideoSegment segment;
           gfx::IntSize size(0,0);
-          segment.AppendFrame(nullptr, aQueuedMedia.GetDuration(), size);
+          segment.AppendFrame(nullptr, aQueuedMedia.GetDuration(), size,
+                              PRINCIPAL_HANDLE_NONE);
           mVideoEncoder->NotifyQueuedTrackChanges(aGraph, aID,
                                                   aTrackOffset, aTrackEvents,
                                                   segment);
@@ -109,8 +106,26 @@ MediaEncoder::NotifyQueuedTrackChanges(MediaStreamGraph* aGraph,
 }
 
 void
+MediaEncoder::NotifyQueuedAudioData(MediaStreamGraph* aGraph, TrackID aID,
+                                    StreamTime aTrackOffset,
+                                    const AudioSegment& aQueuedMedia,
+                                    MediaStream* aInputStream,
+                                    TrackID aInputTrackID)
+{
+  if (!mDirectConnected) {
+    NotifyRealtimeData(aGraph, aID, aTrackOffset, 0, aQueuedMedia);
+  } else {
+    if (mSuspended == RECORD_RESUMED) {
+      if (!mVideoEncoder) {
+        mSuspended = RECORD_NOT_SUSPENDED; // no video
+      }
+    }
+  }
+}
+
+void
 MediaEncoder::NotifyEvent(MediaStreamGraph* aGraph,
-                          MediaStreamListener::MediaStreamGraphEvent event)
+                          MediaStreamGraphEvent event)
 {
   // In case that MediaEncoder does not receive a TRACK_EVENT_ENDED event.
   LOG(LogLevel::Debug, ("NotifyRemoved in [MediaEncoder]."));
@@ -144,8 +159,9 @@ MediaEncoder::CreateEncoder(const nsAString& aMIMEType, uint32_t aAudioBitrate,
   else if (MediaEncoder::IsWebMEncoderEnabled() &&
           (aMIMEType.EqualsLiteral(VIDEO_WEBM) ||
           (aTrackTypes & ContainerWriter::CREATE_VIDEO_TRACK))) {
-    if (aTrackTypes & ContainerWriter::CREATE_AUDIO_TRACK) {
-      audioEncoder = new VorbisTrackEncoder();
+    if (aTrackTypes & ContainerWriter::CREATE_AUDIO_TRACK
+        && MediaDecoder::IsOpusEnabled()) {
+      audioEncoder = new OpusTrackEncoder();
       NS_ENSURE_TRUE(audioEncoder, nullptr);
     }
     videoEncoder = new VP8TrackEncoder();
@@ -283,17 +299,19 @@ MediaEncoder::GetEncodedData(nsTArray<nsTArray<uint8_t> >* aOutputBufs,
       LOG(LogLevel::Debug, ("ENCODE_TRACK TimeStamp = %f", GetEncodeTimeStamp()));
       EncodedFrameContainer encodedData;
       nsresult rv = NS_OK;
+      // We're most likely to actually wait for a video frame, so do that first to minimize
+      // capture offset/lipsync issues
+      rv = WriteEncodedDataToMuxer(mVideoEncoder.get());
+      if (NS_FAILED(rv)) {
+        LOG(LogLevel::Error, ("Fail to write video encoder data to muxer"));
+        break;
+      }
       rv = WriteEncodedDataToMuxer(mAudioEncoder.get());
       if (NS_FAILED(rv)) {
         LOG(LogLevel::Error, ("Error! Fail to write audio encoder data to muxer"));
         break;
       }
       LOG(LogLevel::Debug, ("Audio encoded TimeStamp = %f", GetEncodeTimeStamp()));
-      rv = WriteEncodedDataToMuxer(mVideoEncoder.get());
-      if (NS_FAILED(rv)) {
-        LOG(LogLevel::Error, ("Fail to write video encoder data to muxer"));
-        break;
-      }
       LOG(LogLevel::Debug, ("Video encoded TimeStamp = %f", GetEncodeTimeStamp()));
       // In audio only or video only case, let unavailable track's flag to be true.
       bool isAudioCompleted = (mAudioEncoder && mAudioEncoder->IsEncodingComplete()) || !mAudioEncoder;

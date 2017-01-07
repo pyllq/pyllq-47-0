@@ -5,12 +5,15 @@
 #ifndef nsNSSCertificateDB_h
 #define nsNSSCertificateDB_h
 
+#include "ScopedNSSTypes.h"
 #include "certt.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/NotNull.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIX509CertDB.h"
 #include "nsNSSShutDown.h"
+#include "nsString.h"
 
 class nsCString;
 class nsIArray;
@@ -34,23 +37,29 @@ public:
   ImportValidCACerts(int numCACerts, SECItem *CACerts, nsIInterfaceRequestor *ctx,
                      const nsNSSShutDownPreventionLock &proofOfLock);
 
+  // This is a separate static method so nsNSSComponent can use it during NSS
+  // initialization. Other code should probably not use it.
+  static nsresult
+  FindCertByDBKey(const char* aDBKey, mozilla::UniqueCERTCertificate& cert);
+
 protected:
   virtual ~nsNSSCertificateDB();
 
 private:
 
   static nsresult
-  ImportValidCACertsInList(CERTCertList *certList, nsIInterfaceRequestor *ctx,
-                           const nsNSSShutDownPreventionLock &proofOfLock);
+  ImportValidCACertsInList(const mozilla::UniqueCERTCertList& filteredCerts,
+                           nsIInterfaceRequestor* ctx,
+                           const nsNSSShutDownPreventionLock& proofOfLock);
 
   static void DisplayCertificateAlert(nsIInterfaceRequestor *ctx, 
                                       const char *stringID, nsIX509Cert *certToShow,
                                       const nsNSSShutDownPreventionLock &proofOfLock);
 
-  CERTDERCerts *getCertsFromPackage(PLArenaPool *arena, uint8_t *data, 
-                                    uint32_t length,
-                                    const nsNSSShutDownPreventionLock &proofOfLock);
-  nsresult handleCACertDownload(nsIArray *x509Certs, 
+  CERTDERCerts* getCertsFromPackage(const mozilla::UniquePLArenaPool& arena,
+                                    uint8_t* data, uint32_t length,
+                                    const nsNSSShutDownPreventionLock& proofOfLock);
+  nsresult handleCACertDownload(mozilla::NotNull<nsIArray*> x509Certs,
                                 nsIInterfaceRequestor *ctx,
                                 const nsNSSShutDownPreventionLock &proofOfLock);
 

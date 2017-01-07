@@ -2558,8 +2558,10 @@ loser:
 static certDBEntrySubject *
 ReadDBSubjectEntry(NSSLOWCERTCertDBHandle *handle, SECItem *derSubject)
 {
+    /* |arena| isn't function-bounded, so cannot be a PORTCheapArenaPool. */
     PLArenaPool *arena = NULL;
-    PLArenaPool *tmparena = NULL;
+    PORTCheapArenaPool tmpArena;
+
     certDBEntrySubject *entry;
     SECItem dbkey;
     SECItem dbentry;
@@ -2571,12 +2573,8 @@ ReadDBSubjectEntry(NSSLOWCERTCertDBHandle *handle, SECItem *derSubject)
 	goto loser;
     }
 
-    tmparena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
-    if ( tmparena == NULL ) {
-	PORT_SetError(SEC_ERROR_NO_MEMORY);
-	goto loser;
-    }
-    
+    PORT_InitCheapArena(&tmpArena, DER_DEFAULT_CHUNKSIZE);
+
     entry = (certDBEntrySubject *)PORT_ArenaAlloc(arena,
 						sizeof(certDBEntrySubject));
     if ( entry == NULL ) {
@@ -2586,12 +2584,12 @@ ReadDBSubjectEntry(NSSLOWCERTCertDBHandle *handle, SECItem *derSubject)
     entry->common.arena = arena;
     entry->common.type = certDBEntryTypeSubject;
 
-    rv = EncodeDBSubjectKey(derSubject, tmparena, &dbkey);
+    rv = EncodeDBSubjectKey(derSubject, &tmpArena.arena, &dbkey);
     if ( rv != SECSuccess ) {
 	goto loser;
     }
     
-    rv = ReadDBEntry(handle, &entry->common, &dbkey, &dbentry, tmparena);
+    rv = ReadDBEntry(handle, &entry->common, &dbkey, &dbentry, &tmpArena.arena);
     if ( rv == SECFailure ) {
 	goto loser;
     }
@@ -2601,13 +2599,11 @@ ReadDBSubjectEntry(NSSLOWCERTCertDBHandle *handle, SECItem *derSubject)
 	goto loser;
     }
     
-    PORT_FreeArena(tmparena, PR_FALSE);
+    PORT_DestroyCheapArena(&tmpArena);
     return(entry);
     
 loser:
-    if ( tmparena ) {
-	PORT_FreeArena(tmparena, PR_FALSE);
-    }
+    PORT_DestroyCheapArena(&tmpArena);
     if ( arena ) {
 	PORT_FreeArena(arena, PR_FALSE);
     }
@@ -2777,9 +2773,11 @@ AddNicknameToSubject(NSSLOWCERTCertDBHandle *dbhandle,
 	goto loser;
     }
 
+    DestroyDBEntry((certDBEntry *)entry);
     return(SECSuccess);
 
 loser:
+    DestroyDBEntry((certDBEntry *)entry);
     return(SECFailure);
 }
 
@@ -3831,7 +3829,6 @@ UpdateV4DB(NSSLOWCERTCertDBHandle *handle, DB *updatedb)
     DBT key, data;
     certDBEntryCert *entry, *entry2;
     int ret;
-    PLArenaPool *arena = NULL;
     NSSLOWCERTCertificate *cert;
 
     ret = (* updatedb->seq)(updatedb, &key, &data, R_FIRST);
@@ -3840,11 +3837,6 @@ UpdateV4DB(NSSLOWCERTCertDBHandle *handle, DB *updatedb)
 	return(SECFailure);
     }
 
-    arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
-    if (arena == NULL) {
-	return(SECFailure);
-    }
-    
     do {
 	if ( data.size != 1 ) { /* skip version number */
 
@@ -3871,7 +3863,6 @@ UpdateV4DB(NSSLOWCERTCertDBHandle *handle, DB *updatedb)
 	}
     } while ( (* updatedb->seq)(updatedb, &key, &data, R_NEXT) == 0 );
 
-    PORT_FreeArena(arena, PR_FALSE);
     (* updatedb->close)(updatedb);
     return(SECSuccess);
 }
@@ -4356,6 +4347,10 @@ certcallback(SECItem *dbdata, SECItem *dbkey, certDBEntryType type, void *data)
     }
     
     entry = (certDBEntryCert *)PORT_ArenaAlloc(arena, sizeof(certDBEntryCert));
+    if (!entry) {
+	PORT_SetError(SEC_ERROR_NO_MEMORY);
+	goto loser;
+    }
     mystate = (PermCertCallbackState *)data;
     entry->common.version = (unsigned int)dbdata->data[0];
     entry->common.type = (certDBEntryType)dbdata->data[1];

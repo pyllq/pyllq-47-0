@@ -77,7 +77,7 @@ HeapAnalysesClient.prototype.getCreationTime = function (snapshotFilePath) {
   return this._worker.performTask("getCreationTime", snapshotFilePath);
 };
 
-/*** Censuses *****************************************************************/
+/** * Censuses *****************************************************************/
 
 /**
  * Ask the worker to perform a census analysis on the heap snapshot with the
@@ -116,12 +116,41 @@ HeapAnalysesClient.prototype.getCreationTime = function (snapshotFilePath) {
  */
 HeapAnalysesClient.prototype.takeCensus = function (snapshotFilePath,
                                                     censusOptions,
-                                                    requestOptions={}) {
+                                                    requestOptions = {}) {
   return this._worker.performTask("takeCensus", {
     snapshotFilePath,
     censusOptions,
     requestOptions,
   });
+};
+
+/**
+ * Get the individual nodes that correspond to the given census report leaf
+ * indices.
+ *
+ * @param {Object} opts
+ *        An object with the following properties:
+ *        - {DominatorTreeId} dominatorTreeId: The id of the dominator tree.
+ *        - {Set<Number>} indices: The indices of the census report leaves we
+ *          would like to get the individuals for.
+ *        - {Object} censusBreakdown: The breakdown used to generate the census.
+ *        - {Object} labelBreakdown: The breakdown we would like to use when
+ *          labeling the resulting nodes.
+ *        - {Number} maxRetainingPaths: The maximum number of retaining paths to
+ *          compute for each node.
+ *        - {Number} maxIndividuals: The maximum number of individual nodes to
+ *          return.
+ *
+ * @returns {Promise<Object>}
+ *          A promise of an object with the following properties:
+ *          - {Array<DominatorTreeNode>} nodes: An array of `DominatorTreeNode`s
+ *            with their shortest paths attached, and without any dominator tree
+ *            child/parent information attached. The results are sorted by
+ *            retained size.
+ *
+ */
+HeapAnalysesClient.prototype.getCensusIndividuals = function (opts) {
+  return this._worker.performTask("getCensusIndividuals", opts);
 };
 
 /**
@@ -173,7 +202,7 @@ HeapAnalysesClient.prototype.takeCensusDiff = function (firstSnapshotFilePath,
   });
 };
 
-/*** Dominator Trees **********************************************************/
+/** * Dominator Trees **********************************************************/
 
 /**
  * Compute the dominator tree of the heap snapshot loaded from the given file
@@ -202,6 +231,8 @@ HeapAnalysesClient.prototype.computeDominatorTree = function (snapshotFilePath) 
  *        - {Number} maxSiblings
  *          The maximum number of siblings to visit within each traversed node's
  *          children.
+ *        - {Number} maxRetainingPaths
+ *          The maximum number of retaining paths to find for each node.
  *
  * @returns {Promise<DominatorTreeNode>}
  */

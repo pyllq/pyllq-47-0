@@ -86,10 +86,10 @@ MacroAssembler::call(const wasm::CallSiteDesc& desc, const Register reg)
 }
 
 void
-MacroAssembler::call(const wasm::CallSiteDesc& desc, AsmJSInternalCallee callee)
+MacroAssembler::call(const wasm::CallSiteDesc& desc, uint32_t callee)
 {
     CodeOffset l = callWithPatch();
-    append(desc, l, framePushed(), callee.index);
+    append(desc, l, framePushed(), callee);
 }
 
 // ===============================================================
@@ -451,13 +451,13 @@ MacroAssembler::branchTestObjClass(Condition cond, Register obj, Register scratc
 void
 MacroAssembler::branchTestObjShape(Condition cond, Register obj, const Shape* shape, Label* label)
 {
-    branchPtr(cond, Address(obj, JSObject::offsetOfShape()), ImmGCPtr(shape), label);
+    branchPtr(cond, Address(obj, ShapedObject::offsetOfShape()), ImmGCPtr(shape), label);
 }
 
 void
 MacroAssembler::branchTestObjShape(Condition cond, Register obj, Register shape, Label* label)
 {
-    branchPtr(cond, Address(obj, JSObject::offsetOfShape()), shape, label);
+    branchPtr(cond, Address(obj, ShapedObject::offsetOfShape()), shape, label);
 }
 
 void
@@ -518,17 +518,17 @@ void
 MacroAssembler::branchTestMIRType(Condition cond, const Value& val, MIRType type, Label* label)
 {
     switch (type) {
-      case MIRType_Null:      return branchTestNull(cond, val, label);
-      case MIRType_Undefined: return branchTestUndefined(cond, val, label);
-      case MIRType_Boolean:   return branchTestBoolean(cond, val, label);
-      case MIRType_Int32:     return branchTestInt32(cond, val, label);
-      case MIRType_String:    return branchTestString(cond, val, label);
-      case MIRType_Symbol:    return branchTestSymbol(cond, val, label);
-      case MIRType_Object:    return branchTestObject(cond, val, label);
-      case MIRType_Double:    return branchTestDouble(cond, val, label);
-      case MIRType_MagicOptimizedArguments: // Fall through.
-      case MIRType_MagicIsConstructing:
-      case MIRType_MagicHole: return branchTestMagic(cond, val, label);
+      case MIRType::Null:      return branchTestNull(cond, val, label);
+      case MIRType::Undefined: return branchTestUndefined(cond, val, label);
+      case MIRType::Boolean:   return branchTestBoolean(cond, val, label);
+      case MIRType::Int32:     return branchTestInt32(cond, val, label);
+      case MIRType::String:    return branchTestString(cond, val, label);
+      case MIRType::Symbol:    return branchTestSymbol(cond, val, label);
+      case MIRType::Object:    return branchTestObject(cond, val, label);
+      case MIRType::Double:    return branchTestDouble(cond, val, label);
+      case MIRType::MagicOptimizedArguments: // Fall through.
+      case MIRType::MagicIsConstructing:
+      case MIRType::MagicHole: return branchTestMagic(cond, val, label);
       default:
         MOZ_CRASH("Bad MIRType");
     }
@@ -550,6 +550,122 @@ MacroAssembler::branchTestMagicValue(Condition cond, const ValueOperand& val, JS
     MOZ_ASSERT(cond == Equal || cond == NotEqual);
     branchTestValue(cond, val, MagicValue(why), label);
 }
+
+void
+MacroAssembler::branchDoubleNotInInt64Range(Address src, Register temp, Label* fail)
+{
+    // Tests if double is in [INT64_MIN; INT64_MAX] range
+    uint32_t EXPONENT_MASK = 0x7ff00000;
+    uint32_t EXPONENT_SHIFT = FloatingPoint<double>::kExponentShift - 32;
+    uint32_t TOO_BIG_EXPONENT = (FloatingPoint<double>::kExponentBias + 63) << EXPONENT_SHIFT;
+
+    load32(Address(src.base, src.offset + sizeof(int32_t)), temp);
+    and32(Imm32(EXPONENT_MASK), temp);
+    branch32(Assembler::GreaterThanOrEqual, temp, Imm32(TOO_BIG_EXPONENT), fail);
+}
+
+void
+MacroAssembler::branchDoubleNotInUInt64Range(Address src, Register temp, Label* fail)
+{
+    // Note: returns failure on -0.0
+    // Tests if double is in [0; UINT64_MAX] range
+    // Take the sign also in the equation. That way we can compare in one test?
+    uint32_t EXPONENT_MASK = 0xfff00000;
+    uint32_t EXPONENT_SHIFT = FloatingPoint<double>::kExponentShift - 32;
+    uint32_t TOO_BIG_EXPONENT = (FloatingPoint<double>::kExponentBias + 64) << EXPONENT_SHIFT;
+
+    load32(Address(src.base, src.offset + sizeof(int32_t)), temp);
+    and32(Imm32(EXPONENT_MASK), temp);
+    branch32(Assembler::AboveOrEqual, temp, Imm32(TOO_BIG_EXPONENT), fail);
+}
+
+void
+MacroAssembler::branchFloat32NotInInt64Range(Address src, Register temp, Label* fail)
+{
+    // Tests if float is in [INT64_MIN; INT64_MAX] range
+    uint32_t EXPONENT_MASK = 0x7f800000;
+    uint32_t EXPONENT_SHIFT = FloatingPoint<float>::kExponentShift;
+    uint32_t TOO_BIG_EXPONENT = (FloatingPoint<float>::kExponentBias + 63) << EXPONENT_SHIFT;
+
+    load32(src, temp);
+    and32(Imm32(EXPONENT_MASK), temp);
+    branch32(Assembler::GreaterThanOrEqual, temp, Imm32(TOO_BIG_EXPONENT), fail);
+}
+
+void
+MacroAssembler::branchFloat32NotInUInt64Range(Address src, Register temp, Label* fail)
+{
+    // Note: returns failure on -0.0
+    // Tests if float is in [0; UINT64_MAX] range
+    // Take the sign also in the equation. That way we can compare in one test?
+    uint32_t EXPONENT_MASK = 0xff800000;
+    uint32_t EXPONENT_SHIFT = FloatingPoint<float>::kExponentShift;
+    uint32_t TOO_BIG_EXPONENT = (FloatingPoint<float>::kExponentBias + 64) << EXPONENT_SHIFT;
+
+    load32(src, temp);
+    and32(Imm32(EXPONENT_MASK), temp);
+    branch32(Assembler::AboveOrEqual, temp, Imm32(TOO_BIG_EXPONENT), fail);
+}
+
+// ========================================================================
+// Canonicalization primitives.
+void
+MacroAssembler::canonicalizeFloat(FloatRegister reg)
+{
+    Label notNaN;
+    branchFloat(DoubleOrdered, reg, reg, &notNaN);
+    loadConstantFloat32(float(JS::GenericNaN()), reg);
+    bind(&notNaN);
+}
+
+void
+MacroAssembler::canonicalizeFloatIfDeterministic(FloatRegister reg)
+{
+#ifdef JS_MORE_DETERMINISTIC
+    // See the comment in TypedArrayObjectTemplate::getIndexValue.
+    canonicalizeFloat(reg);
+#endif // JS_MORE_DETERMINISTIC
+}
+
+void
+MacroAssembler::canonicalizeDouble(FloatRegister reg)
+{
+    Label notNaN;
+    branchDouble(DoubleOrdered, reg, reg, &notNaN);
+    loadConstantDouble(JS::GenericNaN(), reg);
+    bind(&notNaN);
+}
+
+void
+MacroAssembler::canonicalizeDoubleIfDeterministic(FloatRegister reg)
+{
+#ifdef JS_MORE_DETERMINISTIC
+    // See the comment in TypedArrayObjectTemplate::getIndexValue.
+    canonicalizeDouble(reg);
+#endif // JS_MORE_DETERMINISTIC
+}
+
+// ========================================================================
+// Memory access primitives.
+template<class T> void
+MacroAssembler::storeDouble(FloatRegister src, const T& dest)
+{
+    canonicalizeDoubleIfDeterministic(src);
+    storeUncanonicalizedDouble(src, dest);
+}
+
+template void MacroAssembler::storeDouble(FloatRegister src, const Address& dest);
+template void MacroAssembler::storeDouble(FloatRegister src, const BaseIndex& dest);
+
+template<class T> void
+MacroAssembler::storeFloat32(FloatRegister src, const T& dest)
+{
+    canonicalizeFloatIfDeterministic(src);
+    storeUncanonicalizedFloat32(src, dest);
+}
+
+template void MacroAssembler::storeFloat32(FloatRegister src, const Address& dest);
+template void MacroAssembler::storeFloat32(FloatRegister src, const BaseIndex& dest);
 
 //}}} check_macroassembler_style
 // ===============================================================
@@ -590,24 +706,6 @@ MacroAssembler::addStackPtrTo(T t)
 }
 
 #endif // !JS_CODEGEN_ARM64
-
-void
-MacroAssembler::canonicalizeFloat(FloatRegister reg)
-{
-    Label notNaN;
-    branchFloat(DoubleOrdered, reg, reg, &notNaN);
-    loadConstantFloat32(float(JS::GenericNaN()), reg);
-    bind(&notNaN);
-}
-
-void
-MacroAssembler::canonicalizeDouble(FloatRegister reg)
-{
-    Label notNaN;
-    branchDouble(DoubleOrdered, reg, reg, &notNaN);
-    loadConstantDouble(JS::GenericNaN(), reg);
-    bind(&notNaN);
-}
 
 template <typename T>
 void

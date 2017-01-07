@@ -12,6 +12,14 @@
          warning when we switch to gradle. -->
     <issue id="HardcodedDebugMode" severity="ignore" />
 
+    <!-- We have our own l10n system & don't use the platform's plurals. -->
+    <issue id="PluralsCandidate" severity="ignore" />
+
+    <!-- We don't want to have to follow the SDK release schedule: we can keep
+	 the warning in order to not forget that there's a new SDK, but there's
+	 no need to break on update. -->
+    <issue id="OldTargetApi" severity="warning" />
+
     <!-- We want all lint warnings to be fatal errors.
          Right now, we set these to lint warnings so:
 
@@ -21,10 +29,10 @@
          and not fail everything. -->
     <issue id="AppCompatResource" severity="warning" />
     <issue id="GoogleAppIndexingDeepLinkError" severity="warning" />
+    <issue id="GoogleAppIndexingUrlError" severity="warning" />
     <issue id="Instantiatable" severity="warning" />
     <issue id="LongLogTag" severity="warning" />
     <issue id="MissingPermission" severity="warning" />
-    <issue id="MissingSuperCall" severity="warning" />
     <issue id="NewApi" severity="warning" />
     <issue id="OnClick" severity="warning" />
     <issue id="ReferenceType" severity="warning" />
@@ -32,6 +40,11 @@
     <issue id="ResourceType" severity="warning" />
     <issue id="ValidFragment" severity="warning" />
     <issue id="WrongConstant" severity="warning" />
+
+    <!-- We fixed all "Registered" lint errors. However the current gradle plugin has a bug where
+         it ignores @SuppressLint annotations for this check. See CrashReporter class and
+         https://code.google.com/p/android/issues/detail?id=204846 -->
+    <issue id="Registered" severity="warning" />
 
     <!-- WHEN YOU FIX A LINT WARNING, ADD IT TO THIS LIST.
 
@@ -51,6 +64,7 @@
     <issue id="AppCompatMethod" severity="error" />
     <issue id="AppIndexingError" severity="error" />
     <issue id="AppIndexingWarning" severity="error" />
+    <issue id="Assert" severity="error" />
     <issue id="ButtonCase" severity="error" />
     <issue id="ButtonOrder" severity="error" />
     <issue id="ByteOrderMark" severity="error" />
@@ -117,6 +131,7 @@
     <issue id="MissingPrefix" severity="error" />
     <issue id="MissingQuantity" severity="error" />
     <issue id="MissingRegistered" severity="error" />
+    <issue id="MissingSuperCall" severity="error" />
     <issue id="MissingTranslation" severity="error" />
     <issue id="MissingVersion" severity="error" />
     <issue id="MockLocation" severity="error" />
@@ -126,7 +141,6 @@
     <issue id="NfcTechWhitespace" severity="error" />
     <issue id="NotSibling" severity="error" />
     <issue id="ObsoleteLayoutParam" severity="error" />
-    <issue id="OldTargetApi" severity="error" />
     <issue id="OnClick" severity="error" />
     <issue id="Orientation" severity="error" />
     <issue id="Override" severity="error" />
@@ -140,7 +154,6 @@
     <issue id="ProtectedPermissions" severity="error" />
     <issue id="PxUsage" severity="error" />
     <issue id="Range" severity="error" />
-    <issue id="Registered" severity="error" />
     <issue id="RelativeOverlap" severity="error" />
     <issue id="RequiredSize" severity="error" />
     <issue id="ResAuto" severity="error" />
@@ -180,6 +193,12 @@
     <issue id="UnlocalizedSms" severity="error" />
     <issue id="UnusedNamespace" severity="error" />
     <issue id="UnusedQuantity" severity="error" />
+    <issue id="UnusedResources" severity="error">
+        <!-- The moz.build based build system leaves a .mkdir.done file lying around in the
+             preprocessed_resources res/raw folder. Lint reports it as unused. We should get
+             rid of the file eventually. See bug 1268948. -->
+        <ignore path="**/raw/.mkdir.done" />
+    </issue>
     <issue id="Usability" severity="error" />
     <issue id="UseCheckPermission" severity="error" />
     <issue id="UseCompoundDrawables" severity="error" />

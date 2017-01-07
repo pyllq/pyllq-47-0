@@ -6,8 +6,11 @@
 package org.mozilla.gecko.home;
 
 import org.mozilla.gecko.db.BrowserContract.TopSites;
+import org.mozilla.gecko.favicons.FaviconGenerator;
 import org.mozilla.gecko.favicons.Favicons;
 import org.mozilla.gecko.R;
+import org.mozilla.gecko.gfx.BitmapUtils;
+import org.mozilla.gecko.util.ThreadUtils;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -17,6 +20,8 @@ import android.view.LayoutInflater;
 import android.widget.ImageView.ScaleType;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
+
+import android.util.Log;
 
 /**
  * A view that displays the thumbnail and the title/url for a top/pinned site.
@@ -30,12 +35,12 @@ public class TopSitesGridItemView extends RelativeLayout {
     // Empty state, to denote there is no valid url.
     private static final int[] STATE_EMPTY = { android.R.attr.state_empty };
 
+    private static final int THUMBNAIL_DEFAULT_FAVICON_ID = R.drawable.favicon_globe;
+    
     private static final ScaleType SCALE_TYPE_FAVICON   = ScaleType.CENTER;
     private static final ScaleType SCALE_TYPE_RESOURCE  = ScaleType.CENTER;
     private static final ScaleType SCALE_TYPE_THUMBNAIL = ScaleType.CENTER_CROP;
     private static final ScaleType SCALE_TYPE_URL       = ScaleType.CENTER_INSIDE;
-
-    private static final int THUMBNAIL_DEFAULT_FAVICON_ID = R.drawable.favicon_globe;
 
     // Child views.
     private final TextView mTitleView;
@@ -156,6 +161,7 @@ public class TopSitesGridItemView extends RelativeLayout {
      * Returns true if any fields changed.
      */
     public boolean updateState(final String title, final String url, final int type, final TopSitesPanel.ThumbnailInfo thumbnail) {
+        Log.v(LOGTAG,"updateState:"+url);
         boolean changed = false;
         if (mUrl == null || !mUrl.equals(url)) {
             mUrl = url;
@@ -210,17 +216,36 @@ public class TopSitesGridItemView extends RelativeLayout {
         mThumbnailSet = false;
     }
 
+    private void generateDefaultIcon() {
+        ThreadUtils.assertOnBackgroundThread();
+
+        final Bitmap bitmap = FaviconGenerator.generate(getContext(), mUrl);
+        final int dominantColor = BitmapUtils.getDominantColor(bitmap);
+
+        ThreadUtils.postToUiThread(new Runnable() {
+            @Override
+            public void run() {
+                mThumbnailView.setScaleType(SCALE_TYPE_FAVICON);
+                mThumbnailView.setImageBitmap(bitmap);
+                mThumbnailView.setBackgroundColor(0x7FFFFFFF & dominantColor); // 50% dominant color
+                mThumbnailSet = false;
+            }
+        });
+    }
+
     /**
      * Display the thumbnail from a bitmap.
      *
      * @param thumbnail The bitmap to show as thumbnail.
      */
     public void displayThumbnail(Bitmap thumbnail) {
+        Log.v(LOGTAG,"displayThumbnail(bitmap)");
         if (thumbnail == null) {
             // Show a favicon based view instead.
             displayThumbnail(THUMBNAIL_DEFAULT_FAVICON_ID);
             return;
         }
+
         mThumbnailSet = true;
         Favicons.cancelFaviconLoad(mLoadId);
         ImageLoader.with(getContext()).cancelRequest(mThumbnailView);

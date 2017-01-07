@@ -31,6 +31,7 @@
 
 using namespace mozilla;
 using namespace mozilla::gfx;
+using namespace mozilla::image;
 
 //----------------------------------------------------------------------
 // Implementation
@@ -50,7 +51,7 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGPathGeometryFrame)
 NS_QUERYFRAME_HEAD(nsSVGPathGeometryFrame)
   NS_QUERYFRAME_ENTRY(nsISVGChildFrame)
   NS_QUERYFRAME_ENTRY(nsSVGPathGeometryFrame)
-NS_QUERYFRAME_TAIL_INHERITING(nsSVGPathGeometryFrameBase)
+NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
 
 //----------------------------------------------------------------------
 // Display list item:
@@ -69,13 +70,22 @@ public:
     MOZ_COUNT_DTOR(nsDisplaySVGPathGeometry);
   }
 #endif
- 
+
   NS_DISPLAY_DECL_NAME("nsDisplaySVGPathGeometry", TYPE_SVG_PATH_GEOMETRY)
 
   virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
                        HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames) override;
   virtual void Paint(nsDisplayListBuilder* aBuilder,
                      nsRenderingContext* aCtx) override;
+
+  nsDisplayItemGeometry* AllocateGeometry(nsDisplayListBuilder* aBuilder) override
+  {
+    return new nsDisplayItemGenericImageGeometry(this, aBuilder);
+  }
+
+  void ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
+                                 const nsDisplayItemGeometry* aGeometry,
+                                 nsRegion *aInvalidRegion) override;
 };
 
 void
@@ -111,7 +121,28 @@ nsDisplaySVGPathGeometry::Paint(nsDisplayListBuilder* aBuilder,
 
   gfxMatrix tm = nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(mFrame) *
                    gfxMatrix::Translation(devPixelOffset);
-  static_cast<nsSVGPathGeometryFrame*>(mFrame)->PaintSVG(*aCtx->ThebesContext(), tm);
+  DrawResult result =
+    static_cast<nsSVGPathGeometryFrame*>(mFrame)->PaintSVG(*aCtx->ThebesContext(), tm);
+
+  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
+}
+
+void
+nsDisplaySVGPathGeometry::ComputeInvalidationRegion(
+  nsDisplayListBuilder* aBuilder,
+  const nsDisplayItemGeometry* aGeometry,
+  nsRegion* aInvalidRegion)
+{
+  auto geometry =
+    static_cast<const nsDisplayItemGenericImageGeometry*>(aGeometry);
+
+  if (aBuilder->ShouldSyncDecodeImages() &&
+      geometry->ShouldInvalidateToSyncDecodeImages()) {
+    bool snap;
+    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
+  }
+
+  nsDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
 }
 
 //----------------------------------------------------------------------
@@ -123,7 +154,7 @@ nsSVGPathGeometryFrame::Init(nsIContent*       aContent,
                              nsIFrame*         aPrevInFlow)
 {
   AddStateBits(aParent->GetStateBits() & NS_STATE_SVG_CLIPPATH_CHILD);
-  nsSVGPathGeometryFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsFrame::Init(aContent, aParent, aPrevInFlow);
 }
 
 nsresult
@@ -150,12 +181,12 @@ nsSVGPathGeometryFrame::AttributeChanged(int32_t         aNameSpaceID,
 /* virtual */ void
 nsSVGPathGeometryFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
 {
-  nsSVGPathGeometryFrameBase::DidSetStyleContext(aOldStyleContext);
+  nsFrame::DidSetStyleContext(aOldStyleContext);
 
   if (aOldStyleContext) {
-    auto oldStyleDisplay = aOldStyleContext->PeekStyleDisplay();
-    if (oldStyleDisplay &&
-        StyleDisplay()->mOpacity != oldStyleDisplay->mOpacity &&
+    auto oldStyleEffects = aOldStyleContext->PeekStyleEffects();
+    if (oldStyleEffects &&
+        StyleEffects()->mOpacity != oldStyleEffects->mOpacity &&
         nsSVGUtils::CanOptimizeOpacity(this)) {
       // nsIFrame::BuildDisplayListForStackingContext() is not going to create an
       // nsDisplayOpacity display list item, so DLBI won't invalidate for us.
@@ -242,19 +273,19 @@ nsSVGPathGeometryFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 //----------------------------------------------------------------------
 // nsISVGChildFrame methods
 
-nsresult
+DrawResult
 nsSVGPathGeometryFrame::PaintSVG(gfxContext& aContext,
                                  const gfxMatrix& aTransform,
                                  const nsIntRect* aDirtyRect)
 {
   if (!StyleVisibility()->IsVisible())
-    return NS_OK;
+    return DrawResult::SUCCESS;
 
   // Matrix to the geometry's user space:
   gfxMatrix newMatrix =
     aContext.CurrentMatrix().PreMultiply(aTransform).NudgeToIntegers();
   if (newMatrix.IsSingular()) {
-    return NS_OK;
+    return DrawResult::BAD_ARGS;
   }
 
   uint32_t paintOrder = StyleSVG()->mPaintOrder;
@@ -280,7 +311,7 @@ nsSVGPathGeometryFrame::PaintSVG(gfxContext& aContext,
     }
   }
 
-  return NS_OK;
+  return DrawResult::SUCCESS;
 }
 
 nsIFrame*

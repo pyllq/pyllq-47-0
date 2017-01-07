@@ -942,7 +942,7 @@ class SdpRtcpFbAttributeList : public SdpAttribute
 public:
   SdpRtcpFbAttributeList() : SdpAttribute(kRtcpFbAttribute) {}
 
-  enum Type { kAck, kApp, kCcm, kNack, kTrrInt };
+  enum Type { kAck, kApp, kCcm, kNack, kTrrInt, kRemb };
 
   static const char* pli;
   static const char* sli;
@@ -993,6 +993,9 @@ inline std::ostream& operator<<(std::ostream& os,
     case SdpRtcpFbAttributeList::kTrrInt:
       os << "trr-int";
       break;
+    case SdpRtcpFbAttributeList::kRemb:
+      os << "goog-remb";
+      break;
     default:
       MOZ_ASSERT(false);
       os << "?";
@@ -1020,6 +1023,8 @@ public:
     kiLBC,
     kiSAC,
     kH264,
+    kRed,
+    kUlpfec,
     kOtherCodec
   };
 
@@ -1099,6 +1104,12 @@ inline std::ostream& operator<<(std::ostream& os,
     case SdpRtpmapAttributeList::kH264:
       os << "H264";
       break;
+    case SdpRtpmapAttributeList::kRed:
+      os << "red";
+      break;
+    case SdpRtpmapAttributeList::kUlpfec:
+      os << "ulpfec";
+      break;
     default:
       MOZ_ASSERT(false);
       os << "?";
@@ -1130,6 +1141,32 @@ public:
     virtual void Serialize(std::ostream& os) const = 0;
 
     SdpRtpmapAttributeList::CodecType codec_type;
+  };
+
+  class RedParameters : public Parameters
+  {
+  public:
+    RedParameters()
+        : Parameters(SdpRtpmapAttributeList::kRed)
+    {
+    }
+
+    virtual Parameters*
+    Clone() const override
+    {
+      return new RedParameters(*this);
+    }
+
+    virtual void
+    Serialize(std::ostream& os) const override
+    {
+      for(size_t i = 0; i < encodings.size(); ++i) {
+        os << (i != 0 ? "/" : "")
+           << std::to_string(encodings[i]);
+      }
+    }
+
+    std::vector<uint8_t> encodings;
   };
 
   class H264Parameters : public Parameters
@@ -1240,11 +1277,13 @@ public:
   {
   public:
     enum { kDefaultMaxPlaybackRate = 48000,
-           kDefaultStereo = 0 };
+           kDefaultStereo = 0,
+           kDefaultUseInBandFec = 0 };
     OpusParameters() :
       Parameters(SdpRtpmapAttributeList::kOpus),
       maxplaybackrate(kDefaultMaxPlaybackRate),
-      stereo(kDefaultStereo)
+      stereo(kDefaultStereo),
+      useInBandFec(kDefaultUseInBandFec)
     {}
 
     Parameters*
@@ -1256,12 +1295,14 @@ public:
     void
     Serialize(std::ostream& os) const override
     {
-      os << "maxplaybackrate=" << maxplaybackrate << ";"
-         << "stereo=" << stereo;
+      os << "maxplaybackrate=" << maxplaybackrate
+         << ";stereo=" << stereo
+         << ";useinbandfec=" << useInBandFec;
     }
 
     unsigned int maxplaybackrate;
     unsigned int stereo;
+    unsigned int useInBandFec;
   };
 
   class Fmtp

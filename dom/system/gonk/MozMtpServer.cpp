@@ -24,7 +24,6 @@
 #include "mozilla/Scoped.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
-#include "nsAutoPtr.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 #include "nsISupportsImpl.h"
@@ -41,7 +40,7 @@ BEGIN_MTP_NAMESPACE
 
 static const char* kMtpWatcherUpdate = "mtp-watcher-update";
 
-class MtpWatcherUpdateRunnable final : public nsRunnable
+class MtpWatcherUpdateRunnable final : public Runnable
 {
 public:
   MtpWatcherUpdateRunnable(MozMtpDatabase* aMozMtpDatabase,
@@ -142,7 +141,7 @@ private:
 NS_IMPL_ISUPPORTS(MtpWatcherUpdate, nsIObserver)
 static StaticRefPtr<MtpWatcherUpdate> sMtpWatcherUpdate;
 
-class AllocMtpWatcherUpdateRunnable final : public nsRunnable
+class AllocMtpWatcherUpdateRunnable final : public Runnable
 {
 public:
   AllocMtpWatcherUpdateRunnable(MozMtpServer* aMozMtpServer)
@@ -160,7 +159,7 @@ private:
   RefPtr<MozMtpServer> mMozMtpServer;
 };
 
-class FreeMtpWatcherUpdateRunnable final : public nsRunnable
+class FreeMtpWatcherUpdateRunnable final : public Runnable
 {
 public:
   FreeMtpWatcherUpdateRunnable(MozMtpServer* aMozMtpServer)
@@ -178,7 +177,7 @@ private:
   RefPtr<MozMtpServer> mMozMtpServer;
 };
 
-class MtpServerRunnable : public nsRunnable
+class MtpServerRunnable : public Runnable
 {
 public:
   MtpServerRunnable(int aMtpUsbFd, MozMtpServer* aMozMtpServer)

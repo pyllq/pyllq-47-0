@@ -1509,7 +1509,7 @@ sdp_result_e sdp_parse_attr_fmtp (sdp_t *sdp_p, sdp_attr_t *attr_p,
             fmtp_p->annex_p_val_picture_resize = 0;
             fmtp_p->annex_p_val_warp = 0;
             tok = tmp;
-            tok++; temp=PL_strtok_r(tok, ",", &strtok_state);
+            tok++; temp = PL_strtok_r(tok, ",", &strtok_state);
             if (temp) {
                 iter=1;
                 while (temp != NULL) {
@@ -1525,7 +1525,7 @@ sdp_result_e sdp_parse_attr_fmtp (sdp_t *sdp_p, sdp_attr_t *attr_p,
                     else if (iter == 2)
                         fmtp_p->annex_p_val_warp = (uint16_t) strtoul_result;
 
-                    temp=PL_strtok_r(NULL, ",", &strtok_state);
+                    temp = PL_strtok_r(NULL, ",", &strtok_state);
                     iter++;
                 }
             }
@@ -1780,6 +1780,28 @@ sdp_result_e sdp_parse_attr_fmtp (sdp_t *sdp_p, sdp_attr_t *attr_p,
                 }
             } /* if (temp) */
             done = TRUE;
+        } else if (strchr(tmp, '/')) {
+            // XXX Note that because RFC 5109 so conveniently specified
+            // this fmtp with no param names, we hope that nothing else
+            // has a slash in the string because otherwise we won't know
+            // how to differentiate.
+            temp=PL_strtok_r(tmp, "/", &strtok_state);
+            if (temp) {
+                iter = 0;
+                while (temp != NULL) {
+                    errno = 0;
+                    strtoul_result = strtoul(temp, &strtoul_end, 10);
+
+                    if (errno ||
+                       temp == strtoul_end || strtoul_result > USHRT_MAX) {
+                      temp = NULL;
+                      continue;
+                    }
+                    fmtp_p->redundant_encodings[iter++] =
+                        (uint8_t)strtoul_result;
+                    temp=PL_strtok_r(NULL, "/", &strtok_state);
+                }
+            } /* if (temp) */
         } else {
           // XXX Note that DTMF fmtp will fall into here:
           // a=fmtp:101 0-15 (or 0-15,NN,NN etc)
@@ -4899,13 +4921,11 @@ sdp_result_e sdp_parse_attr_simple_flag (sdp_t *sdp_p, sdp_attr_t *attr_p,
     return (SDP_SUCCESS);
 }
 
+static sdp_result_e sdp_parse_attr_line(sdp_t *sdp_p, sdp_attr_t *attr_p,
+                                        const char *ptr, char *buf, size_t buf_len) {
+    sdp_result_e result;
 
-sdp_result_e sdp_parse_attr_complete_line (sdp_t *sdp_p, sdp_attr_t *attr_p,
-                                           const char *ptr)
-{
-    sdp_result_e  result;
-
-    ptr = sdp_getnextstrtok(ptr, attr_p->attr.string_val, sizeof(attr_p->attr.string_val), "\r\n", &result);
+    (void)sdp_getnextstrtok(ptr, buf, buf_len, "\r\n", &result);
 
     if (result != SDP_SUCCESS) {
         sdp_parse_error(sdp_p,
@@ -4917,10 +4937,40 @@ sdp_result_e sdp_parse_attr_complete_line (sdp_t *sdp_p, sdp_attr_t *attr_p,
         if (sdp_p->debug_flag[SDP_DEBUG_TRACE]) {
             SDP_PRINT("%s Parsed a=%s, %s", sdp_p->debug_str,
                       sdp_get_attr_name(attr_p->type),
-                      attr_p->attr.string_val);
+                      buf);
         }
         return (SDP_SUCCESS);
     }
+}
+
+sdp_result_e sdp_parse_attr_complete_line (sdp_t *sdp_p, sdp_attr_t *attr_p,
+                                           const char *ptr)
+{
+    return sdp_parse_attr_line(sdp_p, attr_p, ptr,
+                               attr_p->attr.string_val,
+                               sizeof(attr_p->attr.string_val));
+}
+
+sdp_result_e sdp_parse_attr_long_line (sdp_t *sdp_p, sdp_attr_t *attr_p,
+                                       const char *ptr)
+{
+    sdp_result_e result;
+    char buffer[SDP_MAX_LONG_STRING_LEN];
+
+    result = sdp_parse_attr_line(sdp_p, attr_p, ptr,
+                                 buffer, sizeof(buffer));
+    if (result == SDP_SUCCESS) {
+        attr_p->attr.stringp = cpr_strdup(buffer);
+    }
+    return result;
+}
+
+sdp_result_e sdp_build_attr_long_line (sdp_t *sdp_p, sdp_attr_t *attr_p,
+                                       flex_string *fs)
+{
+    flex_string_sprintf(fs, "a=%s:%s\r\n", sdp_attr[attr_p->type].name,
+                        attr_p->attr.stringp);
+    return SDP_SUCCESS;
 }
 
 sdp_result_e sdp_build_attr_rtcp_fb(sdp_t *sdp_p,
@@ -4968,6 +5018,9 @@ sdp_result_e sdp_build_attr_rtcp_fb(sdp_t *sdp_p,
             break;
         case SDP_RTCP_FB_TRR_INT:
             flex_string_sprintf(fs, " %u", attr_p->attr.rtcp_fb.param.trr_int);
+            break;
+        case SDP_RTCP_FB_REMB:
+            /* No additional params after REMB */
             break;
 
         case SDP_RTCP_FB_UNKNOWN:
@@ -5110,6 +5163,10 @@ sdp_result_e sdp_parse_attr_rtcp_fb (sdp_t *sdp_p,
                 sdp_p->conf_p->num_invalid_param++;
                 return SDP_INVALID_PARAMETER;
             }
+            break;
+
+        case SDP_RTCP_FB_REMB:
+            /* No additional tokens to parse after goog-remb */
             break;
 
         case SDP_RTCP_FB_UNKNOWN:
@@ -5517,4 +5574,3 @@ sdp_result_e sdp_build_attr_ssrc(sdp_t *sdp_p,
                         attr_p->attr.ssrc.attribute);
     return SDP_SUCCESS;
 }
-

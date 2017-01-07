@@ -16,7 +16,7 @@
 #include "prerror.h"
 #include "prinit.h"
 
-extern PRLogModuleInfo* gPIPNSSLog;
+extern mozilla::LazyLogModule gPIPNSSLog;
 
 #define CONST_OID static const unsigned char
 #define OI(x) { siDEROID, (unsigned char*) x, sizeof x }
@@ -648,6 +648,20 @@ static struct nsMyTrustedEVInfo myTrustedEVInfos[] = {
     nullptr
   },
   {
+    // CN=Certum Trusted Network CA 2,OU=Certum Certification Authority,O=Unizeto Technologies S.A.,C=PL
+    "1.2.616.1.113527.2.5.1.1",
+    "Certum EV OID",
+    SEC_OID_UNKNOWN,
+    { 0xB6, 0x76, 0xF2, 0xED, 0xDA, 0xE8, 0x77, 0x5C, 0xD3, 0x6C, 0xB0,
+      0xF6, 0x3C, 0xD1, 0xD4, 0x60, 0x39, 0x61, 0xF4, 0x9E, 0x62, 0x65,
+      0xBA, 0x01, 0x3A, 0x2F, 0x03, 0x07, 0xB6, 0xD0, 0xB8, 0x04 },
+    "MIGAMQswCQYDVQQGEwJQTDEiMCAGA1UEChMZVW5pemV0byBUZWNobm9sb2dpZXMg"
+    "Uy5BLjEnMCUGA1UECxMeQ2VydHVtIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MSQw"
+    "IgYDVQQDExtDZXJ0dW0gVHJ1c3RlZCBOZXR3b3JrIENBIDI=",
+    "IdbQSk8lD8kyN/yqXhKN6Q==",
+    nullptr
+  },
+  {
     // CN=Izenpe.com,O=IZENPE S.A.,C=ES
     "1.3.6.1.4.1.14777.6.1.1",
     "Izenpe EV OID 1",
@@ -1158,6 +1172,71 @@ static struct nsMyTrustedEVInfo myTrustedEVInfos[] = {
     "RSBGb3VuZGF0aW9uIEVuZG9yc2VkMSgwJgYDVQQDEx9PSVNURSBXSVNlS2V5IEds"
     "b2JhbCBSb290IEdCIENB",
     "drEgUnTwhYdGs/gjGvbCwA==",
+    nullptr
+  },
+  {
+    // CN=Certplus Root CA G1,O=Certplus,C=FR
+    "1.3.6.1.4.1.22234.3.5.3.1",
+    "DocuSign EV OID 1",
+    SEC_OID_UNKNOWN,
+    { 0x15, 0x2A, 0x40, 0x2B, 0xFC, 0xDF, 0x2C, 0xD5, 0x48, 0x05, 0x4D,
+      0x22, 0x75, 0xB3, 0x9C, 0x7F, 0xCA, 0x3E, 0xC0, 0x97, 0x80, 0x78,
+      0xB0, 0xF0, 0xEA, 0x76, 0xE5, 0x61, 0xA6, 0xC7, 0x43, 0x3E },
+    "MD4xCzAJBgNVBAYTAkZSMREwDwYDVQQKDAhDZXJ0cGx1czEcMBoGA1UEAwwTQ2Vy"
+    "dHBsdXMgUm9vdCBDQSBHMQ==",
+    "ESBVg+QtPlRWhS2DN7cs3EYR",
+    nullptr
+  },
+  {
+    // CN=Certplus Root CA G2,O=Certplus,C=FR
+    "1.3.6.1.4.1.22234.3.5.3.2",
+    "DocuSign EV OID 2",
+    SEC_OID_UNKNOWN,
+    { 0x6C, 0xC0, 0x50, 0x41, 0xE6, 0x44, 0x5E, 0x74, 0x69, 0x6C, 0x4C,
+      0xFB, 0xC9, 0xF8, 0x0F, 0x54, 0x3B, 0x7E, 0xAB, 0xBB, 0x44, 0xB4,
+      0xCE, 0x6F, 0x78, 0x7C, 0x6A, 0x99, 0x71, 0xC4, 0x2F, 0x17 },
+    "MD4xCzAJBgNVBAYTAkZSMREwDwYDVQQKDAhDZXJ0cGx1czEcMBoGA1UEAwwTQ2Vy"
+    "dHBsdXMgUm9vdCBDQSBHMg==",
+    "ESDZkc6uo+jF5//pAq/Pc7xV",
+    nullptr
+  },
+  {
+    // CN=OpenTrust Root CA G1,O=OpenTrust,C=FR
+    "1.3.6.1.4.1.22234.2.14.3.11",
+    "DocuSign EV OID 3",
+    SEC_OID_UNKNOWN,
+    { 0x56, 0xC7, 0x71, 0x28, 0xD9, 0x8C, 0x18, 0xD9, 0x1B, 0x4C, 0xFD,
+      0xFF, 0xBC, 0x25, 0xEE, 0x91, 0x03, 0xD4, 0x75, 0x8E, 0xA2, 0xAB,
+      0xAD, 0x82, 0x6A, 0x90, 0xF3, 0x45, 0x7D, 0x46, 0x0E, 0xB4 },
+    "MEAxCzAJBgNVBAYTAkZSMRIwEAYDVQQKDAlPcGVuVHJ1c3QxHTAbBgNVBAMMFE9w"
+    "ZW5UcnVzdCBSb290IENBIEcx",
+    "ESCzkFU5fX82bWTCp59rY45n",
+    nullptr
+  },
+  {
+    // CN=OpenTrust Root CA G2,O=OpenTrust,C=FR
+    "1.3.6.1.4.1.22234.2.14.3.11",
+    "DocuSign EV OID 3",
+    SEC_OID_UNKNOWN,
+    { 0x27, 0x99, 0x58, 0x29, 0xFE, 0x6A, 0x75, 0x15, 0xC1, 0xBF, 0xE8,
+      0x48, 0xF9, 0xC4, 0x76, 0x1D, 0xB1, 0x6C, 0x22, 0x59, 0x29, 0x25,
+      0x7B, 0xF4, 0x0D, 0x08, 0x94, 0xF2, 0x9E, 0xA8, 0xBA, 0xF2 },
+    "MEAxCzAJBgNVBAYTAkZSMRIwEAYDVQQKDAlPcGVuVHJ1c3QxHTAbBgNVBAMMFE9w"
+    "ZW5UcnVzdCBSb290IENBIEcy",
+    "ESChaRu/vbm9UpaPI+hIvyYR",
+    nullptr
+  },
+  {
+    // CN=OpenTrust Root CA G3,O=OpenTrust,C=FR
+    "1.3.6.1.4.1.22234.2.14.3.11",
+    "DocuSign EV OID 3",
+    SEC_OID_UNKNOWN,
+    { 0xB7, 0xC3, 0x62, 0x31, 0x70, 0x6E, 0x81, 0x07, 0x8C, 0x36, 0x7C,
+      0xB8, 0x96, 0x19, 0x8F, 0x1E, 0x32, 0x08, 0xDD, 0x92, 0x69, 0x49,
+      0xDD, 0x8F, 0x57, 0x09, 0xA4, 0x10, 0xF7, 0x5B, 0x62, 0x92 },
+    "MEAxCzAJBgNVBAYTAkZSMRIwEAYDVQQKDAlPcGVuVHJ1c3QxHTAbBgNVBAMMFE9w"
+    "ZW5UcnVzdCBSb290IENBIEcz",
+    "ESDm+Ez8JLC+BUCs2oMbNGA/",
     nullptr
   },
 };

@@ -32,6 +32,7 @@
 #include "nsBindingManager.h"
 #include "nsCCUncollectableMarker.h"
 #include "mozAutoDocUpdate.h"
+#include "nsTextNode.h"
 
 #include "PLDHashTable.h"
 #include "mozilla/Snprintf.h"
@@ -64,7 +65,7 @@ nsGenericDOMDataNode::nsGenericDOMDataNode(already_AddRefed<mozilla::dom::NodeIn
 
 nsGenericDOMDataNode::~nsGenericDOMDataNode()
 {
-  NS_PRECONDITION(!IsInDoc(),
+  NS_PRECONDITION(!IsInUncomposedDoc(),
                   "Please remove this from the document properly");
   if (GetParent()) {
     NS_RELEASE(mParent);
@@ -310,7 +311,7 @@ nsGenericDOMDataNode::SetTextInternal(uint32_t aOffset, uint32_t aCount,
   if (haveMutationListeners) {
     oldValue = GetCurrentValueAtom();
   }
-    
+
   if (aNotify) {
     CharacterDataChangeInfo info = {
       aOffset == textLength,
@@ -371,7 +372,10 @@ nsGenericDOMDataNode::SetTextInternal(uint32_t aOffset, uint32_t aCount,
   }
 
   if (dirAffectsAncestor) {
-    TextNodeChangedDirection(this, oldDir, aNotify);
+    // dirAffectsAncestor being true implies that we have a text node, see
+    // above.
+    MOZ_ASSERT(NodeType() == nsIDOMNode::TEXT_NODE);
+    TextNodeChangedDirection(static_cast<nsTextNode*>(this), oldDir, aNotify);
   }
 
   // Notify observers
@@ -392,7 +396,7 @@ nsGenericDOMDataNode::SetTextInternal(uint32_t aOffset, uint32_t aCount,
       if (aLength > 0) {
         nsAutoString val;
         mText.AppendTo(val);
-        mutation.mNewAttrValue = do_GetAtom(val);
+        mutation.mNewAttrValue = NS_Atomize(val);
       }
 
       mozAutoSubtreeModified subtree(OwnerDoc(), this);
@@ -467,7 +471,7 @@ nsGenericDOMDataNode::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                   "Must have the same owner document");
   NS_PRECONDITION(!aParent || aDocument == aParent->GetUncomposedDoc(),
                   "aDocument must be current doc of aParent");
-  NS_PRECONDITION(!GetUncomposedDoc() && !IsInDoc(),
+  NS_PRECONDITION(!GetUncomposedDoc() && !IsInUncomposedDoc(),
                   "Already have a document.  Unbind first!");
   // Note that as we recurse into the kids, they'll have a non-null parent.  So
   // only assert if our parent is _changing_ while we have a parent.
@@ -480,7 +484,7 @@ nsGenericDOMDataNode::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                   "Already have a binding parent.  Unbind first!");
   NS_PRECONDITION(aBindingParent != this,
                   "Content must not be its own binding parent");
-  NS_PRECONDITION(!IsRootOfNativeAnonymousSubtree() || 
+  NS_PRECONDITION(!IsRootOfNativeAnonymousSubtree() ||
                   aBindingParent == aParent,
                   "Native anonymous content must have its parent as its "
                   "own binding parent");
@@ -536,7 +540,7 @@ nsGenericDOMDataNode::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     ClearSubtreeRootPointer();
 
     // XXX See the comment in Element::BindToTree
-    SetInDocument();
+    SetIsInDocument();
     if (mText.IsBidi()) {
       aDocument->SetBidiEnabled();
     }
@@ -585,6 +589,12 @@ nsGenericDOMDataNode::UnbindFromTree(bool aDeep, bool aNullParent)
     SetParentIsContent(false);
   }
   ClearInDocument();
+
+#ifdef MOZ_STYLO
+  // Drop any servo node data, since it will generally need to be recomputed on
+  // re-insertion anyway.
+  ServoData().reset();
+#endif
 
   if (aNullParent || !mParent->IsInShadowTree()) {
     UnsetFlags(NODE_IS_IN_SHADOW_TREE);
@@ -641,6 +651,12 @@ const nsAttrName*
 nsGenericDOMDataNode::GetAttrNameAt(uint32_t aIndex) const
 {
   return nullptr;
+}
+
+BorrowedAttrInfo
+nsGenericDOMDataNode::GetAttrInfoAt(uint32_t aIndex) const
+{
+  return BorrowedAttrInfo(nullptr, nullptr);
 }
 
 uint32_t
@@ -793,14 +809,6 @@ nsGenericDOMDataNode::SaveSubtreeState()
 {
 }
 
-void
-nsGenericDOMDataNode::DestroyContent()
-{
-  // XXX We really should let cycle collection do this, but that currently still
-  //     leaks (see https://bugzilla.mozilla.org/show_bug.cgi?id=406684).
-  ReleaseWrapper(this);
-}
-
 #ifdef DEBUG
 void
 nsGenericDOMDataNode::List(FILE* out, int32_t aIndent) const
@@ -809,7 +817,7 @@ nsGenericDOMDataNode::List(FILE* out, int32_t aIndent) const
 
 void
 nsGenericDOMDataNode::DumpContent(FILE* out, int32_t aIndent,
-                                  bool aDumpAll) const 
+                                  bool aDumpAll) const
 {
 }
 #endif
@@ -1097,7 +1105,7 @@ nsGenericDOMDataNode::GetCurrentValueAtom()
 {
   nsAutoString val;
   GetData(val);
-  return NS_NewAtom(val);
+  return NS_Atomize(val);
 }
 
 NS_IMETHODIMP

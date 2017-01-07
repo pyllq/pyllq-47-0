@@ -389,6 +389,9 @@ BacktrackingAllocator::init()
 
         LBlock* block = graph.getBlock(i);
         for (LInstructionIterator ins = block->begin(); ins != block->end(); ins++) {
+            if (mir->shouldCancel("Create data structures (inner loop 1)"))
+                return false;
+
             for (size_t j = 0; j < ins->numDefs(); j++) {
                 LDefinition* def = ins->getDef(j);
                 if (def->isBogusTemp())
@@ -560,7 +563,7 @@ BacktrackingAllocator::buildLivenessInfo()
         for (LInstructionReverseIterator ins = block->rbegin(); ins != block->rend(); ins++) {
             // Calls may clobber registers, so force a spill and reload around the callsite.
             if (ins->isCall()) {
-                for (AnyRegisterIterator iter(allRegisters_.asLiveSet()); iter.more(); iter++) {
+                for (AnyRegisterIterator iter(allRegisters_.asLiveSet()); iter.more(); ++iter) {
                     bool found = false;
                     for (size_t i = 0; i < ins->numDefs(); i++) {
                         if (ins->getDef(i)->isFixed() &&
@@ -569,13 +572,17 @@ BacktrackingAllocator::buildLivenessInfo()
                             break;
                         }
                     }
-                    if (!found) {
+                    // If this register doesn't have an explicit def above, mark
+                    // it as clobbered by the call unless it is actually
+                    // call-preserved.
+                    if (!found && !ins->isCallPreserved(*iter)) {
                         if (!addInitialFixedRange(*iter, outputOf(*ins), outputOf(*ins).next()))
                             return false;
                     }
                 }
 
-                CallRange* callRange = new(alloc()) CallRange(outputOf(*ins), outputOf(*ins).next());
+                CallRange* callRange =
+                    new(alloc().fallible()) CallRange(outputOf(*ins), outputOf(*ins).next());
                 if (!callRange)
                     return false;
 
@@ -702,7 +709,7 @@ BacktrackingAllocator::buildLivenessInfo()
 
                     if (!vreg(use).addInitialRange(alloc(), entryOf(block), to.next()))
                         return false;
-                    UsePosition* usePosition = new(alloc()) UsePosition(use, to);
+                    UsePosition* usePosition = new(alloc().fallible()) UsePosition(use, to);
                     if (!usePosition)
                         return false;
                     vreg(use).addInitialUse(usePosition);
@@ -829,7 +836,7 @@ BacktrackingAllocator::go()
             return false;
 
         QueueItem item = allocationQueue.removeHighest();
-        if (!processBundle(item.bundle))
+        if (!processBundle(mir, item.bundle))
             return false;
     }
     JitSpew(JitSpew_RegAlloc, "Main allocation loop complete");
@@ -1225,7 +1232,7 @@ BacktrackingAllocator::tryAllocateNonFixed(LiveBundle* bundle,
 }
 
 bool
-BacktrackingAllocator::processBundle(LiveBundle* bundle)
+BacktrackingAllocator::processBundle(MIRGenerator* mir, LiveBundle* bundle)
 {
     if (JitSpewEnabled(JitSpew_RegAlloc)) {
         JitSpew(JitSpew_RegAlloc, "Allocating %s [priority %lu] [weight %lu]",
@@ -1260,6 +1267,9 @@ BacktrackingAllocator::processBundle(LiveBundle* bundle)
     bool fixed;
     LiveBundleVector conflicting;
     for (size_t attempt = 0;; attempt++) {
+        if (mir->shouldCancel("Backtracking Allocation (processBundle loop)"))
+            return false;
+
         if (canAllocate) {
             bool success = false;
             fixed = false;
@@ -1354,7 +1364,8 @@ BacktrackingAllocator::computeRequirement(LiveBundle* bundle,
                     return false;
             } else if (policy == LUse::ANY) {
                 // ANY differs from KEEPALIVE by actively preferring a register.
-                hint->merge(Requirement(Requirement::REGISTER));
+                if (!hint->merge(Requirement(Requirement::REGISTER)))
+                    return false;
             }
         }
     }
@@ -1446,6 +1457,8 @@ BacktrackingAllocator::tryAllocateRegister(PhysicalRegister& r, LiveBundle* bund
 
     for (LiveRange::BundleLinkIterator iter = bundle->rangesBegin(); iter; iter++) {
         LiveRange* range = LiveRange::get(*iter);
+        if (!alloc().ensureBallast())
+            return false;
         if (!r.allocations.insert(range))
             return false;
     }
@@ -1650,7 +1663,7 @@ BacktrackingAllocator::pickStackSlot(SpillSet* spillSet)
     // We need a new physical stack slot.
     uint32_t stackSlot = stackSlotAllocator.allocateSlot(type);
 
-    SpillSlot* spillSlot = new(alloc()) SpillSlot(stackSlot, alloc().lifoAlloc());
+    SpillSlot* spillSlot = new(alloc().fallible()) SpillSlot(stackSlot, alloc().lifoAlloc());
     if (!spillSlot)
         return false;
 
@@ -1671,6 +1684,8 @@ BacktrackingAllocator::insertAllRanges(LiveRangeSet& set, LiveBundle* bundle)
 {
     for (LiveRange::BundleLinkIterator iter = bundle->rangesBegin(); iter; iter++) {
         LiveRange* range = LiveRange::get(*iter);
+        if (!alloc().ensureBallast())
+            return false;
         if (!set.insert(range))
             return false;
     }
@@ -1723,14 +1738,14 @@ BacktrackingAllocator::resolveControlFlow()
     for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         VirtualRegister& reg = vregs[i];
 
-        if (mir->shouldCancel("Backtracking Resolve Control Flow (vreg loop)"))
-            return false;
-
-        if (!alloc().ensureBallast())
+        if (mir->shouldCancel("Backtracking Resolve Control Flow (vreg outer loop)"))
             return false;
 
         for (LiveRange::RegisterLinkIterator iter = reg.rangesBegin(); iter; ) {
             LiveRange* range = LiveRange::get(*iter);
+
+            if (mir->shouldCancel("Backtracking Resolve Control Flow (vreg inner loop)"))
+                return false;
 
             // Remove ranges which will never be used.
             if (deadRange(range)) {
@@ -1775,6 +1790,9 @@ BacktrackingAllocator::resolveControlFlow()
                 continue;
             }
 
+            if (!alloc().ensureBallast())
+                return false;
+
             LiveRange* predecessorRange = reg.rangeFor(start.previous(), /* preferRegister = */ true);
             if (start.subpos() == CodePosition::INPUT) {
                 if (!moveInput(ins->toInstruction(), predecessorRange, range, reg.type()))
@@ -1816,6 +1834,8 @@ BacktrackingAllocator::resolveControlFlow()
                 LiveRange* from = vreg(input).rangeFor(exitOf(predecessor), /* preferRegister = */ true);
                 MOZ_ASSERT(from);
 
+                if (!alloc().ensureBallast())
+                    return false;
                 if (!moveAtExit(predecessor, from, to, def->type()))
                     return false;
             }
@@ -1846,6 +1866,8 @@ BacktrackingAllocator::resolveControlFlow()
                     if (targetRange->covers(exitOf(predecessor)))
                         continue;
 
+                    if (!alloc().ensureBallast())
+                        return false;
                     LiveRange* from = reg.rangeFor(exitOf(predecessor), true);
                     if (successor->mir()->numPredecessors() > 1) {
                         MOZ_ASSERT(predecessor->mir()->numSuccessors() == 1);

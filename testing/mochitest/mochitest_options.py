@@ -233,20 +233,6 @@ class MochitestArguments(ArgumentContainer):
           "default": False,
           "suppress": True,
           }],
-        [["--webapprt-content"],
-         {"action": "store_true",
-          "dest": "webapprtContent",
-          "help": "Run WebappRT content tests.",
-          "default": False,
-          "suppress": True,
-          }],
-        [["--webapprt-chrome"],
-         {"action": "store_true",
-          "dest": "webapprtChrome",
-          "help": "Run WebappRT chrome tests.",
-          "default": False,
-          "suppress": True,
-          }],
         [["--a11y"],
          {"action": "store_true",
           "help": "Run accessibility Mochitests.",
@@ -402,17 +388,11 @@ class MochitestArguments(ArgumentContainer):
           "help": "Breaks execution and enters the JS debugger on a test failure. Should "
                   "be used together with --jsdebugger."
           }],
-        [["--e10s"],
-         {"action": "store_true",
-          "default": False,
-          "help": "Run tests with electrolysis preferences and test filtering enabled.",
-          }],
         [["--disable-e10s"],
          {"action": "store_false",
-          "default": False,
+          "default": True,
           "dest": "e10s",
           "help": "Run tests with electrolysis preferences and test filtering disabled.",
-          "suppress": True,
           }],
         [["--store-chrome-manifest"],
          {"action": "store",
@@ -579,6 +559,13 @@ class MochitestArguments(ArgumentContainer):
           "help": "Timeout while waiting to receive a message from the marionette server.",
           "suppress": True,
           }],
+        [["--cleanup-crashes"],
+         {"action": "store_true",
+          "dest": "cleanupCrashes",
+          "default": False,
+          "help": "Delete pending crash reports before running tests.",
+          "suppress": True,
+          }],
     ]
 
     defaults = {
@@ -680,7 +667,7 @@ class MochitestArguments(ArgumentContainer):
 
         if options.dmd and not options.dmdPath:
             if build_obj:
-                options.dmdPath = build_obj.bin_dir
+                options.dmdPath = build_obj.bindir
             else:
                 parser.error(
                     "could not find dmd libraries, specify them with --dmd-path")
@@ -697,10 +684,6 @@ class MochitestArguments(ArgumentContainer):
             options.symbolsPath = self.get_full_path(options.symbolsPath, parser.oldcwd)
         elif not options.symbolsPath and build_obj:
             options.symbolsPath = os.path.join(build_obj.distdir, 'crashreporter-symbols')
-
-        if options.webapprtContent and options.webapprtChrome:
-            parser.error(
-                "Only one of --webapprt-content and --webapprt-chrome may be given.")
 
         if options.jsdebugger:
             options.extraPrefs += [
@@ -811,9 +794,7 @@ class MochitestArguments(ArgumentContainer):
                         '--use-test-media-devices' % f)
 
         if options.nested_oop:
-            if not options.e10s:
-                options.e10s = True
-        mozinfo.update({"e10s": options.e10s})  # for test manifest parsing.
+            options.e10s = True
 
         options.leakThresholds = {
             "default": options.defaultLeakThreshold,
@@ -821,6 +802,11 @@ class MochitestArguments(ArgumentContainer):
             # GMP rarely gets a log, but when it does, it leaks a little.
             "geckomediaplugin": 20000,
         }
+
+        # Bug 1293324 - OSX 10.10 sometimes leaks a little more
+        # graphics layers stuff in the content process.
+        if mozinfo.isMac:
+            options.leakThresholds["tab"] = 12000
 
         # XXX We can't normalize test_paths in the non build_obj case here,
         # because testRoot depends on the flavor, which is determined by the
@@ -1193,6 +1179,11 @@ class AndroidArguments(ArgumentContainer):
                     options.robocopApk)
             options.robocopApk = os.path.abspath(options.robocopApk)
 
+        # Disable e10s by default on Android because we don't run Android
+        # e10s jobs anywhere yet.
+        options.e10s = False
+        mozinfo.update({'e10s': options.e10s})
+
         # allow us to keep original application around for cleanup while
         # running robocop via 'am'
         options.remoteappname = options.app
@@ -1265,10 +1256,3 @@ class MochitestArgumentParser(ArgumentParser):
         for container in self.containers:
             args = container.validate(self, args, self.context)
         return args
-
-    def parse_args(self, *args, **kwargs):
-        return self.validate(ArgumentParser.parse_args(self, *args, **kwargs))
-
-    def parse_known_args(self, *args, **kwargs):
-        args, remainder = ArgumentParser.parse_known_args(self, *args, **kwargs)
-        return (self.validate(args), remainder)

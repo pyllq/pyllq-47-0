@@ -9,17 +9,22 @@ const telemetry = require("../telemetry");
 const {
   getSnapshot,
   censusIsUpToDate,
-  snapshotIsDiffable
+  snapshotIsDiffable,
+  findSelectedSnapshot,
 } = require("../utils");
+// This is a circular dependency, so do not destructure the needed properties.
+const snapshotActions = require("./snapshot");
 
 /**
  * Toggle diffing mode on or off.
  */
 const toggleDiffing = exports.toggleDiffing = function () {
-  return function(dispatch, getState) {
+  return function (dispatch, getState) {
     dispatch({
       type: actions.CHANGE_VIEW,
-      view: getState().diffing ? viewState.CENSUS : viewState.DIFFING,
+      newViewState: getState().diffing ? viewState.CENSUS : viewState.DIFFING,
+      oldDiffing: getState().diffing,
+      oldSelected: findSelectedSnapshot(getState()),
     });
   };
 };
@@ -43,7 +48,7 @@ const selectSnapshotForDiffing = exports.selectSnapshotForDiffing = function (sn
  * @param {snapshotModel} second
  */
 const takeCensusDiff = exports.takeCensusDiff = function (heapWorker, first, second) {
-  return function*(dispatch, getState) {
+  return function* (dispatch, getState) {
     assert(snapshotIsDiffable(first),
            `First snapshot must be in a diffable state, found ${first.state}`);
     assert(snapshotIsDiffable(second),
@@ -121,7 +126,7 @@ const takeCensusDiff = exports.takeCensusDiff = function (heapWorker, first, sec
  * @param {HeapAnalysesClient} heapWorker
  */
 const refreshDiffing = exports.refreshDiffing = function (heapWorker) {
-  return function*(dispatch, getState) {
+  return function* (dispatch, getState) {
     if (getState().diffing.secondSnapshotId === null) {
       return;
     }
@@ -151,7 +156,7 @@ const refreshDiffing = exports.refreshDiffing = function (heapWorker) {
  * @param {snapshotModel} snapshot
  */
 const selectSnapshotForDiffingAndRefresh = exports.selectSnapshotForDiffingAndRefresh = function (heapWorker, snapshot) {
-  return function*(dispatch, getState) {
+  return function* (dispatch, getState) {
     assert(getState().diffing,
            "If we are selecting for diffing, we must be in diffing mode");
     dispatch(selectSnapshotForDiffing(snapshot));

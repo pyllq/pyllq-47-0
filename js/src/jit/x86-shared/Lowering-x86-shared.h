@@ -32,11 +32,6 @@ class LIRGeneratorX86Shared : public LIRGeneratorShared
     void lowerForALU(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir, MDefinition* lhs,
                      MDefinition* rhs);
 
-    void lowerForALUInt64(LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins, MDefinition* mir,
-                          MDefinition* lhs, MDefinition* rhs);
-    void lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, 0>* ins,
-                            MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
-
     template<size_t Temps>
     void lowerForFPU(LInstructionHelper<1, 2, Temps>* ins, MDefinition* mir, MDefinition* lhs,
                      MDefinition* rhs);
@@ -47,6 +42,9 @@ class LIRGeneratorX86Shared : public LIRGeneratorShared
     void lowerForBitAndAndBranch(LBitAndAndBranch* baab, MInstruction* mir,
                                  MDefinition* lhs, MDefinition* rhs);
     void visitAsmJSNeg(MAsmJSNeg* ins);
+    void visitWasmBoundsCheck(MWasmBoundsCheck* ins);
+    void lowerWasmLoad(MWasmLoad* ins);
+    void lowerAsmSelect(MAsmSelect* ins);
     void lowerMulI(MMul* mul, MDefinition* lhs, MDefinition* rhs);
     void lowerDivI(MDiv* div);
     void lowerModI(MMod* mod);
@@ -55,9 +53,15 @@ class LIRGeneratorX86Shared : public LIRGeneratorShared
     void lowerUrshD(MUrsh* mir);
     void lowerTruncateDToInt32(MTruncateToInt32* ins);
     void lowerTruncateFToInt32(MTruncateToInt32* ins);
+    void visitSimdInsertElement(MSimdInsertElement* ins);
+    void visitSimdExtractElement(MSimdExtractElement* ins);
     void visitSimdBinaryArith(MSimdBinaryArith* ins);
+    void visitSimdBinarySaturating(MSimdBinarySaturating* ins);
     void visitSimdSelect(MSimdSelect* ins);
-    void visitSimdSplatX4(MSimdSplatX4* ins);
+    void visitSimdSplat(MSimdSplat* ins);
+    void visitSimdSwizzle(MSimdSwizzle* ins);
+    void visitSimdShuffle(MSimdShuffle* ins);
+    void visitSimdGeneralShuffle(MSimdGeneralShuffle* ins);
     void visitSimdValueX4(MSimdValueX4* ins);
     void lowerCompareExchangeTypedArrayElement(MCompareExchangeTypedArrayElement* ins,
                                                bool useI386ByteRegisters);
@@ -65,6 +69,7 @@ class LIRGeneratorX86Shared : public LIRGeneratorShared
                                               bool useI386ByteRegisters);
     void lowerAtomicTypedArrayElementBinop(MAtomicTypedArrayElementBinop* ins,
                                            bool useI386ByteRegisters);
+    void visitCopySign(MCopySign* ins);
 };
 
 } // namespace jit

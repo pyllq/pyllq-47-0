@@ -79,8 +79,9 @@ user_pref("security.view-source.reachable-from-inner-protocol", true);
 user_pref("toolkit.telemetry.enabled", false);
 user_pref("toolkit.telemetry.unified", false);
 // Likewise for safebrowsing.
-user_pref("browser.safebrowsing.enabled", false);
+user_pref("browser.safebrowsing.phishing.enabled", false);
 user_pref("browser.safebrowsing.malware.enabled", false);
+user_pref("browser.safebrowsing.forbiddenURIs.enabled", false);
 user_pref("browser.safebrowsing.blockedURIs.enabled", false);
 // Likewise for tracking protection.
 user_pref("privacy.trackingprotection.enabled", false);
@@ -112,3 +113,11 @@ user_pref("startup.homepage_welcome_url.additional", "");
 user_pref("startup.homepage_override_url", "");
 
 user_pref("media.gmp-manager.url.override", "http://localhost/dummy-gmp-manager.xml");
+
+// A fake bool pref for "@supports -moz-bool-pref" sanify test.
+user_pref("testing.supports.moz-bool-pref", true);
+
+// Reftests load a lot of URLs very quickly. This puts avoidable and
+// unnecessary I/O pressure on the Places DB (measured to be in the
+// gigabytes).
+user_pref("places.history.enabled", false);

@@ -74,13 +74,6 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_DEVICES:
-#ifdef MOZ_DEVICES
-  true,
-#else
-  false,
-#endif
-
   MOZ_SAFE_BROWSING:
 #ifdef MOZ_SAFE_BROWSING
   true,
@@ -90,6 +83,13 @@ this.AppConstants = Object.freeze({
 
   MOZ_SANDBOX:
 #ifdef MOZ_SANDBOX
+  true,
+#else
+  false,
+#endif
+
+  MOZ_CONTENT_SANDBOX:
+#ifdef MOZ_CONTENT_SANDBOX
   true,
 #else
   false,
@@ -157,8 +157,6 @@ this.AppConstants = Object.freeze({
   platform:
 #ifdef MOZ_WIDGET_GTK
   "linux",
-#elif MOZ_WIDGET_QT
-  "linux",
 #elif XP_WIN
   "win",
 #elif XP_MACOSX
@@ -220,15 +218,15 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_B2G_RIL:
-#ifdef MOZ_B2G_RIL
+  ASAN:
+#ifdef MOZ_ASAN
   true,
 #else
   false,
 #endif
 
-  MOZ_B2GDROID:
-#ifdef MOZ_B2GDROID
+  MOZ_B2G_RIL:
+#ifdef MOZ_B2G_RIL
   true,
 #else
   false,
@@ -241,8 +239,8 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_NATIVE_NSS:
-#ifdef MOZ_NATIVE_NSS
+  MOZ_SYSTEM_NSS:
+#ifdef MOZ_SYSTEM_NSS
   true,
 #else
   false,
@@ -330,8 +328,15 @@ this.AppConstants = Object.freeze({
 
   MOZ_NUWA_PROCESS:
 #ifdef MOZ_NUWA_PROCESS
-    true
+    true,
 #else
-    false
+    false,
+#endif
+
+  HAVE_USR_LIB64_DIR:
+#ifdef HAVE_USR_LIB64_DIR
+    true,
+#else
+    false,
 #endif
 });

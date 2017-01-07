@@ -128,13 +128,15 @@ public:
   template<class Function>
   void RunTestAndWait(Function&& aFunction)
   {
-    RefPtr<nsRunnable> r = NS_NewRunnableFunction(Forward<Function>(aFunction));
+    RefPtr<Runnable> r = NS_NewRunnableFunction(Forward<Function>(aFunction));
     mTaskQueue->Dispatch(r.forget());
     mTaskQueue->AwaitShutdownAndIdle();
   }
 private:
   ~MediaFormatReaderBinding()
-  {}
+  {
+    mDecoder->Shutdown();
+  }
 };
 
 

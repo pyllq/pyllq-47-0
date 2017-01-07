@@ -224,14 +224,23 @@ TVTuner::InitMediaStream()
 already_AddRefed<DOMMediaStream>
 TVTuner::CreateSimulatedMediaStream()
 {
-  ErrorResult error;
+  nsCOMPtr<nsPIDOMWindowInner> domWin = GetOwner();
+  if (NS_WARN_IF(!domWin)) {
+    return nullptr;
+  }
 
-  nsIDocument* doc = GetOwner()->GetExtantDoc();
+  nsIDocument* doc = domWin->GetExtantDoc();
   if (NS_WARN_IF(!doc)) {
     return nullptr;
   }
-  RefPtr<Element> element = doc->CreateElement(VIDEO_TAG, error);
+
+  ErrorResult error;
+  ElementCreationOptionsOrString options;
+
+  options.SetAsString();
+  RefPtr<Element> element = doc->CreateElement(VIDEO_TAG, options, error);
   if (NS_WARN_IF(error.Failed())) {
+    error.SuppressException();
     return nullptr;
   }
 
@@ -247,16 +256,13 @@ TVTuner::CreateSimulatedMediaStream()
 
   mediaElement->SetAutoplay(true, error);
   if (NS_WARN_IF(error.Failed())) {
+    error.SuppressException();
     return nullptr;
   }
 
   mediaElement->SetLoop(true, error);
   if (NS_WARN_IF(error.Failed())) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsPIDOMWindowInner> domWin = GetOwner();
-  if (NS_WARN_IF(!domWin)) {
+    error.SuppressException();
     return nullptr;
   }
 
@@ -292,6 +298,7 @@ TVTuner::CreateSimulatedMediaStream()
 
   mediaElement->SetSrc(currentVideoBlobUrl, error);
   if (NS_WARN_IF(error.Failed())) {
+    error.SuppressException();
     return nullptr;
   }
 
@@ -299,6 +306,7 @@ TVTuner::CreateSimulatedMediaStream()
   // http://www.w3.org/TR/mediacapture-fromelement/
   RefPtr<DOMMediaStream> stream = mediaElement->MozCaptureStream(error);
   if (NS_WARN_IF(error.Failed())) {
+    error.SuppressException();
     return nullptr;
   }
 
@@ -315,9 +323,9 @@ TVTuner::DispatchCurrentSourceChangedEvent(TVSource* aSource)
                                              NS_LITERAL_STRING("currentsourcechanged"),
                                              init);
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethodWithArg<nsCOMPtr<nsIDOMEvent>>(this,
-                                                       &TVTuner::DispatchTVEvent,
-                                                       event);
+    NewRunnableMethod<nsCOMPtr<nsIDOMEvent>>(this,
+                                             &TVTuner::DispatchTVEvent,
+                                             event);
   return NS_DispatchToCurrentThread(runnable);
 }
 

@@ -12,38 +12,56 @@
 
 #include <map>
 
+#include "common/angleutils.h"
 #include "common/platform.h"
+#include "libANGLE/renderer/Format.h"
+#include "libANGLE/renderer/renderer_utils.h"
 #include "libANGLE/renderer/d3d/formatutilsD3D.h"
-#include "libANGLE/renderer/d3d/d3d11/Renderer11.h"
 
 namespace rx
 {
 
+struct Renderer11DeviceCaps;
+
 namespace d3d11
 {
 
-struct TextureFormat
+// For sized GL internal formats, there are several possible corresponding D3D11 formats depending
+// on device capabilities.
+// This structure allows querying for the DXGI texture formats to use for textures, SRVs, RTVs and
+// DSVs given a GL internal format.
+struct Format final : angle::NonCopyable
 {
-    TextureFormat();
+    Format();
+    Format(GLenum internalFormat,
+           angle::Format::ID formatID,
+           DXGI_FORMAT texFormat,
+           DXGI_FORMAT srvFormat,
+           DXGI_FORMAT rtvFormat,
+           DXGI_FORMAT dsvFormat,
+           DXGI_FORMAT blitSRVFormat,
+           GLenum swizzleFormat,
+           InitializeTextureDataFunction internalFormatInitializer,
+           const Renderer11DeviceCaps &deviceCaps);
+
+    static const Format &Get(GLenum internalFormat, const Renderer11DeviceCaps &deviceCaps);
+
+    GLenum internalFormat;
+    const angle::Format &format;
 
     DXGI_FORMAT texFormat;
     DXGI_FORMAT srvFormat;
     DXGI_FORMAT rtvFormat;
     DXGI_FORMAT dsvFormat;
-    DXGI_FORMAT renderFormat;
 
-    DXGI_FORMAT swizzleTexFormat;
-    DXGI_FORMAT swizzleSRVFormat;
-    DXGI_FORMAT swizzleRTVFormat;
+    DXGI_FORMAT blitSRVFormat;
+
+    const Format &swizzle;
 
     InitializeTextureDataFunction dataInitializerFunction;
-    typedef std::map<GLenum, LoadImageFunction> LoadFunctionMap;
 
     LoadFunctionMap loadFunctions;
 };
-
-const TextureFormat &GetTextureFormatInfo(GLenum internalformat,
-                                          const Renderer11DeviceCaps &renderer11DeviceCaps);
 
 }  // namespace d3d11
 

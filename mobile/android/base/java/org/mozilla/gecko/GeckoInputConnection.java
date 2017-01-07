@@ -11,13 +11,18 @@ import java.lang.reflect.Proxy;
 import java.util.concurrent.SynchronousQueue;
 
 import org.mozilla.gecko.AppConstants.Versions;
+import org.mozilla.gecko.gfx.DynamicToolbarAnimator;
 import org.mozilla.gecko.util.Clipboard;
 import org.mozilla.gecko.util.GamepadUtils;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.util.ThreadUtils.AssertBehavior;
 
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.Matrix;
+import android.graphics.RectF;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -34,6 +39,7 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
@@ -44,8 +50,7 @@ class GeckoInputConnection
     extends BaseInputConnection
     implements InputConnectionListener, GeckoEditableListener {
 
-    // Turned on temporarily for debugging bug 1248459.
-    private static final boolean DEBUG = !AppConstants.RELEASE_BUILD;
+    private static final boolean DEBUG = false;
     protected static final String LOGTAG = "GeckoInputConnection";
 
     private static final String CUSTOM_HANDLER_TEST_METHOD = "testInputConnection";
@@ -72,6 +77,10 @@ class GeckoInputConnection
     private boolean mBatchSelectionChanged;
     private boolean mBatchTextChanged;
     private final InputConnection mKeyInputConnection;
+    private CursorAnchorInfo.Builder mCursorAnchorInfoBuilder;
+
+    // Prevent showSoftInput and hideSoftInput from causing reentrant calls on some devices.
+    private volatile boolean mSoftInputReentrancyGuard;
 
     public static GeckoEditableListener create(View targetView,
                                                GeckoEditableClient editable) {
@@ -235,36 +244,41 @@ class GeckoInputConnection
     }
 
     private void showSoftInput() {
-        final InputMethodManager imm = getInputMethodManager();
-        if (imm != null) {
-            final View v = getView();
-
-            if (v.hasFocus() && !imm.isActive(v)) {
-                // Workaround: The view has focus but it is not the active view for the input method. (Bug 1211848)
-                refocusAndShowSoftInput(imm, v);
-            } else {
-                imm.showSoftInput(v, 0);
-            }
+        if (mSoftInputReentrancyGuard) {
+            return;
         }
-    }
+        final View v = getView();
+        final InputMethodManager imm = getInputMethodManager();
+        if (v == null || imm == null) {
+            return;
+        }
 
-    private static void refocusAndShowSoftInput(final InputMethodManager imm, final View v) {
-        ThreadUtils.postToUiThread(new Runnable() {
+        v.post(new Runnable() {
             @Override
             public void run() {
-                v.clearFocus();
-                v.requestFocus();
-
+                if (v.hasFocus() && !imm.isActive(v)) {
+                    // Marshmallow workaround: The view has focus but it is not the active
+                    // view for the input method. (Bug 1211848)
+                    v.clearFocus();
+                    v.requestFocus();
+                }
+                mSoftInputReentrancyGuard = true;
                 imm.showSoftInput(v, 0);
+                mSoftInputReentrancyGuard = false;
             }
         });
     }
 
     private void hideSoftInput() {
+        if (mSoftInputReentrancyGuard) {
+            return;
+        }
         final InputMethodManager imm = getInputMethodManager();
         if (imm != null) {
             final View v = getView();
+            mSoftInputReentrancyGuard = true;
             imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+            mSoftInputReentrancyGuard = false;
         }
     }
 
@@ -291,7 +305,7 @@ class GeckoInputConnection
         }
         try {
             imm.restartInput(v);
-        } catch(RuntimeException e) {
+        } catch (RuntimeException e) {
             Log.e(LOGTAG, "Error restarting input", e);
         }
     }
@@ -384,6 +398,96 @@ class GeckoInputConnection
     }
 
     @Override
+    public void updateCompositionRects(final RectF[] aRects) {
+        if (!Versions.feature21Plus) {
+            return;
+        }
+
+        if (mCursorAnchorInfoBuilder == null) {
+            mCursorAnchorInfoBuilder = new CursorAnchorInfo.Builder();
+        }
+        mCursorAnchorInfoBuilder.reset();
+
+        // Calculate Gecko logical coords to screen coords
+        final View v = getView();
+        if (v == null) {
+            return;
+        }
+
+        int[] viewCoords = new int[2];
+        v.getLocationOnScreen(viewCoords);
+
+        DynamicToolbarAnimator animator = GeckoAppShell.getLayerView().getDynamicToolbarAnimator();
+        float toolbarHeight = animator.getMaxTranslation() - animator.getToolbarTranslation();
+
+        Matrix matrix = GeckoAppShell.getLayerView().getMatrixForLayerRectToViewRect();
+        if (matrix == null) {
+            if (DEBUG) {
+                Log.d(LOGTAG, "Cannot get Matrix to convert from Gecko coords to layer view coords");
+            }
+            return;
+        }
+        matrix.postTranslate(viewCoords[0], viewCoords[1] + toolbarHeight);
+        mCursorAnchorInfoBuilder.setMatrix(matrix);
+
+        final Editable content = getEditable();
+        if (content == null) {
+            return;
+        }
+        int composingStart = getComposingSpanStart(content);
+        int composingEnd = getComposingSpanEnd(content);
+        if (composingStart < 0 || composingEnd < 0) {
+            if (DEBUG) {
+                Log.d(LOGTAG, "No composition for updates");
+            }
+            return;
+        }
+
+        for (int i = 0; i < aRects.length; i++) {
+            mCursorAnchorInfoBuilder.addCharacterBounds(i,
+                                                        aRects[i].left,
+                                                        aRects[i].top,
+                                                        aRects[i].right,
+                                                        aRects[i].bottom,
+                                                        CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION);
+        }
+
+        mCursorAnchorInfoBuilder.setComposingText(0, content.subSequence(composingStart, composingEnd));
+
+        updateCursor();
+    }
+
+    @TargetApi(21)
+    private void updateCursor() {
+        if (mCursorAnchorInfoBuilder == null) {
+            return;
+        }
+
+        final InputMethodManager imm = getInputMethodManager();
+        final View v = getView();
+        if (imm == null || v == null) {
+            return;
+        }
+
+        imm.updateCursorAnchorInfo(v, mCursorAnchorInfoBuilder.build());
+    }
+
+    @Override
+    public boolean requestCursorUpdates(int cursorUpdateMode) {
+
+        if ((cursorUpdateMode & InputConnection.CURSOR_UPDATE_IMMEDIATE) != 0) {
+            mEditableClient.requestCursorUpdates(GeckoEditableClient.ONE_SHOT);
+        }
+
+        if ((cursorUpdateMode & InputConnection.CURSOR_UPDATE_MONITOR) != 0) {
+            mEditableClient.requestCursorUpdates(GeckoEditableClient.START_MONITOR);
+        } else {
+            mEditableClient.requestCursorUpdates(GeckoEditableClient.END_MONITOR);
+        }
+        return true;
+    }
+
+    @Override
     public void onDefaultKeyEvent(final KeyEvent event) {
         ThreadUtils.postToUiThread(new Runnable() {
             @Override
@@ -460,20 +564,27 @@ class GeckoInputConnection
         return config.keyboard != Configuration.KEYBOARD_NOKEYS;
     }
 
-    @Override
+    // Android N: @Override // InputConnection
+    // We need to suppress lint complaining about the lack override here in the meantime: it wants us to build
+    // against sdk 24, even though we're using 23, and therefore complains about the lack of override.
+    // Once we update to 24, we can use the actual override annotation and remove the lint suppression.
+    @SuppressLint("Override")
+    public Handler getHandler() {
+        if (isPhysicalKeyboardPresent()) {
+            return ThreadUtils.getUiHandler();
+        }
+
+        return getBackgroundHandler();
+    }
+
+    @Override // InputConnectionListener
     public Handler getHandler(Handler defHandler) {
         if (!canReturnCustomHandler()) {
             return defHandler;
         }
 
-        if (isPhysicalKeyboardPresent()) {
-            return mEditableClient.setInputConnectionHandler(defHandler);
-        }
-
-        return mEditableClient.setInputConnectionHandler(getBackgroundHandler());
+        return mEditableClient.setInputConnectionHandler(getHandler());
     }
-
-    private boolean mIsVisible = false;
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
@@ -483,6 +594,7 @@ class GeckoInputConnection
         outAttrs.actionLabel = null;
 
         if (mIMEState == IME_STATE_DISABLED) {
+            hideSoftInput();
             return null;
         }
 
@@ -589,12 +701,7 @@ class GeckoInputConnection
         outAttrs.initialSelStart = Selection.getSelectionStart(editable);
         outAttrs.initialSelEnd = Selection.getSelectionEnd(editable);
 
-        if (mIsVisible) {
-            // The app has been brought to the foreground and the Soft Keyboard
-            // was previously visible, so request that it be shown again.
-            showSoftInput();
-        }
-
+        showSoftInput();
         return this;
     }
 
@@ -800,16 +907,6 @@ class GeckoInputConnection
         return processKey(KeyEvent.ACTION_UP, keyCode, event);
     }
 
-    @Override
-    public void onWindowVisibilityChanged (int visibility) {
-        if (visibility == View.VISIBLE) {
-            mIsVisible = true;
-        } else {
-            mIsVisible = false;
-            hideSoftInput();
-        }
-    }
-
     /**
      * Get a key that represents a given character.
      */
@@ -938,11 +1035,6 @@ class GeckoInputConnection
             return;
         }
         restartInput();
-        if (mIMEState == IME_STATE_DISABLED) {
-            hideSoftInput();
-        } else {
-            showSoftInput();
-        }
     }
 }
 

@@ -150,10 +150,9 @@ protected:
 };
 
 nsPluginFrame::nsPluginFrame(nsStyleContext* aContext)
-  : nsPluginFrameSuper(aContext)
+  : nsFrame(aContext)
   , mInstanceOwner(nullptr)
   , mReflowCallbackPosted(false)
-  , mIsHiddenDueToScroll(false)
 {
   MOZ_LOG(sPluginFrameLog, LogLevel::Debug,
          ("Created new nsPluginFrame %p\n", this));
@@ -168,7 +167,7 @@ nsPluginFrame::~nsPluginFrame()
 NS_QUERYFRAME_HEAD(nsPluginFrame)
   NS_QUERYFRAME_ENTRY(nsPluginFrame)
   NS_QUERYFRAME_ENTRY(nsIObjectFrame)
-NS_QUERYFRAME_TAIL_INHERITING(nsPluginFrameSuper)
+NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
 
 #ifdef ACCESSIBILITY
 a11y::AccType
@@ -194,7 +193,7 @@ nsPluginFrame::Init(nsIContent*       aContent,
   MOZ_LOG(sPluginFrameLog, LogLevel::Debug,
          ("Initializing nsPluginFrame %p for content %p\n", this, aContent));
 
-  nsPluginFrameSuper::Init(aContent, aParent, aPrevInFlow);
+  nsFrame::Init(aContent, aParent, aPrevInFlow);
 }
 
 void
@@ -223,7 +222,7 @@ nsPluginFrame::DestroyFrom(nsIFrame* aDestructRoot)
     mBackgroundSink->Destroy();
   }
 
-  nsPluginFrameSuper::DestroyFrom(aDestructRoot);
+  nsFrame::DestroyFrom(aDestructRoot);
 }
 
 /* virtual */ void
@@ -239,7 +238,7 @@ nsPluginFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
     }
   }
 
-  nsPluginFrameSuper::DidSetStyleContext(aOldStyleContext);
+  nsFrame::DidSetStyleContext(aOldStyleContext);
 }
 
 nsIAtom*
@@ -322,7 +321,6 @@ nsPluginFrame::PrepForDrawing(nsIWidget *aWidget)
     configuration->mBounds.height = NSAppUnitsToIntPixels(mRect.height, appUnitsPerDevPixel);
     parentWidget->ConfigureChildren(configurations);
 
-    RefPtr<nsDeviceContext> dx = viewMan->GetDeviceContext();
     mInnerView->AttachWidgetEventHandler(mWidget);
 
 #ifdef XP_MACOSX
@@ -418,7 +416,7 @@ nsPluginFrame::GetWidgetConfiguration(nsTArray<nsIWidget::Configuration>* aConfi
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
   if (XRE_IsContentProcess()) {
     configuration->mWindowID = (uintptr_t)mWidget->GetNativeData(NS_NATIVE_PLUGIN_PORT);
-    configuration->mVisible = !mIsHiddenDueToScroll && mWidget->IsVisible();
+    configuration->mVisible = mWidget->IsVisible();
 
   }
 #endif // defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
@@ -426,8 +424,8 @@ nsPluginFrame::GetWidgetConfiguration(nsTArray<nsIWidget::Configuration>* aConfi
 
 void
 nsPluginFrame::GetDesiredSize(nsPresContext* aPresContext,
-                              const nsHTMLReflowState& aReflowState,
-                              nsHTMLReflowMetrics& aMetrics)
+                              const ReflowInput& aReflowInput,
+                              ReflowOutput& aMetrics)
 {
   // By default, we have no area
   aMetrics.ClearSize();
@@ -436,21 +434,21 @@ nsPluginFrame::GetDesiredSize(nsPresContext* aPresContext,
     return;
   }
 
-  aMetrics.Width() = aReflowState.ComputedWidth();
-  aMetrics.Height() = aReflowState.ComputedHeight();
+  aMetrics.Width() = aReflowInput.ComputedWidth();
+  aMetrics.Height() = aReflowInput.ComputedHeight();
 
   // for EMBED and APPLET, default to 240x200 for compatibility
   if (mContent->IsAnyOfHTMLElements(nsGkAtoms::applet,
                                     nsGkAtoms::embed)) {
     if (aMetrics.Width() == NS_UNCONSTRAINEDSIZE) {
       aMetrics.Width() = clamped(nsPresContext::CSSPixelsToAppUnits(EMBED_DEF_WIDTH),
-                               aReflowState.ComputedMinWidth(),
-                               aReflowState.ComputedMaxWidth());
+                               aReflowInput.ComputedMinWidth(),
+                               aReflowInput.ComputedMaxWidth());
     }
     if (aMetrics.Height() == NS_UNCONSTRAINEDSIZE) {
       aMetrics.Height() = clamped(nsPresContext::CSSPixelsToAppUnits(EMBED_DEF_HEIGHT),
-                                aReflowState.ComputedMinHeight(),
-                                aReflowState.ComputedMaxHeight());
+                                aReflowInput.ComputedMinHeight(),
+                                aReflowInput.ComputedMaxHeight());
     }
 
 #if defined(MOZ_WIDGET_GTK)
@@ -468,8 +466,8 @@ nsPluginFrame::GetDesiredSize(nsPresContext* aPresContext,
   // Make up a number.
   if (aMetrics.Width() == NS_UNCONSTRAINEDSIZE) {
     aMetrics.Width() =
-      (aReflowState.ComputedMinWidth() != NS_UNCONSTRAINEDSIZE) ?
-        aReflowState.ComputedMinWidth() : 0;
+      (aReflowInput.ComputedMinWidth() != NS_UNCONSTRAINEDSIZE) ?
+        aReflowInput.ComputedMinWidth() : 0;
   }
 
   // At this point, the height has an unconstrained value only in two cases:
@@ -478,8 +476,8 @@ nsPluginFrame::GetDesiredSize(nsPresContext* aPresContext,
   // In either case, we have to make up a number.
   if (aMetrics.Height() == NS_UNCONSTRAINEDSIZE) {
     aMetrics.Height() =
-      (aReflowState.ComputedMinHeight() != NS_UNCONSTRAINEDSIZE) ?
-        aReflowState.ComputedMinHeight() : 0;
+      (aReflowInput.ComputedMinHeight() != NS_UNCONSTRAINEDSIZE) ?
+        aReflowInput.ComputedMinHeight() : 0;
   }
 
   // XXXbz don't add in the border and padding, because we screw up our
@@ -491,16 +489,16 @@ nsPluginFrame::GetDesiredSize(nsPresContext* aPresContext,
 
 void
 nsPluginFrame::Reflow(nsPresContext*           aPresContext,
-                      nsHTMLReflowMetrics&     aMetrics,
-                      const nsHTMLReflowState& aReflowState,
+                      ReflowOutput&     aMetrics,
+                      const ReflowInput& aReflowInput,
                       nsReflowStatus&          aStatus)
 {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsPluginFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowState, aMetrics, aStatus);
+  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aMetrics, aStatus);
 
   // Get our desired size
-  GetDesiredSize(aPresContext, aReflowState, aMetrics);
+  GetDesiredSize(aPresContext, aReflowInput, aMetrics);
   aMetrics.SetOverflowAreasToDesiredBounds();
   FinishAndStoreOverflow(&aMetrics);
 
@@ -519,7 +517,7 @@ nsPluginFrame::Reflow(nsPresContext*           aPresContext,
   }
 
   nsRect r(0, 0, aMetrics.Width(), aMetrics.Height());
-  r.Deflate(aReflowState.ComputedPhysicalBorderPadding());
+  r.Deflate(aReflowInput.ComputedPhysicalBorderPadding());
 
   if (mInnerView) {
     nsViewManager* vm = mInnerView->GetViewManager();
@@ -535,7 +533,7 @@ nsPluginFrame::Reflow(nsPresContext*           aPresContext,
 
   aStatus = NS_FRAME_COMPLETE;
 
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aMetrics);
+  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aMetrics);
 }
 
 ///////////// nsIReflowCallback ///////////////
@@ -643,7 +641,7 @@ nsPluginFrame::CallSetWindow(bool aCheckIsHidden)
 
   // window must be in "display pixels"
   double scaleFactor = 1.0;
-  if (NS_FAILED(mInstanceOwner->GetContentsScaleFactor(&scaleFactor))) {
+  if (NS_FAILED(instanceOwnerRef->GetContentsScaleFactor(&scaleFactor))) {
     scaleFactor = 1.0;
   }
   size_t intScaleFactor = ceil(scaleFactor);
@@ -652,10 +650,15 @@ nsPluginFrame::CallSetWindow(bool aCheckIsHidden)
   window->width = intBounds.width / intScaleFactor;
   window->height = intBounds.height / intScaleFactor;
 
+  // BE CAREFUL: By the time we get here the PluginFrame is sometimes destroyed
+  // and poisoned. If we reference local fields (implicit this deref),
+  // we will crash.
+  instanceOwnerRef->ResolutionMayHaveChanged();
+
   // This will call pi->SetWindow and take care of window subclassing
   // if needed, see bug 132759. Calling SetWindow can destroy this frame
   // so check for that before doing anything else with this frame's memory.
-  if (mInstanceOwner->UseAsyncRendering()) {
+  if (instanceOwnerRef->UseAsyncRendering()) {
     rv = pi->AsyncSetWindow(window);
   }
   else {
@@ -737,7 +740,7 @@ nsPluginFrame::IsFocusable(int32_t *aTabIndex, bool aWithMouse)
 {
   if (aTabIndex)
     *aTabIndex = -1;
-  return nsPluginFrameSuper::IsFocusable(aTabIndex, aWithMouse);
+  return nsFrame::IsFocusable(aTabIndex, aWithMouse);
 }
 
 bool
@@ -768,24 +771,6 @@ nsPluginFrame::IsHidden(bool aCheckVisibilityStyle) const
   }
 
   return false;
-}
-
-// Clips windowed plugin frames during remote content scroll operations managed
-// by nsGfxScrollFrame.
-void
-nsPluginFrame::SetScrollVisibility(bool aState)
-{
-  // Limit this setting to windowed plugins by checking if we have a widget
-  if (mWidget) {
-    bool changed = mIsHiddenDueToScroll != aState;
-    mIsHiddenDueToScroll = aState;
-    // Force a paint so plugin window visibility gets flushed via
-    // the compositor.
-    if (changed && mInstanceOwner) {
-      mInstanceOwner->UpdateScrollState(mIsHiddenDueToScroll);
-      SchedulePaint();
-    }
-  }
 }
 
 mozilla::LayoutDeviceIntPoint
@@ -839,7 +824,7 @@ nsPluginFrame::GetWindowOriginInPixels(bool aWindowless)
 
 void
 nsPluginFrame::DidReflow(nsPresContext*            aPresContext,
-                         const nsHTMLReflowState*  aReflowState,
+                         const ReflowInput*  aReflowInput,
                          nsDidReflowStatus         aStatus)
 {
   // Do this check before calling the superclass, as that clears
@@ -851,7 +836,7 @@ nsPluginFrame::DidReflow(nsPresContext*            aPresContext,
     objContent->HasNewFrame(this);
   }
 
-  nsPluginFrameSuper::DidReflow(aPresContext, aReflowState, aStatus);
+  nsFrame::DidReflow(aPresContext, aReflowInput, aStatus);
 
   // The view is created hidden; once we have reflowed it and it has been
   // positioned then we show it.
@@ -1136,19 +1121,16 @@ nsPluginFrame::DidSetWidgetGeometry()
 bool
 nsPluginFrame::IsOpaque() const
 {
-#if defined(MOZ_WIDGET_GTK)
-  // Insure underlying content gets painted when we clip windowed plugins
-  // during remote content scroll operations managed by nsGfxScrollFrame.
-  if (mIsHiddenDueToScroll) {
-    return false;
-  }
-#endif
 #if defined(XP_MACOSX)
   return false;
 #elif defined(MOZ_WIDGET_ANDROID)
   // We don't know, so just assume transparent
   return false;
 #else
+
+  if (mInstanceOwner && mInstanceOwner->UseAsyncRendering()) {
+    return false;
+  }
   return !IsTransparentMode();
 #endif
 }
@@ -1188,14 +1170,6 @@ nsPluginFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists)
 {
-#if defined(MOZ_WIDGET_GTK)
-  // Clip windowed plugin frames from the list during remote content scroll
-  // operations managed by nsGfxScrollFrame.
-  if (mIsHiddenDueToScroll) {
-    return;
-  }
-#endif
-
   // XXX why are we painting collapsed object frames?
   if (!IsVisibleOrCollapsedForPainting(aBuilder))
     return;
@@ -1218,8 +1192,9 @@ nsPluginFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 #endif
 
   if (aBuilder->IsForPainting() && mInstanceOwner) {
-#ifdef XP_MACOSX
+    // Update plugin frame for both content scaling and full zoom changes.
     mInstanceOwner->ResolutionMayHaveChanged();
+#ifdef XP_MACOSX
     mInstanceOwner->WindowFocusMayHaveChanged();
 #endif
     if (mInstanceOwner->UseAsyncRendering()) {
@@ -1512,14 +1487,14 @@ nsPluginFrame::BuildLayer(nsDisplayListBuilder* aBuilder,
 
     imglayer->SetScaleToSize(size, ScaleMode::STRETCH);
     imglayer->SetContainer(container);
-    Filter filter = nsLayoutUtils::GetGraphicsFilterForFrame(this);
+    SamplingFilter samplingFilter = nsLayoutUtils::GetSamplingFilterForFrame(this);
 #ifdef MOZ_GFX_OPTIMIZE_MOBILE
     if (!aManager->IsCompositingCheap()) {
       // Pixman just horrible with bilinear filter scaling
-      filter = Filter::POINT;
+      samplingFilter = SamplingFilter::POINT;
     }
 #endif
-    imglayer->SetFilter(filter);
+    imglayer->SetSamplingFilter(samplingFilter);
 
     layer->SetContentFlags(IsOpaque() ? Layer::CONTENT_OPAQUE : 0);
 
@@ -1530,9 +1505,9 @@ nsPluginFrame::BuildLayer(nsDisplayListBuilder* aBuilder,
     {
       RefPtr<ClientLayerManager> lm = aBuilder->GetWidgetLayerManager()->AsClientLayerManager();
       if (!mDidCompositeObserver || !mDidCompositeObserver->IsValid(lm)) {
-        mDidCompositeObserver = new PluginFrameDidCompositeObserver(mInstanceOwner, lm);
+        mDidCompositeObserver = MakeUnique<PluginFrameDidCompositeObserver>(mInstanceOwner, lm);
       }
-      lm->AddDidCompositeObserver(mDidCompositeObserver);
+      lm->AddDidCompositeObserver(mDidCompositeObserver.get());
     }
 #ifdef MOZ_WIDGET_ANDROID
   } else if (aItem->GetType() == nsDisplayItem::TYPE_PLUGIN_VIDEO) {
@@ -1669,7 +1644,7 @@ nsPluginFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
 #ifdef XP_WIN
-  rv = nsPluginFrameSuper::HandleEvent(aPresContext, anEvent, anEventStatus);
+  rv = nsFrame::HandleEvent(aPresContext, anEvent, anEventStatus);
   return rv;
 #endif
 
@@ -1693,10 +1668,10 @@ nsPluginFrame::HandleEvent(nsPresContext* aPresContext,
   }
 #endif
 
-  rv = nsPluginFrameSuper::HandleEvent(aPresContext, anEvent, anEventStatus);
+  rv = nsFrame::HandleEvent(aPresContext, anEvent, anEventStatus);
 
   // We need to be careful from this point because the call to
-  // nsPluginFrameSuper::HandleEvent() might have killed us.
+  // nsFrame::HandleEvent() might have killed us.
 
 #ifdef XP_MACOSX
   if (anEvent->mMessage == eMouseUp) {
@@ -1711,7 +1686,7 @@ void
 nsPluginFrame::HandleWheelEventAsDefaultAction(WidgetWheelEvent* aWheelEvent)
 {
   MOZ_ASSERT(WantsToHandleWheelEventAsDefaultAction());
-  MOZ_ASSERT(!aWheelEvent->mFlags.mDefaultPrevented);
+  MOZ_ASSERT(!aWheelEvent->DefaultPrevented());
 
   if (NS_WARN_IF(!mInstanceOwner) ||
       NS_WARN_IF(aWheelEvent->mMessage != eWheel)) {
@@ -1728,8 +1703,8 @@ nsPluginFrame::HandleWheelEventAsDefaultAction(WidgetWheelEvent* aWheelEvent)
   // We need to assume that the event is always consumed/handled by the
   // plugin.  There is no way to know if it's actually consumed/handled.
   aWheelEvent->mViewPortIsOverscrolled = false;
-  aWheelEvent->overflowDeltaX = 0;
-  aWheelEvent->overflowDeltaY = 0;
+  aWheelEvent->mOverflowDeltaX = 0;
+  aWheelEvent->mOverflowDeltaY = 0;
   // Consume the event explicitly.
   aWheelEvent->PreventDefault();
 }
@@ -1781,7 +1756,7 @@ nsPluginFrame::GetCursor(const nsPoint& aPoint, nsIFrame::Cursor& aCursor)
     return NS_ERROR_FAILURE;
   }
 
-  return nsPluginFrameSuper::GetCursor(aPoint, aCursor);
+  return nsFrame::GetCursor(aPoint, aCursor);
 }
 
 void

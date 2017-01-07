@@ -27,7 +27,6 @@
 #include "nsITimer.h"
 
 #include "AbstractMediaDecoder.h"
-#include "FrameStatistics.h"
 #include "MediaDecoderOwner.h"
 #include "MediaEventSource.h"
 #include "MediaMetadataManager.h"
@@ -42,6 +41,10 @@ class nsIStreamListener;
 class nsIPrincipal;
 
 namespace mozilla {
+
+namespace dom {
+class Promise;
+}
 
 class VideoFrameContainer;
 class MediaDecoderStateMachine;
@@ -67,6 +70,10 @@ public:
   // Used to register with MediaResource to receive notifications which will
   // be forwarded to MediaDecoder.
   class ResourceCallback : public MediaResourceCallback {
+    // Throttle calls to MediaDecoder::NotifyDataArrived()
+    // to be at most once per 500ms.
+    static const uint32_t sDelay = 500;
+
   public:
     // Start to receive notifications from ResourceCallback.
     void Connect(MediaDecoder* aDecoder);
@@ -89,8 +96,12 @@ public:
     void NotifySuspendedStatusChanged() override;
     void NotifyBytesConsumed(int64_t aBytes, int64_t aOffset) override;
 
+    static void TimerCallback(nsITimer* aTimer, void* aClosure);
+
     // The decoder to send notifications. Main-thread only.
     MediaDecoder* mDecoder = nullptr;
+    nsCOMPtr<nsITimer> mTimer;
+    bool mTimerArmed = false;
   };
 
   typedef MozPromise<SeekResolveValue, bool /* aIgnored */, /* IsExclusive = */ true> SeekPromise;
@@ -125,7 +136,7 @@ public:
 
   // Cleanup internal data structures. Must be called on the main
   // thread by the owning object before that object disposes of this object.
-  virtual RefPtr<ShutdownPromise> Shutdown();
+  virtual void Shutdown();
 
   // Start downloading the media. Decode the downloaded data up to the
   // point of the first frame of data.
@@ -166,7 +177,8 @@ public:
   // Seek to the time position in (seconds) from the start of the video.
   // If aDoFastSeek is true, we'll seek to the sync point/keyframe preceeding
   // the seek target.
-  virtual nsresult Seek(double aTime, SeekTarget::Type aSeekType);
+  virtual nsresult Seek(double aTime, SeekTarget::Type aSeekType,
+                        dom::Promise* aPromise = nullptr);
 
   // Initialize state machine and schedule it.
   nsresult InitializeStateMachine();
@@ -180,7 +192,7 @@ public:
   // Dormant state is a state to free all scarce media resources
   //  (like hw video codec), did not decoding and stay dormant.
   // It is used to share scarece media resources in system.
-  virtual void NotifyOwnerActivityChanged();
+  virtual void NotifyOwnerActivityChanged(bool aIsVisible);
 
   void UpdateDormantState(bool aDormantTimeout, bool aActivity);
 
@@ -215,7 +227,7 @@ public:
   virtual double GetDuration();
 
   // Return true if the stream is infinite (see SetInfinite).
-  virtual bool IsInfinite();
+  bool IsInfinite() const;
 
   // Called by MediaResource when some data has been received.
   // Call on the main thread only.
@@ -227,16 +239,18 @@ public:
 
   // Return true if we are currently seeking in the media resource.
   // Call on the main thread only.
-  virtual bool IsSeeking() const;
+  bool IsSeeking() const;
 
   // Return true if the decoder has reached the end of playback or the decoder
   // has shutdown.
   // Call on the main thread only.
-  virtual bool IsEndedOrShutdown() const;
+  bool IsEndedOrShutdown() const;
 
   // Return true if the MediaDecoderOwner's error attribute is not null.
   // If the MediaDecoder is shutting down, OwnerHasError will return true.
   bool OwnerHasError() const;
+
+  already_AddRefed<GMPCrashHelper> GetCrashHelper() override;
 
 protected:
   // Updates the media duration. This is called while the media is being
@@ -250,15 +264,17 @@ protected:
   void UpdateEstimatedMediaDuration(int64_t aDuration) override;
 
 public:
-  // Called from HTMLMediaElement when owner document activity changes
-  virtual void SetElementVisibility(bool aIsVisible) {}
-
-  // Set a flag indicating whether seeking is supported
+  // Set a flag indicating whether random seeking is supported
   void SetMediaSeekable(bool aMediaSeekable);
+  // Set a flag indicating whether seeking is supported only in buffered ranges
+  void SetMediaSeekableOnlyInBufferedRanges(bool aMediaSeekableOnlyInBufferedRanges);
 
-  // Returns true if this media supports seeking. False for example for WebM
-  // files without an index and chained ogg files.
+  // Returns true if this media supports random seeking. False for example with
+  // chained ogg files.
   bool IsMediaSeekable();
+  // Returns true if this media supports seeking only in buffered ranges. True
+  // for example in WebMs with no cues
+  bool IsMediaSeekableOnlyInBufferedRanges();
   // Returns true if seeking is supported on a transport level (e.g. the server
   // supports range requests, we are playing a file, etc.).
   bool IsTransportSeekable();
@@ -363,6 +379,9 @@ private:
   void SetAudioChannel(dom::AudioChannel aChannel) { mAudioChannel = aChannel; }
   dom::AudioChannel GetAudioChannel() { return mAudioChannel; }
 
+  // Called from HTMLMediaElement when owner document activity changes
+  virtual void SetElementVisibility(bool aIsVisible);
+
   /******
    * The following methods must only be called on the main
    * thread.
@@ -386,12 +405,7 @@ private:
   // Call on the main thread only.
   void PlaybackEnded();
 
-  void OnSeekRejected()
-  {
-    MOZ_ASSERT(NS_IsMainThread());
-    mSeekRequest.Complete();
-    mLogicallySeeking = false;
-  }
+  void OnSeekRejected();
   void OnSeekResolved(SeekResolveValue aVal);
 
   void SeekingChanged()
@@ -406,11 +420,15 @@ private:
   // thread.
   void SeekingStarted(MediaDecoderEventVisibility aEventVisibility = MediaDecoderEventVisibility::Observable);
 
-  void UpdateLogicalPosition(MediaDecoderEventVisibility aEventVisibility);
+  void UpdateLogicalPositionInternal(MediaDecoderEventVisibility aEventVisibility);
   void UpdateLogicalPosition()
   {
     MOZ_ASSERT(NS_IsMainThread());
-    UpdateLogicalPosition(MediaDecoderEventVisibility::Observable);
+    // Per spec, offical position remains stable during pause and seek.
+    if (mPlayState == PLAY_STATE_PAUSED || IsSeeking()) {
+      return;
+    }
+    UpdateLogicalPositionInternal(MediaDecoderEventVisibility::Observable);
   }
 
   // Find the end of the cached data starting at the current decoder
@@ -473,16 +491,15 @@ private:
 
   // Increments the parsed and decoded frame counters by the passed in counts.
   // Can be called on any thread.
-  virtual void NotifyDecodedFrames(uint32_t aParsed, uint32_t aDecoded,
-                                   uint32_t aDropped) override
+  virtual void NotifyDecodedFrames(const FrameStatisticsData& aStats) override
   {
-    GetFrameStatistics().NotifyDecodedFrames(aParsed, aDecoded, aDropped);
+    GetFrameStatistics().NotifyDecodedFrames(aStats);
   }
 
   void UpdateReadyState()
   {
     MOZ_ASSERT(NS_IsMainThread());
-    if (!mShuttingDown) {
+    if (!IsShutdown()) {
       mOwner->UpdateReadyState();
     }
   }
@@ -493,6 +510,8 @@ private:
   // Returns a string describing the state of the media player internal
   // data. Used for debugging purposes.
   virtual void GetMozDebugReaderData(nsAString& aString) {}
+
+  virtual void DumpDebugInfo();
 
 protected:
   virtual ~MediaDecoder();
@@ -514,6 +533,8 @@ protected:
 
   // Return true if the decoder has reached the end of playback
   bool IsEnded() const;
+
+  bool IsShutdown() const;
 
   // Called by the state machine to notify the decoder that the duration
   // has changed.
@@ -588,7 +609,10 @@ private:
     SetMediaSeekable(false);
   }
 
-  RefPtr<ShutdownPromise> FinishShutdown();
+  void FinishShutdown();
+
+  void ConnectMirrors(MediaDecoderStateMachine* aObject);
+  void DisconnectMirrors();
 
   MediaEventProducer<void> mDataArrivedEvent;
 
@@ -609,12 +633,24 @@ private:
 #endif
 
 protected:
-  virtual void CallSeek(const SeekTarget& aTarget);
+  // The promise resolving/rejection is queued as a "micro-task" which will be
+  // handled immediately after the current JS task and before any pending JS
+  // tasks.
+  // At the time we are going to resolve/reject a promise, the "seeking" event
+  // task should already be queued but might yet be processed, so we queue one
+  // more task to file the promise resolving/rejection micro-tasks
+  // asynchronously to make sure that the micro-tasks are processed after the
+  // "seeking" event task.
+  void AsyncResolveSeekDOMPromiseIfExists();
+  void AsyncRejectSeekDOMPromiseIfExists();
+  void DiscardOngoingSeekIfExists();
+  virtual void CallSeek(const SeekTarget& aTarget, dom::Promise* aPromise);
 
   // Returns true if heuristic dormant is supported.
   bool IsHeuristicDormantSupported() const;
 
   MozPromiseRequestHolder<SeekPromise> mSeekRequest;
+  RefPtr<dom::Promise> mSeekDOMPromise;
 
   // True when seeking or otherwise moving the play position around in
   // such a manner that progress event data is inaccurate. This is set
@@ -643,7 +679,7 @@ protected:
   // Counters related to decode and presentation of frames.
   const RefPtr<FrameStatistics> mFrameStats;
 
-  const RefPtr<VideoFrameContainer> mVideoFrameContainer;
+  RefPtr<VideoFrameContainer> mVideoFrameContainer;
 
   // Data needed to estimate playback data rate. The timeline used for
   // this estimate is "decode time" (where the "current time" is the
@@ -653,12 +689,6 @@ protected:
   // True when our media stream has been pinned. We pin the stream
   // while seeking.
   bool mPinnedForSeek;
-
-  // True if the decoder is being shutdown. At this point all events that
-  // are currently queued need to return immediately to prevent javascript
-  // being run that operates on the element and decoder during shutdown.
-  // Read/Write from the main thread only.
-  bool mShuttingDown;
 
   // True if the playback is paused because the playback rate member is 0.0.
   bool mPausedForPlaybackRateNull;
@@ -686,12 +716,6 @@ protected:
 
   // True if MediaDecoder is in dormant state.
   bool mIsDormant;
-
-  // True if MediaDecoder was PLAY_STATE_ENDED state, when entering to dormant.
-  // When MediaCodec is in dormant during PLAY_STATE_ENDED state, PlayState
-  // becomes different from PLAY_STATE_ENDED. But the MediaDecoder need to act
-  // as in PLAY_STATE_ENDED state to MediaDecoderOwner.
-  bool mWasEndedWhenEnteredDormant;
 
   // True if heuristic dormant is supported.
   const bool mIsHeuristicDormantSupported;
@@ -737,7 +761,7 @@ protected:
   // start playing back again.
   Mirror<int64_t> mPlaybackPosition;
 
-  // Used to distiguish whether the audio is producing sound.
+  // Used to distinguish whether the audio is producing sound.
   Mirror<bool> mIsAudioDataAudible;
 
   // Volume of playback.  0.0 = muted. 1.0 = full volume.
@@ -777,6 +801,10 @@ protected:
   // passed to MediaStreams when this is true.
   Canonical<bool> mSameOriginMedia;
 
+  // An identifier for the principal of the media. Used to track when
+  // main-thread induced principal changes get reflected on MSG thread.
+  Canonical<PrincipalHandle> mMediaPrincipalHandle;
+
   // Estimate of the current playback rate (bytes/second).
   Canonical<double> mPlaybackBytesPerSecond;
 
@@ -792,8 +820,17 @@ protected:
   // True if the media is seekable (i.e. supports random access).
   Canonical<bool> mMediaSeekable;
 
+  // True if the media is only seekable within its buffered ranges.
+  Canonical<bool> mMediaSeekableOnlyInBufferedRanges;
+
+  // True if the decoder is visible.
+  Canonical<bool> mIsVisible;
+
 public:
   AbstractCanonical<media::NullableTimeUnit>* CanonicalDurationOrNull() override;
+  AbstractCanonical<Maybe<double>>* CanonicalExplicitDuration() override {
+    return &mExplicitDuration;
+  }
   AbstractCanonical<double>* CanonicalVolume() {
     return &mVolume;
   }
@@ -805,9 +842,6 @@ public:
   }
   AbstractCanonical<media::NullableTimeUnit>* CanonicalEstimatedDuration() {
     return &mEstimatedDuration;
-  }
-  AbstractCanonical<Maybe<double>>* CanonicalExplicitDuration() {
-    return &mExplicitDuration;
   }
   AbstractCanonical<PlayState>* CanonicalPlayState() {
     return &mPlayState;
@@ -821,6 +855,9 @@ public:
   AbstractCanonical<bool>* CanonicalSameOriginMedia() {
     return &mSameOriginMedia;
   }
+  AbstractCanonical<PrincipalHandle>* CanonicalMediaPrincipalHandle() {
+    return &mMediaPrincipalHandle;
+  }
   AbstractCanonical<double>* CanonicalPlaybackBytesPerSecond() {
     return &mPlaybackBytesPerSecond;
   }
@@ -832,6 +869,12 @@ public:
   }
   AbstractCanonical<bool>* CanonicalMediaSeekable() {
     return &mMediaSeekable;
+  }
+  AbstractCanonical<bool>* CanonicalMediaSeekableOnlyInBufferedRanges() {
+    return &mMediaSeekableOnlyInBufferedRanges;
+  }
+  AbstractCanonical<bool>* CanonicalIsVisible() {
+    return &mIsVisible;
   }
 
 private:

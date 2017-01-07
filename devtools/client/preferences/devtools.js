@@ -14,9 +14,6 @@ pref("devtools.devedition.promo.url", "https://www.mozilla.org/firefox/developer
   pref("devtools.devedition.promo.enabled", false);
 #endif
 
-// Disable the error console
-pref("devtools.errorconsole.enabled", false);
-
 // DevTools development workflow
 pref("devtools.loader.hotreload", false);
 
@@ -33,7 +30,7 @@ pref("devtools.toolbox.sidebar.width", 500);
 pref("devtools.toolbox.host", "bottom");
 pref("devtools.toolbox.previousHost", "side");
 pref("devtools.toolbox.selectedTool", "webconsole");
-pref("devtools.toolbox.toolbarSpec", '["splitconsole", "paintflashing toggle","scratchpad","resize toggle","eyedropper","screenshot --fullpage", "rulers", "measure"]');
+pref("devtools.toolbox.toolbarSpec", '["splitconsole", "paintflashing toggle","scratchpad","resize toggle","screenshot --fullpage", "rulers", "measure"]');
 pref("devtools.toolbox.sideEnabled", true);
 pref("devtools.toolbox.zoomValue", "1");
 pref("devtools.toolbox.splitconsoleEnabled", false);
@@ -46,7 +43,6 @@ pref("devtools.command-button-splitconsole.enabled", true);
 pref("devtools.command-button-paintflashing.enabled", false);
 pref("devtools.command-button-scratchpad.enabled", false);
 pref("devtools.command-button-responsive.enabled", true);
-pref("devtools.command-button-eyedropper.enabled", false);
 pref("devtools.command-button-screenshot.enabled", false);
 pref("devtools.command-button-rulers.enabled", false);
 pref("devtools.command-button-measure.enabled", false);
@@ -105,10 +101,14 @@ pref("devtools.debugger.ui.variables-only-enum-visible", false);
 pref("devtools.debugger.ui.variables-searchbox-visible", false);
 
 // Enable the Memory tools
-pref("devtools.memory.enabled", false);
+pref("devtools.memory.enabled", true);
 
 pref("devtools.memory.custom-census-displays", "{}");
-pref("devtools.memory.custom-dominator-tree-displays", "{}");
+pref("devtools.memory.custom-label-displays", "{}");
+pref("devtools.memory.custom-tree-map-displays", "{}");
+
+pref("devtools.memory.max-individuals", 1000);
+pref("devtools.memory.max-retaining-paths", 10);
 
 // Enable the Performance tools
 pref("devtools.performance.enabled", true);
@@ -212,6 +212,9 @@ pref("devtools.webaudioeditor.enabled", false);
 // Enable Scratchpad
 pref("devtools.scratchpad.enabled", false);
 
+// Make sure the DOM panel is hidden by default
+pref("devtools.dom.enabled", false);
+
 // Web Audio Editor Inspector Width should be a preference
 pref("devtools.webaudioeditor.inspectorWidth", 300);
 
@@ -272,9 +275,6 @@ pref("devtools.browserconsole.filter.serverwarn", false);
 pref("devtools.browserconsole.filter.serverinfo", false);
 pref("devtools.browserconsole.filter.serverlog", false);
 
-// Text size in the Web Console. Use 0 for the system default size.
-pref("devtools.webconsole.fontSize", 0);
-
 // Max number of inputs to store in web console history.
 pref("devtools.webconsole.inputHistoryCount", 50);
 
@@ -291,6 +291,15 @@ pref("devtools.webconsole.timestampMessages", false);
 // Web Console automatic multiline mode: |true| if you want incomplete statements
 // to automatically trigger multiline editing (equivalent to shift + enter).
 pref("devtools.webconsole.autoMultiline", true);
+
+// Enable the experimental webconsole frontend (work in progress)
+pref("devtools.webconsole.new-frontend-enabled", false);
+
+// Enable the experimental support for source maps in console (work in progress)
+pref("devtools.sourcemap.locations.enabled", false);
+
+// The number of lines that are displayed in the web console.
+pref("devtools.hud.loglimit", 1000);
 
 // The number of lines that are displayed in the web console for the Net,
 // CSS, JS and Web Developer categories. These defaults should be kept in sync
@@ -319,7 +328,7 @@ pref("devtools.editor.enableCodeFolding", true);
 pref("devtools.editor.autocomplete", true);
 
 // Enable the Font Inspector
-pref("devtools.fontinspector.enabled", false);
+pref("devtools.fontinspector.enabled", true);
 
 // Pref to store the browser version at the time of a telemetry ping for an
 // opened developer tool. This allows us to ping telemetry just once per browser

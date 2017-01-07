@@ -6,9 +6,14 @@
 package org.mozilla.gecko;
 
 import org.mozilla.gecko.annotation.JNITarget;
+import org.mozilla.gecko.annotation.WrapForJNI;
 import org.mozilla.gecko.util.NativeEventListener;
 import org.mozilla.gecko.util.NativeJSObject;
 import org.mozilla.gecko.util.EventCallback;
+import org.mozilla.gecko.util.NetworkUtils;
+import org.mozilla.gecko.util.NetworkUtils.ConnectionSubType;
+import org.mozilla.gecko.util.NetworkUtils.ConnectionType;
+import org.mozilla.gecko.util.NetworkUtils.NetworkStatus;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -16,53 +21,67 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.DhcpInfo;
-import android.net.NetworkInfo;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.telephony.TelephonyManager;
 import android.text.format.Formatter;
 import android.util.Log;
 
-/*
- * A part of the work of GeckoNetworkManager is to give an general connection
- * type based on the current connection. According to spec of NetworkInformation
- * API version 3, connection types include: bluetooth, cellular, ethernet, none,
- * wifi and other. The objective of providing such general connection is due to
- * some security concerns. In short, we don't want to expose the information of
- * exact network type, especially the cellular network type.
+/**
+ * Provides connection type, subtype and general network status (up/down).
  *
- * Current connection is firstly obtained from Android's ConnectivityManager,
- * which is represented by the constant, and then will be mapped into the
- * connection type defined in Network Information API version 3.
+ * According to spec of Network Information API version 3, connection types include:
+ * bluetooth, cellular, ethernet, none, wifi and other. The objective of providing such general
+ * connection is due to some security concerns. In short, we don't want to expose exact network type,
+ * especially the cellular network type.
+ *
+ * Specific mobile subtypes are mapped to general 2G, 3G and 4G buckets.
+ *
+ * Logic is implemented as a state machine, so see the transition matrix to figure out what happens when.
+ * This class depends on access to the context, so only use after GeckoAppShell has been initialized.
  */
-
 public class GeckoNetworkManager extends BroadcastReceiver implements NativeEventListener {
     private static final String LOGTAG = "GeckoNetworkManager";
 
-    private static GeckoNetworkManager sInstance;
+    private static final String LINK_DATA_CHANGED = "changed";
+
+    private static GeckoNetworkManager instance;
+
+    // We hackishly (yet harmlessly, in this case) keep a Context reference passed in via the start method.
+    // See context handling notes in handleManagerEvent, and Bug 1277333.
+    private Context context;
 
     public static void destroy() {
-        if (sInstance != null) {
-            sInstance.onDestroy();
-            sInstance = null;
+        if (instance != null) {
+            instance.onDestroy();
+            instance = null;
         }
     }
 
-    // Connection Type defined in Network Information API v3.
-    private enum ConnectionType {
-        CELLULAR(0),
-        BLUETOOTH(1),
-        ETHERNET(2),
-        WIFI(3),
-        OTHER(4),
-        NONE(5);
-
-        public final int value;
-
-        private ConnectionType(int value) {
-            this.value = value;
-        }
+    public enum ManagerState {
+        OffNoListeners,
+        OffWithListeners,
+        OnNoListeners,
+        OnWithListeners
     }
+
+    public enum ManagerEvent {
+        start,
+        stop,
+        enableNotifications,
+        disableNotifications,
+        receivedUpdate
+    }
+
+    private ManagerState currentState = ManagerState.OffNoListeners;
+    private ConnectionType currentConnectionType = ConnectionType.NONE;
+    private ConnectionType previousConnectionType = ConnectionType.NONE;
+    private ConnectionSubType currentConnectionSubtype = ConnectionSubType.UNKNOWN;
+    private ConnectionSubType previousConnectionSubtype = ConnectionSubType.UNKNOWN;
+    private NetworkStatus currentNetworkStatus = NetworkStatus.UNKNOWN;
+    private NetworkStatus previousNetworkStatus = NetworkStatus.UNKNOWN;
 
     private enum InfoType {
         MCC,
@@ -76,88 +95,316 @@ public class GeckoNetworkManager extends BroadcastReceiver implements NativeEven
     }
 
     private void onDestroy() {
+        handleManagerEvent(ManagerEvent.stop);
         EventDispatcher.getInstance().unregisterGeckoThreadListener(this,
                 "Wifi:Enable",
                 "Wifi:GetIPAddress");
     }
 
-    private volatile ConnectionType mConnectionType = ConnectionType.NONE;
-    private final IntentFilter mNetworkFilter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
-
-    // Whether the manager should be listening to Network Information changes.
-    private boolean mShouldBeListening;
-
-    // Whether the manager should notify Gecko that a change in Network
-    // Information happened.
-    private boolean mShouldNotify;
-
-    // The application context used for registering receivers, so
-    // we can unregister them again later.
-    private volatile Context mApplicationContext;
-    private boolean mIsListening;
-
     public static GeckoNetworkManager getInstance() {
-        if (sInstance == null) {
-            sInstance = new GeckoNetworkManager();
+        if (instance == null) {
+            instance = new GeckoNetworkManager();
         }
 
-        return sInstance;
+        return instance;
+    }
+
+    public double[] getCurrentInformation() {
+        final Context applicationContext = GeckoAppShell.getApplicationContext();
+        final ConnectionType connectionType = currentConnectionType;
+        return new double[] {
+                connectionType.value,
+                connectionType == ConnectionType.WIFI ? 1.0 : 0.0,
+                connectionType == ConnectionType.WIFI ? wifiDhcpGatewayAddress(applicationContext) : 0.0
+        };
     }
 
     @Override
     public void onReceive(Context aContext, Intent aIntent) {
-        updateConnectionType();
+        handleManagerEvent(ManagerEvent.receivedUpdate);
     }
 
     public void start(final Context context) {
-        // Note that this initialization clause only runs once.
-        mApplicationContext = context.getApplicationContext();
-        if (mConnectionType == ConnectionType.NONE) {
-            mConnectionType = getConnectionType();
-        }
-
-        mShouldBeListening = true;
-        updateConnectionType();
-
-        if (mShouldNotify) {
-            startListening();
-        }
-    }
-
-    private void startListening() {
-        if (mIsListening) {
-            Log.w(LOGTAG, "Already started!");
-            return;
-        }
-
-        final Context appContext = mApplicationContext;
-        if (appContext == null) {
-            Log.w(LOGTAG, "Not registering receiver: no context!");
-            return;
-        }
-
-        // registerReceiver will return null if registering fails.
-        if (appContext.registerReceiver(this, mNetworkFilter) == null) {
-            Log.e(LOGTAG, "Registering receiver failed");
-        } else {
-            mIsListening = true;
-        }
+        this.context = context;
+        handleManagerEvent(ManagerEvent.start);
     }
 
     public void stop() {
-        mShouldBeListening = false;
+        handleManagerEvent(ManagerEvent.stop);
+    }
 
-        if (mShouldNotify) {
-            stopListening();
+    public void enableNotifications() {
+        handleManagerEvent(ManagerEvent.enableNotifications);
+    }
+
+    public void disableNotifications() {
+        handleManagerEvent(ManagerEvent.disableNotifications);
+    }
+
+    /**
+     * For a given event, figure out the next state, run any transition by-product actions, and switch
+     * current state to the next state. If event is invalid for the current state, this is a no-op.
+     *
+     * @param event Incoming event
+     * @return Boolean indicating if transition was performed.
+     */
+    private synchronized boolean handleManagerEvent(ManagerEvent event) {
+        final ManagerState nextState = getNextState(currentState, event);
+
+        Log.d(LOGTAG, "Incoming event " + event + " for state " + currentState + " -> " + nextState);
+        if (nextState == null) {
+            Log.w(LOGTAG, "Invalid event " + event + " for state " + currentState);
+            return false;
+        }
+
+        // We're being deliberately careful about handling context here; it's possible that in some
+        // rare cases and possibly related to timing of when this is called (seems to be early in the startup phase),
+        // GeckoAppShell.getApplicationContext() will be null, and .start() wasn't called yet,
+        // so we don't have a local Context reference either. If both of these are true, we have to drop the event.
+        // NB: this is hacky (and these checks attempt to isolate the hackiness), and root cause
+        // seems to be how this class fits into the larger ecosystem and general flow of events.
+        // See Bug 1277333.
+        final Context contextForAction;
+        if (context != null) {
+            contextForAction = context;
+        } else {
+            contextForAction = GeckoAppShell.getApplicationContext();
+        }
+
+        if (contextForAction == null) {
+            Log.w(LOGTAG, "Context is not available while processing event " + event + " for state " + currentState);
+            return false;
+        }
+
+        performActionsForStateEvent(contextForAction, currentState, event);
+        currentState = nextState;
+
+        return true;
+    }
+
+    /**
+     * Defines a transition matrix for our state machine. For a given state/event pair, returns nextState.
+     *
+     * @param currentState Current state against which we have an incoming event
+     * @param event Incoming event for which we'd like to figure out the next state
+     * @return State into which we should transition as result of given event
+     */
+    @Nullable
+    public static ManagerState getNextState(@NonNull ManagerState currentState, @NonNull ManagerEvent event) {
+        switch (currentState) {
+            case OffNoListeners:
+                switch (event) {
+                    case start:
+                        return ManagerState.OnNoListeners;
+                    case enableNotifications:
+                        return ManagerState.OffWithListeners;
+                    default:
+                        return null;
+                }
+            case OnNoListeners:
+                switch (event) {
+                    case stop:
+                        return ManagerState.OffNoListeners;
+                    case enableNotifications:
+                        return ManagerState.OnWithListeners;
+                    case receivedUpdate:
+                        return ManagerState.OnNoListeners;
+                    default:
+                        return null;
+                }
+            case OnWithListeners:
+                switch (event) {
+                    case stop:
+                        return ManagerState.OffWithListeners;
+                    case disableNotifications:
+                        return ManagerState.OnNoListeners;
+                    case receivedUpdate:
+                        return ManagerState.OnWithListeners;
+                    default:
+                        return null;
+                }
+            case OffWithListeners:
+                switch (event) {
+                    case start:
+                        return ManagerState.OnWithListeners;
+                    case disableNotifications:
+                        return ManagerState.OffNoListeners;
+                    default:
+                        return null;
+                }
+            default:
+                throw new IllegalStateException("Unknown current state: " + currentState.name());
+        }
+    }
+
+    /**
+     * For a given state/event combination, run any actions which are by-products of leaving the state
+     * because of a given event. Since this is a deterministic state machine, we can easily do that
+     * without any additional information.
+     *
+     * @param currentState State which we are leaving
+     * @param event Event which is causing us to leave the state
+     */
+    private void performActionsForStateEvent(final Context context, final ManagerState currentState, final ManagerEvent event) {
+        // NB: network state might be queried via getCurrentInformation at any time; pre-rewrite behaviour was
+        // that network state was updated whenever enableNotifications was called. To avoid deviating
+        // from previous behaviour and causing weird side-effects, we call updateNetworkStateAndConnectionType
+        // whenever notifications are enabled.
+        switch (currentState) {
+            case OffNoListeners:
+                if (event == ManagerEvent.start) {
+                    updateNetworkStateAndConnectionType(context);
+                    registerBroadcastReceiver(context, this);
+                }
+                if (event == ManagerEvent.enableNotifications) {
+                    updateNetworkStateAndConnectionType(context);
+                }
+                break;
+            case OnNoListeners:
+                if (event == ManagerEvent.receivedUpdate) {
+                    updateNetworkStateAndConnectionType(context);
+                    sendNetworkStateToListeners(context);
+                }
+                if (event == ManagerEvent.enableNotifications) {
+                    updateNetworkStateAndConnectionType(context);
+                    registerBroadcastReceiver(context, this);
+                }
+                if (event == ManagerEvent.stop) {
+                    unregisterBroadcastReceiver(context, this);
+                }
+                break;
+            case OnWithListeners:
+                if (event == ManagerEvent.receivedUpdate) {
+                    updateNetworkStateAndConnectionType(context);
+                    sendNetworkStateToListeners(context);
+                }
+                if (event == ManagerEvent.stop) {
+                    unregisterBroadcastReceiver(context, this);
+                }
+                /* no-op event: ManagerEvent.disableNotifications */
+                break;
+            case OffWithListeners:
+                if (event == ManagerEvent.start) {
+                    registerBroadcastReceiver(context, this);
+                }
+                /* no-op event: ManagerEvent.disableNotifications */
+                break;
+            default:
+                throw new IllegalStateException("Unknown current state: " + currentState.name());
+        }
+    }
+
+    /**
+     * Update current network state and connection types.
+     */
+    private void updateNetworkStateAndConnectionType(final Context context) {
+        final ConnectivityManager connectivityManager = (ConnectivityManager) context.getSystemService(
+                Context.CONNECTIVITY_SERVICE);
+        // Type/status getters below all have a defined behaviour for when connectivityManager == null
+        if (connectivityManager == null) {
+            Log.e(LOGTAG, "ConnectivityManager does not exist.");
+        }
+        currentConnectionType = NetworkUtils.getConnectionType(connectivityManager);
+        currentNetworkStatus = NetworkUtils.getNetworkStatus(connectivityManager);
+        currentConnectionSubtype = NetworkUtils.getConnectionSubType(connectivityManager);
+        Log.d(LOGTAG, "New network state: " + currentNetworkStatus + ", " + currentConnectionType + ", " + currentConnectionSubtype);
+    }
+
+    @WrapForJNI
+    private static native void onConnectionChanged(int type, String subType,
+                                                   boolean isWifi, int DHCPGateway);
+
+    @WrapForJNI
+    private static native void onStatusChanged(String status);
+
+    /**
+     * Send current network state and connection type as a GeckoEvent, to whomever is listening.
+     */
+    private void sendNetworkStateToListeners(final Context context) {
+        if (currentConnectionType != previousConnectionType ||
+                currentConnectionSubtype != previousConnectionSubtype) {
+            previousConnectionType = currentConnectionType;
+            previousConnectionSubtype = currentConnectionSubtype;
+
+            final boolean isWifi = currentConnectionType == ConnectionType.WIFI;
+            final int gateway = !isWifi ? 0 :
+                    wifiDhcpGatewayAddress(context);
+
+            if (GeckoThread.isRunning()) {
+                onConnectionChanged(currentConnectionType.value,
+                                    currentConnectionSubtype.value, isWifi, gateway);
+            } else {
+                GeckoThread.queueNativeCall(GeckoNetworkManager.class, "onConnectionChanged",
+                                            currentConnectionType.value,
+                                            String.class, currentConnectionSubtype.value,
+                                            isWifi, gateway);
+            }
+        }
+
+        final String status;
+
+        if (currentNetworkStatus != previousNetworkStatus) {
+            previousNetworkStatus = currentNetworkStatus;
+            status = currentNetworkStatus.value;
+        } else {
+            status = LINK_DATA_CHANGED;
+        }
+
+        if (GeckoThread.isRunning()) {
+            onStatusChanged(status);
+        } else {
+            GeckoThread.queueNativeCall(GeckoNetworkManager.class, "onStatusChanged",
+                                        String.class, status);
+        }
+    }
+
+    /**
+     * Stop listening for network state updates.
+     */
+    private static void unregisterBroadcastReceiver(final Context context, final BroadcastReceiver receiver) {
+        context.unregisterReceiver(receiver);
+    }
+
+    /**
+     * Start listening for network state updates.
+     */
+    private static void registerBroadcastReceiver(final Context context, final BroadcastReceiver receiver) {
+        final IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
+        context.registerReceiver(receiver, filter);
+    }
+
+    private static int wifiDhcpGatewayAddress(final Context context) {
+        if (context == null) {
+            return 0;
+        }
+
+        try {
+            WifiManager mgr = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+            DhcpInfo d = mgr.getDhcpInfo();
+            if (d == null) {
+                return 0;
+            }
+
+            return d.gateway;
+
+        } catch (Exception ex) {
+            // getDhcpInfo() is not documented to require any permissions, but on some devices
+            // requires android.permission.ACCESS_WIFI_STATE. Just catch the generic exception
+            // here and returning 0. Not logging because this could be noisy.
+            return 0;
         }
     }
 
     @Override
+    /**
+     * Handles native messages, not part of the state machine flow.
+     */
     public void handleMessage(final String event, final NativeJSObject message,
                               final EventCallback callback) {
+        final Context applicationContext = GeckoAppShell.getApplicationContext();
         switch (event) {
-            case "Wifi:Enable": {
-                final WifiManager mgr = (WifiManager) mApplicationContext.getSystemService(Context.WIFI_SERVICE);
+            case "Wifi:Enable":
+                final WifiManager mgr = (WifiManager) applicationContext.getSystemService(Context.WIFI_SERVICE);
 
                 if (!mgr.isWifiEnabled()) {
                     mgr.setWifiEnabled(true);
@@ -165,20 +412,18 @@ public class GeckoNetworkManager extends BroadcastReceiver implements NativeEven
                     // If Wifi is enabled, maybe you need to select a network
                     Intent intent = new Intent(android.provider.Settings.ACTION_WIFI_SETTINGS);
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    mApplicationContext.startActivity(intent);
+                    applicationContext.startActivity(intent);
                 }
                 break;
-            }
-            case "Wifi:GetIPAddress": {
+            case "Wifi:GetIPAddress":
                 getWifiIPAddress(callback);
                 break;
-            }
         }
     }
 
-    // This function only works for IPv4
+    // This function only works for IPv4; not part of the state machine flow.
     private void getWifiIPAddress(final EventCallback callback) {
-        final WifiManager mgr = (WifiManager) mApplicationContext.getSystemService(Context.WIFI_SERVICE);
+        final WifiManager mgr = (WifiManager) GeckoAppShell.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
 
         if (mgr == null) {
             callback.sendError("Cannot get WifiManager");
@@ -197,130 +442,6 @@ public class GeckoNetworkManager extends BroadcastReceiver implements NativeEven
             return;
         }
         callback.sendSuccess(Formatter.formatIpAddress(ip));
-    }
-
-    private void stopListening() {
-        if (null == mApplicationContext) {
-            return;
-        }
-
-        if (!mIsListening) {
-            Log.w(LOGTAG, "Already stopped!");
-            return;
-        }
-
-        mApplicationContext.unregisterReceiver(this);
-        mIsListening = false;
-    }
-
-    private int wifiDhcpGatewayAddress() {
-        if (mConnectionType != ConnectionType.WIFI) {
-            return 0;
-        }
-
-        if (null == mApplicationContext) {
-            return 0;
-        }
-
-        try {
-            WifiManager mgr = (WifiManager) mApplicationContext.getSystemService(Context.WIFI_SERVICE);
-            DhcpInfo d = mgr.getDhcpInfo();
-            if (d == null) {
-                return 0;
-            }
-
-            return d.gateway;
-
-        } catch (Exception ex) {
-            // getDhcpInfo() is not documented to require any permissions, but on some devices
-            // requires android.permission.ACCESS_WIFI_STATE. Just catch the generic exception
-            // here and returning 0. Not logging because this could be noisy.
-            return 0;
-        }
-    }
-
-    private void updateConnectionType() {
-        final ConnectionType previousConnectionType = mConnectionType;
-        final ConnectionType newConnectionType = getConnectionType();
-        if (newConnectionType == previousConnectionType) {
-            return;
-        }
-
-        mConnectionType = newConnectionType;
-
-        if (!mShouldNotify) {
-            return;
-        }
-
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createNetworkEvent(
-                                       newConnectionType.value,
-                                       newConnectionType == ConnectionType.WIFI,
-                                       wifiDhcpGatewayAddress()));
-    }
-
-    public double[] getCurrentInformation() {
-        final ConnectionType connectionType = mConnectionType;
-        return new double[] { connectionType.value,
-                              connectionType == ConnectionType.WIFI ? 1.0 : 0.0,
-                              wifiDhcpGatewayAddress() };
-    }
-
-    public void enableNotifications() {
-        // We set mShouldNotify *after* calling updateConnectionType() to make sure we
-        // don't notify an eventual change in mConnectionType.
-        mConnectionType = ConnectionType.NONE; // force a notification
-        updateConnectionType();
-        mShouldNotify = true;
-
-        if (mShouldBeListening) {
-            startListening();
-        }
-    }
-
-    public void disableNotifications() {
-        mShouldNotify = false;
-
-        if (mShouldBeListening) {
-            stopListening();
-        }
-    }
-
-    private ConnectionType getConnectionType() {
-        final Context appContext = mApplicationContext;
-
-        if (null == appContext) {
-            return ConnectionType.NONE;
-        }
-
-        ConnectivityManager cm = (ConnectivityManager) appContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm == null) {
-            Log.e(LOGTAG, "Connectivity service does not exist");
-            return ConnectionType.NONE;
-        }
-
-        NetworkInfo ni = null;
-        try {
-            ni = cm.getActiveNetworkInfo();
-        } catch (SecurityException se) {} // if we don't have the permission, fall through to null check
-
-        if (ni == null) {
-            return ConnectionType.NONE;
-        }
-
-        switch (ni.getType()) {
-        case ConnectivityManager.TYPE_BLUETOOTH:
-            return ConnectionType.BLUETOOTH;
-        case ConnectivityManager.TYPE_ETHERNET:
-            return ConnectionType.ETHERNET;
-        case ConnectivityManager.TYPE_MOBILE:
-        case ConnectivityManager.TYPE_WIMAX:
-            return ConnectionType.CELLULAR;
-        case ConnectivityManager.TYPE_WIFI:
-            return ConnectionType.WIFI;
-        default:
-            Log.w(LOGTAG, "Ignoring the current network type.");
-            return ConnectionType.OTHER;
-        }
     }
 
     private static int getNetworkOperator(InfoType type, Context context) {
@@ -355,14 +476,16 @@ public class GeckoNetworkManager extends BroadcastReceiver implements NativeEven
      *
      * Note that these methods must only be called after GeckoAppShell has been
      * initialized: they depend on access to the context.
+     *
+     * Not part of the state machine flow.
      */
     @JNITarget
     public static int getMCC() {
-        return getNetworkOperator(InfoType.MCC, GeckoAppShell.getContext().getApplicationContext());
+        return getNetworkOperator(InfoType.MCC, GeckoAppShell.getApplicationContext());
     }
 
     @JNITarget
     public static int getMNC() {
-        return getNetworkOperator(InfoType.MNC, GeckoAppShell.getContext().getApplicationContext());
+        return getNetworkOperator(InfoType.MNC, GeckoAppShell.getApplicationContext());
     }
 }

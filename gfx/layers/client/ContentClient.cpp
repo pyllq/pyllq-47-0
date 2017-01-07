@@ -10,7 +10,6 @@
 #include "gfxEnv.h"                     // for gfxEnv
 #include "gfxPrefs.h"                   // for gfxPrefs
 #include "gfxPoint.h"                   // for IntSize, gfxPoint
-#include "gfxTeeSurface.h"              // for gfxTeeSurface
 #include "gfxUtils.h"                   // for gfxUtils
 #include "ipc/ShadowLayers.h"           // for ShadowLayerForwarder
 #include "mozilla/ArrayUtils.h"         // for ArrayLength
@@ -20,11 +19,10 @@
 #include "mozilla/gfx/BaseSize.h"       // for BaseSize
 #include "mozilla/gfx/Rect.h"           // for Rect
 #include "mozilla/gfx/Types.h"
-#include "mozilla/layers/CompositorChild.h" // for CompositorChild
+#include "mozilla/layers/CompositorBridgeChild.h" // for CompositorBridgeChild
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/layers/LayersMessages.h"  // for ThebesBufferData
 #include "mozilla/layers/LayersTypes.h"
-#include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsDebug.h"                    // for NS_ASSERTION, NS_WARNING, etc
 #include "nsISupportsImpl.h"            // for gfxContext::Release, etc
 #include "nsIWidget.h"                  // for nsIWidget
@@ -73,7 +71,7 @@ ContentClient::CreateContentClient(CompositableForwarder* aForwarder)
 
 #ifdef XP_WIN
   if (backend == LayersBackend::LAYERS_D3D11) {
-    useDoubleBuffering = gfxWindowsPlatform::GetPlatform()->GetRenderMode() == gfxWindowsPlatform::RENDER_DIRECT2D;
+    useDoubleBuffering = gfxWindowsPlatform::GetPlatform()->IsDirect2DBackend();
   } else
 #endif
 #ifdef MOZ_WIDGET_GTK
@@ -129,6 +127,9 @@ ContentClientBasic::CreateBuffer(ContentType aType,
                                  RefPtr<gfx::DrawTarget>* aWhiteDT)
 {
   MOZ_ASSERT(!(aFlags & BUFFER_COMPONENT_ALPHA));
+  if (aFlags & BUFFER_COMPONENT_ALPHA) {
+    gfxDevCrash(LogReason::AlphaWithBasicClient) << "Asking basic content client for component alpha";
+  }
 
   *aBlackDT = gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
     IntSize(aRect.width, aRect.height),
@@ -447,14 +448,6 @@ ContentClientDoubleBuffered::Updated(const nsIntRegion& aRegionToDraw,
                                      bool aDidSelfCopy)
 {
   ContentClientRemoteBuffer::Updated(aRegionToDraw, aVisibleRegion, aDidSelfCopy);
-
-  if (mFrontClient) {
-    mFrontClient->RemoveFromCompositable(this);
-  }
-
-  if (mFrontClientOnWhite) {
-    mFrontClientOnWhite->RemoveFromCompositable(this);
-  }
 }
 
 void

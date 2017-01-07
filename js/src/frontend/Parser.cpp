@@ -94,7 +94,9 @@ template <>
 bool
 ParseContext<FullParseHandler>::checkLocalsOverflow(TokenStream& ts)
 {
-    if (vars_.length() + bodyLevelLexicals_.length() >= LOCALNO_LIMIT) {
+    if (vars_.length() + bodyLevelLexicals_.length() >= LOCALNO_LIMIT ||
+        bodyLevelLexicals_.length() >= Bindings::BODY_LEVEL_LEXICAL_LIMIT)
+    {
         ts.reportError(JSMSG_TOO_MANY_LOCALS);
         return false;
     }
@@ -398,7 +400,7 @@ ParseContext<ParseHandler>::prepareToAddDuplicateArg(HandlePropertyName name, De
 }
 
 template <typename ParseHandler>
-void
+bool
 ParseContext<ParseHandler>::updateDecl(TokenStream& ts, JSAtom* atom, Node pn)
 {
     Definition* oldDecl = decls_.lookupFirst(atom);
@@ -422,7 +424,7 @@ ParseContext<ParseHandler>::updateDecl(TokenStream& ts, JSAtom* atom, Node pn)
         newDecl->pn_scopecoord = oldDecl->pn_scopecoord;
         newDecl->pn_dflags |= PND_BOUND;
         newDecl->setOp(JSOP_INITLEXICAL);
-        return;
+        return true;
     }
 
     if (sc->isGlobalContext() || oldDecl->isDeoptimized()) {
@@ -442,14 +444,16 @@ ParseContext<ParseHandler>::updateDecl(TokenStream& ts, JSAtom* atom, Node pn)
                     !sc->isGlobalContext())
                 {
                     newDecl->pn_dflags |= PND_BOUND;
-                    newDecl->pn_scopecoord.setSlot(ts, i);
+                    if (!newDecl->pn_scopecoord.setSlot(ts, i)) {
+                        return false;
+                    }
                     newDecl->setOp(JSOP_GETLOCAL);
                 }
                 vars_[i] = newDecl;
                 break;
             }
         }
-        return;
+        return true;
     }
 
     MOZ_ASSERT(oldDecl->isBound());
@@ -466,6 +470,7 @@ ParseContext<ParseHandler>::updateDecl(TokenStream& ts, JSAtom* atom, Node pn)
         MOZ_ASSERT(vars_[oldDecl->pn_scopecoord.slot()] == oldDecl);
         vars_[oldDecl->pn_scopecoord.slot()] = newDecl;
     }
+    return true;
 }
 
 template <typename ParseHandler>
@@ -551,6 +556,9 @@ ParseContext<ParseHandler>::generateBindings(ExclusiveContext* cx, TokenStream& 
      * bindings to what will fit in a uint32_t.
      */
     if (UINT32_MAX - args_.length() <= vars_.length() + bodyLevelLexicals_.length())
+        return ts.reportError(JSMSG_TOO_MANY_LOCALS);
+
+    if (blockScopeDepth >= Bindings::BLOCK_SCOPED_LIMIT)
         return ts.reportError(JSMSG_TOO_MANY_LOCALS);
 
     // Fix up slots in non-global contexts. In global contexts all body-level
@@ -696,7 +704,7 @@ Parser<ParseHandler>::Parser(ExclusiveContext* cx, LifoAlloc* alloc,
 {
     {
         AutoLockForExclusiveAccess lock(cx);
-        cx->perThreadData->addActiveCompilation();
+        cx->perThreadData->addActiveCompilation(lock);
     }
 
     // The Mozilla specific JSOPTION_EXTRA_WARNINGS option adds extra warnings
@@ -737,7 +745,7 @@ Parser<ParseHandler>::~Parser()
 
     {
         AutoLockForExclusiveAccess lock(context);
-        context->perThreadData->removeActiveCompilation();
+        context->perThreadData->removeActiveCompilation(lock);
     }
 }
 
@@ -940,8 +948,7 @@ Parser<ParseHandler>::reportBadReturn(Node pn, ParseReportKind kind,
                                       unsigned errnum, unsigned anonerrnum)
 {
     JSAutoByteString name;
-    JSAtom* atom = pc->sc->asFunctionBox()->function()->atom();
-    if (atom) {
+    if (JSAtom* atom = pc->sc->asFunctionBox()->function()->name()) {
         if (!AtomToPrintableString(context, atom, &name))
             return false;
     } else {
@@ -1438,7 +1445,8 @@ bool
 Parser<FullParseHandler>::makeDefIntoUse(Definition* dn, ParseNode* pn, HandleAtom atom)
 {
     /* Turn pn into a definition. */
-    pc->updateDecl(tokenStream, atom, pn);
+    if (!pc->updateDecl(tokenStream, atom, pn))
+        return false;
 
     /* Change all uses of dn to be uses of pn. */
     for (ParseNode* pnu = dn->dn_uses; pnu; pnu = pnu->pn_link) {
@@ -1993,6 +2001,25 @@ Parser<SyntaxParseHandler>::leaveFunction(Node fn, ParseContext<SyntaxParseHandl
     return addFreeVariablesFromLazyFunction(funbox->function(), outerpc);
 }
 
+template <typename ParseHandler>
+JSAtom*
+Parser<ParseHandler>::prefixAccessorName(PropertyType propType, HandleAtom propAtom)
+{
+    RootedAtom prefix(context);
+    if (propType == PropertyType::Setter || propType == PropertyType::SetterNoExpressionClosure) {
+        prefix = context->names().setPrefix;
+    } else {
+        MOZ_ASSERT(propType == PropertyType::Getter || propType == PropertyType::GetterNoExpressionClosure);
+        prefix = context->names().getPrefix;
+    }
+
+    RootedString str(context, ConcatStrings<CanGC>(context, prefix, propAtom));
+    if (!str)
+        return nullptr;
+
+    return AtomizeString(context, str);
+}
+
 /*
  * defineArg is called for both the arguments of a regular function definition
  * and the arguments specified by the Function constructor.
@@ -2328,8 +2355,9 @@ Parser<FullParseHandler>::bindBodyLevelFunctionName(HandlePropertyName funName,
         MOZ_ASSERT(!dn->isUsed());
         MOZ_ASSERT(dn->isDefn());
 
-        if (dn->kind() == Definition::CONSTANT || dn->kind() == Definition::LET)
-            return reportRedeclaration(nullptr, Definition::VAR, funName);
+        Definition::Kind kind = dn->kind();
+        if (kind == Definition::CONSTANT || kind == Definition::LET || kind == Definition::IMPORT)
+            return reportRedeclaration(nullptr, kind, funName);
 
         /*
          * Body-level function statements are effectively variable
@@ -2339,7 +2367,7 @@ Parser<FullParseHandler>::bindBodyLevelFunctionName(HandlePropertyName funName,
          * the function's binding (which is mutable), so turn any existing
          * declaration into a use.
          */
-        if (dn->kind() == Definition::ARG) {
+        if (kind == Definition::ARG) {
             // The exception to the above comment is when the function
             // has the same name as an argument. Then the argument node
             // remains a definition. But change the function node pn so
@@ -2395,7 +2423,7 @@ Parser<FullParseHandler>::bindLexicalFunctionName(HandlePropertyName funName,
 
 template <>
 bool
-Parser<FullParseHandler>::checkFunctionDefinition(HandlePropertyName funName,
+Parser<FullParseHandler>::checkFunctionDefinition(HandleAtom funAtom,
                                                   ParseNode** pn_, FunctionSyntaxKind kind,
                                                   bool* pbodyProcessed,
                                                   ParseNode** assignmentForAnnexBOut)
@@ -2404,6 +2432,7 @@ Parser<FullParseHandler>::checkFunctionDefinition(HandlePropertyName funName,
     *pbodyProcessed = false;
 
     if (kind == Statement) {
+        RootedPropertyName funName(context, funAtom->asPropertyName());
         MOZ_ASSERT(assignmentForAnnexBOut);
         *assignmentForAnnexBOut = nullptr;
 
@@ -2648,7 +2677,7 @@ Parser<ParseHandler>::addFreeVariablesFromLazyFunction(JSFunction* fun,
 
 template <>
 bool
-Parser<SyntaxParseHandler>::checkFunctionDefinition(HandlePropertyName funName,
+Parser<SyntaxParseHandler>::checkFunctionDefinition(HandleAtom funAtom,
                                                     Node* pn, FunctionSyntaxKind kind,
                                                     bool* pbodyProcessed,
                                                     Node* assignmentForAnnexBOut)
@@ -2659,6 +2688,7 @@ Parser<SyntaxParseHandler>::checkFunctionDefinition(HandlePropertyName funName,
     bool bodyLevel = pc->atBodyLevel();
 
     if (kind == Statement) {
+        RootedPropertyName funName(context, funAtom->asPropertyName());
         *assignmentForAnnexBOut = null();
 
         if (!bodyLevel) {
@@ -2748,7 +2778,10 @@ Parser<ParseHandler>::templateLiteral(YieldHandling yieldHandling)
     Node pn = noSubstitutionTemplate();
     if (!pn)
         return null();
+
     Node nodeList = handler.newList(PNK_TEMPLATE_STRING_LIST, pn);
+    if (!nodeList)
+        return null();
 
     TokenKind tt;
     do {
@@ -2767,7 +2800,7 @@ Parser<ParseHandler>::templateLiteral(YieldHandling yieldHandling)
 template <typename ParseHandler>
 typename ParseHandler::Node
 Parser<ParseHandler>::functionDef(InHandling inHandling, YieldHandling yieldHandling,
-                                  HandlePropertyName funName, FunctionSyntaxKind kind,
+                                  HandleAtom funName, FunctionSyntaxKind kind,
                                   GeneratorKind generatorKind, InvokedPrediction invoked,
                                   Node* assignmentForAnnexBOut)
 {
@@ -2878,7 +2911,7 @@ Parser<SyntaxParseHandler>::finishFunctionDefinition(Node pn, FunctionBox* funbo
         freeVariables[i++] = LazyScript::FreeVariable(r.front().key());
     MOZ_ASSERT(i == numFreeVariables);
 
-    HeapPtrFunction* innerFunctions = lazy->innerFunctions();
+    GCPtrFunction* innerFunctions = lazy->innerFunctions();
     for (size_t i = 0; i < numInnerFunctions; i++)
         innerFunctions[i].init(pc->innerFunctions[i]);
 
@@ -2978,7 +3011,8 @@ Parser<FullParseHandler>::functionArgsAndBody(InHandling inHandling, ParseNode* 
         return true;
     } while (false);
 
-    blockScopes.resize(oldBlockScopesLength);
+    if (!blockScopes.resize(oldBlockScopesLength))
+        return false;
 
     // Continue doing a full parse for this inner function.
     ParseContext<FullParseHandler> funpc(this, pc, pn, funbox, newDirectives);
@@ -3050,7 +3084,8 @@ Parser<ParseHandler>::appendToCallSiteObj(Node callSiteObj)
     if (!rawNode)
         return false;
 
-    return handler.addToCallSiteObject(callSiteObj, rawNode, cookedNode);
+    handler.addToCallSiteObject(callSiteObj, rawNode, cookedNode);
+    return true;
 }
 
 template <>
@@ -3184,10 +3219,10 @@ Parser<ParseHandler>::functionArgsAndBodyGeneric(InHandling inHandling,
     if (!body)
         return false;
 
-    if ((kind != Method && !IsConstructorKind(kind)) && fun->name() &&
-        !checkStrictBinding(fun->name(), pn))
-    {
-        return false;
+    if ((kind != Method && !IsConstructorKind(kind)) && fun->name()) {
+        RootedPropertyName propertyName(context, fun->name()->asPropertyName());
+        if (!checkStrictBinding(propertyName, pn))
+            return false;
     }
 
     if (bodyType == StatementListBody) {
@@ -3209,6 +3244,8 @@ Parser<ParseHandler>::functionArgsAndBodyGeneric(InHandling inHandling,
         if (kind == Statement && !MatchOrInsertSemicolonAfterExpression(tokenStream))
             return false;
     }
+
+    handler.setEndPosition(body, pos().begin);
 
     return finishFunctionDefinition(pn, funbox, body);
 }
@@ -4014,7 +4051,7 @@ HasOuterLexicalBinding(ParseContext<ParseHandler>* pc, StmtInfoPC* stmt, HandleA
     while (stmt->enclosingScope) {
         stmt = LexicalLookup(pc, atom, stmt->enclosingScope);
         if (!stmt)
-            return false;
+            break;
         if (stmt->type == StmtType::BLOCK)
             return true;
     }
@@ -4123,7 +4160,8 @@ Parser<ParseHandler>::bindVar(BindData<ParseHandler>* data,
 
         // Synthesize a new 'var' binding if one does not exist.
         DefinitionNode last = pc->decls().lookupLast(name);
-        if (last && parser->handler.getDefinitionKind(last) != Definition::VAR) {
+        Definition::Kind lastKind = parser->handler.getDefinitionKind(last);
+        if (last && lastKind != Definition::VAR && lastKind != Definition::ARG) {
             parser->handler.setFlag(parser->handler.getDefinitionNode(last), PND_CLOSED);
 
             Node synthesizedVarName = parser->newName(name);
@@ -5683,7 +5721,7 @@ Parser<FullParseHandler>::exportDeclaration()
         if (!kid)
             return null();
 
-        if (!checkExportedName(kid->pn_funbox->function()->atom()))
+        if (!checkExportedName(kid->pn_funbox->function()->name()))
             return null();
         break;
 
@@ -7216,21 +7254,23 @@ Parser<FullParseHandler>::classDefinition(YieldHandling yieldHandling,
 
         // FIXME: Implement ES6 function "name" property semantics
         // (bug 883377).
-        RootedPropertyName funName(context);
+        RootedAtom funName(context);
         switch (propType) {
           case PropertyType::GetterNoExpressionClosure:
           case PropertyType::SetterNoExpressionClosure:
-            funName = nullptr;
+            if (!tokenStream.isCurrentTokenType(TOK_RB)) {
+                funName = prefixAccessorName(propType, propAtom);
+                if (!funName)
+                    return null();
+            }
             break;
           case PropertyType::Constructor:
           case PropertyType::DerivedConstructor:
             funName = name;
             break;
           default:
-            if (tokenStream.isCurrentTokenType(TOK_NAME))
-                funName = tokenStream.currentName();
-            else
-                funName = nullptr;
+            if (!tokenStream.isCurrentTokenType(TOK_RB))
+                funName = propAtom;
         }
         ParseNode* fn = methodDefinition(yieldHandling, propType, funName);
         if (!fn)
@@ -8319,8 +8359,10 @@ Parser<ParseHandler>::generatorComprehensionLambda(unsigned begin)
      * kid and could be removed from pc->sc.
      */
     genFunbox->anyCxFlags = outerpc->sc->anyCxFlags;
-    if (outerpc->sc->isFunctionBox())
-        genFunbox->funCxFlags = outerpc->sc->asFunctionBox()->funCxFlags;
+    if (outerpc->sc->isFunctionBox()) {
+        genFunbox->funCxFlags =
+            outerpc->sc->asFunctionBox()->flagsForNestedGeneratorComprehensionLambda();
+    }
 
     handler.setBlockId(genfn, genpc.bodyid);
 
@@ -8945,11 +8987,7 @@ Parser<ParseHandler>::newRegExp()
     RegExpFlag flags = tokenStream.currentToken().regExpFlags();
 
     Rooted<RegExpObject*> reobj(context);
-    RegExpStatics* res = context->global()->getRegExpStatics(context);
-    if (!res)
-        return null();
-
-    reobj = RegExpObject::create(context, res, chars, length, flags, &tokenStream, alloc);
+    reobj = RegExpObject::create(context, chars, length, flags, &tokenStream, alloc);
     if (!reobj)
         return null();
 
@@ -9319,7 +9357,12 @@ Parser<ParseHandler>::objectLiteral(YieldHandling yieldHandling, PossibleError* 
                 return null();
 
             tokenStream.consumeKnownToken(TOK_ASSIGN);
+            bool saved = pc->inDeclDestructuring;
+            // Setting `inDeclDestructuring` to false allows name use to be noted
+            // in `identifierName` See Bug: 1255167.
+            pc->inDeclDestructuring = false;
             Node rhs = assignExpr(InAllowed, yieldHandling, TripledotProhibited);
+            pc->inDeclDestructuring = saved;
             if (!rhs)
                 return null();
 
@@ -9361,18 +9404,17 @@ Parser<ParseHandler>::objectLiteral(YieldHandling yieldHandling, PossibleError* 
         } else {
             // FIXME: Implement ES6 function "name" property semantics
             // (bug 883377).
-            RootedPropertyName funName(context);
-            switch (propType) {
-              case PropertyType::Getter:
-              case PropertyType::Setter:
-                funName = nullptr;
-                break;
-              default:
-                if (tokenStream.isCurrentTokenType(TOK_NAME))
-                    funName = tokenStream.currentName();
-                else
-                    funName = nullptr;
+            RootedAtom funName(context);
+            if (!tokenStream.isCurrentTokenType(TOK_RB)) {
+                funName = propAtom;
+
+                if (propType == PropertyType::Getter || propType == PropertyType::Setter) {
+                    funName = prefixAccessorName(propType, propAtom);
+                    if (!funName)
+                        return null();
+                }
             }
+
             Node fn = methodDefinition(yieldHandling, propType, funName);
             if (!fn)
                 return null();
@@ -9399,7 +9441,7 @@ Parser<ParseHandler>::objectLiteral(YieldHandling yieldHandling, PossibleError* 
 template <typename ParseHandler>
 typename ParseHandler::Node
 Parser<ParseHandler>::methodDefinition(YieldHandling yieldHandling, PropertyType propType,
-                                       HandlePropertyName funName)
+                                       HandleAtom funName)
 {
     FunctionSyntaxKind kind = FunctionSyntaxKindFromPropertyType(propType);
     GeneratorKind generatorKind = GeneratorKindFromPropertyType(propType);

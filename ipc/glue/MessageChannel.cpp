@@ -14,11 +14,15 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Move.h"
 #include "mozilla/SizePrintfMacros.h"
+#include "mozilla/Snprintf.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/Logging.h"
+#include "nsAutoPtr.h"
 #include "nsDebug.h"
 #include "nsISupportsImpl.h"
 #include "nsContentUtils.h"
-#include "mozilla/Snprintf.h"
+
+using mozilla::Move;
 
 // Undo the damage done by mozzconf.h
 #undef compress
@@ -100,13 +104,6 @@ using mozilla::dom::ScriptSettingsInitialized;
 using mozilla::MonitorAutoLock;
 using mozilla::MonitorAutoUnlock;
 
-template<>
-struct RunnableMethodTraits<mozilla::ipc::MessageChannel>
-{
-    static void RetainCallee(mozilla::ipc::MessageChannel* obj) { }
-    static void ReleaseCallee(mozilla::ipc::MessageChannel* obj) { }
-};
-
 #define IPC_ASSERT(_cond, ...)                                      \
     do {                                                            \
         if (!(_cond))                                               \
@@ -176,7 +173,7 @@ public:
     {
         MOZ_RELEASE_ASSERT(&aOther != this);
         this->~InterruptFrame();
-        new (this) InterruptFrame(mozilla::Move(aOther));
+        new (this) InterruptFrame(Move(aOther));
         return *this;
     }
 
@@ -397,22 +394,22 @@ public:
         return mTransaction;
     }
 
-    void ReceivedReply(const IPC::Message& aMessage) {
+    void ReceivedReply(IPC::Message&& aMessage) {
         MOZ_RELEASE_ASSERT(aMessage.seqno() == mSeqno);
         MOZ_RELEASE_ASSERT(aMessage.transaction_id() == mTransaction);
         MOZ_RELEASE_ASSERT(!mReply);
         IPC_LOG("Reply received on worker thread: seqno=%d", mSeqno);
-        mReply = new IPC::Message(aMessage);
+        mReply = new IPC::Message(Move(aMessage));
         MOZ_RELEASE_ASSERT(IsComplete());
     }
 
-    void HandleReply(const IPC::Message& aMessage) {
+    void HandleReply(IPC::Message&& aMessage) {
         AutoEnterTransaction *cur = mChan->mTransactionStack;
         MOZ_RELEASE_ASSERT(cur == this);
         while (cur) {
             MOZ_RELEASE_ASSERT(cur->mActive);
             if (aMessage.seqno() == cur->mSeqno) {
-                cur->ReceivedReply(aMessage);
+                cur->ReceivedReply(Move(aMessage));
                 break;
             }
             cur = cur->mNext;
@@ -493,6 +490,9 @@ MessageChannel::MessageChannel(MessageListener *aListener)
     mFlags(REQUIRE_DEFAULT),
     mPeerPidSet(false),
     mPeerPid(-1)
+#if defined(MOZ_CRASHREPORTER) && defined(OS_WIN)
+    , mPending(AnnotateAllocator<Message>(*this))
+#endif
 {
     MOZ_COUNT_CTOR(ipc::MessageChannel);
 
@@ -501,13 +501,12 @@ MessageChannel::MessageChannel(MessageListener *aListener)
     mIsSyncWaitingOnNonMainThread = false;
 #endif
 
-    mDequeueOneTask = new RefCountedTask(NewRunnableMethod(
-                                                 this,
-                                                 &MessageChannel::OnMaybeDequeueOne));
+    RefPtr<CancelableRunnable> runnable =
+        NewNonOwningCancelableRunnableMethod(this, &MessageChannel::OnMaybeDequeueOne);
+    mDequeueOneTask = new RefCountedTask(runnable.forget());
 
-    mOnChannelConnectedTask = new RefCountedTask(NewRunnableMethod(
-        this,
-        &MessageChannel::DispatchOnChannelConnected));
+    runnable = NewNonOwningCancelableRunnableMethod(this, &MessageChannel::DispatchOnChannelConnected);
+    mOnChannelConnectedTask = new RefCountedTask(runnable.forget());
 
 #ifdef OS_WIN
     mEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -520,8 +519,20 @@ MessageChannel::~MessageChannel()
     MOZ_COUNT_DTOR(ipc::MessageChannel);
     IPC_ASSERT(mCxxStackFrames.empty(), "mismatched CxxStackFrame ctor/dtors");
 #ifdef OS_WIN
-    BOOL ok = CloseHandle(mEvent);
-    MOZ_RELEASE_ASSERT(ok);
+    if (mEvent) {
+        BOOL ok = CloseHandle(mEvent);
+        mEvent = nullptr;
+
+        if (!ok) {
+            gfxDevCrash(mozilla::gfx::LogReason::MessageChannelCloseFailure) <<
+                "MessageChannel failed to close. GetLastError: " <<
+                GetLastError();
+        }
+        MOZ_RELEASE_ASSERT(ok);
+    } else {
+        gfxDevCrash(mozilla::gfx::LogReason::MessageChannelCloseFailure) <<
+                "MessageChannel destructor ran without an mEvent Handle";
+    }
 #endif
     Clear();
 }
@@ -687,9 +698,10 @@ MessageChannel::Open(MessageChannel *aTargetChan, MessageLoop *aTargetLoop, Side
 
     MonitorAutoLock lock(*mMonitor);
     mChannelState = ChannelOpening;
-    aTargetLoop->PostTask(
-        FROM_HERE,
-        NewRunnableMethod(aTargetChan, &MessageChannel::OnOpenAsSlave, this, oppSide));
+    aTargetLoop->PostTask(NewNonOwningRunnableMethod
+                          <MessageChannel*, Side>(aTargetChan,
+                                                  &MessageChannel::OnOpenAsSlave,
+                                                  this, oppSide));
 
     while (ChannelOpening == mChannelState)
         mMonitor->Wait();
@@ -751,9 +763,9 @@ MessageChannel::Echo(Message* aMsg)
 bool
 MessageChannel::Send(Message* aMsg)
 {
-    if (aMsg->capacity() >= kMinTelemetryMessageSize) {
+    if (aMsg->size() >= kMinTelemetryMessageSize) {
         Telemetry::Accumulate(Telemetry::IPC_MESSAGE_SIZE,
-                              nsDependentCString(aMsg->name()), aMsg->capacity());
+                              nsDependentCString(aMsg->name()), aMsg->size());
     }
 
     CxxStackFrame frame(*this, OUT_MESSAGE, aMsg);
@@ -893,7 +905,7 @@ MessageChannel::OnMessageReceivedFromLink(Message&& aMsg)
         MOZ_RELEASE_ASSERT(AwaitingSyncReply());
         MOZ_RELEASE_ASSERT(!mTimedOutMessageSeqno);
 
-        mTransactionStack->HandleReply(aMsg);
+        mTransactionStack->HandleReply(Move(aMsg));
         NotifyWorkerThread();
         return;
     }
@@ -977,7 +989,21 @@ MessageChannel::OnMessageReceivedFromLink(Message&& aMsg)
         if (!compress) {
             // If we compressed away the previous message, we'll re-use
             // its pending task.
-            mWorkerLoop->PostTask(FROM_HERE, new DequeueTask(mDequeueOneTask));
+            RefPtr<DequeueTask> task = new DequeueTask(mDequeueOneTask);
+            mWorkerLoop->PostTask(task.forget());
+        }
+    }
+}
+
+void
+MessageChannel::PeekMessages(mozilla::function<bool(const Message& aMsg)> aInvoke)
+{
+    MonitorAutoLock lock(*mMonitor);
+
+    for (MessageQueue::iterator it = mPending.begin(); it != mPending.end(); it++) {
+        Message &msg = *it;
+        if (!aInvoke(msg)) {
+            break;
         }
     }
 }
@@ -985,10 +1011,8 @@ MessageChannel::OnMessageReceivedFromLink(Message&& aMsg)
 void
 MessageChannel::ProcessPendingRequests(AutoEnterTransaction& aTransaction)
 {
-    int32_t seqno = aTransaction.SequenceNumber();
-    int32_t transaction = aTransaction.TransactionID();
-
-    IPC_LOG("ProcessPendingRequests for seqno=%d, xid=%d", seqno, transaction);
+    IPC_LOG("ProcessPendingRequests for seqno=%d, xid=%d",
+            aTransaction.SequenceNumber(), aTransaction.TransactionID());
 
     // Loop until there aren't any more priority messages to process.
     for (;;) {
@@ -1032,7 +1056,7 @@ MessageChannel::ProcessPendingRequests(AutoEnterTransaction& aTransaction)
         // loop around to check for more afterwards.
 
         for (auto it = toProcess.begin(); it != toProcess.end(); it++) {
-            ProcessPendingRequest(*it);
+            ProcessPendingRequest(Move(*it));
         }
     }
 }
@@ -1040,9 +1064,9 @@ MessageChannel::ProcessPendingRequests(AutoEnterTransaction& aTransaction)
 bool
 MessageChannel::Send(Message* aMsg, Message* aReply)
 {
-    if (aMsg->capacity() >= kMinTelemetryMessageSize) {
+    if (aMsg->size() >= kMinTelemetryMessageSize) {
         Telemetry::Accumulate(Telemetry::IPC_MESSAGE_SIZE,
-                              nsDependentCString(aMsg->name()), aMsg->capacity());
+                              nsDependentCString(aMsg->name()), aMsg->size());
     }
 
     nsAutoPtr<Message> msg(aMsg);
@@ -1230,9 +1254,9 @@ MessageChannel::Send(Message* aMsg, Message* aReply)
     MOZ_RELEASE_ASSERT(reply->is_sync());
 
     *aReply = Move(*reply);
-    if (aReply->capacity() >= kMinTelemetryMessageSize) {
+    if (aReply->size() >= kMinTelemetryMessageSize) {
         Telemetry::Accumulate(Telemetry::IPC_REPLY_SIZE,
-                              nsDependentCString(msgName), aReply->capacity());
+                              nsDependentCString(msgName), aReply->size());
     }
     return true;
 }
@@ -1268,7 +1292,7 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
     msg->set_seqno(NextSeqno());
     msg->set_interrupt_remote_stack_depth_guess(mRemoteStackDepthGuess);
     msg->set_interrupt_local_stack_depth(1 + InterruptStackDepth());
-    mInterruptStack.push(*msg);
+    mInterruptStack.push(MessageInfo(*msg));
     mLink->SendMessage(msg.forget());
 
     while (true) {
@@ -1337,7 +1361,7 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
 
         // If the message is not Interrupt, we can dispatch it as normal.
         if (!recvd.is_interrupt()) {
-            DispatchMessage(recvd);
+            DispatchMessage(Move(recvd));
             if (!Connected()) {
                 ReportConnectionError("MessageChannel::DispatchMessage");
                 return false;
@@ -1353,7 +1377,7 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
             // If this is not a reply the call we've initiated, add it to our
             // out-of-turn replies and keep polling for events.
             {
-                const Message &outcall = mInterruptStack.top();
+                const MessageInfo &outcall = mInterruptStack.top();
 
                 // Note, In the parent, sequence numbers increase from 0, and
                 // in the child, they decrease from 0.
@@ -1395,7 +1419,7 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
             MonitorAutoUnlock unlock(*mMonitor);
 
             CxxStackFrame frame(*this, IN_MESSAGE, &recvd);
-            DispatchInterruptMessage(recvd, stackDepth);
+            DispatchInterruptMessage(Move(recvd), stackDepth);
         }
         if (!Connected()) {
             ReportConnectionError("MessageChannel::DispatchInterruptMessage");
@@ -1451,14 +1475,14 @@ MessageChannel::InterruptEventOccurred()
 }
 
 bool
-MessageChannel::ProcessPendingRequest(const Message &aUrgent)
+MessageChannel::ProcessPendingRequest(Message &&aUrgent)
 {
     AssertWorkerThread();
     mMonitor->AssertCurrentThreadOwns();
 
     IPC_LOG("Process pending: seqno=%d, xid=%d", aUrgent.seqno(), aUrgent.transaction_id());
 
-    DispatchMessage(aUrgent);
+    DispatchMessage(Move(aUrgent));
     if (!Connected()) {
         ReportConnectionError("MessageChannel::ProcessPendingRequest");
         return false;
@@ -1539,13 +1563,13 @@ MessageChannel::OnMaybeDequeueOne()
         return false;
     }
 
-    DispatchMessage(recvd);
+    DispatchMessage(Move(recvd));
 
     return true;
 }
 
 void
-MessageChannel::DispatchMessage(const Message &aMsg)
+MessageChannel::DispatchMessage(Message &&aMsg)
 {
     Maybe<AutoNoJSAPI> nojsapi;
     if (ScriptSettingsInitialized() && NS_IsMainThread())
@@ -1570,7 +1594,7 @@ MessageChannel::DispatchMessage(const Message &aMsg)
             if (aMsg.is_sync())
                 DispatchSyncMessage(aMsg, *getter_Transfers(reply));
             else if (aMsg.is_interrupt())
-                DispatchInterruptMessage(aMsg, 0);
+                DispatchInterruptMessage(Move(aMsg), 0);
             else
                 DispatchAsyncMessage(aMsg);
 
@@ -1640,7 +1664,7 @@ MessageChannel::DispatchAsyncMessage(const Message& aMsg)
 }
 
 void
-MessageChannel::DispatchInterruptMessage(const Message& aMsg, size_t stackDepth)
+MessageChannel::DispatchInterruptMessage(Message&& aMsg, size_t stackDepth)
 {
     AssertWorkerThread();
     mMonitor->AssertNotCurrentThreadOwns();
@@ -1655,9 +1679,11 @@ MessageChannel::DispatchInterruptMessage(const Message& aMsg, size_t stackDepth)
         // processing of the other side's in-call.
         bool defer;
         const char* winner;
-        const Message& parentMsg = (mSide == ChildSide) ? aMsg : mInterruptStack.top();
-        const Message& childMsg = (mSide == ChildSide) ? mInterruptStack.top() : aMsg;
-        switch (mListener->MediateInterruptRace(parentMsg, childMsg))
+        const MessageInfo parentMsgInfo =
+          (mSide == ChildSide) ? MessageInfo(aMsg) : mInterruptStack.top();
+        const MessageInfo childMsgInfo =
+          (mSide == ChildSide) ? mInterruptStack.top() : MessageInfo(aMsg);
+        switch (mListener->MediateInterruptRace(parentMsgInfo, childMsgInfo))
         {
           case RIPChildWins:
             winner = "child";
@@ -1686,7 +1712,7 @@ MessageChannel::DispatchInterruptMessage(const Message& aMsg, size_t stackDepth)
             // We now know the other side's stack has one more frame
             // than we thought.
             ++mRemoteStackDepthGuess; // decremented in MaybeProcessDeferred()
-            mDeferred.push(aMsg);
+            mDeferred.push(Move(aMsg));
             return;
         }
 
@@ -1735,7 +1761,7 @@ MessageChannel::MaybeUndeferIncall()
                "fatal logic error");
 
     // maybe time to process this message
-    Message call = mDeferred.top();
+    Message call(Move(mDeferred.top()));
     mDeferred.pop();
 
     // fix up fudge factor we added to account for race
@@ -1743,7 +1769,7 @@ MessageChannel::MaybeUndeferIncall()
     --mRemoteStackDepthGuess;
 
     MOZ_RELEASE_ASSERT(call.priority() == IPC::Message::PRIORITY_NORMAL);
-    mPending.push_back(call);
+    mPending.push_back(Move(call));
 }
 
 void
@@ -1789,14 +1815,16 @@ MessageChannel::EnqueuePendingMessages()
     MaybeUndeferIncall();
 
     for (size_t i = 0; i < mDeferred.size(); ++i) {
-        mWorkerLoop->PostTask(FROM_HERE, new DequeueTask(mDequeueOneTask));
+        RefPtr<DequeueTask> task = new DequeueTask(mDequeueOneTask);
+        mWorkerLoop->PostTask(task.forget());
     }
 
     // XXX performance tuning knob: could process all or k pending
     // messages here, rather than enqueuing for later processing
 
     for (size_t i = 0; i < mPending.size(); ++i) {
-        mWorkerLoop->PostTask(FROM_HERE, new DequeueTask(mDequeueOneTask));
+        RefPtr<DequeueTask> task = new DequeueTask(mDequeueOneTask);
+        mWorkerLoop->PostTask(task.forget());
     }
 }
 
@@ -1904,7 +1932,8 @@ MessageChannel::OnChannelConnected(int32_t peer_id)
     MOZ_RELEASE_ASSERT(!mPeerPidSet);
     mPeerPidSet = true;
     mPeerPid = peer_id;
-    mWorkerLoop->PostTask(FROM_HERE, new DequeueTask(mOnChannelConnectedTask));
+    RefPtr<DequeueTask> task = new DequeueTask(mOnChannelConnectedTask);
+    mWorkerLoop->PostTask(task.forget());
 }
 
 void
@@ -2047,10 +2076,13 @@ MessageChannel::NotifyMaybeChannelError()
         return;
     }
 
+    Clear();
+
     // Oops, error!  Let the listener know about it.
     mChannelState = ChannelError;
+
+    // After this, the channel may be deleted.
     mListener->OnChannelError();
-    Clear();
 }
 
 void
@@ -2072,9 +2104,10 @@ MessageChannel::OnNotifyMaybeChannelError()
 
     if (IsOnCxxStack()) {
         mChannelErrorTask =
-            NewRunnableMethod(this, &MessageChannel::OnNotifyMaybeChannelError);
+            NewNonOwningCancelableRunnableMethod(this, &MessageChannel::OnNotifyMaybeChannelError);
+        RefPtr<Runnable> task = mChannelErrorTask;
         // 10 ms delay is completely arbitrary
-        mWorkerLoop->PostDelayedTask(FROM_HERE, mChannelErrorTask, 10);
+        mWorkerLoop->PostDelayedTask(task.forget(), 10);
         return;
     }
 
@@ -2091,8 +2124,9 @@ MessageChannel::PostErrorNotifyTask()
 
     // This must be the last code that runs on this thread!
     mChannelErrorTask =
-        NewRunnableMethod(this, &MessageChannel::OnNotifyMaybeChannelError);
-    mWorkerLoop->PostTask(FROM_HERE, mChannelErrorTask);
+        NewNonOwningCancelableRunnableMethod(this, &MessageChannel::OnNotifyMaybeChannelError);
+    RefPtr<Runnable> task = mChannelErrorTask;
+    mWorkerLoop->PostTask(task.forget());
 }
 
 // Special async message.
@@ -2200,17 +2234,18 @@ MessageChannel::NotifyChannelClosed()
     if (ChannelClosed != mChannelState)
         NS_RUNTIMEABORT("channel should have been closed!");
 
-    // OK, the IO thread just closed the channel normally.  Let the
-    // listener know about it.
-    mListener->OnChannelClose();
-
     Clear();
+
+    // OK, the IO thread just closed the channel normally.  Let the
+    // listener know about it. After this point the channel may be
+    // deleted.
+    mListener->OnChannelClose();
 }
 
 void
 MessageChannel::DebugAbort(const char* file, int line, const char* cond,
                            const char* why,
-                           bool reply) const
+                           bool reply)
 {
     printf_stderr("###!!! [MessageChannel][%s][%s:%d] "
                   "Assertion (%s) failed.  %s %s\n",
@@ -2229,7 +2264,7 @@ MessageChannel::DebugAbort(const char* file, int line, const char* cond,
     printf_stderr("  Pending queue size: %" PRIuSIZE ", front to back:\n",
                   mPending.size());
 
-    MessageQueue pending = mPending;
+    MessageQueue pending = Move(mPending);
     while (!pending.empty()) {
         printf_stderr("    [ %s%s ]\n",
                       pending.front().is_interrupt() ? "intr" :
@@ -2287,7 +2322,8 @@ MessageChannel::EndTimeout()
         // OnMaybeDequeueOne. But during the timeout, that function will skip
         // some messages. Now they're ready to be processed, so we enqueue more
         // tasks.
-        mWorkerLoop->PostTask(FROM_HERE, new DequeueTask(mDequeueOneTask));
+        RefPtr<DequeueTask> task = new DequeueTask(mDequeueOneTask);
+        mWorkerLoop->PostTask(task.forget());
     }
 }
 

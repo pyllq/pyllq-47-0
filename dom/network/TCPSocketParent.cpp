@@ -32,6 +32,16 @@ DeserializeArrayBuffer(JSContext* aCx,
 } // namespace IPC
 
 namespace mozilla {
+
+namespace net {
+//
+// set MOZ_LOG=TCPSocket:5
+//
+extern LazyLogModule gTCPSocketLog;
+#define TCPSOCKET_LOG(args)     MOZ_LOG(gTCPSocketLog, LogLevel::Debug, args)
+#define TCPSOCKET_LOG_ENABLED() MOZ_LOG_TEST(gTCPSocketLog, LogLevel::Debug)
+} // namespace net
+
 namespace dom {
 
 static void
@@ -176,7 +186,8 @@ TCPSocketParent::RecvOpenBind(const nsCString& aRemoteHost,
                               const nsCString& aLocalAddr,
                               const uint16_t& aLocalPort,
                               const bool&     aUseSSL,
-                              const bool&     aUseArrayBuffers)
+                              const bool&     aUseArrayBuffers,
+                              const nsCString& aFilter)
 {
   if (net::UsingNeckoIPCSecurity() &&
       !AssertAppProcessPermission(Manager()->Manager(), "tcp-socket")) {
@@ -219,6 +230,24 @@ TCPSocketParent::RecvOpenBind(const nsCString& aRemoteHost,
     return true;
   }
 
+  if (!aFilter.IsEmpty()) {
+    nsAutoCString contractId(NS_NETWORK_TCP_SOCKET_FILTER_HANDLER_PREFIX);
+    contractId.Append(aFilter);
+    nsCOMPtr<nsISocketFilterHandler> filterHandler =
+      do_GetService(contractId.get());
+    if (!filterHandler) {
+      NS_ERROR("Content doesn't have a valid filter");
+      FireInteralError(this, __LINE__);
+      return true;
+    }
+    rv = filterHandler->NewFilter(getter_AddRefs(mFilter));
+    if (NS_FAILED(rv)) {
+      NS_ERROR("Cannot create filter that content specified");
+      FireInteralError(this, __LINE__);
+      return true;
+    }
+  }
+
   // Obtain App ID
   uint32_t appId = nsIScriptSecurityManager::NO_APP_ID;
   bool     inIsolatedMozBrowser = false;
@@ -245,7 +274,10 @@ TCPSocketParent::RecvStartTLS()
   NS_ENSURE_TRUE(mSocket, true);
   ErrorResult rv;
   mSocket->UpgradeToSecure(rv);
-  NS_ENSURE_FALSE(rv.Failed(), true);
+  if (NS_WARN_IF(rv.Failed())) {
+    rv.SuppressException();
+  }
+
   return true;
 }
 
@@ -263,7 +295,10 @@ TCPSocketParent::RecvResume()
   NS_ENSURE_TRUE(mSocket, true);
   ErrorResult rv;
   mSocket->Resume(rv);
-  NS_ENSURE_FALSE(rv.Failed(), true);
+  if (NS_WARN_IF(rv.Failed())) {
+    rv.SuppressException();
+  }
+
   return true;
 }
 
@@ -272,6 +307,25 @@ TCPSocketParent::RecvData(const SendableData& aData,
                           const uint32_t& aTrackingNumber)
 {
   ErrorResult rv;
+
+  if (mFilter) {
+    mozilla::net::NetAddr addr; // dummy value
+    bool allowed;
+    MOZ_ASSERT(aData.type() == SendableData::TArrayOfuint8_t,
+               "Unsupported data type for filtering");
+    const InfallibleTArray<uint8_t>& data(aData.get_ArrayOfuint8_t());
+    nsresult nsrv = mFilter->FilterPacket(&addr, data.Elements(),
+                                          data.Length(),
+                                          nsISocketFilter::SF_OUTGOING,
+                                          &allowed);
+
+    // Reject sending of unallowed data
+    if (NS_WARN_IF(NS_FAILED(nsrv)) || !allowed) {
+      TCPSOCKET_LOG(("%s: Dropping outgoing TCP packet", __FUNCTION__));
+      return false;
+    }
+  }
+
   switch (aData.type()) {
     case SendableData::TArrayOfuint8_t: {
       AutoSafeJSContext autoCx;
@@ -295,7 +349,7 @@ TCPSocketParent::RecvData(const SendableData& aData,
     default:
       MOZ_CRASH("unexpected SendableData type");
   }
-  NS_ENSURE_FALSE(rv.Failed(), true);
+  NS_ENSURE_SUCCESS(rv.StealNSResult(), true);
   return true;
 }
 
@@ -324,6 +378,20 @@ TCPSocketParent::FireArrayBufferDataEvent(nsTArray<uint8_t>& aBuffer, TCPReadySt
 {
   InfallibleTArray<uint8_t> arr;
   arr.SwapElements(aBuffer);
+
+  if (mFilter) {
+    bool allowed;
+    mozilla::net::NetAddr addr;
+    nsresult nsrv = mFilter->FilterPacket(&addr, arr.Elements(), arr.Length(),
+                                          nsISocketFilter::SF_INCOMING,
+                                          &allowed);
+    // receiving unallowed data, drop it.
+    if (NS_WARN_IF(NS_FAILED(nsrv)) || !allowed) {
+      TCPSOCKET_LOG(("%s: Dropping incoming TCP packet", __FUNCTION__));
+      return;
+    }
+  }
+
   SendableData data(arr);
   SendEvent(NS_LITERAL_STRING("data"), data, aReadyState);
 }
@@ -331,7 +399,11 @@ TCPSocketParent::FireArrayBufferDataEvent(nsTArray<uint8_t>& aBuffer, TCPReadySt
 void
 TCPSocketParent::FireStringDataEvent(const nsACString& aData, TCPReadyState aReadyState)
 {
-  SendEvent(NS_LITERAL_STRING("data"), SendableData(nsCString(aData)), aReadyState);
+  SendableData data((nsCString(aData)));
+
+  MOZ_ASSERT(!mFilter, "Socket filtering doesn't support nsCString");
+
+  SendEvent(NS_LITERAL_STRING("data"), data, aReadyState);
 }
 
 void

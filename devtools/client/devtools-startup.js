@@ -2,15 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* FIXME: remove this globals comment and replace with import-globals-from when
-   bug 1242893 is fixed */
-/* globals BrowserToolboxProcess */
-
 /**
  * This XPCOM component is loaded very early.
  * It handles command line arguments like -jsconsole, but also ensures starting
- * core modules like devtools/devtools-browser that listen for application
- * startup.
+ * core modules like 'devtools-browser.js' that hooks the browser windows
+ * and ensure setting up tools.
  *
  * Be careful to lazy load dependencies as much as possible.
  **/
@@ -22,13 +18,13 @@ const kDebuggerPrefs = [
   "devtools.debugger.remote-enabled",
   "devtools.chrome.enabled"
 ];
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+const { XPCOMUtils } = Cu.import("resource://gre/modules/XPCOMUtils.jsm", {});
 XPCOMUtils.defineLazyModuleGetter(this, "Services", "resource://gre/modules/Services.jsm");
 
 function DevToolsStartup() {}
 
 DevToolsStartup.prototype = {
-  handle: function(cmdLine) {
+  handle: function (cmdLine) {
     let consoleFlag = cmdLine.handleFlag("jsconsole", false);
     let debuggerFlag = cmdLine.handleFlag("jsdebugger", false);
     let devtoolsFlag = cmdLine.handleFlag("devtools", false);
@@ -52,7 +48,7 @@ DevToolsStartup.prototype = {
       this.handleDebuggerServerFlag(cmdLine, debuggerServerFlag);
     }
 
-    let onStartup = function(window) {
+    let onStartup = function (window) {
       Services.obs.removeObserver(onStartup,
                                   "browser-delayed-startup-finished");
       // Ensure loading core module once firefox is ready
@@ -66,16 +62,14 @@ DevToolsStartup.prototype = {
                              false);
   },
 
-  initDevTools: function() {
-    let { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+  initDevTools: function () {
+    let { loader } = Cu.import("resource://devtools/shared/Loader.jsm", {});
     // Ensure loading main devtools module that hooks up into browser UI
     // and initialize all devtools machinery.
-    // browser.xul or main top-level document used to load this module,
-    // but this code may be called without/before it.
-    require("devtools/client/framework/devtools-browser");
+    loader.require("devtools/client/framework/devtools-browser");
   },
 
-  handleConsoleFlag: function(cmdLine) {
+  handleConsoleFlag: function (cmdLine) {
     let window = Services.wm.getMostRecentWindow("devtools:webconsole");
     if (!window) {
       this.initDevTools();
@@ -95,7 +89,7 @@ DevToolsStartup.prototype = {
   },
 
   // Open the toolbox on the selected tab once the browser starts up.
-  handleDevToolsFlag: function(window) {
+  handleDevToolsFlag: function (window) {
     const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
     const {gDevTools} = require("devtools/client/framework/devtools");
     const {TargetFactory} = require("devtools/client/framework/target");
@@ -110,13 +104,13 @@ DevToolsStartup.prototype = {
         return Services.prefs.getBoolPref(pref);
       });
     } catch (ex) {
-      Cu.reportError(ex);
+      console.error(ex);
       return false;
     }
     if (!remoteDebuggingEnabled) {
       let errorMsg = "Could not run chrome debugger! You need the following " +
                      "prefs to be set to true: " + kDebuggerPrefs.join(", ");
-      Cu.reportError(errorMsg);
+      console.error(new Error(errorMsg));
       // Dump as well, as we're doing this from a commandline, make sure people
       // don't miss it:
       dump(errorMsg + "\n");
@@ -124,11 +118,11 @@ DevToolsStartup.prototype = {
     return remoteDebuggingEnabled;
   },
 
-  handleDebuggerFlag: function(cmdLine) {
+  handleDebuggerFlag: function (cmdLine) {
     if (!this._isRemoteDebuggingEnabled()) {
       return;
     }
-    Cu.import("resource://devtools/client/framework/ToolboxProcess.jsm");
+    const { BrowserToolboxProcess } = Cu.import("resource://devtools/client/framework/ToolboxProcess.jsm", {});
     BrowserToolboxProcess.init();
 
     if (cmdLine.state == Ci.nsICommandLine.STATE_REMOTE_AUTO) {
@@ -136,7 +130,7 @@ DevToolsStartup.prototype = {
     }
   },
 
-  handleDebuggerServerFlag: function(cmdLine, portOrPath) {
+  handleDebuggerServerFlag: function (cmdLine, portOrPath) {
     if (!this._isRemoteDebuggingEnabled()) {
       return;
     }
@@ -156,8 +150,8 @@ DevToolsStartup.prototype = {
       // settings).
       let serverLoader = new DevToolsLoader();
       serverLoader.invisibleToDebugger = true;
-      serverLoader.main("devtools/server/main");
-      let debuggerServer = serverLoader.DebuggerServer;
+      let { DebuggerServer: debuggerServer } =
+        serverLoader.require("devtools/server/main");
       debuggerServer.init();
       debuggerServer.addBrowserActors();
       debuggerServer.allowChromeProcess = true;

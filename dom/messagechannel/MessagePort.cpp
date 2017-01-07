@@ -48,13 +48,11 @@ using namespace mozilla::dom::workers;
 namespace mozilla {
 namespace dom {
 
-class PostMessageRunnable final : public nsICancelableRunnable
+class PostMessageRunnable final : public CancelableRunnable
 {
   friend class MessagePort;
 
 public:
-  NS_DECL_ISUPPORTS
-
   PostMessageRunnable(MessagePort* aPort, SharedMessagePortMessage* aData)
     : mPort(aPort)
     , mData(aData)
@@ -81,7 +79,7 @@ public:
     return rv;
   }
 
-  NS_IMETHOD
+  nsresult
   Cancel() override
   {
     mPort = nullptr;
@@ -165,8 +163,6 @@ private:
   RefPtr<SharedMessagePortMessage> mData;
 };
 
-NS_IMPL_ISUPPORTS(PostMessageRunnable, nsICancelableRunnable, nsIRunnable)
-
 NS_IMPL_CYCLE_COLLECTION_CLASS(MessagePort)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MessagePort,
@@ -199,19 +195,19 @@ NS_IMPL_RELEASE_INHERITED(MessagePort, DOMEventTargetHelper)
 
 namespace {
 
-class MessagePortFeature final : public workers::WorkerFeature
+class MessagePortWorkerHolder final : public workers::WorkerHolder
 {
   MessagePort* mPort;
 
 public:
-  explicit MessagePortFeature(MessagePort* aPort)
+  explicit MessagePortWorkerHolder(MessagePort* aPort)
     : mPort(aPort)
   {
     MOZ_ASSERT(aPort);
-    MOZ_COUNT_CTOR(MessagePortFeature);
+    MOZ_COUNT_CTOR(MessagePortWorkerHolder);
   }
 
-  virtual bool Notify(JSContext* aCx, workers::Status aStatus) override
+  virtual bool Notify(workers::Status aStatus) override
   {
     if (aStatus > Running) {
       // We cannot process messages anymore because we cannot dispatch new
@@ -223,9 +219,9 @@ public:
   }
 
 private:
-  ~MessagePortFeature()
+  ~MessagePortWorkerHolder()
   {
-    MOZ_COUNT_DTOR(MessagePortFeature);
+    MOZ_COUNT_DTOR(MessagePortWorkerHolder);
   }
 };
 
@@ -291,7 +287,7 @@ MessagePort::MessagePort(nsIGlobalObject* aGlobal)
 MessagePort::~MessagePort()
 {
   CloseForced();
-  MOZ_ASSERT(!mWorkerFeature);
+  MOZ_ASSERT(!mWorkerHolder);
 }
 
 /* static */ already_AddRefed<MessagePort>
@@ -344,7 +340,7 @@ MessagePort::Initialize(const nsID& aUUID,
 
   if (mNeutered) {
     // If this port is neutered we don't want to keep it alive artificially nor
-    // we want to add listeners or workerFeatures.
+    // we want to add listeners or workerWorkerHolders.
     mState = eStateDisentangled;
     return;
   }
@@ -361,15 +357,15 @@ MessagePort::Initialize(const nsID& aUUID,
   if (!NS_IsMainThread()) {
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
     MOZ_ASSERT(workerPrivate);
-    MOZ_ASSERT(!mWorkerFeature);
+    MOZ_ASSERT(!mWorkerHolder);
 
-    nsAutoPtr<WorkerFeature> feature(new MessagePortFeature(this));
-    if (NS_WARN_IF(!workerPrivate->AddFeature(feature))) {
+    nsAutoPtr<WorkerHolder> workerHolder(new MessagePortWorkerHolder(this));
+    if (NS_WARN_IF(!workerHolder->HoldWorker(workerPrivate))) {
       aRv.Throw(NS_ERROR_FAILURE);
       return;
     }
 
-    mWorkerFeature = Move(feature);
+    mWorkerHolder = Move(workerHolder);
   } else if (GetOwner()) {
     MOZ_ASSERT(NS_IsMainThread());
     MOZ_ASSERT(GetOwner()->IsInnerWindow());
@@ -568,7 +564,7 @@ MessagePort::Dispatch()
 
   mPostMessageRunnable = new PostMessageRunnable(this, data);
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(mPostMessageRunnable)));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(mPostMessageRunnable));
 }
 
 void
@@ -916,13 +912,8 @@ MessagePort::UpdateMustKeepAlive()
       mIsKeptAlive) {
     mIsKeptAlive = false;
 
-    if (mWorkerFeature) {
-      WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
-      MOZ_ASSERT(workerPrivate);
-
-      workerPrivate->RemoveFeature(mWorkerFeature);
-      mWorkerFeature = nullptr;
-    }
+    // The DTOR of this WorkerHolder will release the worker for us.
+    mWorkerHolder = nullptr;
 
     if (NS_IsMainThread()) {
       nsCOMPtr<nsIObserverService> obs =

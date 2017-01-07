@@ -31,33 +31,34 @@ public:
   virtual ~FFmpegDecoderModule() {}
 
   already_AddRefed<MediaDataDecoder>
-  CreateVideoDecoder(const VideoInfo& aConfig,
-                     layers::LayersBackend aLayersBackend,
-                     layers::ImageContainer* aImageContainer,
-                     FlushableTaskQueue* aVideoTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override
+  CreateVideoDecoder(const CreateDecoderParams& aParams) override
   {
     RefPtr<MediaDataDecoder> decoder =
-      new FFmpegVideoDecoder<V>(mLib, aVideoTaskQueue, aCallback, aConfig,
-                                aImageContainer);
+      new FFmpegVideoDecoder<V>(mLib,
+                                aParams.mTaskQueue,
+                                aParams.mCallback,
+                                aParams.VideoConfig(),
+                                aParams.mImageContainer);
     return decoder.forget();
   }
 
   already_AddRefed<MediaDataDecoder>
-  CreateAudioDecoder(const AudioInfo& aConfig,
-                     FlushableTaskQueue* aAudioTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override
+  CreateAudioDecoder(const CreateDecoderParams& aParams) override
   {
 #ifdef USING_MOZFFVPX
     return nullptr;
 #else
     RefPtr<MediaDataDecoder> decoder =
-      new FFmpegAudioDecoder<V>(mLib, aAudioTaskQueue, aCallback, aConfig);
+      new FFmpegAudioDecoder<V>(mLib,
+                                aParams.mTaskQueue,
+                                aParams.mCallback,
+                                aParams.AudioConfig());
     return decoder.forget();
 #endif
   }
 
-  bool SupportsMimeType(const nsACString& aMimeType) const override
+  bool SupportsMimeType(const nsACString& aMimeType,
+                        DecoderDoctorDiagnostics* aDiagnostics) const override
   {
     AVCodecID videoCodec = FFmpegVideoDecoder<V>::GetCodecId(aMimeType);
 #ifdef USING_MOZFFVPX

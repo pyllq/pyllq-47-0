@@ -44,6 +44,13 @@
         <meta-data android:name="com.google.android.gms.version" android:value="@integer/google_play_services_version" />
 #endif
 
+        <!-- This activity handles all incoming Intents and dispatches them to other activities. -->
+        <activity android:name="org.mozilla.gecko.LauncherActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:relinquishTaskIdentity="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true" />
+
         <!-- Fennec is shipped as the Android package named
              org.mozilla.{fennec,firefox,firefox_beta}.  The internal Java
              package hierarchy inside the Android package used to have an
@@ -53,7 +60,7 @@
                   android:label="@string/moz_app_displayname"
                   android:taskAffinity="@ANDROID_PACKAGE_NAME@.BROWSER"
                   android:alwaysRetainTaskState="true"
-                  android:configChanges="keyboard|keyboardHidden|mcc|mnc|orientation|screenSize|locale|layoutDirection"
+                  android:configChanges="keyboard|keyboardHidden|mcc|mnc|orientation|screenSize|locale|layoutDirection|smallestScreenSize|screenLayout"
                   android:windowSoftInputMode="stateUnspecified|adjustResize"
                   android:launchMode="singleTask"
                   android:exported="true"
@@ -64,7 +71,7 @@
              filter details change. -->
         <activity-alias android:name=".App"
                         android:label="@MOZ_APP_DISPLAYNAME@"
-                        android:targetActivity="@MOZ_ANDROID_BROWSER_INTENT_CLASS@">
+                        android:targetActivity="org.mozilla.gecko.LauncherActivity">
 
             <!-- android:priority ranges between -1000 and 1000.  We never want
                  another activity to usurp the MAIN action, so we ratchet our
@@ -75,6 +82,27 @@
                 <category android:name="android.intent.category.MULTIWINDOW_LAUNCHER"/>
                 <category android:name="android.intent.category.APP_BROWSER" />
                 <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:scheme="about" />
+                <data android:scheme="javascript" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:mimeType="text/html"/>
+                <data android:mimeType="text/plain"/>
+                <data android:mimeType="application/xhtml+xml"/>
             </intent-filter>
 
             <meta-data android:name="com.sec.minimode.icon.portrait.normal"
@@ -89,13 +117,6 @@
 
             <intent-filter>
                 <action android:name="org.mozilla.gecko.GUEST_SESSION_INPROGRESS" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-
-            <!-- Notification API V2 -->
-            <intent-filter>
-                <action android:name="@ANDROID_PACKAGE_NAME@.helperBroadcastAction" />
-                <data android:scheme="moz-notification" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
@@ -154,6 +175,14 @@
                   android:launchMode="singleTop"
                   android:theme="@style/OverlayActivity" />
 
+        <activity android:name="org.mozilla.gecko.promotion.SimpleHelperUI"
+                  android:launchMode="singleTop"
+                  android:theme="@style/OverlayActivity" />
+
+        <activity android:name="org.mozilla.gecko.promotion.HomeScreenPrompt"
+                  android:launchMode="singleTop"
+                  android:theme="@style/OverlayActivity" />
+
         <!-- The main reason for the Tab Queue build flag is to not mess with the VIEW intent filter
              before the rest of the plumbing is in place -->
 
@@ -162,34 +191,6 @@
         <activity android:name="org.mozilla.gecko.tabqueue.TabQueuePrompt"
                   android:launchMode="singleTop"
                   android:theme="@style/OverlayActivity" />
-
-        <activity android:name="org.mozilla.gecko.tabqueue.TabQueueDispatcher"
-                  android:label="@MOZ_APP_DISPLAYNAME@"
-                  android:launchMode="singleTask"
-                  android:excludeFromRecents="true"
-                  android:taskAffinity="@ANDROID_PACKAGE_NAME@.TABQUEUE"
-                  android:theme="@style/TabQueueActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="http" />
-                <data android:scheme="https" />
-                <data android:scheme="about" />
-                <data android:scheme="javascript" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" />
-                <data android:scheme="http" />
-                <data android:scheme="https" />
-                <data android:mimeType="text/html"/>
-                <data android:mimeType="text/plain"/>
-                <data android:mimeType="application/xhtml+xml"/>
-            </intent-filter>
-        </activity>
 
         <receiver android:name="org.mozilla.gecko.restrictions.RestrictionProvider">
           <intent-filter>
@@ -226,6 +227,10 @@
                  android:process="@MANGLED_ANDROID_PACKAGE_NAME@.Restarter">
         </service>
 
+        <service android:name="org.mozilla.gecko.media.MediaControlService"
+                 android:exported="false">
+        </service>
+
         <receiver android:name="org.mozilla.gecko.AlarmReceiver" >
         </receiver>
 
@@ -235,6 +240,17 @@
             <intent-filter>
                 <action android:name="android.intent.action.PACKAGE_REPLACED" />
                 <data android:scheme="package" android:path="org.mozilla.gecko" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="org.mozilla.gecko.notifications.NotificationReceiver"
+            android:exported="false">
+            <!-- Notification API V2 -->
+            <intent-filter>
+                <action android:name="@ANDROID_PACKAGE_NAME@.helperBroadcastAction" />
+                <data android:scheme="moz-notification" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 
@@ -268,6 +284,10 @@
                   android:authorities="@ANDROID_PACKAGE_NAME@.db.browser"
                   android:exported="false"/>
 
+        <provider android:name="org.mozilla.gecko.distribution.PartnerBookmarksProviderProxy"
+                  android:authorities="@ANDROID_PACKAGE_NAME@.partnerbookmarks"
+                  android:exported="false"/>
+
         <!-- Share overlay activity
 
              Setting launchMode="singleTop" ensures onNewIntent is called when the Activity is
@@ -286,6 +306,11 @@
             </intent-filter>
 
         </activity>
+
+#ifdef MOZ_ANDROID_CUSTOM_TABS
+        <activity android:name="org.mozilla.gecko.customtabs.CustomTabsActivity"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+#endif
 
         <!-- Service to handle requests from overlays. -->
         <service android:name="org.mozilla.gecko.overlays.service.OverlayActionService" />
@@ -325,11 +350,6 @@
                   android:authorities="@ANDROID_PACKAGE_NAME@.db.home"
                   android:exported="false"/>
 
-        <provider android:name="org.mozilla.gecko.db.ReadingListProvider"
-                  android:authorities="@ANDROID_PACKAGE_NAME@.db.readinglist"
-                  android:label="@string/reading_list_title"
-                  android:exported="false"/>
-
         <provider android:name="org.mozilla.gecko.db.SearchHistoryProvider"
                   android:authorities="@ANDROID_PACKAGE_NAME@.db.searchhistory"
                   android:exported="false"/>
@@ -342,7 +362,7 @@
 
         <service
             android:exported="false"
-            android:name="org.mozilla.gecko.NotificationService">
+            android:name="org.mozilla.gecko.notifications.NotificationService">
         </service>
 
         <service
@@ -351,8 +371,41 @@
         </service>
 
         <service
+            android:exported="false"
+            android:name="org.mozilla.gecko.feeds.FeedService">
+        </service>
+
+        <!-- DON'T EXPORT THIS, please! An attacker could delete arbitrary files. -->
+        <service
+            android:exported="false"
+            android:name="org.mozilla.gecko.cleanup.FileCleanupService">
+        </service>
+
+        <receiver
+            android:name="org.mozilla.gecko.feeds.FeedAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="org.mozilla.gecko.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"></action>
+            </intent-filter>
+        </receiver>
+
+        <service
           android:name="org.mozilla.gecko.telemetry.TelemetryUploadService"
           android:exported="false"/>
+
+#ifdef MOZ_ANDROID_CUSTOM_TABS
+        <service
+            android:name="org.mozilla.gecko.customtabs.GeckoCustomTabsService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.support.customtabs.action.CustomTabsService" />
+            </intent-filter>
+        </service>
+#endif
 
 #ifdef MOZ_MOZ_BUILD_ORIG
 #include ../services/manifests/FxAccountAndroidManifest_services.xml.in

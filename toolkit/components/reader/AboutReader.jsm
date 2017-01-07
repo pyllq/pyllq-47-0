@@ -12,10 +12,11 @@ Cu.import("resource://gre/modules/ReaderMode.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "AsyncPrefs", "resource://gre/modules/AsyncPrefs.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "NarrateControls", "resource://gre/modules/narrate/NarrateControls.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Rect", "resource://gre/modules/Geometry.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Task", "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry", "resource://gre/modules/UITelemetry.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "NarrateControls", "resource://gre/modules/narrate/NarrateControls.jsm");
 
 var gStrings = Services.strings.createBundle("chrome://global/locale/aboutReader.properties");
 
@@ -36,9 +37,12 @@ var AboutReader = function(mm, win, articlePromise) {
   this._mm.addMessageListener("Reader:CloseDropdown", this);
   this._mm.addMessageListener("Reader:AddButton", this);
   this._mm.addMessageListener("Reader:RemoveButton", this);
+  this._mm.addMessageListener("Reader:GetStoredArticleData", this);
 
   this._docRef = Cu.getWeakReference(doc);
   this._winRef = Cu.getWeakReference(win);
+  this._innerWindowId = win.QueryInterface(Ci.nsIInterfaceRequestor)
+    .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
 
   this._article = null;
 
@@ -58,9 +62,11 @@ var AboutReader = function(mm, win, articlePromise) {
 
   doc.addEventListener("click", this, false);
 
-  win.addEventListener("unload", this, false);
+  win.addEventListener("pagehide", this, false);
   win.addEventListener("scroll", this, false);
   win.addEventListener("resize", this, false);
+
+  Services.obs.addObserver(this, "inner-window-destroyed", false);
 
   doc.addEventListener("visibilitychange", this, false);
 
@@ -102,6 +108,10 @@ var AboutReader = function(mm, win, articlePromise) {
   this._setFontType(fontType);
 
   this._setupFontSizeButtons();
+
+  this._setupContentWidthButtons();
+
+  this._setupLineHeightButtons();
 
   if (win.speechSynthesis && Services.prefs.getBoolPref("narrate.enabled")) {
     new NarrateControls(mm, win);
@@ -204,6 +214,9 @@ AboutReader.prototype = {
         }
         break;
       }
+      case "Reader:GetStoredArticleData": {
+        this._mm.sendAsyncMessage("Reader:StoredArticleData", { article: this._article });
+      }
     }
   },
 
@@ -221,7 +234,7 @@ AboutReader.prototype = {
         }
         break;
       case "scroll":
-        this._closeDropdowns();
+        this._closeDropdowns(true);
         let isScrollingUp = this._scrollOffset > aEvent.pageY;
         this._setSystemUIVisibility(isScrollingUp);
         this._scrollOffset = aEvent.pageY;
@@ -245,20 +258,34 @@ AboutReader.prototype = {
         this._handleVisibilityChange();
         break;
 
-      case "unload":
+      case "pagehide":
         // Close the Banners Font-dropdown, cleanup Android BackPressListener.
         this._closeDropdowns();
 
         this._mm.removeMessageListener("Reader:CloseDropdown", this);
         this._mm.removeMessageListener("Reader:AddButton", this);
         this._mm.removeMessageListener("Reader:RemoveButton", this);
+        this._mm.removeMessageListener("Reader:GetStoredArticleData", this);
         this._windowUnloaded = true;
         break;
     }
   },
 
+  observe: function(subject, topic, data) {
+    if (subject.QueryInterface(Ci.nsISupportsPRUint64).data != this._innerWindowId) {
+      return;
+    }
+
+    Services.obs.removeObserver(this, "inner-window-destroyed", false);
+
+    this._mm.removeMessageListener("Reader:CloseDropdown", this);
+    this._mm.removeMessageListener("Reader:AddButton", this);
+    this._mm.removeMessageListener("Reader:RemoveButton", this);
+    this._windowUnloaded = true;
+  },
+
   _onReaderClose: function() {
-    this._win.location.href = this._getOriginalUrl();
+    ReaderMode.leaveReaderMode(this._mm.docShell, this._win);
   },
 
   _setFontSize: function(newFontSize) {
@@ -269,11 +296,7 @@ AboutReader.prototype = {
 
     this._fontSize = newFontSize;
     containerClasses.add("font-size" + this._fontSize);
-
-    this._mm.sendAsyncMessage("Reader:SetIntPref", {
-      name: "reader.font_size",
-      value: this._fontSize
-    });
+    return AsyncPrefs.set("reader.font_size", this._fontSize);
   },
 
   _setupFontSizeButtons: function() {
@@ -334,6 +357,142 @@ AboutReader.prototype = {
       currentSize--;
       updateControls();
       this._setFontSize(currentSize);
+    }, true);
+  },
+
+  _setContentWidth: function(newContentWidth) {
+    let containerClasses = this._doc.getElementById("container").classList;
+
+    if (this._contentWidth > 0)
+      containerClasses.remove("content-width" + this._contentWidth);
+
+    this._contentWidth = newContentWidth;
+    containerClasses.add("content-width" + this._contentWidth);
+    return AsyncPrefs.set("reader.content_width", this._contentWidth);
+  },
+
+  _setupContentWidthButtons: function() {
+    const CONTENT_WIDTH_MIN = 1;
+    const CONTENT_WIDTH_MAX = 9;
+
+    let currentContentWidth = Services.prefs.getIntPref("reader.content_width");
+    currentContentWidth = Math.max(CONTENT_WIDTH_MIN, Math.min(CONTENT_WIDTH_MAX, currentContentWidth));
+
+    let plusButton = this._doc.getElementById("content-width-plus");
+    let minusButton = this._doc.getElementById("content-width-minus");
+
+    function updateControls() {
+      if (currentContentWidth === CONTENT_WIDTH_MIN) {
+        minusButton.setAttribute("disabled", true);
+      } else {
+        minusButton.removeAttribute("disabled");
+      }
+      if (currentContentWidth === CONTENT_WIDTH_MAX) {
+        plusButton.setAttribute("disabled", true);
+      } else {
+        plusButton.removeAttribute("disabled");
+      }
+    }
+
+    updateControls();
+    this._setContentWidth(currentContentWidth);
+
+    plusButton.addEventListener("click", (event) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      event.stopPropagation();
+
+      if (currentContentWidth >= CONTENT_WIDTH_MAX) {
+        return;
+      }
+
+      currentContentWidth++;
+      updateControls();
+      this._setContentWidth(currentContentWidth);
+    }, true);
+
+    minusButton.addEventListener("click", (event) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      event.stopPropagation();
+
+      if (currentContentWidth <= CONTENT_WIDTH_MIN) {
+        return;
+      }
+
+      currentContentWidth--;
+      updateControls();
+      this._setContentWidth(currentContentWidth);
+    }, true);
+  },
+
+  _setLineHeight: function(newLineHeight) {
+    let contentClasses = this._doc.getElementById("moz-reader-content").classList;
+
+    if (this._lineHeight > 0)
+      contentClasses.remove("line-height" + this._lineHeight);
+
+    this._lineHeight = newLineHeight;
+    contentClasses.add("line-height" + this._lineHeight);
+    return AsyncPrefs.set("reader.line_height", this._lineHeight);
+  },
+
+  _setupLineHeightButtons: function() {
+    const LINE_HEIGHT_MIN = 1;
+    const LINE_HEIGHT_MAX = 9;
+
+    let currentLineHeight = Services.prefs.getIntPref("reader.line_height");
+    currentLineHeight = Math.max(LINE_HEIGHT_MIN, Math.min(LINE_HEIGHT_MAX, currentLineHeight));
+
+    let plusButton = this._doc.getElementById("line-height-plus");
+    let minusButton = this._doc.getElementById("line-height-minus");
+
+    function updateControls() {
+      if (currentLineHeight === LINE_HEIGHT_MIN) {
+        minusButton.setAttribute("disabled", true);
+      } else {
+        minusButton.removeAttribute("disabled");
+      }
+      if (currentLineHeight === LINE_HEIGHT_MAX) {
+        plusButton.setAttribute("disabled", true);
+      } else {
+        plusButton.removeAttribute("disabled");
+      }
+    }
+
+    updateControls();
+    this._setLineHeight(currentLineHeight);
+
+    plusButton.addEventListener("click", (event) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      event.stopPropagation();
+
+      if (currentLineHeight >= LINE_HEIGHT_MAX) {
+        return;
+      }
+
+      currentLineHeight++;
+      updateControls();
+      this._setLineHeight(currentLineHeight);
+    }, true);
+
+    minusButton.addEventListener("click", (event) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      event.stopPropagation();
+
+      if (currentLineHeight <= LINE_HEIGHT_MIN) {
+        return;
+      }
+
+      currentLineHeight--;
+      updateControls();
+      this._setLineHeight(currentLineHeight);
     }, true);
   },
 
@@ -425,10 +584,7 @@ AboutReader.prototype = {
     this._enableAmbientLighting(colorSchemePref === "auto");
     this._setColorScheme(colorSchemePref);
 
-    this._mm.sendAsyncMessage("Reader:SetCharPref", {
-      name: "reader.color_scheme",
-      value: colorSchemePref
-    });
+    AsyncPrefs.set("reader.color_scheme", colorSchemePref);
   },
 
   _setFontType: function(newFontType) {
@@ -443,10 +599,7 @@ AboutReader.prototype = {
     this._fontType = newFontType;
     bodyClasses.add(this._fontType);
 
-    this._mm.sendAsyncMessage("Reader:SetCharPref", {
-      name: "reader.font_type",
-      value: this._fontType
-    });
+    AsyncPrefs.set("reader.font_type", this._fontType);
   },
 
   _setSystemUIVisibility: function(visible) {
@@ -461,29 +614,40 @@ AboutReader.prototype = {
     if (this._articlePromise) {
       article = yield this._articlePromise;
     } else {
-      article = yield this._getArticle(url);
+      try {
+        article = yield this._getArticle(url);
+      } catch (e) {
+        if (e && e.newURL) {
+          let readerURL = "about:reader?url=" + encodeURIComponent(e.newURL);
+          this._win.location.replace(readerURL);
+          return;
+        }
+      }
     }
 
     if (this._windowUnloaded) {
       return;
     }
 
-    if (article) {
-      this._showContent(article);
-    } else if (this._articlePromise) {
-      // If we were promised an article, show an error message if there's a failure.
+    // Replace the loading message with an error message if there's a failure.
+    // Users are supposed to navigate away by themselves (because we cannot
+    // remove ourselves from session history.)
+    if (!article) {
       this._showError();
-    } else {
-      // Otherwise, just load the original URL. We can encounter this case when
-      // loading an about:reader URL directly (e.g. opening a reading list item).
-      this._win.location.href = url;
+      return;
     }
+
+    this._showContent(article);
   }),
 
   _getArticle: function(url) {
     return new Promise((resolve, reject) => {
       let listener = (message) => {
         this._mm.removeMessageListener("Reader:ArticleData", listener);
+        if (message.data.newURL) {
+          reject({ newURL: message.data.newURL });
+          return;
+        }
         resolve(message.data.article);
       };
       this._mm.addMessageListener("Reader:ArticleData", listener);
@@ -617,6 +781,9 @@ AboutReader.prototype = {
     this._doc.body.classList.add("loaded");
 
     Services.obs.notifyObservers(this._win, "AboutReader:Ready", "");
+
+    this._doc.dispatchEvent(
+      new this._win.CustomEvent("AboutReaderContentReady", { bubbles: true, cancelable: false }));
   },
 
   _hideContent: function() {
@@ -780,10 +947,17 @@ AboutReader.prototype = {
   },
 
   /*
-   * If the ReaderView has open dropdowns, close them.
+   * If the ReaderView has open dropdowns, close them. If we are closing the
+   * dropdowns because the page is scrolling, allow popups to stay open with
+   * the keep-open class.
    */
-  _closeDropdowns: function() {
-    let openDropdowns = this._doc.querySelectorAll(".dropdown.open:not(.keep-open)");
+  _closeDropdowns: function(scrolling) {
+    let selector = ".dropdown.open";
+    if (scrolling) {
+      selector += ":not(.keep-open)";
+    }
+
+    let openDropdowns = this._doc.querySelectorAll(selector);
     for (let dropdown of openDropdowns) {
       dropdown.classList.remove("open");
     }

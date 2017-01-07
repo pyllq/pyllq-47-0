@@ -97,6 +97,16 @@ class HTMLFormatter(base.BaseFormatter):
         tc_time = (data["time"] - self.start_times.pop(data["test"])) / 1000.
         additional_html = []
         debug = data.get("extra", {})
+        # Add support for log exported from wptrunner. The structure of
+        # reftest_screenshots is listed in wptrunner/executors/base.py.
+        if debug.get('reftest_screenshots'):
+            log_data = debug.get("reftest_screenshots", {})
+            debug = {
+                'image1':'data:image/png;base64,' + log_data[0].get("screenshot", {}),
+                'image2':'data:image/png;base64,' + log_data[2].get("screenshot", {}),
+                'differences': "Not Implemented",
+            }
+
         links_html = []
 
         status = status_name = data["status"]
@@ -110,19 +120,40 @@ class HTMLFormatter(base.BaseFormatter):
         self.test_count[status_name] += 1
 
         if status in ['SKIP', 'FAIL', 'ERROR']:
+            if debug.get('differences'):
+                images = [
+                    ('image1','Image 1 (test)'),
+                    ('image2','Image 2 (reference)')
+                ]
+                for title, description in images:
+                    screenshot = '%s' % debug[title]
+                    additional_html.append(html.div(
+                        html.a(html.img(src=screenshot), href="#"),
+                        html.br(),
+                        html.a(description),
+                        class_='screenshot'))
+
             if debug.get('screenshot'):
-                screenshot = 'data:image/png;base64,%s' % debug['screenshot']
+                screenshot = '%s' % debug['screenshot']
+                screenshot = 'data:image/png;base64,' + screenshot
+
                 additional_html.append(html.div(
                     html.a(html.img(src=screenshot), href="#"),
                     class_='screenshot'))
+
             for name, content in debug.items():
-                if 'screenshot' in name:
-                    href = '#'
+                if name in ['screenshot', 'image1', 'image2']:
+                    if not content.startswith('data:image/png;base64,'):
+                        href = 'data:image/png;base64,%s' % content
+                    else:
+                        href = content
                 else:
-                    # use base64 to avoid that some browser (such as Firefox, Opera)
-                    # treats '#' as the start of another link if the data URL contains.
-                    # use 'charset=utf-8' to show special characters like Chinese.
-                    href = 'data:text/plain;charset=utf-8;base64,%s' % base64.b64encode(content.encode('utf-8'))
+                    # Encode base64 to avoid that some browsers (such as Firefox, Opera)
+                    # treats '#' as the start of another link if it is contained in the data URL.
+                    # Use 'charset=utf-8' to show special characters like Chinese.
+                    utf_encoded = unicode(content).encode('utf-8', 'xmlcharrefreplace')
+                    href = 'data:text/html;charset=utf-8;base64,%s' % base64.b64encode(utf_encoded)
+
                 links_html.append(html.a(
                     name.title(),
                     class_=name,

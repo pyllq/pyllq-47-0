@@ -17,6 +17,7 @@
 #define nsWindow_h
 
 #include "InputData.h"
+#include "mozilla/UniquePtr.h"
 #include "nsBaseWidget.h"
 #include "nsRegion.h"
 #include "nsIIdleServiceInternal.h"
@@ -89,7 +90,7 @@ public:
                              nsEventStatus& aStatus);
     virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
                                                 TouchPointerState aPointerState,
-                                                ScreenIntPoint aPointerScreenPoint,
+                                                LayoutDeviceIntPoint aPoint,
                                                 double aPointerPressure,
                                                 uint32_t aPointerOrientation,
                                                 nsIObserver* aObserver) override;
@@ -112,11 +113,8 @@ public:
     virtual mozilla::layers::LayerManager*
         GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                         LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                        LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                        bool* aAllowRetaining = nullptr);
+                        LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT);
     virtual void DestroyCompositor();
-
-    virtual CompositorParent* NewCompositorParent(int aSurfaceWidth, int aSurfaceHeight);
 
     NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
                                       const InputContextAction& aAction);
@@ -147,10 +145,15 @@ protected:
     // event (like a keypress or mouse click).
     void UserActivity();
 
+    bool UseExternalCompositingSurface() const override {
+      return true;
+    }
+    CompositorBridgeParent* GetCompositorBridgeParent() const;
+
 private:
     // This is used by SynthesizeNativeTouchPoint to maintain state between
     // multiple synthesized points
-    nsAutoPtr<mozilla::MultiTouchInput> mSynthesizedTouchInput;
+    mozilla::UniquePtr<mozilla::MultiTouchInput> mSynthesizedTouchInput;
 
     RefPtr<nsScreenGonk> mScreen;
 

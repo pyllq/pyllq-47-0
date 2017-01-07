@@ -17,7 +17,8 @@
 #include "nsWeakReference.h"
 #include "mozilla/SHA1.h"
 #include "mozilla/StaticMutex.h"
-#include "mozilla/Endian.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/TimeStamp.h"
 
 class nsIFile;
@@ -694,6 +695,10 @@ public:
   // READY or WRITING and mIndexNeedsUpdate as well as mShuttingDown is false.
   static nsresult IsUpToDate(bool *_retval);
 
+  // Called from CacheStorageService::Clear() and CacheFileContextEvictor::EvictEntries(),
+  // sets a flag that blocks notification to AsyncGetDiskConsumption.
+  static void OnAsyncEviction(bool aEvicting);
+
   // Memory reporting
   static size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
   static size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
@@ -767,7 +772,8 @@ private:
   // cleared.
   nsresult GetFile(const nsACString &aName, nsIFile **_retval);
   nsresult RemoveFile(const nsACString &aName);
-  void     RemoveIndexFromDisk();
+  void     RemoveAllIndexFiles();
+  void     RemoveJournalAndTempFile();
   // Writes journal to the disk and clears dirty flag in index header.
   nsresult WriteLogToDisk();
 
@@ -831,6 +837,7 @@ private:
   // Following methods perform updating and building of the index.
   // Timer callback that starts update or build process.
   static void DelayedUpdate(nsITimer *aTimer, void *aClosure);
+  void DelayedUpdateLocked();
   // Posts timer event that start update or build process.
   nsresult ScheduleUpdateTimer(uint32_t aDelay);
   nsresult SetupDirectoryEnumerator();
@@ -908,6 +915,7 @@ private:
 
   static char const * StateString(EState aState);
   void ChangeState(EState aNewState);
+  void NotifyAsyncGetDiskConsumptionCallbacks();
 
   // Allocates and releases buffer used for reading and writing index.
   void AllocBuffer();
@@ -928,7 +936,7 @@ private:
 
   void ReportHashStats();
 
-  static CacheIndex *gInstance;
+  static mozilla::StaticRefPtr<CacheIndex> gInstance;
   static StaticMutex sLock;
 
   nsCOMPtr<nsIFile> mCacheDirectory;
@@ -986,6 +994,10 @@ private:
   uint32_t                  mRWBufPos;
   RefPtr<CacheHash>         mRWHash;
 
+  // True if read or write operation is pending. It is used to ensure that
+  // mRWBuf is not freed until OnDataRead or OnDataWritten is called.
+  bool                      mRWPending;
+
   // Reading of journal succeeded if true.
   bool                      mJournalReadSuccessfully;
 
@@ -1028,7 +1040,12 @@ private:
 
   nsTArray<CacheIndexIterator *> mIterators;
 
-  class DiskConsumptionObserver : public nsRunnable
+  // This flag is true iff we are between CacheStorageService:Clear() and processing
+  // all contexts to be evicted.  It will make UI to show "calculating" instead of
+  // any intermediate cache size.
+  bool mAsyncGetDiskConsumptionBlocked;
+
+  class DiskConsumptionObserver : public Runnable
   {
   public:
     static DiskConsumptionObserver* Init(nsICacheStorageConsumptionObserver* aObserver)

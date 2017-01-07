@@ -39,6 +39,7 @@ Structure::
         defaultSearchEngineData: {, // data about the current default engine
           name: <string>, // engine name, e.g. "Yahoo"; or "NONE" if no default
           loadPath: <string>, // where the engine line is located; missing if no default
+          origin: <string>, // 'default', 'verified', 'unverified', or 'invalid'; based on the presence and validity of the engine's loadPath verification hash.
           submissionURL: <string> // missing if no default or for user-installed engines
         },
         searchCohort: <string>, // optional, contains an identifier for any active search A/B experiments
@@ -57,6 +58,13 @@ Structure::
           "pref.name.value": value // some prefs send the value
           "pref.name.url": "<user-set>" // For some privacy-sensitive prefs
             // only the fact that the value has been changed is recorded
+        },
+        attribution: { // optional, only present if the installation has attribution data
+          // all of these values are optional.
+          source: <string>, // referring partner domain, when install happens via a known partner
+          medium: <string>, // category of the source, such as "organic" for a search engine
+          campaign: <string>, // identifier of the particular campaign that led to the download of the product
+          content: <string>, // identifier to indicate the particular link within a campaign
         },
       },
       profile: {
@@ -92,7 +100,7 @@ Structure::
               ...
               // as applicable:
               // "MMX", "SSE", "SSE2", "SSE3", "SSSE3", "SSE4A", "SSE4_1",
-              // "SSE4_2", "EDSP", "ARMv6", "ARMv7", "NEON"
+              // "SSE4_2", "AVX", "AVX2", "EDSP", "ARMv6", "ARMv7", "NEON"
             ],
         },
         device: { // This section is only available on mobile devices.
@@ -237,7 +245,7 @@ Structure::
                 applyBackgroundUpdates: <integer>,
             },
             ...
-        ],
+        },
         activeExperiment: { // section is empty if there's no active experiment
             id: <string>, // id
             branch: <string>, // branch name
@@ -284,6 +292,8 @@ The object contains:
  [distribution]/searchplugins/common/engine.xml
  [other]/engine.xml
 
+- an ``origin`` property: the value will be ``default`` for engines that are built-in or from distribution partners, ``verified`` for user-installed engines with valid verification hashes, ``unverified`` for non-default engines without verification hash, and ``invalid`` for engines with broken verification hashes.
+
 - a ``submissionURL`` property with the HTTP url we would use to search.
   For privacy, we don't record this for user-installed engines.
 
@@ -307,9 +317,20 @@ The following is a partial list of collected preferences.
 
 - ``browser.urlbar.suggest.searches``: True if search suggestions are enabled in the urlbar. Defaults to false.
 
-- ``browser.urlbar.unifiedcomplete``: True if the urlbar's UnifiedComplete back-end is enabled.
-
 - ``browser.urlbar.userMadeSearchSuggestionsChoice``: True if the user has clicked Yes or No in the urlbar's opt-in notification. Defaults to false.
+
+- ``browser.zoom.full``: True if zoom is enabled for both text and images, that is if "Zoom Text Only" is not enabled. Defaults to true. Collection of this preference has been enabled in Firefox 50 and will be disabled again in Firefox 53 (`Bug 979323 <https://bugzilla.mozilla.org/show_bug.cgi?id=979323>`_).
+
+- ``security.sandbox.content.level``: The meanings of the values are OS dependent, but 0 means not sandboxed for all OS. Details of the meanings can be found in the `Firefox prefs file <http://hg.mozilla.org/mozilla-central/file/tip/browser/app/profile/firefox.js>`_.
+
+attribution
+~~~~~~~~~~~
+
+This object contains the attribution data for the product installation.
+
+Attribution data is used to link installations of Firefox with the source that the user arrived at the Firefox download page from. It would indicate, for instance, when a user executed a web search for Firefox and arrived at the download page from there, directly navigated to the site, clicked on a link from a particular social media campaign, etc.
+
+The attribution data is included in some versions of the default Firefox installer for Windows (the "stub" installer) and stored as part of the installation. All platforms other than Windows and also Windows installations that did not use the stub installer do not have this data and will not include the ``attribution`` object.
 
 partner
 -------

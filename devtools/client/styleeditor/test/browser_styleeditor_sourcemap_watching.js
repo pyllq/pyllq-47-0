@@ -15,13 +15,10 @@ const TRANSITIONS_PREF = "devtools.styleeditor.transitions";
 
 const CSS_TEXT = "* { color: blue }";
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-
 const {FileUtils} = Components.utils.import("resource://gre/modules/FileUtils.jsm", {});
 const {NetUtil} = Components.utils.import("resource://gre/modules/NetUtil.jsm", {});
 
-add_task(function*() {
+add_task(function* () {
   yield new Promise(resolve => {
     SpecialPowers.pushPrefEnv({"set": [
       [TRANSITIONS_PREF, false]
@@ -53,10 +50,10 @@ add_task(function*() {
 
   yield editor.getSourceEditor();
 
-  let color = yield getComputedStyleProperty("div", null, "color");
+  let color = yield getComputedStyleProperty({selector: "div", name: "color"});
   is(color, "rgb(255, 0, 102)", "div is red before saving file");
 
-  // let styleApplied = promise.defer();
+  // let styleApplied = defer();
   let styleApplied = editor.once("style-applied");
 
   yield pauseForTimeChange();
@@ -73,16 +70,16 @@ add_task(function*() {
 
   yield styleApplied;
 
-  color = yield getComputedStyleProperty("div", null, "color");
+  color = yield getComputedStyleProperty({selector: "div", name: "color"});
   is(color, "rgb(0, 0, 255)", "div is blue after saving file");
 });
 
 function editSCSS(editor) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   editor.sourceEditor.setText(CSS_TEXT);
 
-  editor.saveToFile(null, function(file) {
+  editor.saveToFile(null, function (file) {
     ok(file, "Scss file should be saved");
     deferred.resolve();
   });
@@ -95,7 +92,7 @@ function editCSSFile(CSSFile) {
 }
 
 function pauseForTimeChange() {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   // We have to wait for the system time to turn over > 1000 ms so that
   // our file's last change time will show a change. This reflects what
@@ -143,7 +140,7 @@ function read(srcChromeURL) {
 }
 
 function write(data, file) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   let converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"]
     .createInstance(Ci.nsIScriptableUnicodeConverter);
@@ -153,7 +150,7 @@ function write(data, file) {
   let istream = converter.convertToInputStream(data);
   let ostream = FileUtils.openSafeFileOutputStream(file);
 
-  NetUtil.asyncCopy(istream, ostream, function(status) {
+  NetUtil.asyncCopy(istream, ostream, function (status) {
     if (!Components.isSuccessCode(status)) {
       info("Coudln't write to " + file.path);
       return;

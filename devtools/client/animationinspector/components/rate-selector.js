@@ -6,11 +6,13 @@
 
 "use strict";
 
-const {Cu} = require("chrome");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+const EventEmitter = require("devtools/shared/event-emitter");
 const {createNode} = require("devtools/client/animationinspector/utils");
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
+
 const STRINGS_URI = "chrome://devtools/locale/animationinspector.properties";
-const L10N = new ViewHelpers.L10N(STRINGS_URI);
+const L10N = new LocalizationHelper(STRINGS_URI);
+
 // List of playback rate presets displayed in the timeline toolbar.
 const PLAYBACK_RATES = [.1, .25, .5, 1, 2, 5, 10];
 
@@ -30,7 +32,7 @@ function RateSelector() {
 exports.RateSelector = RateSelector;
 
 RateSelector.prototype = {
-  init: function(containerEl) {
+  init: function (containerEl) {
     this.selectEl = createNode({
       parent: containerEl,
       nodeType: "select",
@@ -43,17 +45,17 @@ RateSelector.prototype = {
     this.selectEl.addEventListener("change", this.onRateChanged);
   },
 
-  destroy: function() {
+  destroy: function () {
     this.selectEl.removeEventListener("change", this.onRateChanged);
     this.selectEl.remove();
     this.selectEl = null;
   },
 
-  getAnimationsRates: function(animations) {
+  getAnimationsRates: function (animations) {
     return sortedUnique(animations.map(a => a.state.playbackRate));
   },
 
-  getAllRates: function(animations) {
+  getAllRates: function (animations) {
     let animationsRates = this.getAnimationsRates(animations);
     if (animationsRates.length > 1) {
       return PLAYBACK_RATES;
@@ -62,7 +64,7 @@ RateSelector.prototype = {
     return sortedUnique(PLAYBACK_RATES.concat(animationsRates));
   },
 
-  render: function(animations) {
+  render: function (animations) {
     let allRates = this.getAnimationsRates(animations);
     let hasOneRate = allRates.length === 1;
 
@@ -93,7 +95,7 @@ RateSelector.prototype = {
     }
   },
 
-  onRateChanged: function() {
+  onRateChanged: function () {
     let rate = parseFloat(this.selectEl.value);
     if (!isNaN(rate)) {
       this.emit("rate-changed", rate);

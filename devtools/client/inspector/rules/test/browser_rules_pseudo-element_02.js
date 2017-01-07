@@ -4,11 +4,11 @@
 
 "use strict";
 
-// Test that pseudoelements are displayed correctly in the rule view
+// Test that pseudoelements are displayed correctly in the markup view.
 
 const TEST_URI = URL_ROOT + "doc_pseudoelement.html";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab(TEST_URI);
   let {inspector} = yield openRuleView();
 

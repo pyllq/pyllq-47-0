@@ -8,6 +8,7 @@ import socket
 import sys
 import traceback
 
+
 def _find_marionette_in_args(*args, **kwargs):
     try:
         m = [a for a in args + tuple(kwargs.values()) if hasattr(a, 'session')][0]
@@ -16,16 +17,21 @@ def _find_marionette_in_args(*args, **kwargs):
         raise
     return m
 
-def do_crash_check(func, always=False):
-    """Decorator which checks for crashes after the function has run.
+
+def do_process_check(func, always=False):
+    """Decorator which checks the process after the function has run.
+
+    There is a check for crashes which always gets executed. And in the case of
+    connection issues the process will be force closed.
 
     :param always: If False, only checks for crashes if an exception
                    was raised. If True, always checks for crashes.
     """
     @wraps(func)
     def _(*args, **kwargs):
-        def check():
-            m = _find_marionette_in_args(*args, **kwargs)
+        m = _find_marionette_in_args(*args, **kwargs)
+
+        def check_for_crash():
             try:
                 m.check_for_crash()
             except:
@@ -34,16 +40,26 @@ def do_crash_check(func, always=False):
 
         try:
             return func(*args, **kwargs)
-        except (MarionetteException, socket.error, IOError) as e:
+        except (MarionetteException, IOError) as e:
             exc, val, tb = sys.exc_info()
+
+            # In case of no Marionette failures ensure to check for possible crashes.
+            # Do it before checking for port disconnects, to avoid reporting of unrelated
+            # crashes due to a forced shutdown of the application.
             if not isinstance(e, MarionetteException) or type(e) is MarionetteException:
                 if not always:
-                    check()
+                    check_for_crash()
+
+            # In case of socket failures force a shutdown of the application
+            if type(e) in (socket.error, socket.timeout):
+                m.force_shutdown()
+
             raise exc, val, tb
         finally:
             if always:
-                check()
+                check_for_crash(m)
     return _
+
 
 def uses_marionette(func):
     """Decorator which creates a marionette session and deletes it
@@ -66,6 +82,7 @@ def uses_marionette(func):
         return ret
     return _
 
+
 def using_context(context):
     """Decorator which allows a function to execute in certain scope
     using marionette.using_context functionality and returns to old
@@ -73,11 +90,11 @@ def using_context(context):
     :param context: Either 'chrome' or 'content'.
     """
     def wrap(func):
-         @wraps(func)
-         def inner(*args, **kwargs):
-             m = _find_marionette_in_args(*args, **kwargs)
-             with m.using_context(context):
-                 return func(*args, **kwargs)
+        @wraps(func)
+        def inner(*args, **kwargs):
+            m = _find_marionette_in_args(*args, **kwargs)
+            with m.using_context(context):
+                return func(*args, **kwargs)
 
-         return inner
+        return inner
     return wrap

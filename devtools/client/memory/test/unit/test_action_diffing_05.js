@@ -7,6 +7,7 @@ const {
   diffingState,
   snapshotState,
   censusDisplays,
+  viewState,
 } = require("devtools/client/memory/constants");
 const {
   setCensusDisplayAndRefresh,
@@ -22,17 +23,19 @@ const {
   takeSnapshot,
   readSnapshot,
 } = require("devtools/client/memory/actions/snapshot");
+const { changeView } = require("devtools/client/memory/actions/view");
 
 function run_test() {
   run_next_test();
 }
 
-add_task(function *() {
+add_task(function* () {
   let front = new StubbedMemoryFront();
   let heapWorker = new HeapAnalysesClient();
   yield front.attach();
   let store = Store();
   const { getState, dispatch } = store;
+  dispatch(changeView(viewState.CENSUS));
 
   yield dispatch(setCensusDisplayAndRefresh(heapWorker,
                                         censusDisplays.allocationStack));

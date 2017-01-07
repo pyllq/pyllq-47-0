@@ -7,6 +7,9 @@
 
 "use strict";
 
+// This test runs very slowly on linux32 debug - bug 1269977
+requestLongerTimeout(2);
+
 const TEST_NETWORK_REQUEST_URI =
   "http://example.com/browser/devtools/client/webconsole/test/" +
   "test-network-request.html";
@@ -21,6 +24,14 @@ const TEST_DATA_REQUEST_PREDICATE =
   ({ request }) => request.url.endsWith("test-data.json");
 
 add_task(function* testPageLoad() {
+  // Enable logging in the UI.  Not needed to pass test but makes it easier
+  // to debug interactively.
+  yield new Promise(resolve => {
+    SpecialPowers.pushPrefEnv({"set":
+      [["devtools.webconsole.filter.networkinfo", true]
+    ]}, resolve);
+  });
+
   let finishedRequest = waitForFinishedRequest(PAGE_REQUEST_PREDICATE);
   let hud = yield loadPageAndGetHud(TEST_NETWORK_REQUEST_URI);
   let request = yield finishedRequest;
@@ -40,6 +51,8 @@ add_task(function* testPageLoad() {
     "Request body was not discarded");
   is(responseContent.content.text.indexOf("<!DOCTYPE HTML>"), 0,
     "Response body's beginning is okay");
+
+  yield closeTabAndToolbox();
 });
 
 add_task(function* testXhrGet() {
@@ -62,6 +75,8 @@ add_task(function* testXhrGet() {
     "Request body was not discarded");
   is(responseContent.content.text, TEST_DATA_JSON_CONTENT,
     "Response is correct");
+
+  yield closeTabAndToolbox();
 });
 
 add_task(function* testXhrPost() {
@@ -82,13 +97,15 @@ add_task(function* testXhrPost() {
   is(postData.postData.text, "Hello world!", "Request body was logged");
   is(responseContent.content.text, TEST_DATA_JSON_CONTENT,
     "Response is correct");
+
+  yield closeTabAndToolbox();
 });
 
 add_task(function* testFormSubmission() {
   let pageLoadRequestFinished = waitForFinishedRequest(PAGE_REQUEST_PREDICATE);
   let hud = yield loadPageAndGetHud(TEST_NETWORK_REQUEST_URI);
 
-  info("Waiting for the page load to be finished.")
+  info("Waiting for the page load to be finished.");
   yield pageLoadRequestFinished;
 
   // The form POSTs to the page URL but over https (page over http).
@@ -117,4 +134,6 @@ add_task(function* testFormSubmission() {
     .indexOf("name=foo+bar&age=144"), -1, "Form data is correct");
   is(responseContent.content.text.indexOf("<!DOCTYPE HTML>"), 0,
     "Response body's beginning is okay");
+
+  yield closeTabAndToolbox();
 });

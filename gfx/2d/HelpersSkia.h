@@ -16,6 +16,7 @@
 #include "mozilla/Assertions.h"
 #include <vector>
 #include "RefPtrSkia.h"
+#include "nsDebug.h"
 
 namespace mozilla {
 namespace gfx {
@@ -106,6 +107,14 @@ GfxMatrixToSkiaMatrix(const Matrix& mat, SkMatrix& retval)
                   0, 0, SK_Scalar1);
 }
 
+static inline void
+GfxMatrixToSkiaMatrix(const Matrix4x4& aMatrix, SkMatrix& aResult)
+{
+  aResult.setAll(SkFloatToScalar(aMatrix._11), SkFloatToScalar(aMatrix._21), SkFloatToScalar(aMatrix._41),
+                 SkFloatToScalar(aMatrix._12), SkFloatToScalar(aMatrix._22), SkFloatToScalar(aMatrix._42),
+                 SkFloatToScalar(aMatrix._14), SkFloatToScalar(aMatrix._24), SkFloatToScalar(aMatrix._44));
+}
+
 static inline SkPaint::Cap
 CapStyleToSkiaCap(CapStyle aCap)
 {
@@ -168,10 +177,10 @@ StrokeOptionsToPaint(SkPaint& aPaint, const StrokeOptions &aOptions)
       pattern[i] = SkFloatToScalar(aOptions.mDashPattern[i % aOptions.mDashLength]);
     }
 
-    SkPathEffect* dash = SkDashPathEffect::Create(&pattern.front(),
-                                                  dashCount,
-                                                  SkFloatToScalar(aOptions.mDashOffset));
-    SkSafeUnref(aPaint.setPathEffect(dash));
+    sk_sp<SkPathEffect> dash = SkDashPathEffect::Make(&pattern.front(),
+                                                      dashCount,
+                                                      SkFloatToScalar(aOptions.mDashOffset));
+    aPaint.setPathEffect(dash);
   }
 
   aPaint.setStyle(SkPaint::kStroke_Style);
@@ -343,6 +352,24 @@ GfxHintingToSkiaHinting(FontHinting aHinting)
       return SkPaint::kFull_Hinting;
   }
   return SkPaint::kNormal_Hinting;
+}
+
+static inline FillRule GetFillRule(SkPath::FillType aFillType)
+{
+  switch (aFillType)
+  {
+  case SkPath::kWinding_FillType:
+    return FillRule::FILL_WINDING;
+  case SkPath::kEvenOdd_FillType:
+    return FillRule::FILL_EVEN_ODD;
+  case SkPath::kInverseWinding_FillType:
+  case SkPath::kInverseEvenOdd_FillType:
+  default:
+    NS_WARNING("Unsupported fill type\n");
+    break;
+  }
+
+  return FillRule::FILL_EVEN_ODD;
 }
 
 } // namespace gfx

@@ -7,7 +7,6 @@ package org.mozilla.gecko.gfx;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
-import java.util.ArrayList;
 
 import org.mozilla.gecko.AndroidGamepadManager;
 import org.mozilla.gecko.annotation.RobocopTarget;
@@ -19,22 +18,19 @@ import org.mozilla.gecko.GeckoAccessibility;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoEvent;
 import org.mozilla.gecko.GeckoThread;
-import org.mozilla.gecko.PrefsHelper;
 import org.mozilla.gecko.Tab;
 import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.ZoomConstraints;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -137,7 +133,7 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
         setFocusableInTouchMode(true);
 
         GeckoAccessibility.setDelegate(this);
-        GeckoAccessibility.setAccessibilityStateChangeListener(getContext());
+        GeckoAccessibility.setAccessibilityManagerListeners(getContext());
     }
 
     /**
@@ -225,6 +221,9 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
         event.offsetLocation(0, -mSurfaceTranslation);
 
         if (mToolbarAnimator != null && mToolbarAnimator.onInterceptTouchEvent(event)) {
+            if (mPanZoomController != null) {
+                mPanZoomController.onMotionEventVelocity(event.getEventTime(), mToolbarAnimator.getVelocity());
+            }
             return true;
         }
         if (AppConstants.MOZ_ANDROID_APZ && !mLayerClient.isGeckoReady()) {
@@ -249,6 +248,16 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
 
         event.offsetLocation(0, -mSurfaceTranslation);
 
+        if (AppConstants.MOZ_ANDROID_APZ) {
+            if (!mLayerClient.isGeckoReady()) {
+                // If gecko isn't loaded yet, don't try sending events to the
+                // native code because it's just going to crash
+                return true;
+            } else if (mPanZoomController != null && mPanZoomController.onMotionEvent(event)) {
+                return true;
+            }
+        }
+
         return sendEventToGecko(event);
     }
 
@@ -272,6 +281,8 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
 
     @Override
     protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+
         // We are adding descendants to this LayerView, but we don't want the
         // descendants to affect the way LayerView retains its focus.
         setDescendantFocusability(FOCUS_BLOCK_DESCENDANTS);
@@ -297,7 +308,6 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
 
             mSurfaceView = new LayerSurfaceView(getContext(), this);
             mSurfaceView.setBackgroundColor(Color.WHITE);
-            Log.i("GeckoBug1151102", "Initialized surfaceview");
 
             // The "filler" view sits behind the URL bar and should never be
             // visible. It exists solely to make this LayerView actually
@@ -341,6 +351,10 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
 
     public PointF convertViewPointToLayerPoint(PointF viewPoint) {
         return mLayerClient.convertViewPointToLayerPoint(viewPoint);
+    }
+
+    public Matrix getMatrixForLayerRectToViewRect() {
+        return mLayerClient.getMatrixForLayerRectToViewRect();
     }
 
     int getBackgroundColor() {
@@ -510,6 +524,13 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
         return mTextureView.getSurfaceTexture();
     }
 
+    public Object getSurface() {
+      if (mSurfaceView != null) {
+        return mSurfaceView.getHolder().getSurface();
+      }
+      return null;
+    }
+
     //This method is called on the Gecko main thread.
     @WrapForJNI(allowMultithread = true, stubName = "updateZoomedView")
     public static void updateZoomedView(ByteBuffer data) {
@@ -587,7 +608,7 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
         @Override
         protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
             super.onLayout(changed, left, top, right, bottom);
-            if (changed) {
+            if (changed && mParent.mGLController.isServerSurfaceValid()) {
                 mParent.surfaceChanged(right - left, bottom - top);
             }
         }
@@ -650,6 +671,10 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
         return super.getOverScrollMode();
     }
 
+    public float getZoomFactor() {
+        return getLayerClient().getViewportMetrics().zoomFactor;
+    }
+
     @Override
     public void onFocusChanged (boolean gainFocus, int direction, Rect previouslyFocusedRect) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
@@ -689,7 +714,7 @@ public class LayerView extends ScrollView implements Tabs.OnTabsChangedListener 
     }
 
     @Override
-    public void onTabChanged(Tab tab, Tabs.TabEvents msg, Object data) {
+    public void onTabChanged(Tab tab, Tabs.TabEvents msg, String data) {
         if (msg == Tabs.TabEvents.VIEWPORT_CHANGE && Tabs.getInstance().isSelectedTab(tab) && mLayerClient != null) {
             setZoomConstraints(tab.getZoomConstraints());
             setIsRTL(tab.getIsRTL());

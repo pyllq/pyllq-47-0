@@ -14,9 +14,10 @@
 #include "nsISupportsImpl.h"
 #include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 
-class Task;
-
 namespace mozilla {
+
+class Runnable;
+
 namespace layers {
 
 class GeckoContentController
@@ -37,55 +38,38 @@ public:
   virtual void RequestContentRepaint(const FrameMetrics& aFrameMetrics) = 0;
 
   /**
-   * Requests handling of a scroll snapping at the end of a fling gesture for
-   * the scrollable frame with the given scroll id. aDestination specifies the
-   * expected landing position of the fling if no snapping were to be performed.
+   * Different types of tap-related events that can be sent in
+   * the HandleTap function. The names should be relatively self-explanatory.
+   * Note that the eLongTapUp will always be preceded by an eLongTap, but not
+   * all eLongTap notifications will be followed by an eLongTapUp (for instance,
+   * if the user moves their finger after triggering the long-tap but before
+   * lifting it).
    */
-  virtual void RequestFlingSnap(const FrameMetrics::ViewID& aScrollId,
-                                const mozilla::CSSPoint& aDestination) = 0;
+  enum class TapType {
+    eSingleTap,
+    eDoubleTap,
+    eLongTap,
+    eLongTapUp,
+
+    eSentinel,
+  };
 
   /**
-   * Acknowledges the recipt of a scroll offset update for the scrollable
-   * frame with the given scroll id. This is used to maintain consistency
-   * between APZ and other sources of scroll changes.
-   */
-  virtual void AcknowledgeScrollUpdate(const FrameMetrics::ViewID& aScrollId,
-                                       const uint32_t& aScrollGeneration) = 0;
-
-  /**
-   * Requests handling of a double tap. |aPoint| is in CSS pixels, relative to
-   * the current scroll offset. This should eventually round-trip back to
-   * AsyncPanZoomController::ZoomToRect with the dimensions that we want to zoom
-   * to.
-   */
-  virtual void HandleDoubleTap(const CSSPoint& aPoint,
-                               Modifiers aModifiers,
-                               const ScrollableLayerGuid& aGuid) = 0;
-
-  /**
-   * Requests handling a single tap. |aPoint| is in CSS pixels, relative to the
-   * current scroll offset. This should simulate and send to content a mouse
-   * button down, then mouse button up at |aPoint|.
-   */
-  virtual void HandleSingleTap(const CSSPoint& aPoint,
-                               Modifiers aModifiers,
-                               const ScrollableLayerGuid& aGuid) = 0;
-
-  /**
-   * Requests handling a long tap. |aPoint| is in CSS pixels, relative to the
+   * Requests handling of a tap event. |aPoint| is in LD pixels, relative to the
    * current scroll offset.
    */
-  virtual void HandleLongTap(const CSSPoint& aPoint,
-                             Modifiers aModifiers,
-                             const ScrollableLayerGuid& aGuid,
-                             uint64_t aInputBlockId) = 0;
+  virtual void HandleTap(TapType aType,
+                         const LayoutDevicePoint& aPoint,
+                         Modifiers aModifiers,
+                         const ScrollableLayerGuid& aGuid,
+                         uint64_t aInputBlockId) = 0;
 
   /**
    * Schedules a runnable to run on the controller/UI thread at some time
    * in the future.
    * This method must always be called on the controller thread.
    */
-  virtual void PostDelayedTask(Task* aTask, int aDelayMs) = 0;
+  virtual void PostDelayedTask(already_AddRefed<Runnable> aRunnable, int aDelayMs) = 0;
 
   /**
    * APZ uses |FrameMetrics::mCompositionBounds| for hit testing. Sometimes,
@@ -104,30 +88,33 @@ public:
     return false;
   }
 
-  enum APZStateChange {
+  enum class APZStateChange {
     /**
      * APZ started modifying the view (including panning, zooming, and fling).
      */
-    TransformBegin,
+    eTransformBegin,
     /**
      * APZ finished modifying the view.
      */
-    TransformEnd,
+    eTransformEnd,
     /**
      * APZ started a touch.
      * |aArg| is 1 if touch can be a pan, 0 otherwise.
      */
-    StartTouch,
+    eStartTouch,
     /**
      * APZ started a pan.
      */
-    StartPanning,
+    eStartPanning,
     /**
      * APZ finished processing a touch.
      * |aArg| is 1 if touch was a click, 0 otherwise.
      */
-    EndTouch,
-    APZStateChangeSentinel
+    eEndTouch,
+
+    // Sentinel value for IPC, this must be the last item in the enum and
+    // should not be used as an actual message value.
+    eSentinel
   };
   /**
    * General notices of APZ state changes for consumers.
@@ -152,7 +139,8 @@ public:
   virtual void NotifyFlushComplete() = 0;
 
   virtual void UpdateOverscrollVelocity(const float aX, const float aY) {}
-  virtual void UpdateOverscrollOffset(const float aX,const  float aY) {}
+  virtual void UpdateOverscrollOffset(const float aX, const float aY) {}
+  virtual void SetScrollingRootContent(const bool isRootContent) {}
 
   GeckoContentController() {}
   virtual void ChildAdopted() {}

@@ -134,6 +134,9 @@ public:
                            Point aOffset,
                            const DrawOptions &aOptions = DrawOptions()) override;
 
+  virtual bool Draw3DTransformedSurface(SourceSurface* aSurface,
+                                        const Matrix4x4& aMatrix) override;
+
   virtual void PushClip(const Path *aPath) override;
   virtual void PushClipRect(const Rect &aRect) override;
   virtual void PopClip() override;
@@ -173,6 +176,8 @@ public:
   bool Init(unsigned char* aData, const IntSize &aSize, int32_t aStride, SurfaceFormat aFormat);
 
   virtual void SetTransform(const Matrix& aTransform) override;
+
+  virtual void DetachAllSnapshots() override { MarkSnapshotIndependent(); }
 
   // Call to set up aContext for drawing (with the current transform, etc).
   // Pass the path you're going to be using if you have one.

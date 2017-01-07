@@ -6,7 +6,9 @@
 
 #include "mozilla/dom/HTMLButtonElement.h"
 
+#include "HTMLFormSubmissionConstants.h"
 #include "mozilla/dom/HTMLButtonElementBinding.h"
+#include "mozilla/dom/HTMLFormSubmission.h"
 #include "nsIDOMHTMLFormElement.h"
 #include "nsAttrValueInlines.h"
 #include "nsGkAtoms.h"
@@ -14,9 +16,6 @@
 #include "nsStyleConsts.h"
 #include "nsPresContext.h"
 #include "nsIFormControl.h"
-#include "nsIForm.h"
-#include "nsFormSubmission.h"
-#include "nsFormSubmissionConstants.h"
 #include "nsIURL.h"
 #include "nsIFrame.h"
 #include "nsIFormControlFrame.h"
@@ -253,7 +252,7 @@ HTMLButtonElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
       // DOMActive event should be trusted since the activation is actually
       // occurred even if the cause is an untrusted click event.
       InternalUIEvent actEvent(true, eLegacyDOMActivate, mouseEvent);
-      actEvent.detail = 1;
+      actEvent.mDetail = 1;
 
       nsCOMPtr<nsIPresShell> shell = aVisitor.mPresContext->GetPresShell();
       if (shell) {
@@ -288,19 +287,12 @@ HTMLButtonElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
           // For backwards compat, trigger buttons with space or enter
           // (bug 25300)
           WidgetKeyboardEvent* keyEvent = aVisitor.mEvent->AsKeyboardEvent();
-          if ((keyEvent->keyCode == NS_VK_RETURN &&
+          if ((keyEvent->mKeyCode == NS_VK_RETURN &&
                eKeyPress == aVisitor.mEvent->mMessage) ||
-              (keyEvent->keyCode == NS_VK_SPACE &&
+              (keyEvent->mKeyCode == NS_VK_SPACE &&
                eKeyUp == aVisitor.mEvent->mMessage)) {
-            nsEventStatus status = nsEventStatus_eIgnore;
-
-            WidgetMouseEvent event(aVisitor.mEvent->mFlags.mIsTrusted,
-                                   eMouseClick, nullptr,
-                                   WidgetMouseEvent::eReal);
-            event.inputSource = nsIDOMMouseEvent::MOZ_SOURCE_KEYBOARD;
-            EventDispatcher::Dispatch(static_cast<nsIContent*>(this),
-                                      aVisitor.mPresContext, &event, nullptr,
-                                      &status);
+            DispatchSimulatedClick(this, aVisitor.mEvent->IsTrusted(),
+                                   aVisitor.mPresContext);
             aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
           }
         }
@@ -310,7 +302,7 @@ HTMLButtonElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
         {
           WidgetMouseEvent* mouseEvent = aVisitor.mEvent->AsMouseEvent();
           if (mouseEvent->button == WidgetMouseEvent::eLeftButton) {
-            if (mouseEvent->mFlags.mIsTrusted) {
+            if (mouseEvent->IsTrusted()) {
               EventStateManager* esm =
                 aVisitor.mPresContext->EventStateManager();
               EventStateManager::SetActiveManager(
@@ -398,7 +390,7 @@ HTMLButtonElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
           // see bug 592124.
           // Hold a strong ref while dispatching
           RefPtr<HTMLFormElement> form(mForm);
-          presShell->HandleDOMEventWithTarget(mForm, &event, &status);
+          presShell->HandleDOMEventWithTarget(form, &event, &status);
           aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
         }
       }
@@ -447,7 +439,7 @@ HTMLButtonElement::Reset()
 }
 
 NS_IMETHODIMP
-HTMLButtonElement::SubmitNamesValues(nsFormSubmission* aFormSubmission)
+HTMLButtonElement::SubmitNamesValues(HTMLFormSubmission* aFormSubmission)
 {
   //
   // We only submit if we were the button pressed

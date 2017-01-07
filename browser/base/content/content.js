@@ -24,6 +24,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "ContentLinkHandler",
   "resource:///modules/ContentLinkHandler.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "LoginManagerContent",
   "resource://gre/modules/LoginManagerContent.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "FormLikeFactory",
+  "resource://gre/modules/LoginManagerContent.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "InsecurePasswordUtils",
   "resource://gre/modules/InsecurePasswordUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PluginContent",
@@ -44,6 +46,8 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuChild", function() {
 XPCOMUtils.defineLazyModuleGetter(this, "Feeds",
   "resource:///modules/Feeds.jsm");
 
+Cu.importGlobalProperties(["URL"]);
+
 // TabChildGlobal
 var global = this;
 
@@ -61,10 +65,13 @@ addMessageListener("RemoteLogins:fillForm", function(message) {
 });
 addEventListener("DOMFormHasPassword", function(event) {
   LoginManagerContent.onDOMFormHasPassword(event, content);
-  InsecurePasswordUtils.checkForInsecurePasswords(event.target);
+  let formLike = FormLikeFactory.createFromForm(event.target);
+  InsecurePasswordUtils.checkForInsecurePasswords(formLike);
 });
 addEventListener("DOMInputPasswordAdded", function(event) {
   LoginManagerContent.onDOMInputPasswordAdded(event, content);
+  let formLike = FormLikeFactory.createFromField(event.target);
+  InsecurePasswordUtils.checkForInsecurePasswords(formLike);
 });
 addEventListener("pageshow", function(event) {
   LoginManagerContent.onPageShow(event, content);
@@ -114,13 +121,16 @@ var handleContentContextMenu = function (event) {
                                           .outerWindowID;
   let loginFillInfo = LoginManagerContent.getFieldContext(event.target);
 
+  // The same-origin check will be done in nsContextMenu.openLinkInTab.
+  let parentAllowsMixedContent = !!docShell.mixedContentChannel;
+
   // get referrer attribute from clicked link and parse it
   // if per element referrer is enabled, the element referrer overrules
   // the document wide referrer
   if (Services.prefs.getBoolPref("network.http.enablePerElementReferrer")) {
     let referrerAttrValue = Services.netUtils.parseAttributePolicyString(event.target.
                             getAttribute("referrerpolicy"));
-    if (referrerAttrValue !== Ci.nsIHttpChannel.REFERRER_POLICY_DEFAULT) {
+    if (referrerAttrValue !== Ci.nsIHttpChannel.REFERRER_POLICY_UNSET) {
       referrerPolicy = referrerAttrValue;
     }
   }
@@ -166,7 +176,7 @@ var handleContentContextMenu = function (event) {
     // commands on the context menu.
     docShell.contentViewer.QueryInterface(Ci.nsIContentViewerEdit)
             .setCommandNode(event.target);
-    event.target.ownerDocument.defaultView.updateCommands("contentcontextmenu");
+    event.target.ownerGlobal.updateCommands("contentcontextmenu");
 
     let customMenuItems = PageMenuChild.build(event.target);
     let principal = doc.nodePrincipal;
@@ -175,13 +185,13 @@ var handleContentContextMenu = function (event) {
                      principal, docLocation, charSet, baseURI, referrer,
                      referrerPolicy, contentType, contentDisposition,
                      frameOuterWindowID, selectionInfo, disableSetDesktopBg,
-                     loginFillInfo, },
+                     loginFillInfo, parentAllowsMixedContent },
                    { event, popupNode: event.target });
   }
   else {
     // Break out to the parent window and pass the add-on info along
     let browser = docShell.chromeEventHandler;
-    let mainWin = browser.ownerDocument.defaultView;
+    let mainWin = browser.ownerGlobal;
     mainWin.gContextMenuContentData = {
       isRemote: false,
       event: event,
@@ -198,6 +208,7 @@ var handleContentContextMenu = function (event) {
       selectionInfo: selectionInfo,
       disableSetDesktopBackground: disableSetDesktopBg,
       loginFillInfo,
+      parentAllowsMixedContent,
     };
   }
 }
@@ -212,109 +223,120 @@ const TLS_ERROR_REPORT_TELEMETRY_EXPANDED = 1;
 const TLS_ERROR_REPORT_TELEMETRY_SUCCESS  = 6;
 const TLS_ERROR_REPORT_TELEMETRY_FAILURE  = 7;
 
-var AboutCertErrorListener = {
-  init(chromeGlobal) {
-    addMessageListener("AboutCertErrorDetails", this);
-    chromeGlobal.addEventListener("AboutCertErrorLoad", this, false, true);
-    chromeGlobal.addEventListener("AboutCertErrorSetAutomatic", this, false, true);
-  },
+const SEC_ERROR_BASE          = Ci.nsINSSErrorsService.NSS_SEC_ERROR_BASE;
+const MOZILLA_PKIX_ERROR_BASE = Ci.nsINSSErrorsService.MOZILLA_PKIX_ERROR_BASE;
 
-  get isAboutCertError() {
-    return content.document.documentURI.startsWith("about:certerror");
-  },
+const SEC_ERROR_EXPIRED_CERTIFICATE                = SEC_ERROR_BASE + 11;
+const SEC_ERROR_UNKNOWN_ISSUER                     = SEC_ERROR_BASE + 13;
+const SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE         = SEC_ERROR_BASE + 30;
+const SEC_ERROR_OCSP_FUTURE_RESPONSE               = SEC_ERROR_BASE + 131;
+const SEC_ERROR_OCSP_OLD_RESPONSE                  = SEC_ERROR_BASE + 132;
+const MOZILLA_PKIX_ERROR_NOT_YET_VALID_CERTIFICATE = MOZILLA_PKIX_ERROR_BASE + 5;
+const MOZILLA_PKIX_ERROR_NOT_YET_VALID_ISSUER_CERTIFICATE = MOZILLA_PKIX_ERROR_BASE + 6;
 
-  handleEvent(event) {
-    if (!this.isAboutCertError) {
-      return;
-    }
+const PREF_BLOCKLIST_CLOCK_SKEW_SECONDS = "services.blocklist.clock_skew_seconds";
 
-    switch (event.type) {
-      case "AboutCertErrorLoad":
-        this.onLoad(event);
-        break;
-      case "AboutCertErrorSetAutomatic":
-        this.onSetAutomatic(event);
-        break;
-    }
-  },
+const PREF_SSL_IMPACT_ROOTS = ["security.tls.version.", "security.ssl3."];
 
-  receiveMessage(msg) {
-    if (!this.isAboutCertError) {
-      return;
-    }
-
-    switch (msg.name) {
-      case "AboutCertErrorDetails":
-        this.onDetails(msg);
-        break;
-    }
-  },
-
-  onLoad(event) {
-    let originalTarget = event.originalTarget;
-    let ownerDoc = originalTarget.ownerDocument;
-    ClickEventHandler.onAboutCertError(originalTarget, ownerDoc);
-
-    // Set up the TLS Error Reporting UI - reports are sent automatically
-    // (from nsHttpChannel::OnStopRequest) if the user has previously enabled
-    // automatic sending of reports. The UI ensures that a report is sent
-    // for the certificate error currently displayed if the user enables it
-    // here.
-    let automatic = Services.prefs.getBoolPref("security.ssl.errorReporting.automatic");
-    content.dispatchEvent(new content.CustomEvent("AboutCertErrorOptions", {
-      detail: JSON.stringify({
-        enabled: Services.prefs.getBoolPref("security.ssl.errorReporting.enabled"),
-        automatic,
-      })
-    }));
-  },
-
-  onDetails(msg) {
-    let div = content.document.getElementById("certificateErrorText");
-    div.textContent = msg.data.info;
-  },
-
-  onSetAutomatic(event) {
-    sendAsyncMessage("Browser:SetSSLErrorReportAuto", {
-      automatic: event.detail
-    });
-
-    // if we're enabling reports, send a report for this failure
-    if (event.detail) {
-      let serhelper = Cc["@mozilla.org/network/serialization-helper;1"]
-          .getService(Ci.nsISerializationHelper);
-
-      let serializable =  docShell.failedChannel.securityInfo
-          .QueryInterface(Ci.nsITransportSecurityInfo)
-          .QueryInterface(Ci.nsISerializable);
-
-      let serializedSecurityInfo = serhelper.serializeToString(serializable);
-
-      let {host, port} = content.document.mozDocumentURIIfNotForErrorPages;
-      sendAsyncMessage("Browser:SendSSLErrorReport", {
-        uri: { host, port },
-        securityInfo: serializedSecurityInfo
-      });
-    }
-  },
-};
-
-AboutCertErrorListener.init(this);
+const PREF_SSL_IMPACT = PREF_SSL_IMPACT_ROOTS.reduce((prefs, root) => {
+  return prefs.concat(Services.prefs.getChildList(root));
+}, []);
 
 
-var AboutNetErrorListener = {
+function getSerializedSecurityInfo(docShell) {
+  let serhelper = Cc["@mozilla.org/network/serialization-helper;1"]
+                    .getService(Ci.nsISerializationHelper);
+
+  let securityInfo = docShell.failedChannel && docShell.failedChannel.securityInfo;
+  if (!securityInfo) {
+    return "";
+  }
+  securityInfo.QueryInterface(Ci.nsITransportSecurityInfo)
+              .QueryInterface(Ci.nsISerializable);
+
+  return serhelper.serializeToString(securityInfo);
+}
+
+var AboutNetAndCertErrorListener = {
   init: function(chromeGlobal) {
+    addMessageListener("CertErrorDetails", this);
     chromeGlobal.addEventListener('AboutNetErrorLoad', this, false, true);
     chromeGlobal.addEventListener('AboutNetErrorSetAutomatic', this, false, true);
     chromeGlobal.addEventListener('AboutNetErrorOverride', this, false, true);
+    chromeGlobal.addEventListener('AboutNetErrorResetPreferences', this, false, true);
   },
 
   get isAboutNetError() {
     return content.document.documentURI.startsWith("about:neterror");
   },
 
+  get isAboutCertError() {
+    return content.document.documentURI.startsWith("about:certerror");
+  },
+
+  receiveMessage: function(msg) {
+    if (!this.isAboutCertError) {
+      return;
+    }
+
+    switch (msg.name) {
+      case "CertErrorDetails":
+        this.onCertErrorDetails(msg);
+        break;
+    }
+  },
+
+  onCertErrorDetails(msg) {
+    let div = content.document.getElementById("certificateErrorText");
+    div.textContent = msg.data.info;
+    let learnMoreLink = content.document.getElementById("learnMoreLink");
+    let baseURL = Services.urlFormatter.formatURLPref("app.support.baseURL");
+
+    switch (msg.data.code) {
+      case SEC_ERROR_UNKNOWN_ISSUER:
+        learnMoreLink.href = baseURL  + "security-error";
+        break;
+
+      // in case the certificate expired we make sure the system clock
+      // matches settings server (kinto) time
+      case SEC_ERROR_EXPIRED_CERTIFICATE:
+      case SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE:
+      case SEC_ERROR_OCSP_FUTURE_RESPONSE:
+      case SEC_ERROR_OCSP_OLD_RESPONSE:
+      case MOZILLA_PKIX_ERROR_NOT_YET_VALID_CERTIFICATE:
+      case MOZILLA_PKIX_ERROR_NOT_YET_VALID_ISSUER_CERTIFICATE:
+
+        // use blocklist stats if available
+        if (Services.prefs.getPrefType(PREF_BLOCKLIST_CLOCK_SKEW_SECONDS)) {
+          let difference = Services.prefs.getIntPref(PREF_BLOCKLIST_CLOCK_SKEW_SECONDS);
+
+          // if the difference is more than a day
+          if (Math.abs(difference) > 60 * 60 * 24) {
+            let formatter = new Intl.DateTimeFormat();
+            let systemDate = formatter.format(new Date());
+            // negative difference means local time is behind server time
+            let actualDate = formatter.format(new Date(Date.now() - difference * 1000));
+
+            content.document.getElementById("wrongSystemTime_URL")
+              .textContent = content.document.location.hostname;
+            content.document.getElementById("wrongSystemTime_systemDate")
+              .textContent = systemDate;
+            content.document.getElementById("wrongSystemTime_actualDate")
+              .textContent = actualDate;
+
+            content.document.getElementById("errorShortDesc")
+              .style.display = "none";
+            content.document.getElementById("wrongSystemTimePanel")
+              .style.display = "block";
+          }
+        }
+        learnMoreLink.href = baseURL  + "time-errors";
+        break;
+    }
+  },
+
   handleEvent: function(aEvent) {
-    if (!this.isAboutNetError) {
+    if (!this.isAboutNetError && !this.isAboutCertError) {
       return;
     }
 
@@ -328,20 +350,45 @@ var AboutNetErrorListener = {
     case "AboutNetErrorOverride":
       this.onOverride(aEvent);
       break;
+    case "AboutNetErrorResetPreferences":
+      this.onResetPreferences(aEvent);
+      break;
     }
   },
 
+  changedCertPrefs: function () {
+    for (let prefName of PREF_SSL_IMPACT) {
+      if (Services.prefs.prefHasUserValue(prefName)) {
+        return true;
+      }
+    }
+
+    return false;
+  },
+
   onPageLoad: function(evt) {
+    if (this.isAboutCertError) {
+      let originalTarget = evt.originalTarget;
+      let ownerDoc = originalTarget.ownerDocument;
+      ClickEventHandler.onCertError(originalTarget, ownerDoc);
+    }
+
     let automatic = Services.prefs.getBoolPref("security.ssl.errorReporting.automatic");
     content.dispatchEvent(new content.CustomEvent("AboutNetErrorOptions", {
       detail: JSON.stringify({
         enabled: Services.prefs.getBoolPref("security.ssl.errorReporting.enabled"),
+        changedCertPrefs: this.changedCertPrefs(),
         automatic: automatic
       })
     }));
 
     sendAsyncMessage("Browser:SSLErrorReportTelemetry",
                      {reportStatus: TLS_ERROR_REPORT_TELEMETRY_UI_SHOWN});
+  },
+
+
+  onResetPreferences: function(evt) {
+    sendAsyncMessage("Browser:ResetSSLPreferences");
   },
 
   onSetAutomatic: function(evt) {
@@ -351,19 +398,10 @@ var AboutNetErrorListener = {
 
     // if we're enabling reports, send a report for this failure
     if (evt.detail) {
-      let serhelper = Cc["@mozilla.org/network/serialization-helper;1"]
-                        .getService(Ci.nsISerializationHelper);
-
-      let serializable = docShell.failedChannel.securityInfo
-          .QueryInterface(Ci.nsITransportSecurityInfo)
-          .QueryInterface(Ci.nsISerializable);
-
-      let serializedSecurityInfo = serhelper.serializeToString(serializable);
-
       let {host, port} = content.document.mozDocumentURIIfNotForErrorPages;
       sendAsyncMessage("Browser:SendSSLErrorReport", {
         uri: { host, port },
-        securityInfo: serializedSecurityInfo
+        securityInfo: getSerializedSecurityInfo(docShell),
       });
 
     }
@@ -375,7 +413,7 @@ var AboutNetErrorListener = {
   }
 }
 
-AboutNetErrorListener.init(this);
+AboutNetAndCertErrorListener.init(this);
 
 
 var ClickEventHandler = {
@@ -398,7 +436,7 @@ var ClickEventHandler = {
 
     // Handle click events from about pages
     if (ownerDoc.documentURI.startsWith("about:certerror")) {
-      this.onAboutCertError(originalTarget, ownerDoc);
+      this.onCertError(originalTarget, ownerDoc);
       return;
     } else if (ownerDoc.documentURI.startsWith("about:blocked")) {
       this.onAboutBlocked(originalTarget, ownerDoc);
@@ -418,7 +456,7 @@ var ClickEventHandler = {
         node) {
       let referrerAttrValue = Services.netUtils.parseAttributePolicyString(node.
                               getAttribute("referrerpolicy"));
-      if (referrerAttrValue !== Ci.nsIHttpChannel.REFERRER_POLICY_DEFAULT) {
+      if (referrerAttrValue !== Ci.nsIHttpChannel.REFERRER_POLICY_UNSET) {
         referrerPolicy = referrerAttrValue;
       }
     }
@@ -426,7 +464,8 @@ var ClickEventHandler = {
     let json = { button: event.button, shiftKey: event.shiftKey,
                  ctrlKey: event.ctrlKey, metaKey: event.metaKey,
                  altKey: event.altKey, href: null, title: null,
-                 bookmark: false, referrerPolicy: referrerPolicy };
+                 bookmark: false, referrerPolicy: referrerPolicy,
+                 originAttributes: principal ? principal.originAttributes : {} };
 
     if (href) {
       try {
@@ -448,6 +487,22 @@ var ClickEventHandler = {
       }
       json.noReferrer = BrowserUtils.linkHasNoReferrer(node)
 
+      // Check if the link needs to be opened with mixed content allowed.
+      // Only when the owner doc has |mixedContentChannel| and the same origin
+      // should we allow mixed content.
+      json.allowMixedContent = false;
+      let docshell = ownerDoc.defaultView.QueryInterface(Ci.nsIInterfaceRequestor)
+                             .getInterface(Ci.nsIWebNavigation)
+                             .QueryInterface(Ci.nsIDocShell);
+      if (docShell.mixedContentChannel) {
+        const sm = Services.scriptSecurityManager;
+        try {
+          let targetURI = BrowserUtils.makeURI(href);
+          sm.checkSameOriginURI(docshell.mixedContentChannel.URI, targetURI, false);
+          json.allowMixedContent = true;
+        } catch (e) {}
+      }
+
       sendAsyncMessage("Content:Click", json);
       return;
     }
@@ -458,27 +513,15 @@ var ClickEventHandler = {
     }
   },
 
-  onAboutCertError: function (targetElement, ownerDoc) {
-    let docshell = ownerDoc.defaultView.QueryInterface(Ci.nsIInterfaceRequestor)
+  onCertError: function (targetElement, ownerDoc) {
+    let docShell = ownerDoc.defaultView.QueryInterface(Ci.nsIInterfaceRequestor)
                                        .getInterface(Ci.nsIWebNavigation)
                                        .QueryInterface(Ci.nsIDocShell);
-    let serhelper = Cc["@mozilla.org/network/serialization-helper;1"]
-                     .getService(Ci.nsISerializationHelper);
-    let serializedSecurityInfo = "";
-
-    try {
-      let serializable =  docShell.failedChannel.securityInfo
-                                  .QueryInterface(Ci.nsITransportSecurityInfo)
-                                  .QueryInterface(Ci.nsISerializable);
-
-      serializedSecurityInfo = serhelper.serializeToString(serializable);
-    } catch (e) { }
-
     sendAsyncMessage("Browser:CertExceptionError", {
       location: ownerDoc.location.href,
       elementId: targetElement.getAttribute("id"),
       isTopFrame: (ownerDoc.defaultView.parent === ownerDoc.defaultView),
-      securityInfoAsString: serializedSecurityInfo
+      securityInfoAsString: getSerializedSecurityInfo(docShell),
     });
   },
 
@@ -488,8 +531,6 @@ var ClickEventHandler = {
       reason = 'malware';
     } else if (/e=unwantedBlocked/.test(ownerDoc.documentURI)) {
       reason = 'unwanted';
-    } else if (/e=forbiddenBlocked/.test(ownerDoc.documentURI)) {
-      reason = 'forbidden';
     }
     sendAsyncMessage("Browser:SiteBlockedError", {
       location: ownerDoc.location.href,
@@ -603,6 +644,13 @@ addEventListener("pageshow", function(event) {
     });
   }
 });
+addEventListener("pagehide", function(event) {
+  if (event.target == content.document) {
+    sendAsyncMessage("PageVisibility:Hide", {
+      persisted: event.persisted,
+    });
+  }
+});
 
 var PageMetadataMessenger = {
   init() {
@@ -686,6 +734,9 @@ addMessageListener("ContextMenu:MediaCommand", (message) => {
     case "pause":
       media.pause();
       break;
+    case "loop":
+      media.loop = !media.loop;
+      break;
     case "mute":
       media.muted = true;
       break;
@@ -701,13 +752,6 @@ addMessageListener("ContextMenu:MediaCommand", (message) => {
     case "showcontrols":
       media.setAttribute("controls", "true");
       break;
-    case "hidestats":
-    case "showstats":
-      let event = media.ownerDocument.createEvent("CustomEvent");
-      event.initCustomEvent("media-showStatistics", false, true,
-                            message.data.command == "showstats");
-      media.dispatchEvent(event);
-      break;
     case "fullscreen":
       if (content.document.fullscreenEnabled)
         media.requestFullscreen();
@@ -715,9 +759,11 @@ addMessageListener("ContextMenu:MediaCommand", (message) => {
   }
 });
 
-addMessageListener("ContextMenu:Canvas:ToDataURL", (message) => {
-  let dataURL = message.objects.target.toDataURL();
-  sendAsyncMessage("ContextMenu:Canvas:ToDataURL:Result", { dataURL });
+addMessageListener("ContextMenu:Canvas:ToBlobURL", (message) => {
+  message.objects.target.toBlob((blob) => {
+    let blobURL = URL.createObjectURL(blob);
+    sendAsyncMessage("ContextMenu:Canvas:ToBlobURL:Result", { blobURL });
+  });
 });
 
 addMessageListener("ContextMenu:ReloadFrame", (message) => {
@@ -838,7 +884,7 @@ var LightWeightThemeWebInstallListener = {
           baseURI: event.target.baseURI,
           themeData: event.target.getAttribute("data-browsertheme"),
         });
-        this._previewWindow = event.target.ownerDocument.defaultView;
+        this._previewWindow = event.target.ownerGlobal;
         this._previewWindow.addEventListener("pagehide", this, true);
         break;
       }
@@ -1002,6 +1048,7 @@ var PageInfoListener = {
     docInfo.contentType = document.contentType;
     docInfo.characterSet = document.characterSet;
     docInfo.lastModified = document.lastModified;
+    docInfo.principal = document.nodePrincipal;
 
     let documentURIObject = {};
     documentURIObject.spec = document.documentURIObject.spec;
@@ -1092,7 +1139,7 @@ var PageInfoListener = {
   getMediaItems: function(document, strings, elem)
   {
     // Check for images defined in CSS (e.g. background, borders)
-    let computedStyle = elem.ownerDocument.defaultView.getComputedStyle(elem, "");
+    let computedStyle = elem.ownerGlobal.getComputedStyle(elem);
     // A node can have multiple media items associated with it - for example,
     // multiple background images.
     let mediaItems = [];
@@ -1430,4 +1477,3 @@ let OfflineApps = {
 
 addEventListener("MozApplicationManifest", OfflineApps, false);
 addMessageListener("OfflineApps:StartFetching", OfflineApps);
-

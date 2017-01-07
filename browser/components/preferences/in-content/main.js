@@ -141,32 +141,19 @@ var gMainPane = {
       }
     }
 
-    const Cc = Components.classes, Ci = Components.interfaces;
-    let brandName = document.getElementById("bundleBrand").getString("brandShortName");
-    let bundle = document.getElementById("bundlePreferences");
-    let msg = bundle.getFormattedString(e10sCheckbox.checked ?
-                                        "featureEnableRequiresRestart" : "featureDisableRequiresRestart",
-                                        [brandName]);
-    let title = bundle.getFormattedString("shouldRestartTitle", [brandName]);
-    let shouldProceed = Services.prompt.confirm(window, title, msg)
-    if (shouldProceed) {
+    let buttonIndex = confirmRestartPrompt(e10sCheckbox.checked, 0,
+                                           true, false);
+    if (buttonIndex == CONFIRM_RESTART_PROMPT_RESTART_NOW) {
+      const Cc = Components.classes, Ci = Components.interfaces;
       let cancelQuit = Cc["@mozilla.org/supports-PRBool;1"]
                          .createInstance(Ci.nsISupportsPRBool);
       Services.obs.notifyObservers(cancelQuit, "quit-application-requested",
                                    "restart");
-      shouldProceed = !cancelQuit.data;
-
-      if (shouldProceed) {
+      if (!cancelQuit.data) {
         for (let prefToChange of prefsToChange) {
           prefToChange.value = e10sCheckbox.checked;
         }
 
-        let tmp = {};
-        Components.utils.import("resource://gre/modules/UpdateUtils.jsm", tmp);
-        if (!e10sCheckbox.checked && tmp.UpdateUtils.UpdateChannel != "default") {
-          Services.prefs.setBoolPref("browser.requestE10sFeedback", true);
-          Services.prompt.alert(window, brandName, bundle.getString("e10sFeedbackAfterRestart"));
-        }
         Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit |  Ci.nsIAppStartup.eRestart);
       }
     }
@@ -199,40 +186,20 @@ var gMainPane = {
       }
     }
 
-    const Cc = Components.classes, Ci = Components.interfaces;
     let separateProfileModeCheckbox = document.getElementById("separateProfileMode");
-    let brandName = document.getElementById("bundleBrand").getString("brandShortName");
-    let bundle = document.getElementById("bundlePreferences");
-    let msg = bundle.getFormattedString(separateProfileModeCheckbox.checked ?
-                                        "featureEnableRequiresRestart" : "featureDisableRequiresRestart",
-                                        [brandName]);
-    let title = bundle.getFormattedString("shouldRestartTitle", [brandName]);
-    let check = {value: false};
-    let prompts = Services.prompt;
-    let flags = prompts.BUTTON_POS_0 * prompts.BUTTON_TITLE_IS_STRING +
-                  prompts.BUTTON_POS_1 * prompts.BUTTON_TITLE_CANCEL  +
-                  prompts.BUTTON_POS_2 * prompts.BUTTON_TITLE_IS_STRING;
-    let button0Title = bundle.getString("restartNowButton");
-    let button2Title = bundle.getString("restartLaterButton");
-    let button_index = prompts.confirmEx(window, title, msg, flags,
-                         button0Title, null, button2Title, null, check)
-    let RESTART_NOW_BUTTON_INDEX = 0;
-    let CANCEL_BUTTON_INDEX = 1;
-    let RESTART_LATER_BUTTON_INDEX = 2;
-
+    let button_index = confirmRestartPrompt(separateProfileModeCheckbox.checked,
+                                            0, false, true);
     switch (button_index) {
-      case CANCEL_BUTTON_INDEX:
+      case CONFIRM_RESTART_PROMPT_CANCEL:
         revertCheckbox();
         return;
-      case RESTART_NOW_BUTTON_INDEX:
-        let shouldProceed = false;
+      case CONFIRM_RESTART_PROMPT_RESTART_NOW:
+        const Cc = Components.classes, Ci = Components.interfaces;
         let cancelQuit = Cc["@mozilla.org/supports-PRBool;1"]
                            .createInstance(Ci.nsISupportsPRBool);
         Services.obs.notifyObservers(cancelQuit, "quit-application-requested",
                                       "restart");
-        shouldProceed = !cancelQuit.data;
-
-        if (shouldProceed) {
+        if (!cancelQuit.data) {
           createOrRemoveSpecialDevEditionFile(quitApp);
           return;
         }
@@ -240,7 +207,7 @@ var gMainPane = {
         // Revert the checkbox in case we didn't quit
         revertCheckbox();
         return;
-      case RESTART_LATER_BUTTON_INDEX:
+      case CONFIRM_RESTART_PROMPT_RESTART_LATER:
         createOrRemoveSpecialDevEditionFile();
         return;
     }
@@ -253,7 +220,7 @@ var gMainPane = {
     let win = wm.getMostRecentWindow("navigator:browser");
 
     if (win) {
-      let accountsTab = win.gBrowser.addTab("about:accounts");
+      let accountsTab = win.gBrowser.addTab("about:accounts?action=signin&entrypoint=dev-edition-setup");
       win.gBrowser.selectedTab = accountsTab;
     }
   },
@@ -453,8 +420,8 @@ var gMainPane = {
     var downloadFolder = document.getElementById("downloadFolder");
     var chooseFolder = document.getElementById("chooseFolder");
     var preference = document.getElementById("browser.download.useDownloadDir");
-    downloadFolder.disabled = !preference.value;
-    chooseFolder.disabled = !preference.value;
+    downloadFolder.disabled = !preference.value || preference.locked;
+    chooseFolder.disabled = !preference.value || preference.locked;
 
     // don't override the preference's value in UI
     return undefined;

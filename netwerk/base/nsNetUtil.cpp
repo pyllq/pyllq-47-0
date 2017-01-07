@@ -12,7 +12,7 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/Telemetry.h"
 #include "nsNetUtil.h"
-#include "nsNetUtil.inl"
+#include "nsNetUtilInlines.h"
 #include "mozIApplicationClearPrivateDataParams.h"
 #include "nsCategoryCache.h"
 #include "nsContentUtils.h"
@@ -749,20 +749,21 @@ NS_ImplementChannelOpen(nsIChannel      *channel,
     nsCOMPtr<nsIInputStream> stream;
     nsresult rv = NS_NewSyncStreamListener(getter_AddRefs(listener),
                                            getter_AddRefs(stream));
-    if (NS_SUCCEEDED(rv)) {
-        rv = channel->AsyncOpen(listener, nullptr);
-        if (NS_SUCCEEDED(rv)) {
-            uint64_t n;
-            // block until the initial response is received or an error occurs.
-            rv = stream->Available(&n);
-            if (NS_SUCCEEDED(rv)) {
-                *result = nullptr;
-                stream.swap(*result);
-            }
-        }
-    }
-    return rv;
-}
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    rv = NS_MaybeOpenChannelUsingAsyncOpen2(channel, listener);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    uint64_t n;
+    // block until the initial response is received or an error occurs.
+    rv = stream->Available(&n);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    *result = nullptr;
+    stream.swap(*result);
+
+    return NS_OK;
+ }
 
 nsresult
 NS_NewRequestObserverProxy(nsIRequestObserver **result,
@@ -1259,14 +1260,25 @@ NS_GetOriginAttributes(nsIChannel *aChannel,
                        mozilla::NeckoOriginAttributes &aAttributes)
 {
     nsCOMPtr<nsILoadContext> loadContext;
+    nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
     NS_QueryNotificationCallbacks(aChannel, loadContext);
-    if (!loadContext) {
+
+    if (!loadContext && !loadInfo) {
         return false;
     }
 
-    DocShellOriginAttributes doa;
-    loadContext->GetOriginAttributes(doa);
-    aAttributes.InheritFromDocShellToNecko(doa);
+    // Bug 1270678 - By default, we would acquire the originAttributes from
+    // the loadContext. But in some cases, say, loading the favicon, that the
+    // loadContext is not available. We would use the loadInfo to get
+    // originAttributes instead.
+    if (loadContext) {
+        DocShellOriginAttributes doa;
+        loadContext->GetOriginAttributes(doa);
+        aAttributes.InheritFromDocShellToNecko(doa);
+    } else {
+        loadInfo->GetOriginAttributes(&aAttributes);
+    }
+    aAttributes.SyncAttributesWithPrivateBrowsing(NS_UsePrivateBrowsing(aChannel));
     return true;
 }
 
@@ -1295,6 +1307,17 @@ NS_HasBeenCrossOrigin(nsIChannel* aChannel, bool aReport)
 {
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
   MOZ_RELEASE_ASSERT(loadInfo, "Origin tracking only works for channels created with a loadinfo");
+
+#ifdef DEBUG
+  // Don't enforce TYPE_DOCUMENT assertions for loads
+  // initiated by javascript tests.
+  bool skipContentTypeCheck = false;
+  skipContentTypeCheck = Preferences::GetBool("network.loadinfo.skip_type_assertion");
+#endif
+
+  MOZ_ASSERT(skipContentTypeCheck ||
+             loadInfo->GetExternalContentPolicyType() != nsIContentPolicy::TYPE_DOCUMENT,
+             "calling NS_HasBeenCrossOrigin on a top level load");
 
   // Always treat tainted channels as cross-origin.
   if (loadInfo->GetTainting() != LoadTainting::Basic) {
@@ -1932,8 +1955,7 @@ NS_IsHSTSUpgradeRedirect(nsIChannel *aOldChannel,
   }
 
   nsCOMPtr<nsIURI> upgradedURI;
-  nsresult rv =
-    HttpBaseChannel::GetSecureUpgradedURI(oldURI, getter_AddRefs(upgradedURI));
+  nsresult rv = NS_GetSecureUpgradedURI(oldURI, getter_AddRefs(upgradedURI));
   if (NS_FAILED(rv)) {
     return false;
   }
@@ -1983,6 +2005,26 @@ nsresult NS_MakeRandomInvalidURLString(nsCString &result)
 }
 #undef NS_FAKE_SCHEME
 #undef NS_FAKE_TLD
+
+nsresult NS_MaybeOpenChannelUsingOpen2(nsIChannel* aChannel,
+                                       nsIInputStream **aStream)
+{
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
+  if (loadInfo && loadInfo->GetSecurityMode() != 0) {
+    return aChannel->Open2(aStream);
+  }
+  return aChannel->Open(aStream);
+}
+
+nsresult NS_MaybeOpenChannelUsingAsyncOpen2(nsIChannel* aChannel,
+                                            nsIStreamListener *aListener)
+{
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
+  if (loadInfo && loadInfo->GetSecurityMode() != 0) {
+    return aChannel->AsyncOpen2(aListener);
+  }
+  return aChannel->AsyncOpen(aListener, nullptr);
+}
 
 nsresult
 NS_CheckIsJavaCompatibleURLString(nsCString &urlString, bool *result)
@@ -2257,9 +2299,11 @@ NS_ShouldSecureUpgrade(nsIURI* aURI,
       // Please note that cross origin top level navigations are not subject
       // to upgrade-insecure-requests, see:
       // http://www.w3.org/TR/upgrade-insecure-requests/#examples
+      // Compare the principal we are navigating to (aChannelResultPrincipal)
+      // with the referring/triggering Principal.
       bool crossOriginNavigation =
         (aLoadInfo->GetExternalContentPolicyType() == nsIContentPolicy::TYPE_DOCUMENT) &&
-        (!aChannelResultPrincipal->Equals(aLoadInfo->LoadingPrincipal()));
+        (!aChannelResultPrincipal->Equals(aLoadInfo->TriggeringPrincipal()));
 
       if (aLoadInfo->GetUpgradeInsecureRequests() && !crossOriginNavigation) {
         // let's log a message to the console that we are upgrading a request
@@ -2273,7 +2317,7 @@ NS_ShouldSecureUpgrade(nsIURI* aURI,
 
         const char16_t* params[] = { reportSpec.get(), reportScheme.get() };
         uint32_t innerWindowId = aLoadInfo->GetInnerWindowID();
-        CSP_LogLocalizedStr(MOZ_UTF16("upgradeInsecureRequest"),
+        CSP_LogLocalizedStr(u"upgradeInsecureRequest",
                             params, ArrayLength(params),
                             EmptyString(), // aSourceFile
                             EmptyString(), // aScriptSample
@@ -2318,6 +2362,111 @@ NS_ShouldSecureUpgrade(nsIURI* aURI,
     Telemetry::Accumulate(Telemetry::HTTP_SCHEME_UPGRADE, 0);
   }
   aShouldUpgrade = false;
+  return NS_OK;
+}
+
+nsresult
+NS_GetSecureUpgradedURI(nsIURI* aURI, nsIURI** aUpgradedURI)
+{
+  nsCOMPtr<nsIURI> upgradedURI;
+
+  nsresult rv = aURI->Clone(getter_AddRefs(upgradedURI));
+  NS_ENSURE_SUCCESS(rv,rv);
+
+  // Change the scheme to HTTPS:
+  upgradedURI->SetScheme(NS_LITERAL_CSTRING("https"));
+
+  // Change the default port to 443:
+  nsCOMPtr<nsIStandardURL> upgradedStandardURL = do_QueryInterface(upgradedURI);
+  if (upgradedStandardURL) {
+    upgradedStandardURL->SetDefaultPort(443);
+  } else {
+    // If we don't have a nsStandardURL, fall back to using GetPort/SetPort.
+    // XXXdholbert Is this function even called with a non-nsStandardURL arg,
+    // in practice?
+    int32_t oldPort = -1;
+    rv = aURI->GetPort(&oldPort);
+    if (NS_FAILED(rv)) return rv;
+
+    // Keep any nonstandard ports so only the scheme is changed.
+    // For example:
+    //  http://foo.com:80 -> https://foo.com:443
+    //  http://foo.com:81 -> https://foo.com:81
+
+    if (oldPort == 80 || oldPort == -1) {
+        upgradedURI->SetPort(-1);
+    } else {
+        upgradedURI->SetPort(oldPort);
+    }
+  }
+
+  upgradedURI.forget(aUpgradedURI);
+  return NS_OK;
+}
+
+nsresult
+NS_CompareLoadInfoAndLoadContext(nsIChannel *aChannel)
+{
+  nsCOMPtr<nsILoadInfo> loadInfo;
+  aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
+
+  nsCOMPtr<nsILoadContext> loadContext;
+  NS_QueryNotificationCallbacks(aChannel, loadContext);
+  if (loadInfo && loadContext) {
+
+    uint32_t loadContextAppId = 0;
+    nsresult rv = loadContext->GetAppId(&loadContextAppId);
+    if (NS_FAILED(rv)) {
+      return NS_ERROR_UNEXPECTED;
+    }
+
+    bool loadContextIsInBE = false;
+    rv = loadContext->GetIsInIsolatedMozBrowserElement(&loadContextIsInBE);
+    if (NS_FAILED(rv)) {
+      return NS_ERROR_UNEXPECTED;
+    }
+
+    OriginAttributes originAttrsLoadInfo = loadInfo->GetOriginAttributes();
+    DocShellOriginAttributes originAttrsLoadContext;
+    loadContext->GetOriginAttributes(originAttrsLoadContext);
+
+    bool loadInfoUsePB = false;
+    rv = loadInfo->GetUsePrivateBrowsing(&loadInfoUsePB);
+    if (NS_FAILED(rv)) {
+      return NS_ERROR_UNEXPECTED;
+    }
+    bool loadContextUsePB = false;
+    rv = loadContext->GetUsePrivateBrowsing(&loadContextUsePB);
+    if (NS_FAILED(rv)) {
+      return NS_ERROR_UNEXPECTED;
+    }
+
+    LOG(("NS_CompareLoadInfoAndLoadContext - loadInfo: %d, %d, %d, %d; "
+         "loadContext: %d %d, %d, %d. [channel=%p]",
+         originAttrsLoadInfo.mAppId, originAttrsLoadInfo.mInIsolatedMozBrowser,
+         originAttrsLoadInfo.mUserContextId, loadInfoUsePB,
+         loadContextAppId, loadContextUsePB,
+         originAttrsLoadContext.mUserContextId, loadContextIsInBE,
+         aChannel));
+
+    MOZ_ASSERT(originAttrsLoadInfo.mAppId == loadContextAppId,
+               "AppId in the loadContext and in the loadInfo are not the "
+               "same!");
+
+    MOZ_ASSERT(originAttrsLoadInfo.mInIsolatedMozBrowser ==
+               loadContextIsInBE,
+               "The value of InIsolatedMozBrowser in the loadContext and in "
+               "the loadInfo are not the same!");
+
+    MOZ_ASSERT(originAttrsLoadInfo.mUserContextId ==
+               originAttrsLoadContext.mUserContextId,
+               "The value of mUserContextId in the loadContext and in the "
+               "loadInfo are not the same!");
+
+    MOZ_ASSERT(loadInfoUsePB == loadContextUsePB,
+               "The value of usePrivateBrowsing in the loadContext and in the loadInfo "
+               "are not the same!");
+  }
   return NS_OK;
 }
 

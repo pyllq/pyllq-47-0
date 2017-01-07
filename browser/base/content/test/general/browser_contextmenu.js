@@ -12,6 +12,7 @@ let LOGIN_FILL_ITEMS = [
 ];
 
 let hasPocket = Services.prefs.getBoolPref("extensions.pocket.enabled");
+let hasContainers = Services.prefs.getBoolPref("privacy.userContext.enabled");
 
 add_task(function* test_setup() {
   const example_base = "http://example.com/browser/browser/base/content/test/general/";
@@ -26,8 +27,16 @@ add_task(function* test_setup() {
     let doc = content.document;
     let videoIframe = doc.querySelector("#test-video-in-iframe");
     let video = videoIframe.contentDocument.querySelector("video");
+    let awaitPause = ContentTaskUtils.waitForEvent(video, "pause");
     video.pause();
-    yield ContentTaskUtils.waitForCondition(() => video.paused, "iframe video should be paused");
+    yield awaitPause;
+
+    let audioIframe = doc.querySelector("#test-audio-in-iframe");
+    // media documents always use a <video> tag.
+    let audio = audioIframe.contentDocument.querySelector("video");
+    awaitPause = ContentTaskUtils.waitForEvent(audio, "pause");
+    audio.pause();
+    yield awaitPause;
   });
 });
 
@@ -54,6 +63,10 @@ add_task(function* test_plaintext() {
 add_task(function* test_link() {
   yield test_contextmenu("#test-link",
     ["context-openlinkintab", true,
+     ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+     // We need a blank entry here because the containers submenu is
+     // dynamically generated with no ids.
+     ...(hasContainers ? ["", null] : []),
      "context-openlink",      true,
      "context-openlinkprivate", true,
      "---",                   null,
@@ -104,10 +117,11 @@ add_task(function* test_video_ok() {
      "context-media-playbackrate", null,
          ["context-media-playbackrate-050x", true,
           "context-media-playbackrate-100x", true,
+          "context-media-playbackrate-125x", true,
           "context-media-playbackrate-150x", true,
           "context-media-playbackrate-200x", true], null,
+     "context-media-loop",         true,
      "context-media-hidecontrols", true,
-     "context-video-showstats",    true,
      "context-video-fullscreen",   true,
      "---",                        null,
      "context-viewvideo",          true,
@@ -129,8 +143,10 @@ add_task(function* test_audio_in_video() {
      "context-media-playbackrate", null,
          ["context-media-playbackrate-050x", true,
           "context-media-playbackrate-100x", true,
+          "context-media-playbackrate-125x", true,
           "context-media-playbackrate-150x", true,
           "context-media-playbackrate-200x", true], null,
+     "context-media-loop",         true,
      "context-media-showcontrols", true,
      "---",                        null,
      "context-copyaudiourl",       true,
@@ -148,10 +164,11 @@ add_task(function* test_video_bad() {
      "context-media-playbackrate", null,
          ["context-media-playbackrate-050x", false,
           "context-media-playbackrate-100x", false,
+          "context-media-playbackrate-125x", false,
           "context-media-playbackrate-150x", false,
           "context-media-playbackrate-200x", false], null,
+     "context-media-loop",         true,
      "context-media-hidecontrols", false,
-     "context-video-showstats",    false,
      "context-video-fullscreen",   false,
      "---",                        null,
      "context-viewvideo",          true,
@@ -173,10 +190,11 @@ add_task(function* test_video_bad2() {
      "context-media-playbackrate", null,
          ["context-media-playbackrate-050x", false,
           "context-media-playbackrate-100x", false,
+          "context-media-playbackrate-125x", false,
           "context-media-playbackrate-150x", false,
           "context-media-playbackrate-200x", false], null,
+     "context-media-loop",         true,
      "context-media-hidecontrols", false,
-     "context-video-showstats",    false,
      "context-video-fullscreen",   false,
      "---",                        null,
      "context-viewvideo",          false,
@@ -232,10 +250,11 @@ add_task(function* test_video_in_iframe() {
      "context-media-playbackrate", null,
          ["context-media-playbackrate-050x", true,
           "context-media-playbackrate-100x", true,
+          "context-media-playbackrate-125x", true,
           "context-media-playbackrate-150x", true,
           "context-media-playbackrate-200x", true], null,
+     "context-media-loop",         true,
      "context-media-hidecontrols", true,
-     "context-video-showstats",    true,
      "context-video-fullscreen",   true,
      "---",                        null,
      "context-viewvideo",          true,
@@ -246,6 +265,38 @@ add_task(function* test_video_in_iframe() {
      "context-sendvideo",          true,
      "context-castvideo",          null,
        [], null,
+     "frame",                null,
+         ["context-showonlythisframe", true,
+          "context-openframeintab",    true,
+          "context-openframe",         true,
+          "---",                       null,
+          "context-reloadframe",       true,
+          "---",                       null,
+          "context-bookmarkframe",     true,
+          "context-saveframe",         true,
+          "---",                       null,
+          "context-printframe",        true,
+          "---",                       null,
+          "context-viewframeinfo",     true], null]
+  );
+});
+
+add_task(function* test_audio_in_iframe() {
+  yield test_contextmenu("#test-audio-in-iframe",
+    ["context-media-play",         true,
+     "context-media-mute",         true,
+     "context-media-playbackrate", null,
+         ["context-media-playbackrate-050x", true,
+          "context-media-playbackrate-100x", true,
+          "context-media-playbackrate-125x", true,
+          "context-media-playbackrate-150x", true,
+          "context-media-playbackrate-200x", true], null,
+     "context-media-loop",         true,
+     "---",                        null,
+     "context-copyaudiourl",       true,
+     "---",                        null,
+     "context-saveaudio",          true,
+     "context-sendaudio",          true,
      "frame",                null,
          ["context-showonlythisframe", true,
           "context-openframeintab",    true,
@@ -576,6 +627,10 @@ add_task(function* test_select_text_link() {
   yield test_contextmenu("#test-select-text-link",
     ["context-openlinkincurrent",           true,
      "context-openlinkintab",               true,
+     ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+     // We need a blank entry here because the containers submenu is
+     // dynamically generated with no ids.
+     ...(hasContainers ? ["", null] : []),
      "context-openlink",                    true,
      "context-openlinkprivate",             true,
      "---",                                 null,
@@ -606,6 +661,10 @@ add_task(function* test_select_text_link() {
 add_task(function* test_imagelink() {
   yield test_contextmenu("#test-image-link",
     ["context-openlinkintab", true,
+     ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+     // We need a blank entry here because the containers submenu is
+     // dynamically generated with no ids.
+     ...(hasContainers ? ["", null] : []),
      "context-openlink",      true,
      "context-openlinkprivate", true,
      "---",                   null,
@@ -791,6 +850,80 @@ add_task(function* test_input_spell_false() {
      "spell-add-dictionaries-main",  true,
     ]
   );
+});
+
+const remoteClientsFixture = [ { id: 1, name: "Foo"}, { id: 2, name: "Bar"} ];
+
+add_task(function* test_plaintext_sendpagetodevice() {
+  if (!gFxAccounts.sendTabToDeviceEnabled) {
+    return;
+  }
+  const oldGetter = setupRemoteClientsFixture(remoteClientsFixture);
+
+  let plainTextItems = ["context-navigation",   null,
+                        ["context-back",         false,
+                         "context-forward",      false,
+                         "context-reload",       true,
+                         "context-bookmarkpage", true], null,
+                    "---",                  null,
+                    "context-savepage",     true,
+                    ...(hasPocket ? ["context-pocket", true] : []),
+                    "---",                  null,
+                    "context-sendpagetodevice", true,
+                      ["*Foo", true,
+                       "*Bar", true,
+                       "---", null,
+                       "*All Devices", true], null,
+                    "---",                  null,
+                    "context-viewbgimage",  false,
+                    "context-selectall",    true,
+                    "---",                  null,
+                    "context-viewsource",   true,
+                    "context-viewinfo",     true
+                   ];
+  yield test_contextmenu("#test-text", plainTextItems, {
+      onContextMenuShown() {
+        yield openMenuItemSubmenu("context-sendpagetodevice");
+      }
+    });
+
+  restoreRemoteClients(oldGetter);
+});
+
+add_task(function* test_link_sendlinktodevice() {
+  if (!gFxAccounts.sendTabToDeviceEnabled) {
+    return;
+  }
+  const oldGetter = setupRemoteClientsFixture(remoteClientsFixture);
+
+  yield test_contextmenu("#test-link",
+    ["context-openlinkintab", true,
+     ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+     // We need a blank entry here because the containers submenu is
+     // dynamically generated with no ids.
+     ...(hasContainers ? ["", null] : []),
+     "context-openlink",      true,
+     "context-openlinkprivate", true,
+     "---",                   null,
+     "context-bookmarklink",  true,
+     "context-savelink",      true,
+     ...(hasPocket ? ["context-savelinktopocket", true] : []),
+     "context-copylink",      true,
+     "context-searchselect",  true,
+     "---",                  null,
+     "context-sendlinktodevice", true,
+      ["*Foo", true,
+       "*Bar", true,
+       "---", null,
+       "*All Devices", true], null,
+    ],
+    {
+      onContextMenuShown() {
+        yield openMenuItemSubmenu("context-sendlinktodevice");
+      }
+    });
+
+  restoreRemoteClients(oldGetter);
 });
 
 add_task(function* test_cleanup() {

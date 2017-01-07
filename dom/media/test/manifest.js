@@ -181,7 +181,7 @@ var gPlayTests = [
   // Multiple audio streams.
   { name:"bug516323.ogv", type:"video/ogg", duration:4.208 },
   // oggz-chop with non-keyframe as first frame
-  { name:"bug556821.ogv", type:"video/ogg", duration:2.551 },
+  { name:"bug556821.ogv", type:"video/ogg", duration:2.936 },
 
   // Encoded with vorbis beta1, includes unusually sized codebooks
   { name:"beta-phrasebook.ogg", type:"audio/ogg", duration:4.01 },
@@ -198,9 +198,9 @@ var gPlayTests = [
   { name:"bug498855-3.ogv", type:"video/ogg", duration:0.24 },
   { name:"bug504644.ogv", type:"video/ogg", duration:1.6 },
   { name:"chain.ogv", type:"video/ogg", duration:Number.NaN },
-  { name:"bug523816.ogv", type:"video/ogg", duration:0.533 },
+  { name:"bug523816.ogv", type:"video/ogg", duration:0.766 },
   { name:"bug495129.ogv", type:"video/ogg", duration:2.41 },
-  { name:"bug498380.ogv", type:"video/ogg", duration:0.533 },
+  { name:"bug498380.ogv", type:"video/ogg", duration:0.7663 },
   { name:"bug495794.ogg", type:"audio/ogg", duration:0.3 },
   { name:"bug557094.ogv", type:"video/ogg", duration:0.24 },
   { name:"multiple-bos.ogg", type:"video/ogg", duration:0.431 },
@@ -219,6 +219,9 @@ var gPlayTests = [
 
   // Test playback of a WebM file with non-zero start time.
   { name:"split.webm", type:"video/webm", duration:1.967 },
+
+  // Test playback of a WebM file with resolution changes.
+  { name:"resolution-change.webm", type:"video/webm", duration:6.533 },
 
   // Test playback of a raw file
   { name:"seek.yuv", type:"video/x-raw-yuv", duration:1.833 },
@@ -273,6 +276,53 @@ var gPlayTests = [
   { name:"bogus.duh", type:"bogus/duh", duration:Number.NaN },
 ];
 
+var gSeekToNextFrameTests = [
+  // Test playback of a WebM file with vp9 video
+  { name:"vp9.webm", type:"video/webm", duration:4 },
+  { name:"vp9cake.webm", type:"video/webm", duration:7.966 },
+  // oggz-chop stream
+  { name:"bug482461.ogv", type:"video/ogg", duration:4.34 },
+  // Theora only oggz-chop stream
+  { name:"bug482461-theora.ogv", type:"video/ogg", duration:4.138 },
+  // With first frame a "duplicate" (empty) frame.
+  { name:"bug500311.ogv", type:"video/ogg", duration:1.96 },
+
+  // More audio in file than video.
+  { name:"short-video.ogv", type:"video/ogg", duration:1.081 },
+  // First Theora data packet is zero bytes.
+  { name:"bug504613.ogv", type:"video/ogg", duration:Number.NaN },
+  // Multiple audio streams.
+  { name:"bug516323.ogv", type:"video/ogg", duration:4.208 },
+  // oggz-chop with non-keyframe as first frame
+  { name:"bug556821.ogv", type:"video/ogg", duration:2.936 },
+  // Various weirdly formed Ogg files
+  { name:"bug498855-1.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug498855-2.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug498855-3.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug504644.ogv", type:"video/ogg", duration:1.6 },
+
+  { name:"bug523816.ogv", type:"video/ogg", duration:0.766 },
+
+  { name:"bug498380.ogv", type:"video/ogg", duration:0.766 },
+  { name:"bug557094.ogv", type:"video/ogg", duration:0.24 },
+  { name:"multiple-bos.ogg", type:"video/ogg", duration:0.431 },
+  // Test playback/metadata work after a redirect
+  { name:"redirect.sjs?domain=mochi.test:8888&file=320x240.ogv",
+    type:"video/ogg", duration:0.266 },
+  // Test playback of a webm file
+  { name:"seek.webm", type:"video/webm", duration:3.966 },
+  // Test playback of a WebM file with non-zero start time.
+  { name:"split.webm", type:"video/webm", duration:1.967 },
+  // Test playback of a raw file
+  { name:"seek.yuv", type:"video/x-raw-yuv", duration:1.833 },
+
+  { name:"gizmo.mp4", type:"video/mp4", duration:5.56 },
+
+  // Test playback of a MP4 file with a non-zero start time (and audio starting
+  // a second later).
+  { name:"bipbop-lateaudio.mp4", type:"video/mp4" },
+];
+
 // A file for each type we can support.
 var gSnifferTests = [
   { name:"big.wav", type:"audio/x-wav", duration:9.278982, size:102444 },
@@ -282,6 +332,11 @@ var gSnifferTests = [
   // A mp3 file with id3 tags.
   { name:"id3tags.mp3", type:"audio/mpeg", duration:0.28, size:3530},
   { name:"bogus.duh", type:"bogus/duh" }
+];
+
+// Files that contain resolution changes
+var gResolutionChangeTests = [
+  { name:"resolution-change.webm", type:"video/webm", duration:6.533 },
 ];
 
 // Files we must reject as invalid.
@@ -471,6 +526,20 @@ var gErrorTests = [
   { name:"bogus.duh", type:"bogus/duh" }
 ];
 
+function IsWindowsVistaOrLater() {
+  var re = /Windows NT (\d+.\d)/;
+  var winver = manifestNavigator().userAgent.match(re);
+  return winver && winver.length == 2 && parseFloat(winver[1]) >= 6.0;
+}
+
+// Windows' H.264 decoder cannot handle H.264 streams with resolution
+// less than 48x48 pixels. We refuse to play and error on such streams.
+if (IsWindowsVistaOrLater() &&
+    manifestVideo().canPlayType('video/mp4; codecs="avc1.42E01E"')) {
+  gErrorTests = gErrorTests.concat({name: "red-46x48.mp4", type:"video/mp4"},
+                                   {name: "red-48x46.mp4", type:"video/mp4"});
+}
+
 // These are files that have nontrivial duration and are useful for seeking within.
 var gSeekTests = [
   { name:"r11025_s16_c1.wav", type:"audio/x-wav", duration:1.0 },
@@ -500,16 +569,16 @@ var gFastSeekTests = [
   { name:"bug516323.indexed.ogv", type:"video/ogg", keyframes:[0, 0.46, 3.06] },
 ];
 
-function IsWindows8OrLater() {
-  var re = /Windows NT (\d.\d)/;
-  var winver = manifestNavigator().userAgent.match(re);
-  return winver && winver.length == 2 && parseFloat(winver[1]) >= 6.2;
-}
+// These files are WebMs without cues. They're seekable within their buffered
+// ranges. If work renders WebMs fully seekable these files should be moved
+// into gSeekTests
+var gCuelessWebMTests = [
+  { name:"no-cues.webm", type:"video/webm", duration:3.967 },
+];
 
 // These are files that are non seekable, due to problems with the media,
 // for example broken or missing indexes.
 var gUnseekableTests = [
-  { name:"no-cues.webm", type:"video/webm" },
   { name:"bogus.duh", type:"bogus/duh"}
 ];
 
@@ -1288,6 +1357,56 @@ var gEMETests = [
     sessionCount:3,
     duration:1.60,
   },
+  {
+    name: "WebM vorbis audio & vp8 video clearkey",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/webm; codecs=\"vorbis\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-audio.webm",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/webm; codecs=\"vp8\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-video-vp8.webm",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "f1f3ee1790527e9de47217d43835f76a" : "97b9ddc459c8d5ff23c1f2754c95abe8",
+      "8b5df745ad84145b5617c33116e35a67" : "bddfd35dd9be033ee73bc18bc1885056",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name: "WebM vorbis audio & vp9 video clearkey",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/webm; codecs=\"vorbis\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-audio.webm",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/webm; codecs=\"vp9\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-video-vp9.webm",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "f1f3ee1790527e9de47217d43835f76a" : "97b9ddc459c8d5ff23c1f2754c95abe8",
+      "eedf63a94fa7c398ee094f123a4ee709" : "973b679a746c82f3acdb856b30e9378e",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
 ];
 
 var gEMENonMSEFailTests = [
@@ -1401,7 +1520,8 @@ var PARALLEL_TESTS = 2;
 var gTestPrefs = [
   ['media.recorder.max_memory', 1024],
   ["media.preload.default", 2], // default preload = metadata
-  ["media.preload.auto", 3] // auto preload = enough
+  ["media.preload.auto", 3], // auto preload = enough
+  ["media.test.dumpDebugInfo", true],
 ];
 
 // When true, we'll loop forever on whatever test we run. Use this to debug
@@ -1553,7 +1673,7 @@ function mediaTestCleanup(callback) {
       removeNodeAndSource(A[i]);
       A[i] = null;
     }
-    SpecialPowers.exactGC(window, callback);
+    SpecialPowers.exactGC(callback);
 }
 
 function setMediaTestsPrefs(callback, extraPrefs) {
@@ -1573,4 +1693,14 @@ function isSlowPlatform() {
 // like file_access_controls.html.
 if ("SimpleTest" in window) {
   SimpleTest.requestFlakyTimeout("untriaged");
+
+  // Register timeout function to dump debugging logs.
+  SimpleTest.registerTimeoutFunction(function() {
+    for (var v of document.getElementsByTagName("video")) {
+      v.mozDumpDebugInfo();
+    }
+    for (var a of document.getElementsByTagName("audio")) {
+      a.mozDumpDebugInfo();
+    }
+  });
 }

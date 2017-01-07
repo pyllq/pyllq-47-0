@@ -133,17 +133,19 @@ protected:
   bool RecvOnProgress(const int64_t& progress, const int64_t& progressMax) override;
   bool RecvOnStatus(const nsresult& status) override;
   bool RecvFailedAsyncOpen(const nsresult& status) override;
-  bool RecvRedirect1Begin(const uint32_t& newChannel,
+  bool RecvRedirect1Begin(const uint32_t& registrarId,
                           const URIParams& newURI,
                           const uint32_t& redirectFlags,
                           const nsHttpResponseHead& responseHead,
-                          const nsCString& securityInfoSerialization) override;
+                          const nsCString& securityInfoSerialization,
+                          const nsCString& channelId) override;
   bool RecvRedirect3Complete() override;
   bool RecvAssociateApplicationCache(const nsCString& groupID,
                                      const nsCString& clientID) override;
   bool RecvFlushedForDiversion() override;
   bool RecvDivertMessages() override;
   bool RecvDeleteSelf() override;
+  bool RecvFinishInterceptedRedirect() override;
 
   bool RecvReportSecurityMessage(const nsString& messageTag,
                                  const nsString& messageCategory) override;
@@ -244,6 +246,17 @@ private:
   // is synthesized.
   bool mSuspendParentAfterSynthesizeResponse;
 
+  // Needed to call AsyncOpen in FinishInterceptedRedirect
+  nsCOMPtr<nsIStreamListener> mInterceptedRedirectListener;
+  nsCOMPtr<nsISupports> mInterceptedRedirectContext;
+  // Needed to call CleanupRedirectingChannel in FinishInterceptedRedirect
+  RefPtr<HttpChannelChild> mInterceptingChannel;
+  // Used to call OverrideWithSynthesizedResponse in FinishInterceptedRedirect
+  RefPtr<Runnable> mOverrideRunnable;
+
+  void FinishInterceptedRedirect();
+  void CleanupRedirectingChannel(nsresult rv);
+
   // true after successful AsyncOpen until OnStopRequest completes.
   bool RemoteChannelExists() { return mIPCOpen && !mKeptAlive; }
 
@@ -277,12 +290,13 @@ private:
   void OnStatus(const nsresult& status);
   void FailedAsyncOpen(const nsresult& status);
   void HandleAsyncAbort();
-  void Redirect1Begin(const uint32_t& newChannelId,
+  void Redirect1Begin(const uint32_t& registrarId,
                       const URIParams& newUri,
                       const uint32_t& redirectFlags,
                       const nsHttpResponseHead& responseHead,
-                      const nsACString& securityInfoSerialization);
-  void Redirect3Complete();
+                      const nsACString& securityInfoSerialization,
+                      const nsACString& channelId);
+  bool Redirect3Complete(OverrideRunnable* aRunnable);
   void DeleteSelf();
 
   // Create a a new channel to be used in a redirection, based on the provided
@@ -295,6 +309,9 @@ private:
   // Perform a redirection without communicating with the parent process at all.
   void BeginNonIPCRedirect(nsIURI* responseURI,
                            const nsHttpResponseHead* responseHead);
+
+  // Override the default security info pointer during a non-IPC redirection.
+  void OverrideSecurityInfoForNonIPCRedirect(nsISupports* securityInfo);
 
   friend class AssociateApplicationCacheEvent;
   friend class StartRequestEvent;

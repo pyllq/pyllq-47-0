@@ -13,33 +13,35 @@
 #include "CheckerboardEvent.h"          // for CheckerboardEvent
 #include "Compositor.h"                 // for Compositor
 #include "FrameMetrics.h"               // for FrameMetrics, etc
+#include "GenericFlingAnimation.h"      // for GenericFlingAnimation
 #include "GestureEventListener.h"       // for GestureEventListener
 #include "HitTestingTreeNode.h"         // for HitTestingTreeNode
 #include "InputData.h"                  // for MultiTouchInput, etc
 #include "InputBlockState.h"            // for InputBlockState, TouchBlockState
 #include "InputQueue.h"                 // for InputQueue
+#include "Overscroll.h"                 // for OverscrollAnimation
 #include "OverscrollHandoffState.h"     // for OverscrollHandoffState
 #include "Units.h"                      // for CSSRect, CSSPoint, etc
 #include "UnitTransforms.h"             // for TransformTo
 #include "base/message_loop.h"          // for MessageLoop
 #include "base/task.h"                  // for NewRunnableMethod, etc
-#include "base/tracked.h"               // for FROM_HERE
 #include "gfxPrefs.h"                   // for gfxPrefs
 #include "gfxTypes.h"                   // for gfxFloat
 #include "LayersLogging.h"              // for print_stderr
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/BasicEvents.h"        // for Modifiers, MODIFIER_*
 #include "mozilla/ClearOnShutdown.h"    // for ClearOnShutdown
+#include "mozilla/ComputedTimingFunction.h" // for ComputedTimingFunction
 #include "mozilla/EventForwards.h"      // for nsEventStatus_*
 #include "mozilla/MouseEvents.h"        // for WidgetWheelEvent
 #include "mozilla/Preferences.h"        // for Preferences
 #include "mozilla/ReentrantMonitor.h"   // for ReentrantMonitorAutoEnter, etc
+#include "mozilla/RefPtr.h"             // for RefPtr
 #include "mozilla/StaticPtr.h"          // for StaticAutoPtr
 #include "mozilla/Telemetry.h"          // for Telemetry
 #include "mozilla/TimeStamp.h"          // for TimeDuration, TimeStamp
 #include "mozilla/dom/CheckerboardReportService.h" // for CheckerboardEventStorage
              // note: CheckerboardReportService.h actually lives in gfx/layers/apz/util/
-#include "mozilla/dom/KeyframeEffect.h" // for ComputedTimingFunction
 #include "mozilla/dom/Touch.h"          // for Touch
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
 #include "mozilla/gfx/BaseRect.h"       // for BaseRect
@@ -51,15 +53,13 @@
 #include "mozilla/layers/AsyncCompositionManager.h"  // for ViewTransform
 #include "mozilla/layers/AxisPhysicsModel.h" // for AxisPhysicsModel
 #include "mozilla/layers/AxisPhysicsMSDModel.h" // for AxisPhysicsMSDModel
-#include "mozilla/layers/CompositorParent.h" // for CompositorParent
+#include "mozilla/layers/CompositorBridgeParent.h" // for CompositorBridgeParent
 #include "mozilla/layers/LayerTransactionParent.h" // for LayerTransactionParent
-#include "mozilla/layers/PCompositorParent.h" // for PCompositorParent
 #include "mozilla/layers/ScrollInputMethods.h" // for ScrollInputMethod
 #include "mozilla/mozalloc.h"           // for operator new, etc
 #include "mozilla/unused.h"             // for unused
 #include "mozilla/FloatingPoint.h"      // for FuzzyEquals*
 #include "nsAlgorithm.h"                // for clamped
-#include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_WARNING
 #include "nsIDOMWindowUtils.h"          // for nsIDOMWindowUtils
@@ -69,10 +69,14 @@
 #include "nsStyleStruct.h"              // for nsTimingFunction
 #include "nsTArray.h"                   // for nsTArray, nsTArray_Impl, etc
 #include "nsThreadUtils.h"              // for NS_IsMainThread
+#include "nsViewportInfo.h"             // for kViewportMinScale, kViewportMaxScale
 #include "prsystem.h"                   // for PR_GetPhysicalMemorySize
 #include "SharedMemoryBasic.h"          // for SharedMemoryBasic
 #include "ScrollSnap.h"                 // for ScrollSnapUtils
 #include "WheelScrollAnimation.h"
+#if defined(MOZ_ANDROID_APZ)
+#include "AndroidAPZ.h"
+#endif // defined(MOZ_ANDROID_APZ)
 
 #define ENABLE_APZC_LOGGING 0
 // #define ENABLE_APZC_LOGGING 1
@@ -95,9 +99,21 @@ namespace layers {
 
 typedef mozilla::layers::AllowedTouchBehavior AllowedTouchBehavior;
 typedef GeckoContentController::APZStateChange APZStateChange;
+typedef GeckoContentController::TapType TapType;
 typedef mozilla::gfx::Point Point;
 typedef mozilla::gfx::Matrix4x4 Matrix4x4;
 using mozilla::gfx::PointTyped;
+
+// Choose between platform-specific implementations.
+#ifdef MOZ_ANDROID_APZ
+typedef WidgetOverscrollEffect OverscrollEffect;
+typedef AndroidSpecificState PlatformSpecificState;
+typedef AndroidFlingAnimation FlingAnimation;
+#else
+typedef GenericOverscrollEffect OverscrollEffect;
+typedef PlatformSpecificStateBase PlatformSpecificState;  // no extra state, just use the base class
+typedef GenericFlingAnimation FlingAnimation;
+#endif
 
 /**
  * \page APZCPrefs APZ preferences
@@ -157,6 +173,14 @@ using mozilla::gfx::PointTyped;
  * pixels would make us drop to low-res at y=490...990.\n
  * This value is in layer pixels.
  *
+ * \li\b apz.disable_for_scroll_linked_effects
+ * Setting this pref to true will disable APZ scrolling on documents where
+ * scroll-linked effects are detected. A scroll linked effect is detected if
+ * positioning or transform properties are updated inside a scroll event
+ * dispatch; we assume that such an update is in response to the scroll event
+ * and is therefore a scroll-linked effect which will be laggy with APZ
+ * scrolling.
+ *
  * \li\b apz.displayport_expiry_ms
  * While a scrollable frame is scrolling async, we set a displayport on it
  * to make sure it is layerized. However this takes up memory, so once the
@@ -176,6 +200,11 @@ using mozilla::gfx::PointTyped;
  * will be accelerated. Setting an interval of 0 means that acceleration will
  * be disabled.\n
  * Units: milliseconds
+ *
+ * \li\b apz.fling_accel_min_velocity
+ * The minimum velocity of the second fling for it to be considered for fling
+ * acceleration.
+ * Units: screen pixels per milliseconds
  *
  * \li\b apz.fling_accel_base_mult
  * \li\b apz.fling_accel_supplemental_mult
@@ -207,14 +236,21 @@ using mozilla::gfx::PointTyped;
  * The points (x1, y1) and (x2, y2) used as the two intermediate control points
  * in the cubic bezier curve; the first and last points are (0,0) and (1,1).\n
  * Some example values for these prefs can be found at\n
- * http://mxr.mozilla.org/mozilla-central/source/layout/style/nsStyleStruct.cpp?rev=21282be9ad95#2462
+ * https://dxr.mozilla.org/mozilla-central/rev/70e05c6832e831374604ac3ce7433971368dffe0/layout/style/nsStyleStruct.cpp#2729
  *
  * \li\b apz.fling_friction
  * Amount of friction applied during flings. This is used in the following
  * formula: v(t1) = v(t0) * (1 - f)^(t1 - t0), where v(t1) is the velocity
  * for a new sample, v(t0) is the velocity at the previous sample, f is the
  * value of this pref, and (t1 - t0) is the amount of time, in milliseconds,
- * that has elapsed between the two samples.
+ * that has elapsed between the two samples.\n
+ * NOTE: Not currently used in Android fling calculations.
+ *
+ * \li\b apz.fling_min_velocity_threshold
+ * Minimum velocity for a fling to actually kick off. If the user pans and lifts
+ * their finger such that the velocity is smaller than this amount, no fling
+ * is initiated.\n
+ * Units: screen pixels per millisecond
  *
  * \li\b apz.fling_stop_on_tap_threshold
  * When flinging, if the velocity is above this number, then a tap on the
@@ -228,7 +264,9 @@ using mozilla::gfx::PointTyped;
  * When flinging, if the velocity goes below this number, we just stop the
  * animation completely. This is to prevent asymptotically approaching 0
  * velocity and rerendering unnecessarily.\n
- * Units: screen pixels per millisecond
+ * Units: screen pixels per millisecond.\n
+ * NOTE: Should not be set to anything
+ * other than 0.0 for Android except for tests to disable flings.
  *
  * \li\b apz.max_velocity_inches_per_ms
  * Maximum velocity.  Velocity will be capped at this value if a faster fling
@@ -340,6 +378,12 @@ using mozilla::gfx::PointTyped;
  * \li\b apz.zoom_animation_duration_ms
  * This controls how long the zoom-to-rect animation takes.\n
  * Units: ms
+ *
+ * \li\b apz.scale_repaint_delay_ms
+ * How long to delay between repaint requests during a scale.
+ * A negative number prevents repaint requests during a scale.\n
+ * Units: ms
+ *
  */
 
 /**
@@ -367,16 +411,6 @@ static bool IsHighMemSystem()
 {
   return gIsHighMemSystem;
 }
-
-/**
- * Maximum zoom amount, always used, even if a page asks for higher.
- */
-static const CSSToParentLayerScale MAX_ZOOM(8.0f);
-
-/**
- * Minimum zoom amount, always used, even if a page asks for lower.
- */
-static const CSSToParentLayerScale MIN_ZOOM(0.125f);
 
 /**
  * Is aAngle within the given threshold of the horizontal axis?
@@ -430,175 +464,6 @@ private:
   AsyncPanZoomController::PanZoomState mInitialState;
 };
 
-class FlingAnimation: public AsyncPanZoomAnimation {
-public:
-  FlingAnimation(AsyncPanZoomController& aApzc,
-                 const RefPtr<const OverscrollHandoffChain>& aOverscrollHandoffChain,
-                 bool aApplyAcceleration,
-                 const RefPtr<const AsyncPanZoomController>& aScrolledApzc)
-    : mApzc(aApzc)
-    , mOverscrollHandoffChain(aOverscrollHandoffChain)
-    , mScrolledApzc(aScrolledApzc)
-  {
-    MOZ_ASSERT(mOverscrollHandoffChain);
-    TimeStamp now = aApzc.GetFrameTime();
-
-    // Drop any velocity on axes where we don't have room to scroll anyways
-    // (in this APZC, or an APZC further in the handoff chain).
-    // This ensures that we don't take the 'overscroll' path in Sample()
-    // on account of one axis which can't scroll having a velocity.
-    if (!mOverscrollHandoffChain->CanScrollInDirection(&mApzc, Layer::HORIZONTAL)) {
-      ReentrantMonitorAutoEnter lock(mApzc.mMonitor);
-      mApzc.mX.SetVelocity(0);
-    }
-    if (!mOverscrollHandoffChain->CanScrollInDirection(&mApzc, Layer::VERTICAL)) {
-      ReentrantMonitorAutoEnter lock(mApzc.mMonitor);
-      mApzc.mY.SetVelocity(0);
-    }
-
-    ParentLayerPoint velocity = mApzc.GetVelocityVector();
-
-    // If the last fling was very recent and in the same direction as this one,
-    // boost the velocity to be the sum of the two. Check separate axes separately
-    // because we could have two vertical flings with small horizontal components
-    // on the opposite side of zero, and we still want the y-fling to get accelerated.
-    // Note that the acceleration code is only applied on the APZC that initiates
-    // the fling; the accelerated velocities are then handed off using the
-    // normal DispatchFling codepath.
-    if (aApplyAcceleration && !mApzc.mLastFlingTime.IsNull()
-        && (now - mApzc.mLastFlingTime).ToMilliseconds() < gfxPrefs::APZFlingAccelInterval()) {
-      if (SameDirection(velocity.x, mApzc.mLastFlingVelocity.x)) {
-        velocity.x = Accelerate(velocity.x, mApzc.mLastFlingVelocity.x);
-        APZC_LOG("%p Applying fling x-acceleration from %f to %f (delta %f)\n",
-                 &mApzc, mApzc.mX.GetVelocity(), velocity.x, mApzc.mLastFlingVelocity.x);
-        mApzc.mX.SetVelocity(velocity.x);
-      }
-      if (SameDirection(velocity.y, mApzc.mLastFlingVelocity.y)) {
-        velocity.y = Accelerate(velocity.y, mApzc.mLastFlingVelocity.y);
-        APZC_LOG("%p Applying fling y-acceleration from %f to %f (delta %f)\n",
-                 &mApzc, mApzc.mY.GetVelocity(), velocity.y, mApzc.mLastFlingVelocity.y);
-        mApzc.mY.SetVelocity(velocity.y);
-      }
-    }
-
-    mApzc.mLastFlingTime = now;
-    mApzc.mLastFlingVelocity = velocity;
-  }
-
-  /**
-   * Advances a fling by an interpolated amount based on the passed in |aDelta|.
-   * This should be called whenever sampling the content transform for this
-   * frame. Returns true if the fling animation should be advanced by one frame,
-   * or false if there is no fling or the fling has ended.
-   */
-  virtual bool DoSample(FrameMetrics& aFrameMetrics,
-                        const TimeDuration& aDelta) override
-  {
-    float friction = gfxPrefs::APZFlingFriction();
-    float threshold = gfxPrefs::APZFlingStoppedThreshold();
-
-    bool shouldContinueFlingX = mApzc.mX.FlingApplyFrictionOrCancel(aDelta, friction, threshold),
-         shouldContinueFlingY = mApzc.mY.FlingApplyFrictionOrCancel(aDelta, friction, threshold);
-    // If we shouldn't continue the fling, let's just stop and repaint.
-    if (!shouldContinueFlingX && !shouldContinueFlingY) {
-      APZC_LOG("%p ending fling animation. overscrolled=%d\n", &mApzc, mApzc.IsOverscrolled());
-      // This APZC or an APZC further down the handoff chain may be be overscrolled.
-      // Start a snap-back animation on the overscrolled APZC.
-      // Note:
-      //   This needs to be a deferred task even though it can safely run
-      //   while holding mMonitor, because otherwise, if the overscrolled APZC
-      //   is this one, then the SetState(NOTHING) in UpdateAnimation will
-      //   stomp on the SetState(SNAP_BACK) it does.
-      if (!mDeferredTasks.append(NewRunnableMethod(mOverscrollHandoffChain.get(),
-                                                   &OverscrollHandoffChain::SnapBackOverscrolledApzc,
-                                                   &mApzc))) {
-        MOZ_CRASH();
-      }
-      return false;
-    }
-
-    // AdjustDisplacement() zeroes out the Axis velocity if we're in overscroll.
-    // Since we need to hand off the velocity to the tree manager in such a case,
-    // we save it here. Would be ParentLayerVector instead of ParentLayerPoint
-    // if we had vector classes.
-    ParentLayerPoint velocity = mApzc.GetVelocityVector();
-
-    ParentLayerPoint offset = velocity * aDelta.ToMilliseconds();
-
-    // Ordinarily we might need to do a ScheduleComposite if either of
-    // the following AdjustDisplacement calls returns true, but this
-    // is already running as part of a FlingAnimation, so we'll be compositing
-    // per frame of animation anyway.
-    ParentLayerPoint overscroll;
-    ParentLayerPoint adjustedOffset;
-    mApzc.mX.AdjustDisplacement(offset.x, adjustedOffset.x, overscroll.x);
-    mApzc.mY.AdjustDisplacement(offset.y, adjustedOffset.y, overscroll.y);
-
-    aFrameMetrics.ScrollBy(adjustedOffset / aFrameMetrics.GetZoom());
-
-    // The fling may have caused us to reach the end of our scroll range.
-    if (!IsZero(overscroll)) {
-      // Hand off the fling to the next APZC in the overscroll handoff chain.
-
-      // We may have reached the end of the scroll range along one axis but
-      // not the other. In such a case we only want to hand off the relevant
-      // component of the fling.
-      if (FuzzyEqualsAdditive(overscroll.x, 0.0f, COORDINATE_EPSILON)) {
-        velocity.x = 0;
-      } else if (FuzzyEqualsAdditive(overscroll.y, 0.0f, COORDINATE_EPSILON)) {
-        velocity.y = 0;
-      }
-
-      // To hand off the fling, we attempt to find a target APZC and start a new
-      // fling with the same velocity on that APZC. For simplicity, the actual
-      // overscroll of the current sample is discarded rather than being handed
-      // off. The compositor should sample animations sufficiently frequently
-      // that this is not noticeable. The target APZC is chosen by seeing if
-      // there is an APZC further in the handoff chain which is pannable; if
-      // there isn't, we take the new fling ourselves, entering an overscrolled
-      // state.
-      // Note: APZC is holding mMonitor, so directly calling
-      // HandleFlingOverscroll() (which acquires the tree lock) would violate
-      // the lock ordering. Instead we schedule HandleFlingOverscroll() to be
-      // called after mMonitor is released.
-      APZC_LOG("%p fling went into overscroll, handing off with velocity %s\n", &mApzc, Stringify(velocity).c_str());
-      if (!mDeferredTasks.append(NewRunnableMethod(&mApzc,
-                                                   &AsyncPanZoomController::HandleFlingOverscroll,
-                                                   velocity,
-                                                   mOverscrollHandoffChain,
-                                                   mScrolledApzc))) {
-        MOZ_CRASH();
-      }
-
-      // If there is a remaining velocity on this APZC, continue this fling
-      // as well. (This fling and the handed-off fling will run concurrently.)
-      // Note that AdjustDisplacement() will have zeroed out the velocity
-      // along the axes where we're overscrolled.
-      return !IsZero(mApzc.GetVelocityVector());
-    }
-
-    return true;
-  }
-
-private:
-  static bool SameDirection(float aVelocity1, float aVelocity2)
-  {
-    return (aVelocity1 == 0.0f)
-        || (aVelocity2 == 0.0f)
-        || (IsNegative(aVelocity1) == IsNegative(aVelocity2));
-  }
-
-  static float Accelerate(float aBase, float aSupplemental)
-  {
-    return (aBase * gfxPrefs::APZFlingAccelBaseMultiplier())
-         + (aSupplemental * gfxPrefs::APZFlingAccelSupplementalMultiplier());
-  }
-
-  AsyncPanZoomController& mApzc;
-  RefPtr<const OverscrollHandoffChain> mOverscrollHandoffChain;
-  RefPtr<const AsyncPanZoomController> mScrolledApzc;
-};
-
 class ZoomAnimation: public AsyncPanZoomAnimation {
 public:
   ZoomAnimation(CSSPoint aStartOffset, CSSToParentLayerScale2D aStartZoom,
@@ -624,7 +489,9 @@ public:
 
     // Sample the zoom at the current time point.  The sampled zoom
     // will affect the final computed resolution.
-    float sampledPosition = gZoomAnimationFunction->GetValue(animPosition);
+    float sampledPosition =
+      gZoomAnimationFunction->GetValue(animPosition,
+        ComputedTimingFunction::BeforeFlag::Unset);
 
     // We scale the scrollOffset linearly with sampledPosition, so the zoom
     // needs to scale inversely to match.
@@ -663,54 +530,6 @@ private:
   CSSToParentLayerScale2D mEndZoom;
 };
 
-class OverscrollAnimation: public AsyncPanZoomAnimation {
-public:
-  explicit OverscrollAnimation(AsyncPanZoomController& aApzc, const ParentLayerPoint& aVelocity)
-    : mApzc(aApzc)
-  {
-    mApzc.mX.StartOverscrollAnimation(aVelocity.x);
-    mApzc.mY.StartOverscrollAnimation(aVelocity.y);
-  }
-  ~OverscrollAnimation()
-  {
-    mApzc.mX.EndOverscrollAnimation();
-    mApzc.mY.EndOverscrollAnimation();
-  }
-
-  virtual bool DoSample(FrameMetrics& aFrameMetrics,
-                        const TimeDuration& aDelta) override
-  {
-    // Can't inline these variables due to short-circuit evaluation.
-    bool continueX = mApzc.mX.SampleOverscrollAnimation(aDelta);
-    bool continueY = mApzc.mY.SampleOverscrollAnimation(aDelta);
-    if (!continueX && !continueY) {
-      // If we got into overscroll from a fling, that fling did not request a
-      // fling snap to avoid a resulting scrollTo from cancelling the overscroll
-      // animation too early. We do still want to request a fling snap, though,
-      // in case the end of the axis at which we're overscrolled is not a valid
-      // snap point, so we request one now. If there are no snap points, this will
-      // do nothing. If there are snap points, we'll get a scrollTo that snaps us
-      // back to the nearest valid snap point.
-      // The scroll snapping is done in a deferred task, otherwise the state
-      // change to NOTHING caused by the overscroll animation ending would
-      // clobber a possible state change to SMOOTH_SCROLL in ScrollSnap().
-      if (!mDeferredTasks.append(NewRunnableMethod(&mApzc,
-                                                   &AsyncPanZoomController::ScrollSnap))) {
-        MOZ_CRASH();
-      }
-      return false;
-    }
-    return true;
-  }
-
-  virtual bool WantsRepaints() override
-  {
-    return false;
-  }
-
-private:
-  AsyncPanZoomController& mApzc;
-};
 
 class SmoothScrollAnimation : public AsyncPanZoomAnimation {
 public:
@@ -733,11 +552,19 @@ public:
    * frame. Returns true if the smooth scroll should be advanced by one frame,
    * or false if the smooth scroll has ended.
    */
-  bool DoSample(FrameMetrics& aFrameMetrics, const TimeDuration& aDelta) {
+  bool DoSample(FrameMetrics& aFrameMetrics, const TimeDuration& aDelta) override {
     nsPoint oneParentLayerPixel =
       CSSPoint::ToAppUnits(ParentLayerPoint(1, 1) / aFrameMetrics.GetZoom());
     if (mXAxisModel.IsFinished(oneParentLayerPixel.x) &&
         mYAxisModel.IsFinished(oneParentLayerPixel.y)) {
+      // Set the scroll offset to the exact destination. If we allow the scroll
+      // offset to end up being a bit off from the destination, we can get
+      // artefacts like "scroll to the next snap point in this direction"
+      // scrolling to the snap point we're already supposed to be at.
+      aFrameMetrics.SetScrollOffset(
+          aFrameMetrics.CalculateScrollRange().ClampPoint(
+              CSSPoint::FromAppUnits(nsPoint(mXAxisModel.GetDestination(),
+                                             mYAxisModel.GetDestination()))));
       return false;
     }
 
@@ -805,12 +632,10 @@ public:
       // HandleSmoothScrollOverscroll() (which acquires the tree lock) would violate
       // the lock ordering. Instead we schedule HandleSmoothScrollOverscroll() to be
       // called after mMonitor is released.
-      if (!mDeferredTasks.append(NewRunnableMethod(&mApzc,
-                                                   &AsyncPanZoomController::HandleSmoothScrollOverscroll,
-                                                   velocity))) {
-        MOZ_CRASH();
-      }
-
+      mDeferredTasks.AppendElement(
+          NewRunnableMethod<ParentLayerPoint>(&mApzc,
+                                              &AsyncPanZoomController::HandleSmoothScrollOverscroll,
+                                              velocity));
       return false;
     }
 
@@ -820,6 +645,15 @@ public:
   void SetDestination(const nsPoint& aNewDestination) {
     mXAxisModel.SetDestination(static_cast<int32_t>(aNewDestination.x));
     mYAxisModel.SetDestination(static_cast<int32_t>(aNewDestination.y));
+  }
+
+  CSSPoint GetDestination() const {
+    return CSSPoint::FromAppUnits(
+        nsPoint(mXAxisModel.GetDestination(), mYAxisModel.GetDestination()));
+  }
+
+  SmoothScrollAnimation* AsSmoothScrollAnimation() override {
+    return this;
   }
 
 private:
@@ -867,15 +701,20 @@ AsyncPanZoomController::AsyncPanZoomController(uint64_t aLayersId,
      mSharingFrameMetricsAcrossProcesses(false),
      mFrameMetrics(mScrollMetadata.GetMetrics()),
      mMonitor("AsyncPanZoomController"),
+     mLastContentPaintMetrics(mLastContentPaintMetadata.GetMetrics()),
      mX(this),
      mY(this),
      mPanDirRestricted(false),
-     mZoomConstraints(false, false, MIN_ZOOM, MAX_ZOOM),
+     mZoomConstraints(false, false,
+        mFrameMetrics.GetDevPixelsPerCSSPixel() * kViewportMinScale / ParentLayerToScreenScale(1),
+        mFrameMetrics.GetDevPixelsPerCSSPixel() * kViewportMaxScale / ParentLayerToScreenScale(1)),
      mLastSampleTime(GetFrameTime()),
      mLastCheckerboardReport(GetFrameTime()),
+     mOverscrollEffect(MakeUnique<OverscrollEffect>(*this)),
      mState(NOTHING),
      mNotificationBlockers(0),
      mInputQueue(aInputQueue),
+     mPinchPaintTimerSet(false),
      mAPZCId(sAsyncPanZoomControllerCount++),
      mSharedLock(nullptr),
      mAsyncTransformAppliedToContent(false),
@@ -891,19 +730,28 @@ AsyncPanZoomController::~AsyncPanZoomController()
   MOZ_ASSERT(IsDestroyed());
 }
 
-PCompositorParent*
+PCompositorBridgeParent*
 AsyncPanZoomController::GetSharedFrameMetricsCompositor()
 {
   APZThreadUtils::AssertOnCompositorThread();
 
   if (mSharingFrameMetricsAcrossProcesses) {
-    // |state| may be null here if the CrossProcessCompositorParent has already been destroyed.
-    if (const CompositorParent::LayerTreeState* state = CompositorParent::GetIndirectShadowTree(mLayersId)) {
-      return state->CrossProcessPCompositor();
+    // |state| may be null here if the CrossProcessCompositorBridgeParent has already been destroyed.
+    if (const CompositorBridgeParent::LayerTreeState* state = CompositorBridgeParent::GetIndirectShadowTree(mLayersId)) {
+      return state->CrossProcessPCompositorBridge();
     }
     return nullptr;
   }
-  return mCompositorParent.get();
+  return mCompositorBridgeParent.get();
+}
+
+PlatformSpecificStateBase*
+AsyncPanZoomController::GetPlatformSpecificState()
+{
+  if (!mPlatformSpecificState) {
+    mPlatformSpecificState = MakeUnique<PlatformSpecificState>();
+  }
+  return mPlatformSpecificState.get();
 }
 
 already_AddRefed<GeckoContentController>
@@ -940,7 +788,7 @@ AsyncPanZoomController::Destroy()
   mParent = nullptr;
   mTreeManager = nullptr;
 
-  PCompositorParent* compositor = GetSharedFrameMetricsCompositor();
+  PCompositorBridgeParent* compositor = GetSharedFrameMetricsCompositor();
   // Only send the release message if the SharedFrameMetrics has been created.
   if (compositor && mSharedFrameMetricsBuffer) {
     Unused << compositor->SendReleaseSharedCompositorFrameMetrics(mFrameMetrics.GetScrollId(), mAPZCId);
@@ -1040,6 +888,10 @@ static float GetAxisScale(AsyncDragMetrics::DragDirection aDir, T aValue) {
 nsEventStatus AsyncPanZoomController::HandleDragEvent(const MouseInput& aEvent,
                                                       const AsyncDragMetrics& aDragMetrics)
 {
+  if (!gfxPrefs::APZDragEnabled()) {
+    return nsEventStatus_eIgnore;
+  }
+
   if (!GetApzcTreeManager()) {
     return nsEventStatus_eConsumeNoDefault;
   }
@@ -1156,7 +1008,7 @@ nsEventStatus AsyncPanZoomController::HandleInputEvent(const InputData& aEvent,
   }
   case SCROLLWHEEL_INPUT: {
     ScrollWheelInput scrollInput = aEvent.AsScrollWheelInput();
-    if (!scrollInput.TransformToLocal(aTransformToApzc)) { 
+    if (!scrollInput.TransformToLocal(aTransformToApzc)) {
       return rv;
     }
 
@@ -1165,7 +1017,7 @@ nsEventStatus AsyncPanZoomController::HandleInputEvent(const InputData& aEvent,
   }
   case PINCHGESTURE_INPUT: {
     PinchGestureInput pinchInput = aEvent.AsPinchGestureInput();
-    if (!pinchInput.TransformToLocal(aTransformToApzc)) { 
+    if (!pinchInput.TransformToLocal(aTransformToApzc)) {
       return rv;
     }
 
@@ -1174,7 +1026,7 @@ nsEventStatus AsyncPanZoomController::HandleInputEvent(const InputData& aEvent,
   }
   case TAPGESTURE_INPUT: {
     TapGestureInput tapInput = aEvent.AsTapGestureInput();
-    if (!tapInput.TransformToLocal(aTransformToApzc)) { 
+    if (!tapInput.TransformToLocal(aTransformToApzc)) {
       return rv;
     }
 
@@ -1223,6 +1075,11 @@ nsEventStatus AsyncPanZoomController::HandleGestureEvent(const InputData& aEvent
   return rv;
 }
 
+void AsyncPanZoomController::HandleTouchVelocity(uint32_t aTimesampMs, float aSpeedY)
+{
+  mY.HandleTouchVelocity(aTimesampMs, aSpeedY);
+}
+
 nsEventStatus AsyncPanZoomController::OnTouchStart(const MultiTouchInput& aEvent) {
   APZC_LOG("%p got a touch-start in state %d\n", this, mState);
   mPanDirRestricted = false;
@@ -1242,7 +1099,7 @@ nsEventStatus AsyncPanZoomController::OnTouchStart(const MultiTouchInput& aEvent
       mY.StartTouch(point.y, aEvent.mTime);
       if (RefPtr<GeckoContentController> controller = GetGeckoContentController()) {
         controller->NotifyAPZStateChange(
-            GetGuid(), APZStateChange::StartTouch,
+            GetGuid(), APZStateChange::eStartTouch,
             CurrentTouchBlock()->GetOverscrollHandoffChain()->CanBePanned(this));
       }
       SetState(TOUCHING);
@@ -1321,6 +1178,11 @@ nsEventStatus AsyncPanZoomController::OnTouchMove(const MultiTouchInput& aEvent)
 nsEventStatus AsyncPanZoomController::OnTouchEnd(const MultiTouchInput& aEvent) {
   APZC_LOG("%p got a touch-end in state %d\n", this, mState);
 
+  RefPtr<GeckoContentController> controller = GetGeckoContentController();
+  if (controller) {
+    controller->SetScrollingRootContent(false);
+  }
+
   OnTouchEndOrCancel();
 
   // In case no touch behavior triggered previously we can avoid sending
@@ -1390,7 +1252,14 @@ nsEventStatus AsyncPanZoomController::OnTouchEnd(const MultiTouchInput& aEvent) 
     // what our final state is to avoid notification churn.
     StateChangeNotificationBlocker blocker(this);
     SetState(NOTHING);
-    APZC_LOG("%p starting a fling animation\n", this);
+
+    APZC_LOG("%p starting a fling animation if %f >= %f\n", this,
+        flingVelocity.Length(), gfxPrefs::APZFlingMinVelocityThreshold());
+
+    if (flingVelocity.Length() < gfxPrefs::APZFlingMinVelocityThreshold()) {
+      return nsEventStatus_eConsumeNoDefault;
+    }
+
     // Make a local copy of the tree manager pointer and check that it's not
     // null before calling DispatchFling(). This is necessary because Destroy(),
     // which nulls out mTreeManager, could be called concurrently.
@@ -1431,6 +1300,7 @@ nsEventStatus AsyncPanZoomController::OnTouchCancel(const MultiTouchInput& aEven
 nsEventStatus AsyncPanZoomController::OnScaleBegin(const PinchGestureInput& aEvent) {
   APZC_LOG("%p got a scale-begin in state %d\n", this, mState);
 
+  mPinchPaintTimerSet = false;
   // Note that there may not be a touch block at this point, if we received the
   // PinchGestureEvent directly from widget code without any touch events.
   if (HasReadyTouchBlock() && !CurrentTouchBlock()->TouchActionAllowsPinchZoom()) {
@@ -1525,8 +1395,21 @@ nsEventStatus AsyncPanZoomController::OnScale(const PinchGestureInput& aEvent) {
       }
 
       ScheduleComposite();
-      // We don't want to redraw on every scale, so don't use
-      // RequestContentRepaint()
+
+      // We don't want to redraw on every scale, so throttle it.
+      if (!mPinchPaintTimerSet) {
+        const int delay = gfxPrefs::APZScaleRepaintDelay();
+        if (delay >= 0) {
+          if (RefPtr<GeckoContentController> controller = GetGeckoContentController()) {
+            mPinchPaintTimerSet = true;
+            controller->PostDelayedTask(
+              NewRunnableMethod(this,
+                                &AsyncPanZoomController::DoDelayedRequestContentRepaint),
+              delay);
+          }
+        }
+      }
+
       UpdateSharedCompositorFrameMetrics();
     }
 
@@ -1538,6 +1421,8 @@ nsEventStatus AsyncPanZoomController::OnScale(const PinchGestureInput& aEvent) {
 
 nsEventStatus AsyncPanZoomController::OnScaleEnd(const PinchGestureInput& aEvent) {
   APZC_LOG("%p got a scale-end in state %d\n", this, mState);
+
+  mPinchPaintTimerSet = false;
 
   if (HasReadyTouchBlock() && !CurrentTouchBlock()->TouchActionAllowsPinchZoom()) {
     return nsEventStatus_eIgnore;
@@ -1584,30 +1469,32 @@ nsEventStatus AsyncPanZoomController::OnScaleEnd(const PinchGestureInput& aEvent
 }
 
 bool
-AsyncPanZoomController::ConvertToGecko(const ScreenIntPoint& aPoint, CSSPoint* aOut)
+AsyncPanZoomController::ConvertToGecko(const ScreenIntPoint& aPoint, LayoutDevicePoint* aOut)
 {
   if (APZCTreeManager* treeManagerLocal = GetApzcTreeManager()) {
     ScreenToScreenMatrix4x4 transformScreenToGecko =
         treeManagerLocal->GetScreenToApzcTransform(this)
       * treeManagerLocal->GetApzcToGeckoTransform(this);
-    
+
     Maybe<ScreenIntPoint> layoutPoint = UntransformBy(
         transformScreenToGecko, aPoint);
     if (!layoutPoint) {
       return false;
     }
 
-    { // scoped lock to access mFrameMetrics
-      ReentrantMonitorAutoEnter lock(mMonitor);
-      // NOTE: This isn't *quite* LayoutDevicePoint, we just don't have a name
-      // for this coordinate space and it maps the closest to LayoutDevicePoint.
-      *aOut = LayoutDevicePoint(ViewAs<LayoutDevicePixel>(*layoutPoint,
-                  PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent))
-            / mFrameMetrics.GetDevPixelsPerCSSPixel();
-    }
+    *aOut = LayoutDevicePoint(ViewAs<LayoutDevicePixel>(*layoutPoint,
+                PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent));
     return true;
   }
   return false;
+}
+
+static bool
+AllowsScrollingMoreThanOnePage(double aMultiplier)
+{
+  const int32_t kMinAllowPageScroll =
+    EventStateManager::MIN_MULTIPLIER_VALUE_ALLOWING_OVER_ONE_PAGE_SCROLL;
+  return Abs(aMultiplier) >= kMinAllowPageScroll;
 }
 
 ParentLayerPoint
@@ -1615,14 +1502,12 @@ AsyncPanZoomController::GetScrollWheelDelta(const ScrollWheelInput& aEvent) cons
 {
   ParentLayerSize scrollAmount;
   ParentLayerSize pageScrollSize;
-  bool isRootContent = false;
 
   {
     // Grab the lock to access the frame metrics.
     ReentrantMonitorAutoEnter lock(mMonitor);
-    LayoutDeviceIntSize scrollAmountLD = mFrameMetrics.GetLineScrollAmount();
-    LayoutDeviceIntSize pageScrollSizeLD = mFrameMetrics.GetPageScrollAmount();
-    isRootContent = mFrameMetrics.IsRootContent();
+    LayoutDeviceIntSize scrollAmountLD = mScrollMetadata.GetLineScrollAmount();
+    LayoutDeviceIntSize pageScrollSizeLD = mScrollMetadata.GetPageScrollAmount();
     scrollAmount = scrollAmountLD /
       mFrameMetrics.GetDevPixelsPerCSSPixel() * mFrameMetrics.GetZoom();
     pageScrollSize = pageScrollSizeLD /
@@ -1655,9 +1540,9 @@ AsyncPanZoomController::GetScrollWheelDelta(const ScrollWheelInput& aEvent) cons
 
   // For the conditions under which we allow system scroll overrides, see
   // EventStateManager::DeltaAccumulator::ComputeScrollAmountForDefaultAction
-  // and WheelTransaction::OverrideSystemScrollSpeed.
-  if (isRootContent &&
-      gfxPrefs::MouseWheelHasRootScrollDeltaOverride() &&
+  // and WheelTransaction::OverrideSystemScrollSpeed. Note that we do *not*
+  // restrict this to the root content, see bug 1217715 for discussion on this.
+  if (gfxPrefs::MouseWheelHasRootScrollDeltaOverride() &&
       !aEvent.IsCustomizedByUserPrefs() &&
       aEvent.mDeltaType == ScrollWheelInput::SCROLLDELTA_LINE &&
       aEvent.mAllowToOverrideSystemScrollSpeed) {
@@ -1680,12 +1565,16 @@ AsyncPanZoomController::GetScrollWheelDelta(const ScrollWheelInput& aEvent) cons
     }
   }
 
-  if (Abs(delta.x) > pageScrollSize.width) {
+  // We shouldn't scroll more than one page at once except when the
+  // user preference is large.
+  if (!AllowsScrollingMoreThanOnePage(aEvent.mUserDeltaMultiplierX) &&
+      Abs(delta.x) > pageScrollSize.width) {
     delta.x = (delta.x >= 0)
               ? pageScrollSize.width
               : -pageScrollSize.width;
   }
-  if (Abs(delta.y) > pageScrollSize.height) {
+  if (!AllowsScrollingMoreThanOnePage(aEvent.mUserDeltaMultiplierY) &&
+      Abs(delta.y) > pageScrollSize.height) {
     delta.y = (delta.y >= 0)
               ? pageScrollSize.height
               : -pageScrollSize.height;
@@ -1703,7 +1592,7 @@ AsyncPanZoomController::CanScroll(const InputData& aEvent) const
     delta = GetScrollWheelDelta(aEvent.AsScrollWheelInput());
   } else if (aEvent.mInputType == PANGESTURE_INPUT) {
     const PanGestureInput& panInput = aEvent.AsPanGestureInput();
-    delta = ToParentLayerCoordinates(panInput.mPanDisplacement, panInput.mPanStartPoint);
+    delta = ToParentLayerCoordinates(panInput.UserMultipliedPanDisplacement(), panInput.mPanStartPoint);
   }
   if (!delta.x && !delta.y) {
     return false;
@@ -1719,7 +1608,7 @@ AsyncPanZoomController::CanScrollWithWheel(const ParentLayerPoint& aDelta) const
   if (mX.CanScroll(aDelta.x)) {
     return true;
   }
-  if (mY.CanScroll(aDelta.y) && mFrameMetrics.AllowVerticalScrollWithWheel()) {
+  if (mY.CanScroll(aDelta.y) && mScrollMetadata.AllowVerticalScrollWithWheel()) {
     return true;
   }
   return false;
@@ -1749,6 +1638,15 @@ AsyncPanZoomController::AllowScrollHandoffInCurrentBlock() const
     }
   }
   return result;
+}
+
+void AsyncPanZoomController::DoDelayedRequestContentRepaint()
+{
+  if (!IsDestroyed() && mPinchPaintTimerSet) {
+    ReentrantMonitorAutoEnter lock(mMonitor);
+    RequestContentRepaint();
+  }
+  mPinchPaintTimerSet = false;
 }
 
 static ScrollInputMethod
@@ -1796,8 +1694,16 @@ nsEventStatus AsyncPanZoomController::OnScrollWheel(const ScrollWheelInput& aEve
   mozilla::Telemetry::Accumulate(mozilla::Telemetry::SCROLL_INPUT_METHODS,
       (uint32_t) ScrollInputMethodForWheelDeltaType(aEvent.mDeltaType));
 
+
   switch (aEvent.mScrollMode) {
     case ScrollWheelInput::SCROLLMODE_INSTANT: {
+
+      // Wheel events from "clicky" mouse wheels trigger scroll snapping to the
+      // next snap point. Check for this, and adjust the delta to take into
+      // account the snap point.
+      CSSPoint startPosition = mFrameMetrics.GetScrollOffset();
+      MaybeAdjustDeltaForScrollSnapping(aEvent, delta, startPosition);
+
       ScreenPoint distance = ToScreenCoordinates(
         ParentLayerPoint(fabs(delta.x), fabs(delta.y)), aEvent.mLocalOrigin);
 
@@ -1827,6 +1733,26 @@ nsEventStatus AsyncPanZoomController::OnScrollWheel(const ScrollWheelInput& aEve
       // update it.
       ReentrantMonitorAutoEnter lock(mMonitor);
 
+      // Perform scroll snapping if appropriate.
+      CSSPoint startPosition = mFrameMetrics.GetScrollOffset();
+      // If we're already in a wheel scroll or smooth scroll animation,
+      // the delta is applied to its destination, not to the current
+      // scroll position. Take this into account when finding a snap point.
+      if (mState == WHEEL_SCROLL) {
+        startPosition = mAnimation->AsWheelScrollAnimation()->GetDestination();
+      } else if (mState == SMOOTH_SCROLL) {
+        startPosition = mAnimation->AsSmoothScrollAnimation()->GetDestination();
+      }
+      if (MaybeAdjustDeltaForScrollSnapping(aEvent, delta, startPosition)) {
+        // If we're scroll snapping, use a smooth scroll animation to get
+        // the desired physics. Note that SmoothScrollTo() will re-use an
+        // existing smooth scroll animation if there is one.
+        APZC_LOG("%p wheel scrolling to snap point %s\n", this, Stringify(startPosition).c_str());
+        SmoothScrollTo(startPosition);
+        break;
+      }
+
+      // Otherwise, use a wheel scroll animation, also reusing one if possible.
       if (mState != WHEEL_SCROLL) {
         CancelAnimation();
         SetState(WHEEL_SCROLL);
@@ -1845,6 +1771,11 @@ nsEventStatus AsyncPanZoomController::OnScrollWheel(const ScrollWheelInput& aEve
 
       WheelScrollAnimation* animation = mAnimation->AsWheelScrollAnimation();
       animation->Update(aEvent.mTimeStamp, deltaInAppUnits, nsSize(velocity.x, velocity.y));
+      break;
+    }
+
+    case ScrollWheelInput::SCROLLMODE_SENTINEL: {
+      MOZ_ASSERT_UNREACHABLE("Invalid ScrollMode.");
       break;
     }
   }
@@ -1944,19 +1875,27 @@ nsEventStatus AsyncPanZoomController::OnPan(const PanGestureInput& aEvent, bool 
     return OnPanBegin(aEvent);
   }
 
+  // Note that there is a multiplier that applies onto the "physical" pan
+  // displacement (how much the user's fingers moved) that produces the "logical"
+  // pan displacement (how much the page should move). For some of the code
+  // below it makes more sense to use the physical displacement rather than
+  // the logical displacement, and vice-versa.
+  ScreenPoint physicalPanDisplacement = aEvent.mPanDisplacement;
+  ParentLayerPoint logicalPanDisplacement = aEvent.UserMultipliedLocalPanDisplacement();
+
   // We need to update the axis velocity in order to get a useful display port
   // size and position. We need to do so even if this is a momentum pan (i.e.
   // aFingersOnTouchpad == false); in that case the "with touch" part is not
   // really appropriate, so we may want to rethink this at some point.
-  mX.UpdateWithTouchAtDevicePoint(aEvent.mLocalPanStartPoint.x, aEvent.mLocalPanDisplacement.x, aEvent.mTime);
-  mY.UpdateWithTouchAtDevicePoint(aEvent.mLocalPanStartPoint.y, aEvent.mLocalPanDisplacement.y, aEvent.mTime);
+  mX.UpdateWithTouchAtDevicePoint(aEvent.mLocalPanStartPoint.x, logicalPanDisplacement.x, aEvent.mTime);
+  mY.UpdateWithTouchAtDevicePoint(aEvent.mLocalPanStartPoint.y, logicalPanDisplacement.y, aEvent.mTime);
 
-  HandlePanningUpdate(aEvent.mPanDisplacement);
+  HandlePanningUpdate(physicalPanDisplacement);
 
   mozilla::Telemetry::Accumulate(mozilla::Telemetry::SCROLL_INPUT_METHODS,
       (uint32_t) ScrollInputMethod::ApzPanGesture);
 
-  ScreenPoint panDistance(fabs(aEvent.mPanDisplacement.x), fabs(aEvent.mPanDisplacement.y));
+  ScreenPoint panDistance(fabs(physicalPanDisplacement.x), fabs(physicalPanDisplacement.y));
   OverscrollHandoffState handoffState(
       *CurrentPanGestureBlock()->GetOverscrollHandoffChain(),
       panDistance,
@@ -1970,7 +1909,7 @@ nsEventStatus AsyncPanZoomController::OnPan(const PanGestureInput& aEvent, bool 
   // the motion of the scrolled contents, not of the scroll position, they need
   // to move in the opposite direction of the pan displacement.
   ParentLayerPoint startPoint = aEvent.mLocalPanStartPoint;
-  ParentLayerPoint endPoint = aEvent.mLocalPanStartPoint - aEvent.mLocalPanDisplacement;
+  ParentLayerPoint endPoint = aEvent.mLocalPanStartPoint - logicalPanDisplacement;
   CallDispatchScroll(startPoint, endPoint, handoffState);
 
   return nsEventStatus_eConsumeNoDefault;
@@ -2046,14 +1985,20 @@ nsEventStatus AsyncPanZoomController::OnLongPress(const TapGestureInput& aEvent)
   APZC_LOG("%p got a long-press in state %d\n", this, mState);
   RefPtr<GeckoContentController> controller = GetGeckoContentController();
   if (controller) {
-    CSSPoint geckoScreenPoint;
+    LayoutDevicePoint geckoScreenPoint;
     if (ConvertToGecko(aEvent.mPoint, &geckoScreenPoint)) {
-      if (CurrentTouchBlock()->IsDuringFastFling()) {
+      CancelableBlockState* block = CurrentInputBlock();
+      MOZ_ASSERT(block);
+      if (!block->AsTouchBlock()) {
+        APZC_LOG("%p dropping long-press because some non-touch block interrupted it\n", this);
+        return nsEventStatus_eIgnore;
+      }
+      if (block->AsTouchBlock()->IsDuringFastFling()) {
         APZC_LOG("%p dropping long-press because of fast fling\n", this);
         return nsEventStatus_eIgnore;
       }
       uint64_t blockId = GetInputQueue()->InjectNewTouchBlock(this);
-      controller->HandleLongTap(geckoScreenPoint, aEvent.modifiers, GetGuid(), blockId);
+      controller->HandleTap(TapType::eLongTap, geckoScreenPoint, aEvent.modifiers, GetGuid(), blockId);
       return nsEventStatus_eConsumeNoDefault;
     }
   }
@@ -2062,27 +2007,45 @@ nsEventStatus AsyncPanZoomController::OnLongPress(const TapGestureInput& aEvent)
 
 nsEventStatus AsyncPanZoomController::OnLongPressUp(const TapGestureInput& aEvent) {
   APZC_LOG("%p got a long-tap-up in state %d\n", this, mState);
-  return GenerateSingleTap(aEvent.mPoint, aEvent.modifiers);
+  return GenerateSingleTap(TapType::eLongTapUp, aEvent.mPoint, aEvent.modifiers);
 }
 
-nsEventStatus AsyncPanZoomController::GenerateSingleTap(const ScreenIntPoint& aPoint, mozilla::Modifiers aModifiers) {
+nsEventStatus AsyncPanZoomController::GenerateSingleTap(TapType aType,
+      const ScreenIntPoint& aPoint, mozilla::Modifiers aModifiers) {
   RefPtr<GeckoContentController> controller = GetGeckoContentController();
   if (controller) {
-    CSSPoint geckoScreenPoint;
+    LayoutDevicePoint geckoScreenPoint;
     if (ConvertToGecko(aPoint, &geckoScreenPoint)) {
-      if (!CurrentTouchBlock()->SetSingleTapOccurred()) {
-        return nsEventStatus_eIgnore;
+      CancelableBlockState* block = CurrentInputBlock();
+      MOZ_ASSERT(block);
+      TouchBlockState* touch = block->AsTouchBlock();
+      // |block| may be a non-touch block in the case where this function is
+      // invoked by GestureEventListener on a timeout. In that case we already
+      // verified that the single tap is allowed so we let it through.
+      // XXX there is a bug here that in such a case the touch block that
+      // generated this tap will not get its mSingleTapOccurred flag set.
+      // See https://bugzilla.mozilla.org/show_bug.cgi?id=1256344#c6
+      if (touch) {
+        if (touch->IsDuringFastFling()) {
+          APZC_LOG("%p dropping single-tap because it was during a fast-fling\n", this);
+          return nsEventStatus_eIgnore;
+        }
+        touch->SetSingleTapOccurred();
       }
       // Because this may be being running as part of APZCTreeManager::ReceiveInputEvent,
-      // calling controller->HandleSingleTap directly might mean that content receives
+      // calling controller->HandleTap directly might mean that content receives
       // the single tap message before the corresponding touch-up. To avoid that we
       // schedule the singletap message to run on the next spin of the event loop.
       // See bug 965381 for the issue this was causing.
-      controller->PostDelayedTask(
-        NewRunnableMethod(controller.get(), &GeckoContentController::HandleSingleTap,
-                          geckoScreenPoint, aModifiers,
-                          GetGuid()),
-        0);
+      RefPtr<Runnable> runnable =
+        NewRunnableMethod<TapType, LayoutDevicePoint, mozilla::Modifiers,
+                          ScrollableLayerGuid, uint64_t>(controller,
+                            &GeckoContentController::HandleTap,
+                            aType, geckoScreenPoint,
+                            aModifiers, GetGuid(),
+                            touch ? touch->GetBlockId() : 0);
+
+      controller->PostDelayedTask(runnable.forget(), 0);
       return nsEventStatus_eConsumeNoDefault;
     }
   }
@@ -2092,7 +2055,7 @@ nsEventStatus AsyncPanZoomController::GenerateSingleTap(const ScreenIntPoint& aP
 void AsyncPanZoomController::OnTouchEndOrCancel() {
   if (RefPtr<GeckoContentController> controller = GetGeckoContentController()) {
     controller->NotifyAPZStateChange(
-        GetGuid(), APZStateChange::EndTouch, CurrentTouchBlock()->SingleTapOccurred());
+        GetGuid(), APZStateChange::eEndTouch, CurrentTouchBlock()->SingleTapOccurred());
   }
 }
 
@@ -2101,14 +2064,14 @@ nsEventStatus AsyncPanZoomController::OnSingleTapUp(const TapGestureInput& aEven
   // If mZoomConstraints.mAllowDoubleTapZoom is true we wait for a call to OnSingleTapConfirmed before
   // sending event to content
   if (!(mZoomConstraints.mAllowDoubleTapZoom && CurrentTouchBlock()->TouchActionAllowsDoubleTapZoom())) {
-    return GenerateSingleTap(aEvent.mPoint, aEvent.modifiers);
+    return GenerateSingleTap(TapType::eSingleTap, aEvent.mPoint, aEvent.modifiers);
   }
   return nsEventStatus_eIgnore;
 }
 
 nsEventStatus AsyncPanZoomController::OnSingleTapConfirmed(const TapGestureInput& aEvent) {
   APZC_LOG("%p got a single-tap-confirmed in state %d\n", this, mState);
-  return GenerateSingleTap(aEvent.mPoint, aEvent.modifiers);
+  return GenerateSingleTap(TapType::eSingleTap, aEvent.mPoint, aEvent.modifiers);
 }
 
 nsEventStatus AsyncPanZoomController::OnDoubleTap(const TapGestureInput& aEvent) {
@@ -2116,9 +2079,10 @@ nsEventStatus AsyncPanZoomController::OnDoubleTap(const TapGestureInput& aEvent)
   RefPtr<GeckoContentController> controller = GetGeckoContentController();
   if (controller) {
     if (mZoomConstraints.mAllowDoubleTapZoom && CurrentTouchBlock()->TouchActionAllowsDoubleTapZoom()) {
-      CSSPoint geckoScreenPoint;
+      LayoutDevicePoint geckoScreenPoint;
       if (ConvertToGecko(aEvent.mPoint, &geckoScreenPoint)) {
-        controller->HandleDoubleTap(geckoScreenPoint, aEvent.modifiers, GetGuid());
+        controller->HandleTap(TapType::eDoubleTap, geckoScreenPoint,
+            aEvent.modifiers, GetGuid(), CurrentTouchBlock()->GetBlockId());
       }
     }
     return nsEventStatus_eConsumeNoDefault;
@@ -2315,7 +2279,7 @@ nsEventStatus AsyncPanZoomController::StartPanning(const MultiTouchInput& aEvent
 
   if (IsInPanningState()) {
     if (RefPtr<GeckoContentController> controller = GetGeckoContentController()) {
-      controller->NotifyAPZStateChange(GetGuid(), APZStateChange::StartPanning);
+      controller->NotifyAPZStateChange(GetGuid(), APZStateChange::eStartPanning);
     }
     return nsEventStatus_eConsumeNoDefault;
   }
@@ -2339,13 +2303,24 @@ bool AsyncPanZoomController::AttemptScroll(ParentLayerPoint& aStartPoint,
   ParentLayerPoint displacement = aStartPoint - aEndPoint;
 
   ParentLayerPoint overscroll;  // will be used outside monitor block
-  {
+
+  // If the direction of panning is reversed within the same input block,
+  // a later event in the block could potentially scroll an APZC earlier
+  // in the handoff chain, than an earlier event in the block (because
+  // the earlier APZC was scrolled to its extent in the original direction).
+  // We want to disallow this.
+  bool scrollThisApzc = false;
+  if (InputBlockState* block = CurrentInputBlock()) {
+    scrollThisApzc = !block->GetScrolledApzc() || block->IsDownchainOfScrolledApzc(this);
+  }
+
+  if (scrollThisApzc) {
     ReentrantMonitorAutoEnter lock(mMonitor);
 
     ParentLayerPoint adjustedDisplacement;
     bool forceVerticalOverscroll =
       (aOverscrollHandoffState.mScrollSource == ScrollSource::Wheel &&
-       !mFrameMetrics.AllowVerticalScrollWithWheel());
+       !mScrollMetadata.AllowVerticalScrollWithWheel());
     bool yChanged = mY.AdjustDisplacement(displacement.y, adjustedDisplacement.y, overscroll.y,
                                           forceVerticalOverscroll);
     bool xChanged = mX.AdjustDisplacement(displacement.x, adjustedDisplacement.x, overscroll.x);
@@ -2356,18 +2331,24 @@ bool AsyncPanZoomController::AttemptScroll(ParentLayerPoint& aStartPoint,
 
     if (!IsZero(adjustedDisplacement)) {
       ScrollBy(adjustedDisplacement / mFrameMetrics.GetZoom());
-      if (!gfxPrefs::APZAllowImmediateHandoff()) {
-        if (InputBlockState* block = CurrentInputBlock()) {
-          block->SetScrolledApzc(this);
+      if (CancelableBlockState* block = CurrentInputBlock()) {
+        if (block->AsTouchBlock() && (block->GetScrolledApzc() != this)) {
+          RefPtr<GeckoContentController> controller = GetGeckoContentController();
+          if (controller) {
+            controller->SetScrollingRootContent(IsRootContent());
+          }
         }
+        block->SetScrolledApzc(this);
       }
       ScheduleCompositeAndMaybeRepaint();
       UpdateSharedCompositorFrameMetrics();
     }
-  }
 
-  // Adjust the start point to reflect the consumed portion of the scroll.
-  aStartPoint = aEndPoint + overscroll;
+    // Adjust the start point to reflect the consumed portion of the scroll.
+    aStartPoint = aEndPoint + overscroll;
+  } else {
+    overscroll = displacement;
+  }
 
   // If we consumed the entire displacement as a normal scroll, great.
   if (IsZero(overscroll)) {
@@ -2429,29 +2410,10 @@ void AsyncPanZoomController::OverscrollBy(ParentLayerPoint& aOverscroll) {
   bool xConsumed = FuzzyEqualsAdditive(aOverscroll.x, 0.0f, COORDINATE_EPSILON);
   bool yConsumed = FuzzyEqualsAdditive(aOverscroll.y, 0.0f, COORDINATE_EPSILON);
 
-#if defined(MOZ_ANDROID_APZ)
-  RefPtr<GeckoContentController> controller = GetGeckoContentController();
-  if (controller && ((xCanScroll && !xConsumed) || (yCanScroll && !yConsumed))) {
-    controller->UpdateOverscrollOffset(aOverscroll.x, aOverscroll.y);
-    aOverscroll.x = aOverscroll.y = 0.0f;
-  }
-#else
-  if (xCanScroll && !xConsumed) {
-    mX.OverscrollBy(aOverscroll.x);
-    aOverscroll.x = 0;
-    xConsumed = true;
-  }
+  bool shouldOverscrollX = xCanScroll && !xConsumed;
+  bool shouldOverscrollY = yCanScroll && !yConsumed;
 
-  if (yCanScroll && !yConsumed) {
-    mY.OverscrollBy(aOverscroll.y);
-    aOverscroll.y = 0;
-    yConsumed = true;
-  }
-
-  if ((xCanScroll && xConsumed) || (yCanScroll && yConsumed)) {
-    ScheduleComposite();
-  }
-#endif
+  mOverscrollEffect->ConsumeOverscroll(aOverscroll, shouldOverscrollX, shouldOverscrollY);
 }
 
 RefPtr<const OverscrollHandoffChain> AsyncPanZoomController::BuildOverscrollHandoffChain() {
@@ -2489,8 +2451,9 @@ void AsyncPanZoomController::AcceptFling(FlingHandoffState& aHandoffState) {
   if (mState != SMOOTH_SCROLL) {
     SetState(FLING);
     FlingAnimation *fling = new FlingAnimation(*this,
+        GetPlatformSpecificState(),
         aHandoffState.mChain,
-        !aHandoffState.mIsHandoff,  // only apply acceleration if this is an initial fling
+        aHandoffState.mIsHandoff,
         aHandoffState.mScrolledApzc);
     StartAnimation(fling);
   }
@@ -2517,14 +2480,7 @@ void AsyncPanZoomController::HandleFlingOverscroll(const ParentLayerPoint& aVelo
                                    aScrolledApzc};
     treeManagerLocal->DispatchFling(this, handoffState);
     if (!IsZero(handoffState.mVelocity) && IsPannable() && gfxPrefs::APZOverscrollEnabled()) {
-#if defined(MOZ_ANDROID_APZ)
-      RefPtr<GeckoContentController> controller = GetGeckoContentController();
-      if (controller) {
-        controller->UpdateOverscrollVelocity(handoffState.mVelocity.x, handoffState.mVelocity.y);
-      }
-#else
-      StartOverscrollAnimation(handoffState.mVelocity);
-#endif
+      mOverscrollEffect->HandleFlingOverscroll(handoffState.mVelocity);
     }
   }
 }
@@ -2654,8 +2610,8 @@ void AsyncPanZoomController::ClearOverscroll() {
   mY.ClearOverscroll();
 }
 
-void AsyncPanZoomController::SetCompositorParent(CompositorParent* aCompositorParent) {
-  mCompositorParent = aCompositorParent;
+void AsyncPanZoomController::SetCompositorBridgeParent(CompositorBridgeParent* aCompositorBridgeParent) {
+  mCompositorBridgeParent = aCompositorBridgeParent;
 }
 
 void AsyncPanZoomController::ShareFrameMetricsAcrossProcesses() {
@@ -2670,7 +2626,10 @@ void AsyncPanZoomController::AdjustScrollForSurfaceShift(const ScreenPoint& aShi
     / mFrameMetrics.GetZoom();
   APZC_LOG("%p adjusting scroll position by %s for surface shift\n",
     this, Stringify(adjustment).c_str());
-  mFrameMetrics.ScrollBy(adjustment);
+  CSSPoint scrollOffset = mFrameMetrics.GetScrollOffset();
+  scrollOffset.y = mY.ClampOriginToScrollableRect(scrollOffset.y + adjustment.y);
+  scrollOffset.x = mX.ClampOriginToScrollableRect(scrollOffset.x + adjustment.x);
+  mFrameMetrics.SetScrollOffset(scrollOffset);
   ScheduleCompositeAndMaybeRepaint();
   UpdateSharedCompositorFrameMetrics();
 }
@@ -2713,14 +2672,33 @@ CalculateDisplayPortSize(const CSSSize& aCompositionSize,
     yMultiplier += gfxPrefs::APZYSkateHighMemAdjust();
   }
 
-  // Ensure that it is at least as large as the visible area inflated by the
-  // danger zone. If this is not the case then the "AboutToCheckerboard"
-  // function in TiledContentClient.cpp will return true even in the stable
-  // state.
-  float xSize = std::max(aCompositionSize.width * xMultiplier,
-                         aCompositionSize.width + (2 * gfxPrefs::APZDangerZoneX()));
-  float ySize = std::max(aCompositionSize.height * yMultiplier,
-                         aCompositionSize.height + (2 * gfxPrefs::APZDangerZoneY()));
+  return aCompositionSize * CSSSize(xMultiplier, yMultiplier);
+}
+
+/**
+ * Ensures that the displayport is at least as large as the visible area
+ * inflated by the danger zone. If this is not the case then the
+ * "AboutToCheckerboard" function in TiledContentClient.cpp will return true
+ * even in the stable state.
+ */
+static CSSSize
+ExpandDisplayPortToDangerZone(const CSSSize& aDisplayPortSize,
+                              const FrameMetrics& aFrameMetrics)
+{
+  CSSSize dangerZone(0.0f, 0.0f);
+  if (aFrameMetrics.LayersPixelsPerCSSPixel().xScale != 0 &&
+      aFrameMetrics.LayersPixelsPerCSSPixel().yScale != 0) {
+    dangerZone = LayerSize(
+      gfxPrefs::APZDangerZoneX(),
+      gfxPrefs::APZDangerZoneY()) / aFrameMetrics.LayersPixelsPerCSSPixel();
+  }
+  const CSSSize compositionSize = aFrameMetrics.CalculateBoundedCompositedSizeInCssPixels();
+
+  const float xSize = std::max(aDisplayPortSize.width,
+                               compositionSize.width + (2 * dangerZone.width));
+
+  const float ySize = std::max(aDisplayPortSize.height,
+                               compositionSize.height + (2 * dangerZone.height));
 
   return CSSSize(xSize, ySize);
 }
@@ -2757,11 +2735,16 @@ const ScreenMargin AsyncPanZoomController::CalculatePendingDisplayPort(
   }
 
   CSSSize compositionSize = aFrameMetrics.CalculateBoundedCompositedSizeInCssPixels();
-  CSSPoint velocity = aVelocity / aFrameMetrics.GetZoom();
+  CSSPoint velocity;
+  if (aFrameMetrics.GetZoom() != CSSToParentLayerScale2D(0, 0)) {
+    velocity = aVelocity / aFrameMetrics.GetZoom();  // avoid division by zero
+  }
   CSSRect scrollableRect = aFrameMetrics.GetExpandedScrollableRect();
 
   // Calculate the displayport size based on how fast we're moving along each axis.
   CSSSize displayPortSize = CalculateDisplayPortSize(compositionSize, velocity);
+
+  displayPortSize = ExpandDisplayPortToDangerZone(displayPortSize, aFrameMetrics);
 
   if (gfxPrefs::APZEnlargeDisplayPortWhenClipped()) {
     RedistributeDisplayPortExcess(displayPortSize, scrollableRect);
@@ -2799,8 +2782,8 @@ const ScreenMargin AsyncPanZoomController::CalculatePendingDisplayPort(
 }
 
 void AsyncPanZoomController::ScheduleComposite() {
-  if (mCompositorParent) {
-    mCompositorParent->ScheduleRenderOnCompositorThread();
+  if (mCompositorBridgeParent) {
+    mCompositorBridgeParent->ScheduleRenderOnCompositorThread();
   }
 }
 
@@ -2861,16 +2844,16 @@ int32_t AsyncPanZoomController::GetLastTouchIdentifier() const {
   return listener ? listener->GetLastTouchIdentifier() : -1;
 }
 
-void AsyncPanZoomController::RequestContentRepaint() {
+void AsyncPanZoomController::RequestContentRepaint(bool aUserAction) {
   // Reinvoke this method on the main thread if it's not there already. It's
   // important to do this before the call to CalculatePendingDisplayPort, so
   // that CalculatePendingDisplayPort uses the most recent available version of
   // mFrameMetrics, just before the paint request is dispatched to content.
   if (!NS_IsMainThread()) {
     // use the local variable to resolve the function overload.
-    auto func = static_cast<void (AsyncPanZoomController::*)()>
+    auto func = static_cast<void (AsyncPanZoomController::*)(bool)>
         (&AsyncPanZoomController::RequestContentRepaint);
-    NS_DispatchToMainThread(NS_NewRunnableMethod(this, func));
+    NS_DispatchToMainThread(NewRunnableMethod<bool>(this, func, aUserAction));
     return;
   }
 
@@ -2881,6 +2864,7 @@ void AsyncPanZoomController::RequestContentRepaint() {
   mFrameMetrics.SetDisplayPortMargins(CalculatePendingDisplayPort(mFrameMetrics, velocity));
   mFrameMetrics.SetUseDisplayPortMargins(true);
   mFrameMetrics.SetPaintRequestTime(TimeStamp::Now());
+  mFrameMetrics.SetRepaintDrivenByUserAction(aUserAction);
   RequestContentRepaint(mFrameMetrics, velocity);
 }
 
@@ -2919,7 +2903,10 @@ AsyncPanZoomController::RequestContentRepaint(const FrameMetrics& aFrameMetrics,
             mLastPaintRequestMetrics.GetViewport().width) < EPSILON &&
       fabsf(aFrameMetrics.GetViewport().height -
             mLastPaintRequestMetrics.GetViewport().height) < EPSILON &&
-      aFrameMetrics.GetScrollGeneration() == mLastPaintRequestMetrics.GetScrollGeneration()) {
+      aFrameMetrics.GetScrollGeneration() ==
+            mLastPaintRequestMetrics.GetScrollGeneration() &&
+      aFrameMetrics.GetScrollUpdateType() ==
+            mLastPaintRequestMetrics.GetScrollUpdateType()) {
     return;
   }
 
@@ -2941,13 +2928,15 @@ AsyncPanZoomController::RequestContentRepaint(const FrameMetrics& aFrameMetrics,
     }
   }
 
+  MOZ_ASSERT(aFrameMetrics.GetScrollUpdateType() == FrameMetrics::eNone ||
+             aFrameMetrics.GetScrollUpdateType() == FrameMetrics::eUserAction);
   controller->RequestContentRepaint(aFrameMetrics);
   mExpectedGeckoMetrics = aFrameMetrics;
   mLastPaintRequestMetrics = aFrameMetrics;
 }
 
 bool AsyncPanZoomController::UpdateAnimation(const TimeStamp& aSampleTime,
-                                             Vector<Task*>* aOutDeferredTasks)
+                                             nsTArray<RefPtr<Runnable>>* aOutDeferredTasks)
 {
   APZThreadUtils::AssertOnCompositorThread();
 
@@ -2981,8 +2970,15 @@ bool AsyncPanZoomController::UpdateAnimation(const TimeStamp& aSampleTime,
   return false;
 }
 
-AsyncTransformComponentMatrix AsyncPanZoomController::GetOverscrollTransform() const {
+AsyncTransformComponentMatrix
+AsyncPanZoomController::GetOverscrollTransform(AsyncMode aMode) const
+{
   ReentrantMonitorAutoEnter lock(mMonitor);
+
+  if (aMode == RESPECT_FORCE_DISABLE && mScrollMetadata.IsApzForceDisabled()) {
+    return AsyncTransformComponentMatrix();
+  }
+
   if (!IsOverscrolled()) {
     return AsyncTransformComponentMatrix();
   }
@@ -3041,7 +3037,7 @@ bool AsyncPanZoomController::AdvanceAnimations(const TimeStamp& aSampleTime)
   // responsibility to schedule a composite.
   mAsyncTransformAppliedToContent = false;
   bool requestAnimationFrame = false;
-  Vector<Task*> deferredTasks;
+  nsTArray<RefPtr<Runnable>> deferredTasks;
 
   {
     ReentrantMonitorAutoEnter lock(mMonitor);
@@ -3063,9 +3059,9 @@ bool AsyncPanZoomController::AdvanceAnimations(const TimeStamp& aSampleTime)
   // UpdateAnimation()). This needs to be done after the monitor is released
   // since the tasks are allowed to call APZCTreeManager methods which can grab
   // the tree lock.
-  for (uint32_t i = 0; i < deferredTasks.length(); ++i) {
+  for (uint32_t i = 0; i < deferredTasks.Length(); ++i) {
     deferredTasks[i]->Run();
-    delete deferredTasks[i];
+    deferredTasks[i] = nullptr;
   }
 
   // One of the deferred tasks may have started a new animation. In this case,
@@ -3075,17 +3071,27 @@ bool AsyncPanZoomController::AdvanceAnimations(const TimeStamp& aSampleTime)
   return requestAnimationFrame;
 }
 
-void AsyncPanZoomController::SampleContentTransformForFrame(AsyncTransform* aOutTransform,
-                                                            ParentLayerPoint& aScrollOffset)
+ParentLayerPoint
+AsyncPanZoomController::GetCurrentAsyncScrollOffset(AsyncMode aMode) const
 {
   ReentrantMonitorAutoEnter lock(mMonitor);
 
-  aScrollOffset = mFrameMetrics.GetScrollOffset() * mFrameMetrics.GetZoom();
-  *aOutTransform = GetCurrentAsyncTransform();
+  if (aMode == RESPECT_FORCE_DISABLE && mScrollMetadata.IsApzForceDisabled()) {
+    return mLastContentPaintMetrics.GetScrollOffset() * mLastContentPaintMetrics.GetZoom();
+  }
+
+  return (mFrameMetrics.GetScrollOffset() + mTestAsyncScrollOffset)
+      * mFrameMetrics.GetZoom() * mTestAsyncZoom.scale;
 }
 
-AsyncTransform AsyncPanZoomController::GetCurrentAsyncTransform() const {
+AsyncTransform
+AsyncPanZoomController::GetCurrentAsyncTransform(AsyncMode aMode) const
+{
   ReentrantMonitorAutoEnter lock(mMonitor);
+
+  if (aMode == RESPECT_FORCE_DISABLE && mScrollMetadata.IsApzForceDisabled()) {
+    return AsyncTransform();
+  }
 
   CSSPoint lastPaintScrollOffset;
   if (mLastContentPaintMetrics.IsScrollable()) {
@@ -3121,9 +3127,11 @@ AsyncTransform AsyncPanZoomController::GetCurrentAsyncTransform() const {
     -translation);
 }
 
-AsyncTransformComponentMatrix AsyncPanZoomController::GetCurrentAsyncTransformWithOverscroll() const {
-  return AsyncTransformComponentMatrix(GetCurrentAsyncTransform())
-       * GetOverscrollTransform();
+AsyncTransformComponentMatrix
+AsyncPanZoomController::GetCurrentAsyncTransformWithOverscroll(AsyncMode aMode) const
+{
+  return AsyncTransformComponentMatrix(GetCurrentAsyncTransform(aMode))
+       * GetOverscrollTransform(aMode);
 }
 
 Matrix4x4 AsyncPanZoomController::GetTransformToLastDispatchedPaint() const {
@@ -3215,7 +3223,7 @@ AsyncPanZoomController::ReportCheckerboard(const TimeStamp& aSampleTime)
 bool AsyncPanZoomController::IsCurrentlyCheckerboarding() const {
   ReentrantMonitorAutoEnter lock(mMonitor);
 
-  if (!gfxPrefs::APZAllowCheckerboarding()) {
+  if (!gfxPrefs::APZAllowCheckerboarding() || mScrollMetadata.IsApzForceDisabled()) {
     return false;
   }
 
@@ -3242,9 +3250,30 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
 
   const FrameMetrics& aLayerMetrics = aScrollMetadata.GetMetrics();
 
-  mLastContentPaintMetrics = aLayerMetrics;
+  if ((aScrollMetadata == mLastContentPaintMetadata) && !isDefault) {
+    // No new information here, skip it.
+    APZC_LOG("%p NotifyLayersUpdated short-circuit\n", this);
+    return;
+  }
 
-  mFrameMetrics.SetScrollParentId(aLayerMetrics.GetScrollParentId());
+  // If the mFrameMetrics scroll offset is different from the last scroll offset
+  // that the main-thread sent us, then we know that the user has been doing
+  // something that triggers a scroll. This check is the APZ equivalent of the
+  // check on the main-thread at
+  // https://hg.mozilla.org/mozilla-central/file/97a52326b06a/layout/generic/nsGfxScrollFrame.cpp#l4050
+  // There is code below (the use site of userScrolled) that prevents a restored-
+  // scroll-position update from overwriting a user scroll, again equivalent to
+  // how the main thread code does the same thing.
+  CSSPoint lastScrollOffset = mLastContentPaintMetadata.GetMetrics().GetScrollOffset();
+  bool userScrolled =
+    !FuzzyEqualsAdditive(mFrameMetrics.GetScrollOffset().x, lastScrollOffset.x) ||
+    !FuzzyEqualsAdditive(mFrameMetrics.GetScrollOffset().y, lastScrollOffset.y);
+
+  if (aLayerMetrics.GetScrollUpdateType() != FrameMetrics::ScrollOffsetUpdateType::ePending) {
+    mLastContentPaintMetadata = aScrollMetadata;
+  }
+
+  mScrollMetadata.SetScrollParentId(aScrollMetadata.GetScrollParentId());
   APZC_LOG_FM(aLayerMetrics, "%p got a NotifyLayersUpdated with aIsFirstPaint=%d, aThisLayerTreeUpdated=%d",
     this, aIsFirstPaint, aThisLayerTreeUpdated);
 
@@ -3305,6 +3334,12 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
   bool scrollOffsetUpdated = aLayerMetrics.GetScrollOffsetUpdated()
         && (aLayerMetrics.GetScrollGeneration() != mFrameMetrics.GetScrollGeneration());
 
+  if (scrollOffsetUpdated && userScrolled &&
+      aLayerMetrics.GetScrollUpdateType() == FrameMetrics::ScrollOffsetUpdateType::eRestore) {
+    APZC_LOG("%p dropping scroll update of type eRestore because of user scroll\n", this);
+    scrollOffsetUpdated = false;
+  }
+
   bool smoothScrollRequested = aLayerMetrics.GetDoSmoothScroll()
        && (aLayerMetrics.GetScrollGeneration() != mFrameMetrics.GetScrollGeneration());
 
@@ -3317,9 +3352,6 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
     CancelAnimation();
 
     mScrollMetadata = aScrollMetadata;
-    if (scrollOffsetUpdated) {
-      AcknowledgeScrollUpdate();
-    }
     mExpectedGeckoMetrics = aLayerMetrics;
     ShareCompositorFrameMetrics();
 
@@ -3369,15 +3401,18 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
     mFrameMetrics.SetRootCompositionSize(aLayerMetrics.GetRootCompositionSize());
     mFrameMetrics.SetPresShellResolution(aLayerMetrics.GetPresShellResolution());
     mFrameMetrics.SetCumulativeResolution(aLayerMetrics.GetCumulativeResolution());
-    mFrameMetrics.SetHasScrollgrab(aLayerMetrics.GetHasScrollgrab());
-    mFrameMetrics.SetLineScrollAmount(aLayerMetrics.GetLineScrollAmount());
-    mFrameMetrics.SetPageScrollAmount(aLayerMetrics.GetPageScrollAmount());
+    mScrollMetadata.SetHasScrollgrab(aScrollMetadata.GetHasScrollgrab());
+    mScrollMetadata.SetLineScrollAmount(aScrollMetadata.GetLineScrollAmount());
+    mScrollMetadata.SetPageScrollAmount(aScrollMetadata.GetPageScrollAmount());
     mScrollMetadata.SetSnapInfo(ScrollSnapInfo(aScrollMetadata.GetSnapInfo()));
-    mScrollMetadata.SetClipRect(aScrollMetadata.GetClipRect());
-    mScrollMetadata.SetMaskLayerIndex(aScrollMetadata.GetMaskLayerIndex());
-    mFrameMetrics.SetIsLayersIdRoot(aLayerMetrics.IsLayersIdRoot());
-    mFrameMetrics.SetUsesContainerScrolling(aLayerMetrics.UsesContainerScrolling());
+    // The scroll clip can differ between layers associated a given scroll frame,
+    // so APZC (which keeps a single copy of ScrollMetadata per scroll frame)
+    // has no business using it.
+    mScrollMetadata.SetScrollClip(Nothing());
+    mScrollMetadata.SetIsLayersIdRoot(aScrollMetadata.IsLayersIdRoot());
+    mScrollMetadata.SetUsesContainerScrolling(aScrollMetadata.UsesContainerScrolling());
     mFrameMetrics.SetIsScrollInfoLayer(aLayerMetrics.IsScrollInfoLayer());
+    mScrollMetadata.SetForceDisableApz(aScrollMetadata.IsApzForceDisabled());
 
     if (scrollOffsetUpdated) {
       APZC_LOG("%p updating scroll offset from %s to %s\n", this,
@@ -3392,7 +3427,6 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
       // correct this we need to update mExpectedGeckoMetrics to be the
       // last thing we know was painted by Gecko.
       mFrameMetrics.CopyScrollInfoFrom(aLayerMetrics);
-      AcknowledgeScrollUpdate();
       mExpectedGeckoMetrics = aLayerMetrics;
 
       // Cancel the animation (which might also trigger a repaint request)
@@ -3424,31 +3458,17 @@ void AsyncPanZoomController::NotifyLayersUpdated(const ScrollMetadata& aScrollMe
     // See comment on the similar code in the |if (scrollOffsetUpdated)| block
     // above.
     mFrameMetrics.CopySmoothScrollInfoFrom(aLayerMetrics);
-    AcknowledgeScrollUpdate();
+    needContentRepaint = true;
     mExpectedGeckoMetrics = aLayerMetrics;
 
     SmoothScrollTo(mFrameMetrics.GetSmoothScrollOffset());
   }
 
   if (needContentRepaint) {
-    RequestContentRepaint();
+    // This repaint request is not driven by a user action on the APZ side
+    RequestContentRepaint(false);
   }
   UpdateSharedCompositorFrameMetrics();
-}
-
-void
-AsyncPanZoomController::AcknowledgeScrollUpdate() const
-{
-  // Once layout issues a scroll offset update, it becomes impervious to
-  // scroll offset updates from APZ until we acknowledge the update it sent.
-  // This prevents APZ updates from clobbering scroll updates from other
-  // more "legitimate" sources like content scripts.
-  RefPtr<GeckoContentController> controller = GetGeckoContentController();
-  if (controller) {
-    APZC_LOG("%p sending scroll update acknowledgement with gen %u\n", this, mFrameMetrics.GetScrollGeneration());
-    controller->AcknowledgeScrollUpdate(mFrameMetrics.GetScrollId(),
-                                        mFrameMetrics.GetScrollGeneration());
-  }
 }
 
 const FrameMetrics& AsyncPanZoomController::GetFrameMetrics() const {
@@ -3464,6 +3484,12 @@ APZCTreeManager* AsyncPanZoomController::GetApzcTreeManager() const {
 void AsyncPanZoomController::ZoomToRect(CSSRect aRect, const uint32_t aFlags) {
   if (!aRect.IsFinite()) {
     NS_WARNING("ZoomToRect got called with a non-finite rect; ignoring...");
+    return;
+  } else if (aRect.IsEmpty() && (aFlags & DISABLE_ZOOM_OUT)) {
+    // Double-tap-to-zooming uses an empty rect to mean "zoom out".
+    // If zooming out is disabled, an empty rect is nonsensical
+    // and will produce undesirable scrolling.
+    NS_WARNING("ZoomToRect got called with an empty rect and zoom out disabled; ignoring...");
     return;
   }
 
@@ -3588,6 +3614,7 @@ void AsyncPanZoomController::ZoomToRect(CSSRect aRect, const uint32_t aFlags) {
       CalculatePendingDisplayPort(endZoomToMetrics, velocity));
     endZoomToMetrics.SetUseDisplayPortMargins(true);
     endZoomToMetrics.SetPaintRequestTime(TimeStamp::Now());
+    endZoomToMetrics.SetRepaintDrivenByUserAction(true);
     if (NS_IsMainThread()) {
       RequestContentRepaint(endZoomToMetrics, velocity);
     } else {
@@ -3595,7 +3622,7 @@ void AsyncPanZoomController::ZoomToRect(CSSRect aRect, const uint32_t aFlags) {
       auto func = static_cast<void (AsyncPanZoomController::*)(const FrameMetrics&, const ParentLayerPoint&)>
           (&AsyncPanZoomController::RequestContentRepaint);
       NS_DispatchToMainThread(
-          NS_NewRunnableMethodWithArgs<FrameMetrics, ParentLayerPoint>(
+          NewRunnableMethod<FrameMetrics, ParentLayerPoint>(
               this, func, endZoomToMetrics, velocity));
     }
   }
@@ -3630,7 +3657,7 @@ AsyncPanZoomController::ResetTouchInputState()
   CancelAnimationAndGestureState();
   // Clear overscroll along the entire handoff chain, in case an APZC
   // later in the chain is overscrolled.
-  if (TouchBlockState* block = CurrentTouchBlock()) {
+  if (TouchBlockState* block = CurrentInputBlock()->AsTouchBlock()) {
     block->GetOverscrollHandoffChain()->ClearOverscroll();
   }
 }
@@ -3677,20 +3704,20 @@ void AsyncPanZoomController::DispatchStateChangeNotification(PanZoomState aOldSt
   if (RefPtr<GeckoContentController> controller = GetGeckoContentController()) {
     if (!IsTransformingState(aOldState) && IsTransformingState(aNewState)) {
       controller->NotifyAPZStateChange(
-          GetGuid(), APZStateChange::TransformBegin);
+          GetGuid(), APZStateChange::eTransformBegin);
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
       // Let the compositor know about scroll state changes so it can manage
       // windowed plugins.
-      if (mCompositorParent) {
-        mCompositorParent->ScheduleHideAllPluginWindows();
+      if (gfxPrefs::HidePluginsForScroll() && mCompositorBridgeParent) {
+        mCompositorBridgeParent->ScheduleHideAllPluginWindows();
       }
 #endif
     } else if (IsTransformingState(aOldState) && !IsTransformingState(aNewState)) {
       controller->NotifyAPZStateChange(
-          GetGuid(), APZStateChange::TransformEnd);
+          GetGuid(), APZStateChange::eTransformEnd);
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
-      if (mCompositorParent) {
-        mCompositorParent->ScheduleShowAllPluginWindows();
+      if (gfxPrefs::HidePluginsForScroll() && mCompositorBridgeParent) {
+        mCompositorBridgeParent->ScheduleShowAllPluginWindows();
       }
 #endif
     }
@@ -3712,11 +3739,17 @@ void AsyncPanZoomController::UpdateZoomConstraints(const ZoomConstraints& aConst
     NS_WARNING("APZC received zoom constraints with NaN values; dropping...");
     return;
   }
+
+  CSSToParentLayerScale min = mFrameMetrics.GetDevPixelsPerCSSPixel()
+    * kViewportMinScale / ParentLayerToScreenScale(1);
+  CSSToParentLayerScale max = mFrameMetrics.GetDevPixelsPerCSSPixel()
+    * kViewportMaxScale / ParentLayerToScreenScale(1);
+
   // inf float values and other bad cases should be sanitized by the code below.
   mZoomConstraints.mAllowZoom = aConstraints.mAllowZoom;
   mZoomConstraints.mAllowDoubleTapZoom = aConstraints.mAllowDoubleTapZoom;
-  mZoomConstraints.mMinZoom = (MIN_ZOOM > aConstraints.mMinZoom ? MIN_ZOOM : aConstraints.mMinZoom);
-  mZoomConstraints.mMaxZoom = (MAX_ZOOM > aConstraints.mMaxZoom ? aConstraints.mMaxZoom : MAX_ZOOM);
+  mZoomConstraints.mMinZoom = (min > aConstraints.mMinZoom ? min : aConstraints.mMinZoom);
+  mZoomConstraints.mMaxZoom = (max > aConstraints.mMaxZoom ? aConstraints.mMaxZoom : max);
   if (mZoomConstraints.mMaxZoom < mZoomConstraints.mMinZoom) {
     mZoomConstraints.mMaxZoom = mZoomConstraints.mMinZoom;
   }
@@ -3729,12 +3762,16 @@ AsyncPanZoomController::GetZoomConstraints() const
 }
 
 
-void AsyncPanZoomController::PostDelayedTask(Task* aTask, int aDelayMs) {
+void AsyncPanZoomController::PostDelayedTask(already_AddRefed<Runnable> aTask, int aDelayMs) {
   APZThreadUtils::AssertOnControllerThread();
+  RefPtr<Runnable> task = aTask;
   RefPtr<GeckoContentController> controller = GetGeckoContentController();
   if (controller) {
-    controller->PostDelayedTask(aTask, aDelayMs);
+    controller->PostDelayedTask(task.forget(), aDelayMs);
   }
+  // If there is no controller, that means this APZC has been destroyed, and
+  // we probably don't need to run the task. It will get destroyed when the
+  // RefPtr goes out of scope.
 }
 
 bool AsyncPanZoomController::Matches(const ScrollableLayerGuid& aGuid)
@@ -3768,14 +3805,14 @@ void AsyncPanZoomController::UpdateSharedCompositorFrameMetrics()
 
   if (frame && mSharedLock && gfxPlatform::GetPlatform()->UseProgressivePaint()) {
     mSharedLock->Lock();
-    *frame = mFrameMetrics.MakePODObject();
+    *frame = mFrameMetrics;
     mSharedLock->Unlock();
   }
 }
 
 void AsyncPanZoomController::ShareCompositorFrameMetrics() {
 
-  PCompositorParent* compositor = GetSharedFrameMetricsCompositor();
+  PCompositorBridgeParent* compositor = GetSharedFrameMetricsCompositor();
 
   // Only create the shared memory buffer if it hasn't already been created,
   // we are using progressive tile painting, and we have a
@@ -3817,13 +3854,14 @@ void AsyncPanZoomController::ShareCompositorFrameMetrics() {
   }
 }
 
-void AsyncPanZoomController::ScrollSnapNear(const CSSPoint& aDestination) {
+Maybe<CSSPoint> AsyncPanZoomController::FindSnapPointNear(
+    const CSSPoint& aDestination, nsIScrollableFrame::ScrollUnit aUnit) {
   mMonitor.AssertCurrentThreadIn();
   APZC_LOG("%p scroll snapping near %s\n", this, Stringify(aDestination).c_str());
   CSSRect scrollRange = mFrameMetrics.CalculateScrollRange();
   if (Maybe<nsPoint> snapPoint = ScrollSnapUtils::GetSnapPointForDestination(
           mScrollMetadata.GetSnapInfo(),
-          nsIScrollableFrame::DEVICE_PIXELS,
+          aUnit,
           CSSSize::ToAppUnits(mFrameMetrics.CalculateCompositedSizeInCssPixels()),
           CSSRect::ToAppUnits(scrollRange),
           CSSPoint::ToAppUnits(mFrameMetrics.GetScrollOffset()),
@@ -3833,8 +3871,18 @@ void AsyncPanZoomController::ScrollSnapNear(const CSSPoint& aDestination) {
     // of the scroll frame's scroll range. Clamp it here (this matches the
     // behaviour of the main-thread code path, which clamps it in
     // nsGfxScrollFrame::ScrollTo()).
-    cssSnapPoint = scrollRange.ClampPoint(cssSnapPoint);
-    SmoothScrollTo(cssSnapPoint);
+    return Some(scrollRange.ClampPoint(cssSnapPoint));
+  }
+  return Nothing();
+}
+
+void AsyncPanZoomController::ScrollSnapNear(const CSSPoint& aDestination) {
+  if (Maybe<CSSPoint> snapPoint =
+        FindSnapPointNear(aDestination, nsIScrollableFrame::DEVICE_PIXELS)) {
+    if (*snapPoint != mFrameMetrics.GetScrollOffset()) {
+      APZC_LOG("%p smooth scrolling to snap point %s\n", this, Stringify(*snapPoint).c_str());
+      SmoothScrollTo(*snapPoint);
+    }
   }
 }
 
@@ -3874,6 +3922,32 @@ void AsyncPanZoomController::ScrollSnapToDestination() {
 
     ScrollSnapNear(predictedDestination);
   }
+}
+
+bool AsyncPanZoomController::MaybeAdjustDeltaForScrollSnapping(
+    const ScrollWheelInput& aEvent,
+    ParentLayerPoint& aDelta,
+    CSSPoint& aStartPosition)
+{
+  // Don't scroll snap for pixel scrolls. This matches the main thread
+  // behaviour in EventStateManager::DoScrollText().
+  if (aEvent.mDeltaType == ScrollWheelInput::SCROLLDELTA_PIXEL) {
+    return false;
+  }
+
+  ReentrantMonitorAutoEnter lock(mMonitor);
+  CSSToParentLayerScale2D zoom = mFrameMetrics.GetZoom();
+  CSSPoint destination = mFrameMetrics.CalculateScrollRange().ClampPoint(
+      aStartPosition + (aDelta / zoom));
+  nsIScrollableFrame::ScrollUnit unit =
+      ScrollWheelInput::ScrollUnitForDeltaType(aEvent.mDeltaType);
+
+  if (Maybe<CSSPoint> snapPoint = FindSnapPointNear(destination, unit)) {
+    aDelta = (*snapPoint - aStartPosition) * zoom;
+    aStartPosition = *snapPoint;
+    return true;
+  }
+  return false;
 }
 
 } // namespace layers

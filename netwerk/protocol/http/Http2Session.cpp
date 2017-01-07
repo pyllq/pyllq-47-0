@@ -19,13 +19,13 @@
 #include "Http2Stream.h"
 #include "Http2Push.h"
 
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Preferences.h"
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsHttpConnection.h"
-#include "nsISchedulingContext.h"
+#include "nsIRequestContext.h"
 #include "nsISSLSocketControl.h"
 #include "nsISSLStatus.h"
 #include "nsISSLStatusProvider.h"
@@ -153,6 +153,8 @@ Http2Session::Shutdown()
       CloseStream(stream, NS_ERROR_NET_RESET);  // can be restarted
     } else if (stream->RecvdData()) {
       CloseStream(stream, NS_ERROR_NET_PARTIAL_TRANSFER);
+    } else if (mGoAwayReason == INADEQUATE_SECURITY) {
+      CloseStream(stream, NS_ERROR_NET_INADEQUATE_SECURITY);
     } else {
       CloseStream(stream, NS_ERROR_ABORT);
     }
@@ -380,6 +382,17 @@ Http2Session::AddStream(nsAHttpTransaction *aHttpTransaction,
 
   if (!mConnection) {
     mConnection = aHttpTransaction->Connection();
+  }
+
+  if (mClosed || mShouldGoAway) {
+    nsHttpTransaction *trans = aHttpTransaction->QueryHttpTransaction();
+    if (trans && !trans->GetPushedStream()) {
+      LOG3(("Http2Session::AddStream %p atrans=%p trans=%p session unusable - resched.\n",
+            this, aHttpTransaction, trans));
+      aHttpTransaction->SetConnection(nullptr);
+      gHttpHandler->InitiateTransaction(trans, trans->Priority());
+      return true;
+    }
   }
 
   aHttpTransaction->SetConnection(this);
@@ -1036,10 +1049,10 @@ Http2Session::CleanupStream(Http2Stream *aStream, nsresult aResult,
       Http2PushedStream *pushStream = static_cast<Http2PushedStream *>(aStream);
       nsAutoCString hashKey;
       pushStream->GetHashKey(hashKey);
-      nsISchedulingContext *schedulingContext = aStream->SchedulingContext();
-      if (schedulingContext) {
+      nsIRequestContext *requestContext = aStream->RequestContext();
+      if (requestContext) {
         SpdyPushCache *cache = nullptr;
-        schedulingContext->GetSpdyPushCache(&cache);
+        requestContext->GetSpdyPushCache(&cache);
         if (cache) {
           Http2PushedStream *trash = cache->RemovePushedStreamHttp2(hashKey);
           LOG3(("Http2Session::CleanupStream %p aStream=%p pushStream=%p trash=%p",
@@ -1598,16 +1611,20 @@ Http2Session::RecvPushPromise(Http2Session *self)
       RETURN_SESSION_ERROR(self, PROTOCOL_ERROR);
     }
     self->GenerateRstStream(REFUSED_STREAM_ERROR, promisedID);
+  } else if (!(associatedID & 1)) {
+    LOG3(("Http2Session::RecvPushPromise %p assocated=0x%X on pushed (even) stream not allowed\n",
+          self, associatedID));
+    self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
   } else if (!associatedStream) {
     LOG3(("Http2Session::RecvPushPromise %p lookup associated ID failed.\n", self));
     self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
   } else {
-    nsISchedulingContext *schedulingContext = associatedStream->SchedulingContext();
-    if (schedulingContext) {
-      schedulingContext->GetSpdyPushCache(&cache);
+    nsIRequestContext *requestContext = associatedStream->RequestContext();
+    if (requestContext) {
+      requestContext->GetSpdyPushCache(&cache);
       if (!cache) {
         cache = new SpdyPushCache();
-        if (!cache || NS_FAILED(schedulingContext->SetSpdyPushCache(cache))) {
+        if (!cache || NS_FAILED(requestContext->SetSpdyPushCache(cache))) {
           delete cache;
           cache = nullptr;
         }
@@ -2011,7 +2028,7 @@ Http2Session::RecvContinuation(Http2Session *self)
   return RecvPushPromise(self);
 }
 
-class UpdateAltSvcEvent : public nsRunnable
+class UpdateAltSvcEvent : public Runnable
 {
 public:
 UpdateAltSvcEvent(const nsCString &header,
@@ -2132,7 +2149,7 @@ Http2Session::RecvAltSvc(Http2Session *self)
       return NS_OK;
     }
 
-    origin.Assign(self->mInputFrameDataStream->Transaction()->RequestHead()->Origin());
+    self->mInputFrameDataStream->Transaction()->RequestHead()->Origin(origin);
   } else if (!self->mInputFrameID) {
     // ID 0 streams must supply their own origin
     if (origin.IsEmpty()) {
@@ -2142,7 +2159,7 @@ Http2Session::RecvAltSvc(Http2Session *self)
     }
   } else {
     // handling of push streams is not defined. Let's ignore it
-    LOG(("Http2Session %p Alt-Svc Stream 0 has empty origin\n", self));
+    LOG(("Http2Session %p Alt-Svc received on pushed stream - ignoring\n", self));
     self->ResetDownstreamState();
     return NS_OK;
   }
@@ -2276,8 +2293,14 @@ Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader *reader,
              "Inconsistent Write Function Callback");
 
   nsresult rv = ConfirmTLSProfile();
-  if (NS_FAILED(rv))
+  if (NS_FAILED(rv)) {
+    if (mGoAwayReason == INADEQUATE_SECURITY) {
+      LOG3(("Http2Session::ReadSegments %p returning INADEQUATE_SECURITY %x",
+            this, NS_ERROR_NET_INADEQUATE_SECURITY));
+      rv = NS_ERROR_NET_INADEQUATE_SECURITY;
+    }
     return rv;
+  }
 
   if (reader)
     mSegmentReader = reader;
@@ -2751,17 +2774,18 @@ Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter *writer,
   if (mDownstreamState == DISCARDING_DATA_FRAME ||
       mDownstreamState == DISCARDING_DATA_FRAME_PADDING) {
     char trash[4096];
-    uint32_t count = std::min(4096U, mInputFrameDataSize - mInputFrameDataRead);
+    uint32_t discardCount = std::min(mInputFrameDataSize - mInputFrameDataRead,
+                                     4096U);
     LOG3(("Http2Session::WriteSegments %p trying to discard %d bytes of data",
-          this, count));
+          this, discardCount));
 
-    if (!count) {
+    if (!discardCount) {
       ResetDownstreamState();
       ResumeRecv();
       return NS_BASE_STREAM_WOULD_BLOCK;
     }
 
-    rv = NetworkRead(writer, trash, count, countWritten);
+    rv = NetworkRead(writer, trash, discardCount, countWritten);
 
     if (NS_FAILED(rv)) {
       LOG3(("Http2Session %p discard frame read failure %x\n", this, rv));
@@ -3302,6 +3326,7 @@ Http2Session::SetNeedsCleanup()
 
   // This will result in Close() being called
   MOZ_ASSERT(!mNeedsCleanup, "mNeedsCleanup unexpectedly set");
+  mInputFrameDataStream->SetResponseIsComplete();
   mNeedsCleanup = mInputFrameDataStream;
   ResetDownstreamState();
 }
@@ -3567,8 +3592,13 @@ Http2Session::TransactionHasDataToWrite(nsAHttpTransaction *caller)
   LOG3(("Http2Session::TransactionHasDataToWrite %p ID is 0x%X\n",
         this, stream->StreamID()));
 
-  mReadyForWrite.Push(stream);
-  SetWriteCallbacks();
+  if (!mClosed) {
+    mReadyForWrite.Push(stream);
+    SetWriteCallbacks();
+  } else {
+    LOG3(("Http2Session::TransactionHasDataToWrite %p closed so not setting Ready4Write\n",
+          this));
+  }
 
   // NSPR poll will not poll the network if there are non system PR_FileDesc's
   // that are ready - so we can get into a deadlock waiting for the system IO
@@ -3621,7 +3651,7 @@ Http2Session::TakeTransport(nsISocketTransport **,
   return NS_ERROR_UNEXPECTED;
 }
 
-nsHttpConnection *
+already_AddRefed<nsHttpConnection>
 Http2Session::TakeHttpConnection()
 {
   MOZ_ASSERT(false, "TakeHttpConnection of Http2Session");

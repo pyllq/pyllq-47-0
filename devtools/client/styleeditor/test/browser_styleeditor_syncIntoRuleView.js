@@ -6,19 +6,15 @@
 // Test that changes in the style editor are synchronized into the
 // style inspector.
 
-/* import-globals-from ../../inspector/shared/test/head.js */
-Services.scriptloader.loadSubScript("chrome://mochitests/content/browser/devtools/client/inspector/shared/test/head.js", this);
-
 const TEST_URI = `
   <style type='text/css'>
-    div { background-color: seagreen; }
   </style>
   <div id='testid' class='testclass'>Styled Node</div>
 `;
 
 const TESTCASE_CSS_SOURCE = "#testid { color: chartreuse; }";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
 
   let {inspector, view} = yield openRuleView();
@@ -37,9 +33,9 @@ add_task(function*() {
 });
 
 function typeInEditor(editor, panelWindow) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
-  waitForFocus(function() {
+  waitForFocus(function () {
     for (let c of TESTCASE_CSS_SOURCE) {
       EventUtils.synthesizeKey(c, {}, panelWindow);
     }

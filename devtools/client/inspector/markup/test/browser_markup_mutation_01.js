@@ -17,10 +17,10 @@ const TEST_URL = URL_ROOT + "doc_markup_mutation.html";
 const TEST_DATA = [
   {
     desc: "Adding an attribute",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setAttribute("#node1", "newattr", "newattrval");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {editor} = yield getContainerForSelector("#node1", inspector);
       ok([...editor.attrList.querySelectorAll(".attreditor")].some(attr => {
         return attr.textContent.trim() === "newattr=\"newattrval\"";
@@ -29,10 +29,10 @@ const TEST_DATA = [
   },
   {
     desc: "Removing an attribute",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.removeAttribute("#node1", "newattr");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {editor} = yield getContainerForSelector("#node1", inspector);
       ok(![...editor.attrList.querySelectorAll(".attreditor")].some(attr => {
         return attr.textContent.trim() === "newattr=\"newattrval\"";
@@ -41,10 +41,10 @@ const TEST_DATA = [
   },
   {
     desc: "Re-adding an attribute",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setAttribute("#node1", "newattr", "newattrval");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {editor} = yield getContainerForSelector("#node1", inspector);
       ok([...editor.attrList.querySelectorAll(".attreditor")].some(attr => {
         return attr.textContent.trim() === "newattr=\"newattrval\"";
@@ -53,10 +53,10 @@ const TEST_DATA = [
   },
   {
     desc: "Changing an attribute",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setAttribute("#node1", "newattr", "newattrchanged");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {editor} = yield getContainerForSelector("#node1", inspector);
       ok([...editor.attrList.querySelectorAll(".attreditor")].some(attr => {
         return attr.textContent.trim() === "newattr=\"newattrchanged\"";
@@ -66,13 +66,13 @@ const TEST_DATA = [
   {
     desc: "Adding ::after element",
     numMutations: 2,
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node1 = content.document.querySelector("#node1");
         node1.classList.add("pseudo");
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {children} = yield getContainerForSelector("#node1", inspector);
       is(children.childNodes.length, 2,
         "Node1 now has 2 children (text child and ::after");
@@ -81,43 +81,43 @@ const TEST_DATA = [
   {
     desc: "Removing ::after element",
     numMutations: 2,
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node1 = content.document.querySelector("#node1");
         node1.classList.remove("pseudo");
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(container.singleTextChild, "Has single text child.");
+      ok(container.inlineTextChild, "Has single text child.");
     }
   },
   {
     desc: "Updating the text-content",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setProperty("#node1", "textContent", "newtext");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(container.singleTextChild, "Has single text child.");
-      ok(!container.canExpand, "Can't expand container with singleTextChild.");
-      ok(!container.singleTextChild.canExpand, "Can't expand singleTextChild.");
+      ok(container.inlineTextChild, "Has single text child.");
+      ok(!container.canExpand, "Can't expand container with inlineTextChild.");
+      ok(!container.inlineTextChild.canExpand, "Can't expand inlineTextChild.");
       is(container.editor.elt.querySelector(".text").textContent.trim(),
          "newtext", "Single text child editor updated.");
     }
   },
   {
     desc: "Adding a second text child",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node1 = content.document.querySelector("#node1");
         let newText = node1.ownerDocument.createTextNode("more");
         node1.appendChild(newText);
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(!container.singleTextChild, "Does not have single text child.");
+      ok(!container.inlineTextChild, "Does not have single text child.");
       ok(container.canExpand, "Can expand container with child nodes.");
       ok(container.editor.elt.querySelector(".text") == null,
         "Single text child editor removed.");
@@ -125,26 +125,26 @@ const TEST_DATA = [
   },
   {
     desc: "Go from 2 to 1 text child",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setProperty("#node1", "textContent", "newtext");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(container.singleTextChild, "Has single text child.");
-      ok(!container.canExpand, "Can't expand container with singleTextChild.");
-      ok(!container.singleTextChild.canExpand, "Can't expand singleTextChild.");
+      ok(container.inlineTextChild, "Has single text child.");
+      ok(!container.canExpand, "Can't expand container with inlineTextChild.");
+      ok(!container.inlineTextChild.canExpand, "Can't expand inlineTextChild.");
       ok(container.editor.elt.querySelector(".text").textContent.trim(),
          "newtext", "Single text child editor updated.");
     },
   },
   {
     desc: "Removing an only text child",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setProperty("#node1", "innerHTML", "");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(!container.singleTextChild, "Does not have single text child.");
+      ok(!container.inlineTextChild, "Does not have single text child.");
       ok(!container.canExpand, "Can't expand empty container.");
       ok(container.editor.elt.querySelector(".text") == null,
         "Single text child editor removed.");
@@ -152,14 +152,14 @@ const TEST_DATA = [
   },
   {
     desc: "Go from 0 to 1 text child",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setProperty("#node1", "textContent", "newtext");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node1", inspector);
-      ok(container.singleTextChild, "Has single text child.");
-      ok(!container.canExpand, "Can't expand container with singleTextChild.");
-      ok(!container.singleTextChild.canExpand, "Can't expand singleTextChild.");
+      ok(container.inlineTextChild, "Has single text child.");
+      ok(!container.canExpand, "Can't expand container with inlineTextChild.");
+      ok(!container.inlineTextChild.canExpand, "Can't expand inlineTextChild.");
       ok(container.editor.elt.querySelector(".text").textContent.trim(),
          "newtext", "Single text child editor updated.");
     },
@@ -167,11 +167,11 @@ const TEST_DATA = [
 
   {
     desc: "Updating the innerHTML",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.setProperty("#node2", "innerHTML",
                                   "<div><span>foo</span></div>");
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let container = yield getContainerForSelector("#node2", inspector);
 
       let openTags = container.children.querySelectorAll(".open .tag");
@@ -185,7 +185,7 @@ const TEST_DATA = [
   },
   {
     desc: "Removing child nodes",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node4 = content.document.querySelector("#node4");
         while (node4.firstChild) {
@@ -193,21 +193,21 @@ const TEST_DATA = [
         }
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {children} = yield getContainerForSelector("#node4", inspector);
       is(children.innerHTML, "", "Children have been removed");
     }
   },
   {
     desc: "Appending a child to a different parent",
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node17 = content.document.querySelector("#node17");
         let node2 = content.document.querySelector("#node2");
         node2.appendChild(node17);
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       let {children} = yield getContainerForSelector("#node16", inspector);
       is(children.innerHTML, "",
          "Node17 has been removed from its node16 parent");
@@ -233,7 +233,7 @@ const TEST_DATA = [
     //      node21
     //      node18
     //        node19
-    test: function*(testActor) {
+    test: function* (testActor) {
       yield testActor.eval(`
         let node18 = content.document.querySelector("#node18");
         let node20 = content.document.querySelector("#node20");
@@ -242,7 +242,7 @@ const TEST_DATA = [
         node20.appendChild(node18);
       `);
     },
-    check: function*(inspector) {
+    check: function* (inspector) {
       yield inspector.markup.expandAll();
 
       let {children} = yield getContainerForSelector("#node1", inspector);
@@ -266,7 +266,7 @@ const TEST_DATA = [
   }
 ];
 
-add_task(function*() {
+add_task(function* () {
   let {inspector, testActor} = yield openInspectorForURL(TEST_URL);
 
   info("Expanding all markup-view nodes");
@@ -281,7 +281,7 @@ add_task(function*() {
 
     // If a test expects more than one mutation it may come through in a single
     // event or possibly in multiples.
-    let def = promise.defer();
+    let def = defer();
     let seenMutations = 0;
     inspector.on("markupmutation", function onmutation(e, mutations) {
       seenMutations += mutations.length;

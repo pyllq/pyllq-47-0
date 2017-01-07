@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,24 +21,22 @@ const SEARCH_TOKEN_FLAG = "#";
 const SEARCH_LINE_FLAG = ":";
 const SEARCH_VARIABLE_FLAG = "*";
 const SEARCH_AUTOFILL = [SEARCH_GLOBAL_FLAG, SEARCH_FUNCTION_FLAG, SEARCH_TOKEN_FLAG];
-const EDITOR_VARIABLE_HOVER_DELAY = 750; // ms
-const EDITOR_VARIABLE_POPUP_POSITION = "topcenter bottomleft";
 const TOOLBAR_ORDER_POPUP_POSITION = "topcenter bottomleft";
 const RESIZE_REFRESH_RATE = 50; // ms
 const PROMISE_DEBUGGER_URL =
   "chrome://devtools/content/promisedebugger/promise-debugger.xhtml";
 
-const EventListenersView = require('./content/views/event-listeners-view');
-const SourcesView = require('./content/views/sources-view');
+const EventListenersView = require("./content/views/event-listeners-view");
+const SourcesView = require("./content/views/sources-view");
 var actions = Object.assign(
   {},
-  require('./content/globalActions'),
-  require('./content/actions/breakpoints'),
-  require('./content/actions/sources'),
-  require('./content/actions/event-listeners')
+  require("./content/globalActions"),
+  require("./content/actions/breakpoints"),
+  require("./content/actions/sources"),
+  require("./content/actions/event-listeners")
 );
-var queries = require('./content/queries');
-var constants = require('./content/constants');
+var queries = require("./content/queries");
+var constants = require("./content/constants");
 
 /**
  * Object defining the debugger view components.
@@ -59,7 +55,7 @@ var DebuggerView = {
    * @return object
    *         A promise that is resolved when the view finishes initializing.
    */
-  initialize: function() {
+  initialize: function (isWorker) {
     if (this._startup) {
       return this._startup;
     }
@@ -67,23 +63,22 @@ var DebuggerView = {
     this._startup = deferred.promise;
 
     this._initializePanes();
+    this._initializeEditor(deferred.resolve);
     this.Toolbar.initialize();
     this.Options.initialize();
     this.Filtering.initialize();
     this.StackFrames.initialize();
     this.StackFramesClassicList.initialize();
     this.Workers.initialize();
-    this.Sources.initialize();
+    this.Sources.initialize(isWorker);
     this.VariableBubble.initialize();
     this.WatchExpressions.initialize();
     this.EventListeners.initialize();
     this.GlobalSearch.initialize();
     this._initializeVariablesView();
 
-    this._initializeEditor(deferred.resolve);
     this._editorSource = {};
-
-    document.title = L10N.getStr("DebuggerWindowTitle");
+    this._editorDocuments = {};
 
     this.editor.on("cursorActivity", this.Sources._onEditorCursorActivity);
 
@@ -121,7 +116,7 @@ var DebuggerView = {
    * @return object
    *         A promise that is resolved when the view finishes destroying.
    */
-  destroy: function() {
+  destroy: function () {
     if (this._hasShutdown) {
       return;
     }
@@ -152,7 +147,7 @@ var DebuggerView = {
   /**
    * Initializes the UI for all the displayed panes.
    */
-  _initializePanes: function() {
+  _initializePanes: function () {
     dumpn("Initializing the DebuggerView panes");
 
     this._body = document.getElementById("body");
@@ -185,7 +180,7 @@ var DebuggerView = {
   /**
    * Destroys the UI for all the displayed panes.
    */
-  _destroyPanes: function() {
+  _destroyPanes: function () {
     dumpn("Destroying the DebuggerView panes");
 
     if (gHostType != "side") {
@@ -202,7 +197,7 @@ var DebuggerView = {
   /**
    * Initializes the VariablesView instance and attaches a controller.
    */
-  _initializeVariablesView: function() {
+  _initializeVariablesView: function () {
     this.Variables = new VariablesView(document.getElementById("variables"), {
       searchPlaceholder: L10N.getStr("emptyVariablesFilterText"),
       emptyText: L10N.getStr("emptyVariablesText"),
@@ -223,7 +218,7 @@ var DebuggerView = {
     VariablesViewController.attach(this.Variables, {
       getEnvironmentClient: aObject => gThreadClient.environment(aObject),
       getObjectClient: aObject => {
-        return gThreadClient.pauseGrip(aObject)
+        return gThreadClient.pauseGrip(aObject);
       }
     });
 
@@ -246,7 +241,7 @@ var DebuggerView = {
   /**
    * Initialie the Promise Debugger instance.
    */
-  _initializePromiseDebugger: function() {
+  _initializePromiseDebugger: function () {
     let iframe = this._promiseDebuggerIframe = document.createElement("iframe");
     iframe.setAttribute("flex", 1);
 
@@ -267,7 +262,7 @@ var DebuggerView = {
   /**
    * Destroy the Promise Debugger instance.
    */
-  _destroyPromiseDebugger: function() {
+  _destroyPromiseDebugger: function () {
     if (this._promiseDebuggerIframe) {
       this._promiseDebuggerIframe.contentWindow.destroy();
 
@@ -284,7 +279,7 @@ var DebuggerView = {
    * @param function aCallback
    *        Called after the editor finishes initializing.
    */
-  _initializeEditor: function(callback) {
+  _initializeEditor: function (callback) {
     dumpn("Initializing the DebuggerView editor");
 
     let extraKeys = {};
@@ -343,7 +338,7 @@ var DebuggerView = {
     });
   },
 
-  updateEditorBreakpoints: function(source) {
+  updateEditorBreakpoints: function (source) {
     const breakpoints = queries.getBreakpoints(this.controller.getState());
     const sources = queries.getSources(this.controller.getState());
 
@@ -357,7 +352,7 @@ var DebuggerView = {
     }
   },
 
-  addEditorBreakpoint: function(breakpoint) {
+  addEditorBreakpoint: function (breakpoint) {
     const { location, condition } = breakpoint;
     const source = queries.getSelectedSource(this.controller.getState());
 
@@ -374,14 +369,15 @@ var DebuggerView = {
 
     if (source && source.actor === location.actor) {
       this.editor.removeBreakpoint(location.line - 1);
+      this.editor.removeBreakpointCondition(location.line - 1);
     }
   },
 
   renderEditorBreakpointCondition: function (breakpoint) {
-    const { location, condition } = breakpoint;
+    const { location, condition, disabled } = breakpoint;
     const source = queries.getSelectedSource(this.controller.getState());
 
-    if (source && source.actor === location.actor) {
+    if (source && source.actor === location.actor && !disabled) {
       if (condition) {
         this.editor.setBreakpointCondition(location.line - 1);
       } else {
@@ -393,21 +389,21 @@ var DebuggerView = {
   /**
    * Display the source editor.
    */
-  showEditor: function() {
+  showEditor: function () {
     this._editorDeck.selectedIndex = 0;
   },
 
   /**
    * Display the black box message.
    */
-  showBlackBoxMessage: function() {
+  showBlackBoxMessage: function () {
     this._editorDeck.selectedIndex = 1;
   },
 
   /**
    * Display the progress bar.
    */
-  showProgressBar: function() {
+  showProgressBar: function () {
     this._editorDeck.selectedIndex = 2;
   },
 
@@ -415,14 +411,27 @@ var DebuggerView = {
    * Sets the currently displayed text contents in the source editor.
    * This resets the mode and undo stack.
    *
+   * @param string documentKey
+   *        Key to get the correct editor document
+   *
    * @param string aTextContent
    *        The source text content.
+   *
+   * @param boolean shouldUpdateText
+            Forces a text and mode reset
    */
-  _setEditorText: function(aTextContent = "") {
-    this.editor.setMode(Editor.modes.text);
-    this.editor.setText(aTextContent);
+  _setEditorText: function (documentKey, aTextContent = "", shouldUpdateText = false) {
+    const isNew = this._setEditorDocument(documentKey);
+
     this.editor.clearDebugLocation();
     this.editor.clearHistory();
+    this.editor.removeBreakpoints();
+
+    // Only set editor's text and mode if it is a new document
+    if (isNew || shouldUpdateText) {
+      this.editor.setMode(Editor.modes.text);
+      this.editor.setText(aTextContent);
+    }
   },
 
   /**
@@ -436,10 +445,14 @@ var DebuggerView = {
    * @param string aTextContent [optional]
    *        The source text content.
    */
-  _setEditorMode: function(aUrl, aContentType = "", aTextContent = "") {
+  _setEditorMode: function (aUrl, aContentType = "", aTextContent = "") {
     // Use JS mode for files with .js and .jsm extensions.
     if (SourceUtils.isJavaScript(aUrl, aContentType)) {
       return void this.editor.setMode(Editor.modes.js);
+    }
+
+    if (aContentType === "text/wasm") {
+      return void this.editor.setMode(Editor.modes.wasm);
     }
 
     // Use HTML mode for files in which the first non whitespace character is
@@ -452,21 +465,44 @@ var DebuggerView = {
     this.editor.setMode(Editor.modes.text);
   },
 
-  renderBlackBoxed: function(source) {
+  /**
+   * Sets the editor's displayed document.
+   * If there isn't a document for the source, create one
+   *
+   * @param string key - key used to access the editor document cache
+   *
+   * @return boolean isNew - was the document just created
+   */
+  _setEditorDocument: function (key) {
+    let isNew;
+
+    if (!this._editorDocuments[key]) {
+      isNew = true;
+      this._editorDocuments[key] = this.editor.createDocument();
+    } else {
+      isNew = false;
+    }
+
+    const doc = this._editorDocuments[key];
+    this.editor.replaceDocument(doc);
+    return isNew;
+  },
+
+  renderBlackBoxed: function (source) {
     this._renderSourceText(
       source,
       queries.getSourceText(this.controller.getState(), source.actor)
     );
   },
 
-  renderPrettyPrinted: function(source) {
+  renderPrettyPrinted: function (source) {
     this._renderSourceText(
       source,
       queries.getSourceText(this.controller.getState(), source.actor)
     );
   },
 
-  renderSourceText: function(source) {
+  renderSourceText: function (source) {
     this._renderSourceText(
       source,
       queries.getSourceText(this.controller.getState(), source.actor),
@@ -474,9 +510,10 @@ var DebuggerView = {
     );
   },
 
-  _renderSourceText: function(source, textInfo, opts = {}) {
+  _renderSourceText: function (source, textInfo, opts = {}) {
     const selectedSource = queries.getSelectedSource(this.controller.getState());
 
+    // Exit early if we're attempting to render an unselected source
     if (!selectedSource || selectedSource.actor !== source.actor) {
       return;
     }
@@ -496,13 +533,13 @@ var DebuggerView = {
       // TODO: bug 1228866, we need to update `_editorSource` here but
       // still make the editor be updated when the full text comes
       // through somehow.
-      this._setEditorText(L10N.getStr("loadingText"));
+      this._setEditorText("loading", L10N.getStr("loadingText"));
       return;
     }
     else if (textInfo.error) {
       let msg = L10N.getFormatStr("errorLoadingText2", textInfo.error);
-      this._setEditorText(msg);
-      Cu.reportError(msg);
+      this._setEditorText("error", msg);
+      console.error(new Error(msg));
       dumpn(msg);
 
       this.showEditor();
@@ -512,7 +549,7 @@ var DebuggerView = {
 
     // If the line is not specified, default to the current frame's position,
     // if available and the frame's url corresponds to the requested url.
-    if (!('line' in opts)) {
+    if (!("line" in opts)) {
       let cachedFrames = DebuggerController.activeThread.cachedFrames;
       let currentDepth = DebuggerController.StackFrames.currentFrameDepth;
       let frame = cachedFrames[currentDepth];
@@ -528,14 +565,18 @@ var DebuggerView = {
       return;
     }
 
+    let { text, contentType } = textInfo;
+    let shouldUpdateText = this._editorSource.prettyPrinted != source.isPrettyPrinted;
+    this._setEditorText(source.actor, text, shouldUpdateText);
+
     this._editorSource.actor = source.actor;
     this._editorSource.prettyPrinted = source.isPrettyPrinted;
     this._editorSource.blackboxed = source.isBlackBoxed;
+    this._editorSource.prettyPrinted = source.isPrettyPrinted;
 
-    let { text, contentType } = textInfo;
-    this._setEditorText(text);
     this._setEditorMode(source.url, contentType, text);
     this.updateEditorBreakpoints(source);
+
     setTimeout(() => {
       window.emit(EVENTS.SOURCE_SHOWN, source);
     }, 0);
@@ -543,7 +584,7 @@ var DebuggerView = {
     this.updateEditorPosition(opts);
   },
 
-  updateEditorPosition: function(opts) {
+  updateEditorPosition: function (opts) {
     let line = opts.line || 0;
 
     // Line numbers in the source editor should start from 1. If
@@ -590,7 +631,7 @@ var DebuggerView = {
    * @return object
    *         A promise that is resolved after the source text has been set.
    */
-  setEditorLocation: function(aActor, aLine, aFlags = {}) {
+  setEditorLocation: function (aActor, aLine, aFlags = {}) {
     // Avoid trying to set a source for a url that isn't known yet.
     if (!this.Sources.containsValue(aActor)) {
       throw new Error("Unknown source for the specified URL.");
@@ -618,7 +659,7 @@ var DebuggerView = {
    * @return boolean
    */
   get instrumentsPaneHidden() {
-    return this._instrumentsPane.hasAttribute("pane-collapsed");
+    return this._instrumentsPane.classList.contains("pane-collapsed");
   },
 
   /**
@@ -641,17 +682,17 @@ var DebuggerView = {
    * @param number aTabIndex [optional]
    *        The index of the intended selected tab in the details pane.
    */
-  toggleInstrumentsPane: function(aFlags, aTabIndex) {
+  toggleInstrumentsPane: function (aFlags, aTabIndex) {
     let pane = this._instrumentsPane;
     let button = this._instrumentsPaneToggleButton;
 
     ViewHelpers.togglePane(aFlags, pane);
 
     if (aFlags.visible) {
-      button.removeAttribute("pane-collapsed");
+      button.classList.remove("pane-collapsed");
       button.setAttribute("tooltiptext", this._collapsePaneString);
     } else {
-      button.setAttribute("pane-collapsed", "");
+      button.classList.add("pane-collapsed");
       button.setAttribute("tooltiptext", this._expandPaneString);
     }
 
@@ -666,7 +707,7 @@ var DebuggerView = {
    * @param function aCallback
    *        A function to invoke when the toggle finishes.
    */
-  showInstrumentsPane: function(aCallback) {
+  showInstrumentsPane: function (aCallback) {
     DebuggerView.toggleInstrumentsPane({
       visible: true,
       animated: true,
@@ -678,7 +719,7 @@ var DebuggerView = {
   /**
    * Handles a tab selection event on the instruments pane.
    */
-  _onInstrumentsPaneTabSelect: function() {
+  _onInstrumentsPaneTabSelect: function () {
     if (this._instrumentsPane.selectedTab.id == "events-tab") {
       this.controller.dispatch(actions.fetchEventListeners());
     }
@@ -690,7 +731,7 @@ var DebuggerView = {
    * @param string aType
    *        The host type, either "bottom", "side" or "window".
    */
-  handleHostChanged: function(hostType) {
+  handleHostChanged: function (hostType) {
     this._hostType = hostType;
     this.updateLayoutMode();
   },
@@ -707,7 +748,7 @@ var DebuggerView = {
   /**
    * Set the layout to "vertical" or "horizontal" depending on the host type.
    */
-  updateLayoutMode: function() {
+  updateLayoutMode: function () {
     if (this._isSmallWindowHost() || this._hostType == "side") {
       this._setLayoutMode("vertical");
     } else {
@@ -719,7 +760,7 @@ var DebuggerView = {
    * Check if the current host is in window mode and is
    * too small for horizontal layout
    */
-  _isSmallWindowHost: function() {
+  _isSmallWindowHost: function () {
     if (this._hostType != "window") {
       return false;
     }
@@ -731,7 +772,7 @@ var DebuggerView = {
    * Enter the provided layoutMode. Do nothing if the layout is the same as the current one.
    * @param {String} layoutMode new layout ("vertical" or "horizontal")
    */
-  _setLayoutMode: function(layoutMode) {
+  _setLayoutMode: function (layoutMode) {
     if (this._body.getAttribute("layout") == layoutMode) {
       return;
     }
@@ -749,7 +790,7 @@ var DebuggerView = {
   /**
    * Switches the debugger widgets to a vertical layout.
    */
-  _enterVerticalLayout: function() {
+  _enterVerticalLayout: function () {
     let vertContainer = document.getElementById("vertical-layout-panes-container");
 
     // Move the soruces and instruments panes in a different container.
@@ -766,7 +807,7 @@ var DebuggerView = {
   /**
    * Switches the debugger widgets to a horizontal layout.
    */
-  _enterHorizontalLayout: function() {
+  _enterHorizontalLayout: function () {
     let normContainer = document.getElementById("debugger-widgets");
     let editorPane = document.getElementById("editor-and-instruments-pane");
 
@@ -785,9 +826,8 @@ var DebuggerView = {
   /**
    * Handles any initialization on a tab navigation event issued by the client.
    */
-  handleTabNavigation: function() {
+  handleTabNavigation: function () {
     dumpn("Handling tab navigation in the DebuggerView");
-
     this.Filtering.clearSearch();
     this.GlobalSearch.clearView();
     this.StackFrames.empty();
@@ -800,6 +840,7 @@ var DebuggerView = {
       this.editor.setText("");
       this.editor.clearHistory();
       this._editorSource = {};
+      this._editorDocuments = {};
     }
   },
 
@@ -899,7 +940,7 @@ ResultsPanelContainer.prototype = Heritage.extend(WidgetMethods, {
   /**
    * Removes all items from this container and hides it.
    */
-  clearView: function() {
+  clearView: function () {
     this.hidden = true;
     this.empty();
   },
@@ -908,7 +949,7 @@ ResultsPanelContainer.prototype = Heritage.extend(WidgetMethods, {
    * Selects the next found item in this container.
    * Does not change the currently focused node.
    */
-  selectNext: function() {
+  selectNext: function () {
     let nextIndex = this.selectedIndex + 1;
     if (nextIndex >= this.itemCount) {
       nextIndex = 0;
@@ -920,7 +961,7 @@ ResultsPanelContainer.prototype = Heritage.extend(WidgetMethods, {
    * Selects the previously found item in this container.
    * Does not change the currently focused node.
    */
-  selectPrev: function() {
+  selectPrev: function () {
     let prevIndex = this.selectedIndex - 1;
     if (prevIndex < 0) {
       prevIndex = this.itemCount - 1;
@@ -938,7 +979,7 @@ ResultsPanelContainer.prototype = Heritage.extend(WidgetMethods, {
    * @param string aBelowLabel
    *        An optional string shown underneath the label.
    */
-  _createItemView: function(aLabel, aBelowLabel, aBeforeLabel) {
+  _createItemView: function (aLabel, aBelowLabel, aBeforeLabel) {
     let container = document.createElement("vbox");
     container.className = "results-panel-item";
 

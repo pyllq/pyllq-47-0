@@ -9,10 +9,11 @@
 
 #include "MediaData.h"
 #include "MediaInfo.h"
+#include "VPXDecoder.h"
 
 #include "nsThreadUtils.h"
-#include "nsAutoPtr.h"
 #include "nsPromiseFlatString.h"
+#include "nsIGfxInfo.h"
 
 #include "prlog.h"
 
@@ -34,7 +35,7 @@ static PRLogModuleInfo* AndroidDecoderModuleLog()
 
 using namespace mozilla;
 using namespace mozilla::gl;
-using namespace mozilla::widget::sdk;
+using namespace mozilla::java::sdk;
 using media::TimeUnit;
 
 namespace mozilla {
@@ -49,9 +50,9 @@ namespace mozilla {
 static const char*
 TranslateMimeType(const nsACString& aMimeType)
 {
-  if (aMimeType.EqualsLiteral("video/webm; codecs=vp8")) {
+  if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8)) {
     return "video/x-vnd.on2.vp8";
-  } else if (aMimeType.EqualsLiteral("video/webm; codecs=vp9")) {
+  } else if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9)) {
     return "video/x-vnd.on2.vp9";
   }
   return PromiseFlatCString(aMimeType).get();
@@ -65,6 +66,18 @@ CreateDecoder(const nsACString& aMimeType)
                     &codec), nullptr);
   return codec;
 }
+
+static bool
+GetFeatureStatus(int32_t aFeature)
+{
+  nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+  int32_t status = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
+  nsCString discardFailureId;
+  if (!gfxInfo || NS_FAILED(gfxInfo->GetFeatureStatus(aFeature, discardFailureId, &status))) {
+    return false;
+  }
+  return status == nsIGfxInfo::FEATURE_STATUS_OK;
+};
 
 class VideoDataDecoder : public MediaCodecDataDecoder
 {
@@ -161,14 +174,14 @@ public:
   {
     JNIEnv* const env = jni::GetEnvForThread();
 
-    jni::Object::LocalRef buffer(env);
+    jni::ByteBuffer::LocalRef buffer(env);
     NS_ENSURE_SUCCESS_VOID(aFormat->GetByteBuffer(NS_LITERAL_STRING("csd-0"),
                                                   &buffer));
 
     if (!buffer && aConfig.mCodecSpecificConfig->Length() >= 2) {
-      buffer = jni::Object::LocalRef::Adopt(
-          env, env->NewDirectByteBuffer(aConfig.mCodecSpecificConfig->Elements(),
-          aConfig.mCodecSpecificConfig->Length()));
+      buffer = jni::ByteBuffer::New(
+          aConfig.mCodecSpecificConfig->Elements(),
+          aConfig.mCodecSpecificConfig->Length());
       NS_ENSURE_SUCCESS_VOID(aFormat->SetByteBuffer(NS_LITERAL_STRING("csd-0"),
                                                     buffer));
     }
@@ -180,13 +193,17 @@ public:
   }
 
   nsresult Output(BufferInfo::Param aInfo, void* aBuffer,
-                  MediaFormat::Param aFormat, const TimeUnit& aDuration)
+                  MediaFormat::Param aFormat, const TimeUnit& aDuration) override
   {
     // The output on Android is always 16-bit signed
     nsresult rv;
     int32_t numChannels;
     NS_ENSURE_SUCCESS(rv =
         aFormat->GetInteger(NS_LITERAL_STRING("channel-count"), &numChannels), rv);
+    AudioConfig::ChannelLayout layout(numChannels);
+    if (!layout.IsValid()) {
+      return NS_ERROR_FAILURE;
+    }
 
     int32_t sampleRate;
     NS_ENSURE_SUCCESS(rv =
@@ -205,7 +222,10 @@ public:
 #endif
 
     const int32_t numFrames = numSamples / numChannels;
-    auto audio = MakeUnique<AudioDataValue[]>(numSamples);
+    AlignedAudioBuffer audio(numSamples);
+    if (!audio) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
 
     const uint8_t* bufferStart = static_cast<uint8_t*>(aBuffer) + offset;
     PodCopy(audio.get(), reinterpret_cast<const AudioDataValue*>(bufferStart),
@@ -226,7 +246,8 @@ public:
 };
 
 bool
-AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
+AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType,
+                                       DecoderDoctorDiagnostics* aDiagnostics) const
 {
   if (!AndroidBridge::Bridge() ||
       AndroidBridge::Bridge()->GetAPIVersion() < 16) {
@@ -247,49 +268,59 @@ AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
       aMimeType.EqualsLiteral("audio/wave; codecs=7") ||
       aMimeType.EqualsLiteral("audio/wave; codecs=65534")) {
     return false;
-  }  
+  }
 
-  return widget::HardwareCodecCapabilityUtils::FindDecoderCodecInfoForMimeType(
+  if ((VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8) &&
+       !GetFeatureStatus(nsIGfxInfo::FEATURE_VP8_HW_DECODE)) ||
+      (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9) &&
+       !GetFeatureStatus(nsIGfxInfo::FEATURE_VP9_HW_DECODE))) {
+    return false;
+  }
+
+  return java::HardwareCodecCapabilityUtils::FindDecoderCodecInfoForMimeType(
       nsCString(TranslateMimeType(aMimeType)));
 }
 
 already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateVideoDecoder(
-    const VideoInfo& aConfig, layers::LayersBackend aLayersBackend,
-    layers::ImageContainer* aImageContainer, FlushableTaskQueue* aVideoTaskQueue,
-    MediaDataDecoderCallback* aCallback)
+AndroidDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
 {
   MediaFormat::LocalRef format;
 
+  const VideoInfo& config = aParams.VideoConfig();
   NS_ENSURE_SUCCESS(MediaFormat::CreateVideoFormat(
-      TranslateMimeType(aConfig.mMimeType),
-      aConfig.mDisplay.width,
-      aConfig.mDisplay.height,
+      TranslateMimeType(config.mMimeType),
+      config.mDisplay.width,
+      config.mDisplay.height,
       &format), nullptr);
 
   RefPtr<MediaDataDecoder> decoder =
-    new VideoDataDecoder(aConfig, format, aCallback, aImageContainer);
+    new VideoDataDecoder(config,
+                         format,
+                         aParams.mCallback,
+                         aParams.mImageContainer);
 
   return decoder.forget();
 }
 
 already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateAudioDecoder(
-    const AudioInfo& aConfig, FlushableTaskQueue* aAudioTaskQueue,
-    MediaDataDecoderCallback* aCallback)
+AndroidDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
 {
-  MOZ_ASSERT(aConfig.mBitDepth == 16, "We only handle 16-bit audio!");
+  const AudioInfo& config = aParams.AudioConfig();
+  MOZ_ASSERT(config.mBitDepth == 16, "We only handle 16-bit audio!");
 
   MediaFormat::LocalRef format;
 
+  LOG("CreateAudioFormat with mimeType=%s, mRate=%d, channels=%d",
+      config.mMimeType.Data(), config.mRate, config.mChannels);
+
   NS_ENSURE_SUCCESS(MediaFormat::CreateAudioFormat(
-      aConfig.mMimeType,
-      aConfig.mBitDepth,
-      aConfig.mChannels,
+      config.mMimeType,
+      config.mRate,
+      config.mChannels,
       &format), nullptr);
 
   RefPtr<MediaDataDecoder> decoder =
-    new AudioDataDecoder(aConfig, format, aCallback);
+    new AudioDataDecoder(config, format, aParams.mCallback);
 
   return decoder.forget();
 }
@@ -344,7 +375,7 @@ MediaCodecDataDecoder::InitDecoder(Surface::Param aSurface)
 {
   mDecoder = CreateDecoder(mMimeType);
   if (!mDecoder) {
-    INVOKE_CALLBACK(Error);
+    INVOKE_CALLBACK(Error, MediaDataDecoderError::FATAL_ERROR);
     return NS_ERROR_FAILURE;
   }
 
@@ -355,9 +386,8 @@ MediaCodecDataDecoder::InitDecoder(Surface::Param aSurface)
   NS_ENSURE_SUCCESS(rv = ResetInputBuffers(), rv);
   NS_ENSURE_SUCCESS(rv = ResetOutputBuffers(), rv);
 
-  rv = NS_NewNamedThread(
-      "MC Decoder", getter_AddRefs(mThread),
-      NS_NewRunnableMethod(this, &MediaCodecDataDecoder::DecoderLoop));
+  nsCOMPtr<nsIRunnable> r = NewRunnableMethod(this, &MediaCodecDataDecoder::DecoderLoop);
+  rv = NS_NewNamedThread("MC Decoder", getter_AddRefs(mThread), r);
 
   return rv;
 }
@@ -372,7 +402,7 @@ static const int64_t kDecoderTimeout = 10000;
       INVOKE_CALLBACK(DrainComplete); \
       State(kDecoding); \
     } \
-    INVOKE_CALLBACK(Error); \
+    INVOKE_CALLBACK(Error, MediaDataDecoderError::FATAL_ERROR); \
     break; \
   }
 
@@ -612,7 +642,7 @@ MediaCodecDataDecoder::DecoderLoop()
       BREAK_ON_DECODER_ERROR();
     } else if (outputStatus < 0) {
       NS_WARNING("Unknown error from decoder!");
-      INVOKE_CALLBACK(Error);
+      INVOKE_CALLBACK(Error, MediaDataDecoderError::DECODE_ERROR);
       // Don't break here just in case it's recoverable. If it's not, other
       // stuff will fail later and we'll bail out.
     } else {

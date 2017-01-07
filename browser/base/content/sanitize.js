@@ -234,7 +234,6 @@ Sanitizer.prototype = {
         let seenException;
         let yieldCounter = 0;
         let refObj = {};
-        TelemetryStopwatch.start("FX_SANITIZE_COOKIES", refObj);
 
         // Clear cookies.
         TelemetryStopwatch.start("FX_SANITIZE_COOKIES_2", refObj);
@@ -287,7 +286,6 @@ Sanitizer.prototype = {
         // complete, we introduce a soft timeout. Once this timeout has
         // elapsed, we proceed with the shutdown of Firefox.
         let promiseClearPluginCookies;
-        TelemetryStopwatch.start("FX_SANITIZE_PLUGINS", refObj);
         try {
           // We don't want to wait for this operation to complete...
           promiseClearPluginCookies = this.promiseClearPluginCookies(range);
@@ -306,10 +304,6 @@ Sanitizer.prototype = {
           // If this exception is raised before the soft timeout, it
           // will appear in `seenException`. Otherwise, it's too late
           // to do anything about it.
-        }).then(() => {
-          // Finally, update statistics.
-          TelemetryStopwatch.finish("FX_SANITIZE_PLUGINS", refObj);
-          TelemetryStopwatch.finish("FX_SANITIZE_COOKIES", refObj);
         });
 
         if (seenException) {
@@ -361,15 +355,9 @@ Sanitizer.prototype = {
 
     offlineApps: {
       clear: Task.async(function* (range) {
-        let refObj = {};
-        TelemetryStopwatch.start("FX_SANITIZE_OFFLINEAPPS", refObj);
-        try {
-          Components.utils.import("resource:///modules/offlineAppCache.jsm");
-          // This doesn't wait for the cleanup to be complete.
-          OfflineAppCacheHelper.clear();
-        } finally {
-          TelemetryStopwatch.finish("FX_SANITIZE_OFFLINEAPPS", refObj);
-        }
+        Components.utils.import("resource:///modules/offlineAppCache.jsm");
+        // This doesn't wait for the cleanup to be complete.
+        OfflineAppCacheHelper.clear();
       })
     },
 
@@ -576,15 +564,20 @@ Sanitizer.prototype = {
 
         // Clear all push notification subscriptions
         try {
-          let push = Cc["@mozilla.org/push/Service;1"]
-                       .getService(Ci.nsIPushService);
-          push.clearForDomain("*", status => {
-            if (!Components.isSuccessCode(status)) {
-              dump("Error clearing Web Push data: " + status + "\n");
-            }
+          yield new Promise((resolve, reject) => {
+            let push = Cc["@mozilla.org/push/Service;1"]
+                         .getService(Ci.nsIPushService);
+            push.clearForDomain("*", status => {
+              if (Components.isSuccessCode(status)) {
+                resolve();
+              } else {
+                reject(new Error("Error clearing push subscriptions: " +
+                                 status));
+              }
+            });
           });
-        } catch (e) {
-          dump("Web Push may not be available.\n");
+        } catch (ex) {
+          seenException = ex;
         }
 
         TelemetryStopwatch.finish("FX_SANITIZE_SITESETTINGS", refObj);
@@ -604,6 +597,7 @@ Sanitizer.prototype = {
           aWindow.skipNextCanClose = true;
           return true;
         }
+        return false;
       },
       _resetAllWindowClosures: function(aWindowList) {
         for (let win of aWindowList) {
@@ -666,6 +660,7 @@ Sanitizer.prototype = {
               e.stopPropagation();
               return false;
             }
+            return undefined;
           }
           newWindow.addEventListener("fullscreen", onFullScreen);
         }

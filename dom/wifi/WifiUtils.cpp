@@ -387,13 +387,13 @@ WpaSupplicant::WpaSupplicant()
   mSdkVersion = strtol(propVersion, nullptr, 10);
 
   if (mSdkVersion < 16) {
-    mImpl = new ICSWpaSupplicantImpl();
+    mImpl = MakeUnique<ICSWpaSupplicantImpl>();
   } else if (mSdkVersion < 19) {
-    mImpl = new JBWpaSupplicantImpl();
+    mImpl = MakeUnique<JBWpaSupplicantImpl>();
   } else {
-    mImpl = new KKWpaSupplicantImpl();
+    mImpl = MakeUnique<KKWpaSupplicantImpl>();
   }
-  mWifiHotspotUtils = new WifiHotspotUtils();
+  mWifiHotspotUtils = MakeUnique<WifiHotspotUtils>();
 };
 
 void WpaSupplicant::WaitForEvent(nsAString& aEvent, const nsCString& aInterface)
@@ -457,28 +457,6 @@ bool WpaSupplicant::ExecuteCommand(CommandOptions aOptions,
     aResult.mStatus = mImpl->do_wifi_stop_supplicant(0);
   } else if (aOptions.mCmd.EqualsLiteral("connect_to_supplicant")) {
     aResult.mStatus = mImpl->do_wifi_connect_to_supplicant(aInterface.get());
-  } else if (aOptions.mCmd.EqualsLiteral("hostapd_command")) {
-    size_t len = BUFFER_SIZE - 1;
-    char buffer[BUFFER_SIZE];
-    NS_ConvertUTF16toUTF8 request(aOptions.mRequest);
-    aResult.mStatus = mWifiHotspotUtils->do_wifi_hostapd_command(request.get(),
-                                                                 buffer,
-                                                                 &len);
-    nsString value;
-    if (aResult.mStatus == 0) {
-      if (buffer[len - 1] == '\n') { // remove trailing new lines.
-        len--;
-      }
-      buffer[len] = '\0';
-      CheckBuffer(buffer, len, value);
-    }
-    aResult.mReply = value;
-  } else if (aOptions.mCmd.EqualsLiteral("hostapd_get_stations")) {
-    aResult.mStatus = mWifiHotspotUtils->do_wifi_hostapd_get_stations();
-  } else if (aOptions.mCmd.EqualsLiteral("connect_to_hostapd")) {
-    aResult.mStatus = mWifiHotspotUtils->do_wifi_connect_to_hostapd();
-  } else if (aOptions.mCmd.EqualsLiteral("close_hostapd_connection")) {
-    aResult.mStatus = mWifiHotspotUtils->do_wifi_close_hostapd_connection();
   } else if (aOptions.mCmd.EqualsLiteral("hostapd_command")) {
     size_t len = BUFFER_SIZE - 1;
     char buffer[BUFFER_SIZE];

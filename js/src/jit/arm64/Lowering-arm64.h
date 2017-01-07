@@ -34,12 +34,14 @@ class LIRGeneratorARM64 : public LIRGeneratorShared
     bool needTempForPostBarrier() { return true; }
 
     // ARM64 has a scratch register, so no need for another temp for dispatch ICs.
-    LDefinition tempForDispatchCache(MIRType outputType = MIRType_None) {
+    LDefinition tempForDispatchCache(MIRType outputType = MIRType::None) {
         return LDefinition::BogusTemp();
     }
 
     void lowerUntypedPhiInput(MPhi* phi, uint32_t inputPosition, LBlock* block, size_t lirIndex);
     void defineUntypedPhi(MPhi* phi, size_t lirIndex);
+    void lowerInt64PhiInput(MPhi*, uint32_t, LBlock*, size_t) { MOZ_CRASH("NYI"); }
+    void defineInt64Phi(MPhi*, size_t) { MOZ_CRASH("NYI"); }
     void lowerForShift(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir, MDefinition* lhs,
                        MDefinition* rhs);
     void lowerUrshD(MUrsh* mir);
@@ -48,9 +50,11 @@ class LIRGeneratorARM64 : public LIRGeneratorShared
     void lowerForALU(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir,
                      MDefinition* lhs, MDefinition* rhs);
 
-    void lowerForALUInt64(LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins, MDefinition* mir,
-                          MDefinition* lhs, MDefinition* rhs);
-    void lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, 0>* ins,
+    void lowerForALUInt64(LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins,
+                          MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
+    void lowerForMulInt64(LMulI64* ins, MMul* mir, MDefinition* lhs, MDefinition* rhs);
+    template<size_t Temps>
+    void lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, Temps>* ins,
                             MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
 
     void lowerForFPU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir, MDefinition* input);
@@ -84,6 +88,7 @@ class LIRGeneratorARM64 : public LIRGeneratorShared
     void lowerUMod(MMod* mod);
     void visitPowHalf(MPowHalf* ins);
     void visitAsmJSNeg(MAsmJSNeg* ins);
+    void visitAsmSelect(MAsmSelect* ins);
 
     LTableSwitchV* newLTableSwitchV(MTableSwitch* ins);
     LTableSwitch* newLTableSwitch(const LAllocation& in,
@@ -101,21 +106,22 @@ class LIRGeneratorARM64 : public LIRGeneratorShared
     void visitAsmJSUnsignedToFloat32(MAsmJSUnsignedToFloat32* ins);
     void visitAsmJSLoadHeap(MAsmJSLoadHeap* ins);
     void visitAsmJSStoreHeap(MAsmJSStoreHeap* ins);
-    void visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr* ins);
     void visitAsmJSCompareExchangeHeap(MAsmJSCompareExchangeHeap* ins);
     void visitAsmJSAtomicExchangeHeap(MAsmJSAtomicExchangeHeap* ins);
     void visitAsmJSAtomicBinopHeap(MAsmJSAtomicBinopHeap* ins);
     void visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStatic* ins);
-    void visitSimdBinaryArith(MSimdBinaryArith* ins);
-    void visitSimdSelect(MSimdSelect* ins);
-    void visitSimdSplatX4(MSimdSplatX4* ins);
-    void visitSimdValueX4(MSimdValueX4* ins);
     void visitCompareExchangeTypedArrayElement(MCompareExchangeTypedArrayElement* ins);
     void visitAtomicExchangeTypedArrayElement(MAtomicExchangeTypedArrayElement* ins);
     void visitAtomicTypedArrayElementBinop(MAtomicTypedArrayElementBinop* ins);
     void visitSubstr(MSubstr* ins);
     void visitRandom(MRandom* ins);
-    void visitTruncateToInt64(MTruncateToInt64* ins);
+    void visitWasmTruncateToInt64(MWasmTruncateToInt64* ins);
+    void visitWasmBoundsCheck(MWasmBoundsCheck* ins);
+    void visitWasmLoad(MWasmLoad* ins);
+    void visitWasmStore(MWasmStore* ins);
+    void visitInt64ToFloatingPoint(MInt64ToFloatingPoint* ins);
+    void visitCopySign(MCopySign* ins);
+    void visitExtendInt32ToInt64(MExtendInt32ToInt64* ins);
 };
 
 typedef LIRGeneratorARM64 LIRGeneratorSpecific;

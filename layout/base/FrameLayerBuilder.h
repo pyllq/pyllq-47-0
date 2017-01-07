@@ -6,6 +6,7 @@
 #ifndef FRAMELAYERBUILDER_H_
 #define FRAMELAYERBUILDER_H_
 
+#include "nsAutoPtr.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
 #include "nsTArray.h"
@@ -15,6 +16,7 @@
 #include "mozilla/gfx/MatrixFwd.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "LayerState.h"
+#include "Layers.h"
 #include "LayerUserData.h"
 
 class nsDisplayListBuilder;
@@ -62,6 +64,7 @@ struct ContainerLayerParameters {
     , mDisableSubpixelAntialiasingInDescendants(false)
     , mInLowPrecisionDisplayPort(false)
     , mForEventsOnly(false)
+    , mLayerCreationHint(layers::LayerManager::NONE)
   {}
   ContainerLayerParameters(float aXScale, float aYScale)
     : mXScale(aXScale)
@@ -75,6 +78,7 @@ struct ContainerLayerParameters {
     , mDisableSubpixelAntialiasingInDescendants(false)
     , mInLowPrecisionDisplayPort(false)
     , mForEventsOnly(false)
+    , mLayerCreationHint(layers::LayerManager::NONE)
   {}
   ContainerLayerParameters(float aXScale, float aYScale,
                            const nsIntPoint& aOffset,
@@ -91,6 +95,7 @@ struct ContainerLayerParameters {
     , mDisableSubpixelAntialiasingInDescendants(aParent.mDisableSubpixelAntialiasingInDescendants)
     , mInLowPrecisionDisplayPort(aParent.mInLowPrecisionDisplayPort)
     , mForEventsOnly(aParent.mForEventsOnly)
+    , mLayerCreationHint(aParent.mLayerCreationHint)
   {}
 
   float mXScale, mYScale;
@@ -125,6 +130,8 @@ struct ContainerLayerParameters {
   bool mDisableSubpixelAntialiasingInDescendants;
   bool mInLowPrecisionDisplayPort;
   bool mForEventsOnly;
+  layers::LayerManager::PaintedLayerCreationHint mLayerCreationHint;
+
   /**
    * When this is false, PaintedLayer coordinates are drawn to with an integer
    * translation and the scale in mXScale/mYScale.
@@ -211,8 +218,6 @@ public:
   void DidEndTransaction();
 
   enum {
-    CONTAINER_NOT_CLIPPED_BY_ANCESTORS = 0x01,
-
     /**
      * Set this when pulling an opaque background color from behind the
      * container layer into the container doesn't change the visual results,
@@ -220,7 +225,7 @@ public:
      * For example, this is compatible with opacity or clipping/masking, but
      * not with non-OVER blend modes or filters.
      */
-    CONTAINER_ALLOW_PULL_BACKGROUND_COLOR = 0x02
+    CONTAINER_ALLOW_PULL_BACKGROUND_COLOR = 0x01
   };
   /**
    * Build a container layer for a display item that contains a child

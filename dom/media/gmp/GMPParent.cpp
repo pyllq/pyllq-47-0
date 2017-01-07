@@ -22,6 +22,8 @@
 #include "mozilla/SandboxInfo.h"
 #endif
 #include "GMPContentParent.h"
+#include "MediaPrefs.h"
+#include "VideoUtils.h"
 
 #include "mozilla/dom/CrashReporterParent.h"
 using mozilla::dom::CrashReporterParent;
@@ -39,7 +41,7 @@ using CrashReporter::GetIDFromMinidump;
 #include "WMFDecoderModule.h"
 #endif
 
-#ifdef MOZ_WIDEVINE_EME
+#ifdef MOZ_EME
 #include "mozilla/dom/WidevineCDMManifestBinding.h"
 #include "widevine-adapter/WidevineAdapter.h"
 #endif
@@ -252,7 +254,7 @@ GMPParent::EnsureAsyncShutdownTimeoutSet()
    return rv;
   }
 
-  int32_t timeout = GMP_DEFAULT_ASYNC_SHUTDONW_TIMEOUT;
+  int32_t timeout = MediaPrefs::GMPAsyncShutdownTimeout();
   RefPtr<GeckoMediaPluginServiceParent> service =
     GeckoMediaPluginServiceParent::GetSingleton();
   if (service) {
@@ -471,7 +473,7 @@ GMPParent::Shutdown()
   MOZ_ASSERT(mState == GMPStateNotLoaded);
 }
 
-class NotifyGMPShutdownTask : public nsRunnable {
+class NotifyGMPShutdownTask : public Runnable {
 public:
   explicit NotifyGMPShutdownTask(const nsAString& aNodeId)
     : mNodeId(aNodeId)
@@ -502,7 +504,7 @@ GMPParent::ChildTerminated()
     // removed so there is no harm in not trying to remove it again.
     LOGD("%s::%s: GMPThread() returned nullptr.", __CLASS__, __FUNCTION__);
   } else {
-    gmpThread->Dispatch(NS_NewRunnableMethodWithArg<RefPtr<GMPParent>>(
+    gmpThread->Dispatch(NewRunnableMethod<RefPtr<GMPParent>>(
                          mService,
                          &GeckoMediaPluginServiceParent::PluginTerminated,
                          self),
@@ -521,7 +523,7 @@ GMPParent::DeleteProcess()
     mState = GMPStateClosing;
     Close();
   }
-  mProcess->Delete(NS_NewRunnableMethod(this, &GMPParent::ChildTerminated));
+  mProcess->Delete(NewRunnableMethod(this, &GMPParent::ChildTerminated));
   LOGD("%s: Shut down process", __FUNCTION__);
   mProcess = nullptr;
   mState = GMPStateNotLoaded;
@@ -579,7 +581,7 @@ GMPParent::SupportsAPI(const nsCString& aAPI, const nsCString& aTag)
         // file, but uses Windows Media Foundation to decode. That's not present
         // on Windows XP, and on some Vista, Windows N, and KN variants without
         // certain services packs.
-        if (tags[j].EqualsLiteral("org.w3.clearkey")) {
+        if (tags[j].Equals(kEMEKeySystemClearkey)) {
           if (mCapabilities[i].mAPIName.EqualsLiteral(GMP_API_VIDEO_DECODER)) {
             if (!WMFDecoderModule::HasH264()) {
               continue;
@@ -808,7 +810,7 @@ GMPParent::ReadGMPMetaData()
     return ReadGMPInfoFile(infoFile);
   }
 
-#ifdef MOZ_WIDEVINE_EME
+#ifdef MOZ_EME
   // Maybe this is the Widevine adapted plugin?
   nsCOMPtr<nsIFile> manifestFile;
   rv = mDirectory->Clone(getter_AddRefs(manifestFile));
@@ -818,7 +820,7 @@ GMPParent::ReadGMPMetaData()
   manifestFile->AppendRelativePath(NS_LITERAL_STRING("manifest.json"));
   return ReadChromiumManifestFile(manifestFile);
 #else
-  return GenericPromise::CreateAndReject(rv, __func__);
+  return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
 #endif
 }
 
@@ -897,7 +899,7 @@ GMPParent::ReadGMPInfoFile(nsIFile* aFile)
       // Adobe GMP doesn't work without SSE2. Check the tags to see if
       // the decryptor is for the Adobe GMP, and refuse to load it if
       // SSE2 isn't supported.
-      if (cap.mAPITags.Contains(NS_LITERAL_CSTRING("com.adobe.primetime")) &&
+      if (cap.mAPITags.Contains(nsCString(kEMEKeySystemPrimetime)) &&
           !mozilla::supports_sse2()) {
         return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
       }
@@ -914,7 +916,6 @@ GMPParent::ReadGMPInfoFile(nsIFile* aFile)
   return GenericPromise::CreateAndResolve(true, __func__);
 }
 
-#ifdef MOZ_WIDEVINE_EME
 RefPtr<GenericPromise>
 GMPParent::ReadChromiumManifestFile(nsIFile* aFile)
 {
@@ -934,6 +935,7 @@ GMPParent::ParseChromiumManifest(nsString aJSON)
   LOGD("%s: for '%s'", __FUNCTION__, NS_LossyConvertUTF16toASCII(aJSON).get());
 
   MOZ_ASSERT(NS_IsMainThread());
+#ifdef MOZ_EME
   mozilla::dom::WidevineCDMManifest m;
   if (!m.Init(aJSON)) {
     return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
@@ -952,11 +954,13 @@ GMPParent::ParseChromiumManifest(nsString aJSON)
 
   GMPCapability video(NS_LITERAL_CSTRING(GMP_API_VIDEO_DECODER));
   video.mAPITags.AppendElement(NS_LITERAL_CSTRING("h264"));
-  video.mAPITags.AppendElement(NS_LITERAL_CSTRING("com.widevine.alpha"));
+  video.mAPITags.AppendElement(NS_LITERAL_CSTRING("vp8"));
+  video.mAPITags.AppendElement(NS_LITERAL_CSTRING("vp9"));
+  video.mAPITags.AppendElement(nsCString(kEMEKeySystemWidevine));
   mCapabilities.AppendElement(Move(video));
 
   GMPCapability decrypt(NS_LITERAL_CSTRING(GMP_API_DECRYPTOR));
-  decrypt.mAPITags.AppendElement(NS_LITERAL_CSTRING("com.widevine.alpha"));
+  decrypt.mAPITags.AppendElement(nsCString(kEMEKeySystemWidevine));
   mCapabilities.AppendElement(Move(decrypt));
 
   MOZ_ASSERT(mName.EqualsLiteral("widevinecdm"));
@@ -966,8 +970,11 @@ GMPParent::ParseChromiumManifest(nsString aJSON)
 #endif
 
   return GenericPromise::CreateAndResolve(true, __func__);
-}
+#else
+  MOZ_ASSERT_UNREACHABLE("don't call me if EME isn't enabled");
+  return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
 #endif
+}
 
 bool
 GMPParent::CanBeSharedCrossNodeIds() const
@@ -1041,7 +1048,7 @@ GMPParent::RecvAsyncShutdownComplete()
   return true;
 }
 
-class RunCreateContentParentCallbacks : public nsRunnable
+class RunCreateContentParentCallbacks : public Runnable
 {
 public:
   explicit RunCreateContentParentCallbacks(GMPContentParent* aGMPContentParent)

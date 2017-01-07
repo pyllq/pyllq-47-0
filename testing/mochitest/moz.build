@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,7 +19,7 @@ USE_EXTENSION_MANIFEST = True
 
 FINAL_TARGET_PP_FILES += ['install.rdf']
 
-if CONFIG['MOZ_BUILD_APP'] != 'mobile/android' and CONFIG['MOZ_WIDGET_TOOLKIT'] != 'gonk':
+if CONFIG['OS_TARGET'] != 'Android':
     DEFINES['MOCHITEST_BOOTSTRAP'] = True
     FINAL_TARGET_FILES += ['bootstrap.js']
 
@@ -27,6 +27,10 @@ MOCHITEST_MANIFESTS += [
     'tests/MochiKit-1.4.2/tests/mochitest.ini',
 ]
 MOCHITEST_CHROME_MANIFESTS += ['chrome/chrome.ini']
+
+GENERATED_FILES += [
+    'automation.py',
+]
 
 TEST_HARNESS_FILES.testing.mochitest += [
     '!automation.py',
@@ -41,7 +45,6 @@ TEST_HARNESS_FILES.testing.mochitest += [
     'browser-harness.xul',
     'browser-test-overlay.xul',
     'browser-test.js',
-    'cc-analyzer.js',
     'chrome-harness.js',
     'chunkifyTests.js',
     'gen_template.pl',
@@ -65,6 +68,11 @@ TEST_HARNESS_FILES.testing.mochitest += [
     'server.js',
     'start_b2g.js',
     'start_desktop.js',
+]
+
+TEST_HARNESS_FILES.testing.mochitest.embed += [
+    'embed/Xm5i5kbIXzc',
+    'embed/Xm5i5kbIXzc^headers^',
 ]
 
 TEST_HARNESS_FILES.testing.mochitest.pywebsocket += [
@@ -149,3 +157,13 @@ TEST_HARNESS_FILES.testing.mochitest.tests.testing.mochitest.tests['MochiKit-1.4
     'tests/MochiKit-1.4.2/MochiKit/Test.js',
     'tests/MochiKit-1.4.2/MochiKit/Visual.js',
 ]
+
+TEST_HARNESS_FILES.testing.mochitest.iceserver += [
+    '/testing/tools/iceserver/iceserver.py',
+]
+
+TEST_HARNESS_FILES.testing.mochitest.websocketprocessbridge += [
+    '/testing/tools/websocketprocessbridge/websocketprocessbridge.py',
+    '/testing/tools/websocketprocessbridge/websocketprocessbridge_requirements.txt',
+]
+

@@ -34,6 +34,8 @@
 #include "ShimInterfaceInfo.h"
 #include "nsIAddonInterposition.h"
 #include "nsISimpleEnumerator.h"
+#include "nsPIDOMWindow.h"
+#include "nsGlobalWindow.h"
 
 using namespace mozilla;
 using namespace JS;
@@ -57,7 +59,6 @@ JSValIsInterfaceOfType(JSContext* cx, HandleValue v, REFNSIID iid)
 {
 
     nsCOMPtr<nsIXPConnectWrappedNative> wn;
-    nsCOMPtr<nsISupports> sup;
     nsCOMPtr<nsISupports> iface;
 
     if (v.isPrimitive())
@@ -1739,7 +1740,7 @@ public:
     NS_DECL_NSICLASSINFO
 
 public:
-    nsXPCConstructor(); // not implemented
+    nsXPCConstructor() = delete;
     nsXPCConstructor(nsIJSCID* aClassID,
                      nsIJSIID* aInterfaceID,
                      const char* aInitializer);
@@ -2297,7 +2298,9 @@ nsXPCComponents_Utils::ReportError(HandleValue error, JSContext* cx)
     if (!console)
         return NS_OK;
 
-    const uint64_t innerWindowID = nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx);
+    nsGlobalWindow* globalWin = CurrentWindowOrNull(cx);
+    nsPIDOMWindowInner* win = globalWin ? globalWin->AsInner() : nullptr;
+    const uint64_t innerWindowID = win ? win->WindowID() : 0;
 
     RootedObject errorObj(cx, error.isObject() ? &error.toObject() : nullptr);
     JSErrorReport* err = errorObj ? JS_ErrorFromException(cx, errorObj) : nullptr;
@@ -2305,7 +2308,8 @@ nsXPCComponents_Utils::ReportError(HandleValue error, JSContext* cx)
     nsCOMPtr<nsIScriptError> scripterr;
 
     if (errorObj) {
-        JS::RootedObject stackVal(cx, ExceptionStackOrNull(cx, errorObj));
+        JS::RootedObject stackVal(cx,
+          FindExceptionStackForConsoleReport(win, error));
         if (stackVal) {
             scripterr = new nsScriptErrorWithStack(stackVal);
         }
@@ -2317,8 +2321,8 @@ nsXPCComponents_Utils::ReportError(HandleValue error, JSContext* cx)
     if (!scripterr) {
         nsCOMPtr<nsIStackFrame> frame = dom::GetCurrentJSStack();
         if (frame) {
-            frame->GetFilename(fileName);
-            frame->GetLineNumber(&lineNo);
+            frame->GetFilename(cx, fileName);
+            frame->GetLineNumber(cx, &lineNo);
             JS::Rooted<JS::Value> stack(cx);
             nsresult rv = frame->GetNativeSavedFrame(&stack);
             if (NS_SUCCEEDED(rv) && stack.isObject()) {
@@ -2424,9 +2428,9 @@ nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
         xpc->GetCurrentJSStack(getter_AddRefs(frame));
         if (frame) {
             nsString frameFile;
-            frame->GetFilename(frameFile);
+            frame->GetFilename(cx, frameFile);
             CopyUTF16toUTF8(frameFile, filename);
-            frame->GetLineNumber(&lineNo);
+            frame->GetLineNumber(cx, &lineNo);
         }
     }
 
@@ -2543,7 +2547,7 @@ nsXPCComponents_Utils::ImportGlobalProperties(HandleValue aPropertyList,
     }
 
     if (!options.Parse(cx, propertyList) ||
-        !options.Define(cx, global))
+        !options.DefineInXPCComponents(cx, global))
     {
         return NS_ERROR_FAILURE;
     }
@@ -2565,9 +2569,9 @@ nsXPCComponents_Utils::GetWeakReference(HandleValue object, JSContext* cx,
 NS_IMETHODIMP
 nsXPCComponents_Utils::ForceGC()
 {
-    JSRuntime* rt = nsXPConnect::GetRuntimeInstance()->Runtime();
-    PrepareForFullGC(rt);
-    GCForReason(rt, GC_NORMAL, gcreason::COMPONENT_UTILS);
+    JSContext* cx = nsXPConnect::GetRuntimeInstance()->Context();
+    PrepareForFullGC(cx);
+    GCForReason(cx, GC_NORMAL, gcreason::COMPONENT_UTILS);
     return NS_OK;
 }
 
@@ -2609,13 +2613,13 @@ nsXPCComponents_Utils::ClearMaxCCTime()
 NS_IMETHODIMP
 nsXPCComponents_Utils::ForceShrinkingGC()
 {
-    JSRuntime* rt = nsXPConnect::GetRuntimeInstance()->Runtime();
-    PrepareForFullGC(rt);
-    GCForReason(rt, GC_SHRINK, gcreason::COMPONENT_UTILS);
+    JSContext* cx = nsXPConnect::GetRuntimeInstance()->Context();
+    PrepareForFullGC(cx);
+    GCForReason(cx, GC_SHRINK, gcreason::COMPONENT_UTILS);
     return NS_OK;
 }
 
-class PreciseGCRunnable : public nsRunnable
+class PreciseGCRunnable : public Runnable
 {
   public:
     PreciseGCRunnable(ScheduledGCCallback* aCallback, bool aShrinking)
@@ -2625,13 +2629,9 @@ class PreciseGCRunnable : public nsRunnable
     {
         JSRuntime* rt = nsXPConnect::GetRuntimeInstance()->Runtime();
 
-        JSContext* cx;
-        JSContext* iter = nullptr;
-        while ((cx = JS_ContextIterator(rt, &iter)) != nullptr) {
-            if (JS_IsRunning(cx)) {
-                return NS_DispatchToMainThread(this);
-            }
-        }
+        JSContext* cx = JS_GetContext(rt);
+        if (JS_IsRunning(cx))
+            return NS_DispatchToMainThread(this);
 
         nsJSContext::GarbageCollectNow(gcreason::COMPONENT_UTILS,
                                        nsJSContext::NonIncrementalGC,
@@ -2707,12 +2707,9 @@ nsXPCComponents_Utils::CallFunctionWithAsyncStack(HandleValue function,
     }
 
     JS::Rooted<JSObject*> asyncStackObj(cx, &asyncStack.toObject());
-    JS::Rooted<JSString*> asyncCauseString(cx, JS_NewUCStringCopyN(cx, asyncCause.BeginReading(),
-                                                                       asyncCause.Length()));
-    if (!asyncCauseString)
-        return NS_ERROR_OUT_OF_MEMORY;
 
-    JS::AutoSetAsyncStackForNewCalls sas(cx, asyncStackObj, asyncCauseString,
+    NS_ConvertUTF16toUTF8 utf8Cause(asyncCause);
+    JS::AutoSetAsyncStackForNewCalls sas(cx, asyncStackObj, utf8Cause.get(),
                                          JS::AutoSetAsyncStackForNewCalls::AsyncCallKind::EXPLICIT);
 
     if (!JS_CallFunctionValue(cx, nullptr, function,
@@ -3002,27 +2999,12 @@ nsXPCComponents_Utils::Dispatch(HandleValue runnableArg, HandleValue scope,
         return NS_OK;                                                   \
     }
 
-#define GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(_attr, _getter, _setter) \
-    NS_IMETHODIMP                                                       \
-    nsXPCComponents_Utils::Get## _attr(JSContext* cx, bool* aValue)     \
-    {                                                                   \
-        *aValue = RuntimeOptionsRef(cx)._getter();                      \
-        return NS_OK;                                                   \
-    }                                                                   \
-    NS_IMETHODIMP                                                       \
-    nsXPCComponents_Utils::Set## _attr(JSContext* cx, bool aValue)      \
-    {                                                                   \
-        RuntimeOptionsRef(cx)._setter(aValue);                          \
-        return NS_OK;                                                   \
-    }
-
-GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Strict, extraWarnings, setExtraWarnings)
-GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Werror, werror, setWerror)
-GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Strict_mode, strictMode, setStrictMode)
-GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Ion, ion, setIon)
+GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Strict, extraWarnings, setExtraWarnings)
+GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Werror, werror, setWerror)
+GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Strict_mode, strictMode, setStrictMode)
+GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Ion, ion, setIon)
 
 #undef GENERATE_JSCONTEXTOPTION_GETTER_SETTER
-#undef GENERATE_JSRUNTIMEOPTION_GETTER_SETTER
 
 NS_IMETHODIMP
 nsXPCComponents_Utils::SetGCZeal(int32_t aValue, JSContext* cx)
@@ -3361,6 +3343,20 @@ nsXPCComponents_Utils::SetAddonCallInterposition(HandleValue target,
 }
 
 NS_IMETHODIMP
+nsXPCComponents_Utils::AllowCPOWsInAddon(const nsACString& addonIdStr,
+                                         bool allow,
+                                         JSContext* cx)
+{
+    JSAddonId* addonId = xpc::NewAddonId(cx, addonIdStr);
+    if (!addonId)
+        return NS_ERROR_FAILURE;
+    if (!XPCWrappedNativeScope::AllowCPOWsInAddon(cx, addonId, allow))
+        return NS_ERROR_FAILURE;
+
+    return NS_OK;
+}
+
+NS_IMETHODIMP
 nsXPCComponents_Utils::Now(double* aRetval)
 {
     bool isInconsistent = false;
@@ -3462,23 +3458,9 @@ nsXPCComponents::GetManager(nsIComponentManager * *aManager)
 }
 
 NS_IMETHODIMP
-nsXPCComponents::GetLastResult(JSContext* aCx, MutableHandleValue aOut)
-{
-    XPCContext* xpcc = XPCContext::GetXPCContext(aCx);
-    if (!xpcc)
-        return NS_ERROR_FAILURE;
-    nsresult res = xpcc->GetLastResult();
-    aOut.setNumber(static_cast<uint32_t>(res));
-    return NS_OK;
-}
-
-NS_IMETHODIMP
 nsXPCComponents::GetReturnCode(JSContext* aCx, MutableHandleValue aOut)
 {
-    XPCContext* xpcc = XPCContext::GetXPCContext(aCx);
-    if (!xpcc)
-        return NS_ERROR_FAILURE;
-    nsresult res = xpcc->GetPendingResult();
+    nsresult res = XPCJSRuntime::Get()->GetPendingResult();
     aOut.setNumber(static_cast<uint32_t>(res));
     return NS_OK;
 }
@@ -3486,14 +3468,10 @@ nsXPCComponents::GetReturnCode(JSContext* aCx, MutableHandleValue aOut)
 NS_IMETHODIMP
 nsXPCComponents::SetReturnCode(JSContext* aCx, HandleValue aCode)
 {
-    XPCContext* xpcc = XPCContext::GetXPCContext(aCx);
-    if (!xpcc)
-        return NS_ERROR_FAILURE;
     nsresult rv;
     if (!ToUint32(aCx, aCode, (uint32_t*)&rv))
         return NS_ERROR_FAILURE;
-    xpcc->SetPendingResult(rv);
-    xpcc->SetLastResult(rv);
+    XPCJSRuntime::Get()->SetPendingResult(rv);
     return NS_OK;
 }
 
@@ -3515,7 +3493,7 @@ NS_IMETHODIMP nsXPCComponents::ReportError(HandleValue error, JSContext* cx)
 class ComponentsSH : public nsIXPCScriptable
 {
 public:
-    explicit MOZ_CONSTEXPR ComponentsSH(unsigned dummy)
+    explicit constexpr ComponentsSH(unsigned dummy)
     {
     }
 

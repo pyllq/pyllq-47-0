@@ -3,9 +3,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const { Cu } = require("chrome");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 const STRINGS_URI = "chrome://devtools/locale/jit-optimizations.properties";
-const L10N = new ViewHelpers.L10N(STRINGS_URI);
+const L10N = new LocalizationHelper(STRINGS_URI);
+
 const { assert } = require("devtools/shared/DevToolsUtils");
 const { DOM: dom, createClass, createFactory, PropTypes } = require("devtools/client/shared/vendor/react");
 const Tree = createFactory(require("../../shared/components/tree"));
@@ -13,7 +15,7 @@ const OptimizationsItem = createFactory(require("./jit-optimizations-item"));
 const FrameView = createFactory(require("../../shared/components/frame"));
 
 const onClickTooltipString = frame =>
-  L10N.getFormatStr("viewsourceindebugger",`${frame.source}:${frame.line}:${frame.column}`);
+  L10N.getFormatStr("viewsourceindebugger", `${frame.source}:${frame.line}:${frame.column}`);
 const JIT_TITLE = L10N.getStr("jit.title");
 // If TREE_ROW_HEIGHT changes, be sure to change `var(--jit-tree-row-height)`
 // in `devtools/client/themes/jit-optimizations.css`
@@ -133,8 +135,8 @@ const JITOptimizations = module.exports = createClass({
              isAttempts(node) ? "attempts" :
              isTypes(node) ? "types" :
              isAttempt(node) ? "attempt" :
-             isType(node) ? "type":
-             isObservedType(node) ? "observedtype": null;
+             isType(node) ? "type" :
+             isObservedType(node) ? "observedtype" : null;
     };
 
     // Creates a unique key for each node in the

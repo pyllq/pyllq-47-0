@@ -11,7 +11,6 @@
 #include <android/log.h>
 #include <android/api-level.h>
 
-#include "nsGeoPosition.h"
 #include "nsRect.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -405,21 +404,6 @@ public:
     };
 };
 
-class AndroidLocation : public WrappedJavaObject
-{
-public:
-    static void InitLocationClass(JNIEnv *jEnv);
-    static nsGeoPosition* CreateGeoPosition(JNIEnv *jenv, jobject jobj);
-    static jclass jLocationClass;
-    static jmethodID jGetLatitudeMethod;
-    static jmethodID jGetLongitudeMethod;
-    static jmethodID jGetAltitudeMethod;
-    static jmethodID jGetAccuracyMethod;
-    static jmethodID jGetBearingMethod;
-    static jmethodID jGetSpeedMethod;
-    static jmethodID jGetTimeMethod;
-};
-
 class AndroidGeckoEvent : public WrappedJavaObject
 {
 private:
@@ -441,14 +425,6 @@ public:
     static AndroidGeckoEvent* MakeFromJavaObject(JNIEnv *jenv, jobject jobj) {
         AndroidGeckoEvent *event = new AndroidGeckoEvent();
         event->Init(jenv, jobj);
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeBroadcastEvent(const nsCString& topic, const nsCString& data) {
-        AndroidGeckoEvent* event = new AndroidGeckoEvent();
-        event->Init(BROADCAST);
-        CopyUTF8toUTF16(topic, event->mCharacters);
-        CopyUTF8toUTF16(data, event->mCharactersExtra);
         return event;
     }
 
@@ -479,7 +455,6 @@ public:
 
     int Action() { return mAction; }
     int Type() { return mType; }
-    bool AckNeeded() { return mAckNeeded; }
     int64_t Time() { return mTime; }
     const nsTArray<nsIntPoint>& Points() { return mPoints; }
     const nsTArray<int>& PointIndicies() { return mPointIndicies; }
@@ -492,9 +467,9 @@ public:
     double Z() { return mZ; }
     double W() { return mW; }
     const nsIntRect& Rect() { return mRect; }
-    nsAString& Characters() { return mCharacters; }
-    nsAString& CharactersExtra() { return mCharactersExtra; }
-    nsAString& Data() { return mData; }
+    nsString& Characters() { return mCharacters; }
+    nsString& CharactersExtra() { return mCharactersExtra; }
+    nsString& Data() { return mData; }
     int MetaState() { return mMetaState; }
     Modifiers DOMModifiers() const;
     bool IsAltPressed() const { return (mMetaState & AMETA_ALT_MASK) != 0; }
@@ -504,12 +479,6 @@ public:
     int Flags() { return mFlags; }
     int Count() { return mCount; }
     int PointerIndex() { return mPointerIndex; }
-    nsGeoPosition* GeoPosition() { return mGeoPosition; }
-    int ConnectionType() { return mConnectionType; }
-    bool IsWifi() { return mIsWifi; }
-    int DHCPGateway() { return mDHCPGateway; }
-    short ScreenOrientation() { return mScreenOrientation; }
-    short ScreenAngle() { return mScreenAngle; }
     RefCountedJavaObject* ByteBuffer() { return mByteBuffer; }
     int Width() { return mWidth; }
     int Height() { return mHeight; }
@@ -532,7 +501,6 @@ public:
 protected:
     int mAction;
     int mType;
-    bool mAckNeeded;
     int64_t mTime;
     nsTArray<nsIntPoint> mPoints;
     nsTArray<nsIntPoint> mPointRadii;
@@ -546,12 +514,6 @@ protected:
     double mX, mY, mZ, mW;
     int mPointerIndex;
     nsString mCharacters, mCharactersExtra, mData;
-    RefPtr<nsGeoPosition> mGeoPosition;
-    int mConnectionType;
-    bool mIsWifi;
-    int mDHCPGateway;
-    short mScreenOrientation;
-    short mScreenAngle;
     RefPtr<RefCountedJavaObject> mByteBuffer;
     int mWidth, mHeight;
     int mID;
@@ -589,7 +551,6 @@ protected:
     static jclass jGeckoEventClass;
     static jfieldID jActionField;
     static jfieldID jTypeField;
-    static jfieldID jAckNeededField;
     static jfieldID jTimeField;
     static jfieldID jPoints;
     static jfieldID jPointIndicies;
@@ -611,14 +572,7 @@ protected:
     static jfieldID jFlagsField;
     static jfieldID jCountField;
     static jfieldID jPointerIndexField;
-    static jfieldID jLocationField;
 
-    static jfieldID jConnectionTypeField;
-    static jfieldID jIsWifiField;
-    static jfieldID jDHCPGatewayField;
-
-    static jfieldID jScreenOrientationField;
-    static jfieldID jScreenAngleField;
     static jfieldID jByteBufferField;
 
     static jfieldID jWidthField;
@@ -634,24 +588,13 @@ public:
     enum {
         NATIVE_POKE = 0,
         MOTION_EVENT = 2,
-        SENSOR_EVENT = 3,
-        LOCATION_EVENT = 5,
-        APP_BACKGROUNDING = 9,
-        APP_FOREGROUNDING = 10,
-        LOAD_URI = 12,
         NOOP = 15,
         APZ_INPUT_EVENT = 17, // used internally in AndroidJNI/nsAppShell/nsWindow
-        BROADCAST = 19,
         VIEWPORT = 20,
-        VISITED = 21,
-        NETWORK_CHANGED = 22,
-        THUMBNAIL = 25,
-        SCREENORIENTATION_CHANGED = 27,
         NATIVE_GESTURE_EVENT = 31,
         CALL_OBSERVER = 33,
         REMOVE_OBSERVER = 34,
         LOW_MEMORY = 35,
-        NETWORK_LINK_CHANGE = 36,
         TELEMETRY_HISTOGRAM_ADD = 37,
         ADD_OBSERVER = 38,
         TELEMETRY_UI_SESSION_START = 42,

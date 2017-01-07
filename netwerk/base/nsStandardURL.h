@@ -33,6 +33,9 @@ class nsIPrefBranch;
 class nsIFile;
 class nsIURLParser;
 
+namespace mozilla {
+namespace net {
+
 //-----------------------------------------------------------------------------
 // standard URL implementation
 //-----------------------------------------------------------------------------
@@ -61,8 +64,8 @@ public:
     NS_DECL_NSISENSITIVEINFOHIDDENURI
 
     // nsISizeOf
-    virtual size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const override;
-    virtual size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const override;
+    virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override;
+    virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override;
 
     explicit nsStandardURL(bool aSupportsFileURL = false, bool aTrackURL = true);
 
@@ -146,7 +149,8 @@ protected:
     // enum used in a few places to specify how .ref attribute should be handled
     enum RefHandlingEnum {
         eIgnoreRef,
-        eHonorRef
+        eHonorRef,
+        eReplaceRef
     };
 
     // Helper to share code between Equals and EqualsExceptRef
@@ -159,10 +163,12 @@ protected:
 
     // Helper to share code between Clone methods.
     nsresult CloneInternal(RefHandlingEnum aRefHandlingMode,
+                           const nsACString& newRef,
                            nsIURI** aClone);
     // Helper method that copies member variables from the source StandardURL
     // if copyCached = true, it will also copy mFile and mHostA
     nsresult CopyMembers(nsStandardURL * source, RefHandlingEnum mode,
+                         const nsACString& newRef,
                          bool copyCached = false);
 
     // Helper for subclass implementation of GetFile().  Subclasses that map
@@ -388,5 +394,8 @@ nsStandardURL::Filename()
     }
     return Substring(mSpec, pos, len);
 }
+
+} // namespace net
+} // namespace mozilla
 
 #endif // nsStandardURL_h__

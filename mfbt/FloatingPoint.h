@@ -117,7 +117,7 @@ struct FloatingPoint : public SelectTrait<T>
 
 /** Determines whether a float/double is NaN. */
 template<typename T>
-static MOZ_ALWAYS_INLINE MOZ_CONSTEXPR bool
+static MOZ_ALWAYS_INLINE constexpr bool
 IsNaN(T aValue)
 {
   /*
@@ -414,7 +414,7 @@ FuzzyEqualsMultiplicative(T aValue1, T aValue2,
  *
  * This function isn't inlined to avoid buggy optimizations by MSVC.
  */
-MOZ_WARN_UNUSED_RESULT
+MOZ_MUST_USE
 extern MFBT_API bool
 IsFloat32Representable(double aFloat32);
 

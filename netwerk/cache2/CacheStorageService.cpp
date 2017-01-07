@@ -135,6 +135,8 @@ CacheStorageService::~CacheStorageService()
 
 void CacheStorageService::Shutdown()
 {
+  mozilla::MutexAutoLock lock(mLock);
+
   if (mShutdown)
     return;
 
@@ -143,12 +145,13 @@ void CacheStorageService::Shutdown()
   mShutdown = true;
 
   nsCOMPtr<nsIRunnable> event =
-    NS_NewRunnableMethod(this, &CacheStorageService::ShutdownBackground);
+    NewRunnableMethod(this, &CacheStorageService::ShutdownBackground);
   Dispatch(event);
 
-  mozilla::MutexAutoLock lock(mLock);
+#ifdef NS_FREE_PERMANENT_DATA
   sGlobalEntryTables->Clear();
   delete sGlobalEntryTables;
+#endif
   sGlobalEntryTables = nullptr;
 
   LOG(("CacheStorageService::Shutdown - done"));
@@ -156,17 +159,28 @@ void CacheStorageService::Shutdown()
 
 void CacheStorageService::ShutdownBackground()
 {
+  LOG(("CacheStorageService::ShutdownBackground - start"));
+
   MOZ_ASSERT(IsOnManagementThread());
 
-  // Cancel purge timer to avoid leaking.
-  if (mPurgeTimer) {
-    mPurgeTimer->Cancel();
+  {
+    mozilla::MutexAutoLock lock(mLock);
+
+    // Cancel purge timer to avoid leaking.
+    if (mPurgeTimer) {
+      LOG(("  freeing the timer"));
+      mPurgeTimer->Cancel();
+    }
   }
 
+#ifdef NS_FREE_PERMANENT_DATA
   Pool(false).mFrecencyArray.Clear();
   Pool(false).mExpirationArray.Clear();
   Pool(true).mFrecencyArray.Clear();
   Pool(true).mExpirationArray.Clear();
+#endif
+
+  LOG(("CacheStorageService::ShutdownBackground - done"));
 }
 
 // Internal management methods
@@ -175,7 +189,7 @@ namespace {
 
 // WalkCacheRunnable
 // Base class for particular storage entries visiting
-class WalkCacheRunnable : public nsRunnable
+class WalkCacheRunnable : public Runnable
                         , public CacheStorageService::EntryInfoCallback
 {
 protected:
@@ -186,6 +200,7 @@ protected:
     , mSize(0)
     , mNotifyStorage(true)
     , mVisitEntries(aVisitEntries)
+    , mCancel(false)
   {
     MOZ_ASSERT(NS_IsMainThread());
   }
@@ -204,6 +219,8 @@ protected:
 
   bool mNotifyStorage : 1;
   bool mVisitEntries : 1;
+
+  Atomic<bool> mCancel;
 };
 
 // WalkMemoryCacheRunnable
@@ -274,10 +291,10 @@ private:
         mNotifyStorage = false;
 
       } else {
-        LOG(("  entry [left=%d]", mEntryArray.Length()));
+        LOG(("  entry [left=%d, canceled=%d]", mEntryArray.Length(), (bool)mCancel));
 
-        // Third, notify each entry until depleted
-        if (!mEntryArray.Length()) {
+        // Third, notify each entry until depleted or canceled
+        if (!mEntryArray.Length() || mCancel) {
           mCallback->OnCacheEntryVisitCompleted();
           return NS_OK; // done
         }
@@ -310,13 +327,20 @@ private:
                            uint32_t aLastModifiedTime, uint32_t aExpirationTime,
                            bool aPinned)
   {
-    nsCOMPtr<nsIURI> uri;
-    nsresult rv = NS_NewURI(getter_AddRefs(uri), aURISpec);
-    if (NS_FAILED(rv))
-      return;
+    nsresult rv;
 
-    mCallback->OnCacheEntryInfo(uri, aIdEnhance, aDataSize, aFetchCount,
-                                aLastModifiedTime, aExpirationTime, aPinned);
+    nsCOMPtr<nsIURI> uri;
+    rv = NS_NewURI(getter_AddRefs(uri), aURISpec);
+    if (NS_FAILED(rv)) {
+      return;
+    }
+
+    rv = mCallback->OnCacheEntryInfo(uri, aIdEnhance, aDataSize, aFetchCount,
+                                     aLastModifiedTime, aExpirationTime, aPinned);
+    if (NS_FAILED(rv)) {
+      LOG(("  callback failed, canceling the walk"));
+      mCancel = true;
+    }
   }
 
 private:
@@ -357,7 +381,7 @@ public:
 private:
   // Invokes OnCacheEntryInfo callback for each single found entry.
   // There is one instance of this class per one entry.
-  class OnCacheEntryInfoRunnable : public nsRunnable
+  class OnCacheEntryInfoRunnable : public Runnable
   {
   public:
     explicit OnCacheEntryInfoRunnable(WalkDiskCacheRunnable* aWalker)
@@ -369,14 +393,21 @@ private:
     {
       MOZ_ASSERT(NS_IsMainThread());
 
-      nsCOMPtr<nsIURI> uri;
-      nsresult rv = NS_NewURI(getter_AddRefs(uri), mURISpec);
-      if (NS_FAILED(rv))
-        return NS_OK;
+      nsresult rv;
 
-      mWalker->mCallback->OnCacheEntryInfo(
+      nsCOMPtr<nsIURI> uri;
+      rv = NS_NewURI(getter_AddRefs(uri), mURISpec);
+      if (NS_FAILED(rv)) {
+        return NS_OK;
+      }
+
+      rv = mWalker->mCallback->OnCacheEntryInfo(
         uri, mIdEnhance, mDataSize, mFetchCount,
         mLastModifiedTime, mExpirationTime, mPinned);
+      if (NS_FAILED(rv)) {
+        mWalker->mCancel = true;
+      }
+
       return NS_OK;
     }
 
@@ -432,7 +463,7 @@ private:
           }
         }
 
-        while (true) {
+        while (!mCancel && !CacheObserver::ShuttingDown()) {
           if (CacheIOThread::YieldAndRerun())
             return NS_OK;
 
@@ -526,7 +557,7 @@ void CacheStorageService::DropPrivateBrowsingEntries()
 
 namespace {
 
-class CleaupCacheDirectoriesRunnable : public nsRunnable
+class CleaupCacheDirectoriesRunnable : public Runnable
 {
 public:
   NS_DECL_NSIRUNNABLE
@@ -766,6 +797,11 @@ NS_IMETHODIMP CacheStorageService::Clear()
   nsresult rv;
 
   if (CacheObserver::UseNewCache()) {
+    // Tell the index to block notification to AsyncGetDiskConsumption.
+    // Will be allowed again from CacheFileContextEvictor::EvictEntries()
+    // when all the context have been removed from disk.
+    CacheIndex::OnAsyncEviction(true);
+
     {
       mozilla::MutexAutoLock lock(mLock);
 
@@ -1151,6 +1187,8 @@ void CacheStorageService::RemoveEntryForceValid(nsACString const &aContextKey,
 {
   mozilla::MutexAutoLock lock(mForcedValidEntriesLock);
 
+  LOG(("CacheStorageService::RemoveEntryForceValid context='%s' entryKey=%s",
+       aContextKey.BeginReading(), aEntryKey.BeginReading()));
   mForcedValidEntries.Remove(aContextKey + aEntryKey);
 }
 
@@ -1205,7 +1243,7 @@ CacheStorageService::OnMemoryConsumptionChange(CacheMemoryConsumer* aConsumer,
   // Dispatch as a priority task, we want to set the purge timer
   // ASAP to prevent vain redispatch of this event.
   nsCOMPtr<nsIRunnable> event =
-    NS_NewRunnableMethod(this, &CacheStorageService::SchedulePurgeOverMemoryLimit);
+    NewRunnableMethod(this, &CacheStorageService::SchedulePurgeOverMemoryLimit);
   cacheIOTarget->Dispatch(event, nsIEventTarget::DISPATCH_NORMAL);
 }
 
@@ -1228,24 +1266,40 @@ CacheStorageService::MemoryPool::OnMemoryConsumptionChange(uint32_t aSavedMemory
 void
 CacheStorageService::SchedulePurgeOverMemoryLimit()
 {
+  LOG(("CacheStorageService::SchedulePurgeOverMemoryLimit"));
+
   mozilla::MutexAutoLock lock(mLock);
 
-  if (mPurgeTimer)
+  if (mShutdown) {
+    LOG(("  past shutdown"));
     return;
+  }
+
+  if (mPurgeTimer) {
+    LOG(("  timer already up"));
+    return;
+  }
 
   mPurgeTimer = do_CreateInstance(NS_TIMER_CONTRACTID);
-  if (mPurgeTimer)
-    mPurgeTimer->InitWithCallback(this, 1000, nsITimer::TYPE_ONE_SHOT);
+  if (mPurgeTimer) {
+    nsresult rv;
+    rv = mPurgeTimer->InitWithCallback(this, 1000, nsITimer::TYPE_ONE_SHOT);
+    LOG(("  timer init rv=0x%08x", rv));
+  }
 }
 
 NS_IMETHODIMP
 CacheStorageService::Notify(nsITimer* aTimer)
 {
+  LOG(("CacheStorageService::Notify"));
+
+  mozilla::MutexAutoLock lock(mLock);
+
   if (aTimer == mPurgeTimer) {
     mPurgeTimer = nullptr;
 
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethod(this, &CacheStorageService::PurgeOverMemoryLimit);
+      NewRunnableMethod(this, &CacheStorageService::PurgeOverMemoryLimit);
     Dispatch(event);
   }
 
@@ -1396,7 +1450,7 @@ CacheStorageService::MemoryPool::PurgeAll(uint32_t aWhat)
 
 nsresult
 CacheStorageService::AddStorageEntry(CacheStorage const* aStorage,
-                                     nsIURI* aURI,
+                                     const nsACString & aURI,
                                      const nsACString & aIdExtension,
                                      bool aReplace,
                                      CacheEntryHandle** aResult)
@@ -1418,7 +1472,7 @@ CacheStorageService::AddStorageEntry(CacheStorage const* aStorage,
 
 nsresult
 CacheStorageService::AddStorageEntry(nsCSubstring const& aContextKey,
-                                     nsIURI* aURI,
+                                     const nsACString & aURI,
                                      const nsACString & aIdExtension,
                                      bool aWriteToDisk,
                                      bool aSkipSizeCheck,
@@ -1426,8 +1480,6 @@ CacheStorageService::AddStorageEntry(nsCSubstring const& aContextKey,
                                      bool aReplace,
                                      CacheEntryHandle** aResult)
 {
-  NS_ENSURE_ARG(aURI);
-
   nsresult rv;
 
   nsAutoCString entryKey;
@@ -1508,7 +1560,7 @@ CacheStorageService::AddStorageEntry(nsCSubstring const& aContextKey,
 
 nsresult
 CacheStorageService::CheckStorageEntry(CacheStorage const* aStorage,
-                                       nsIURI* aURI,
+                                       const nsACString & aURI,
                                        const nsACString & aIdExtension,
                                        bool* aResult)
 {
@@ -1521,12 +1573,8 @@ CacheStorageService::CheckStorageEntry(CacheStorage const* aStorage,
     AppendMemoryStorageID(contextKey);
   }
 
-  if (LOG_ENABLED()) {
-    nsAutoCString uriSpec;
-    aURI->GetAsciiSpec(uriSpec);
-    LOG(("CacheStorageService::CheckStorageEntry [uri=%s, eid=%s, contextKey=%s]",
-      uriSpec.get(), aIdExtension.BeginReading(), contextKey.get()));
-  }
+  LOG(("CacheStorageService::CheckStorageEntry [uri=%s, eid=%s, contextKey=%s]",
+    aURI.BeginReading(), aIdExtension.BeginReading(), contextKey.get()));
 
   {
     mozilla::MutexAutoLock lock(mLock);
@@ -1627,14 +1675,13 @@ NS_IMPL_ISUPPORTS(CacheEntryDoomByKeyCallback, CacheFileIOListener, nsIRunnable)
 
 nsresult
 CacheStorageService::DoomStorageEntry(CacheStorage const* aStorage,
-                                      nsIURI *aURI,
+                                      const nsACString & aURI,
                                       const nsACString & aIdExtension,
                                       nsICacheEntryDoomCallback* aCallback)
 {
   LOG(("CacheStorageService::DoomStorageEntry"));
 
   NS_ENSURE_ARG(aStorage);
-  NS_ENSURE_ARG(aURI);
 
   nsAutoCString contextKey;
   CacheFileUtils::AppendKeyPrefix(aStorage->LoadInfo(), contextKey);
@@ -1697,7 +1744,7 @@ CacheStorageService::DoomStorageEntry(CacheStorage const* aStorage,
     return NS_OK;
   }
 
-  class Callback : public nsRunnable
+  class Callback : public Runnable
   {
   public:
     explicit Callback(nsICacheEntryDoomCallback* aCallback) : mCallback(aCallback) { }
@@ -1710,7 +1757,7 @@ CacheStorageService::DoomStorageEntry(CacheStorage const* aStorage,
   };
 
   if (aCallback) {
-    RefPtr<nsRunnable> callback = new Callback(aCallback);
+    RefPtr<Runnable> callback = new Callback(aCallback);
     return NS_DispatchToMainThread(callback);
   }
 
@@ -1821,7 +1868,7 @@ CacheStorageService::DoomStorageEntries(nsCSubstring const& aContextKey,
   // probably no need for a callback - has no meaning.  But for compatibility
   // with the old cache that is still in the tree we keep the API similar to be
   // able to make tests as well as other consumers work for now.
-  class Callback : public nsRunnable
+  class Callback : public Runnable
   {
   public:
     explicit Callback(nsICacheEntryDoomCallback* aCallback) : mCallback(aCallback) { }
@@ -1834,7 +1881,7 @@ CacheStorageService::DoomStorageEntries(nsCSubstring const& aContextKey,
   };
 
   if (aCallback) {
-    RefPtr<nsRunnable> callback = new Callback(aCallback);
+    RefPtr<Runnable> callback = new Callback(aCallback);
     return NS_DispatchToMainThread(callback);
   }
 
@@ -1938,13 +1985,9 @@ void
 CacheStorageService::GetCacheEntryInfo(CacheEntry* aEntry,
                                        EntryInfoCallback *aCallback)
 {
-  nsIURI* uri = aEntry->GetURI();
-  nsAutoCString uriSpec;
-  if (uri) {
-    uri->GetAsciiSpec(uriSpec);
-  }
-
+  nsCString const uriSpec = aEntry->GetURI();
   nsCString const enhanceId = aEntry->GetEnhanceID();
+
   uint32_t dataSize;
   if (NS_FAILED(aEntry->GetStorageDataSize(&dataSize))) {
     dataSize = 0;

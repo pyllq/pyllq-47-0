@@ -4,27 +4,42 @@
 
 "use strict";
 
-const { getStr } = require("./utils/l10n");
-const { DOM: dom, createClass, PropTypes } =
+const { getStr } = require("../utils/l10n");
+const { DOM: dom, createClass, PropTypes, addons } =
   require("devtools/client/shared/vendor/react");
+const Types = require("../types");
 
 module.exports = createClass({
-
   displayName: "GlobalToolbar",
 
   propTypes: {
+    screenshot: PropTypes.shape(Types.screenshot).isRequired,
+    touchSimulation: PropTypes.shape(Types.touchSimulation).isRequired,
     onExit: PropTypes.func.isRequired,
+    onScreenshot: PropTypes.func.isRequired,
+    onUpdateTouchSimulation: PropTypes.func.isRequired,
   },
+
+  mixins: [ addons.PureRenderMixin ],
 
   render() {
     let {
+      screenshot,
+      touchSimulation,
       onExit,
+      onScreenshot,
+      onUpdateTouchSimulation
     } = this.props;
+
+    let touchButtonClass = "toolbar-button devtools-button";
+    if (touchSimulation.enabled) {
+      touchButtonClass += " active";
+    }
 
     return dom.header(
       {
         id: "global-toolbar",
-        className: "toolbar",
+        className: "container",
       },
       dom.span(
         {
@@ -32,8 +47,22 @@ module.exports = createClass({
         },
         getStr("responsive.title")),
       dom.button({
+        id: "global-touch-simulation-button",
+        className: touchButtonClass,
+        title: (touchSimulation.enabled ?
+          getStr("responsive.disableTouch") : getStr("responsive.enableTouch")),
+        onClick: () => onUpdateTouchSimulation(!touchSimulation.enabled),
+      }),
+      dom.button({
+        id: "global-screenshot-button",
+        className: "toolbar-button devtools-button",
+        title: getStr("responsive.screenshot"),
+        onClick: onScreenshot,
+        disabled: screenshot.isCapturing,
+      }),
+      dom.button({
         id: "global-exit-button",
-        className: "toolbar-button",
+        className: "toolbar-button devtools-button",
         title: getStr("responsive.exit"),
         onClick: onExit,
       })

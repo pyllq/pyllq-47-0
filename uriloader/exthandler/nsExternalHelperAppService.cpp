@@ -100,7 +100,7 @@
 #endif
 
 #ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
+#include "GeneratedJNIWrappers.h"
 #endif
 
 #include "mozilla/Preferences.h"
@@ -122,7 +122,7 @@ enum {
 , NS_FOLDER_VALUE_CUSTOM = 2
 };
 
-PRLogModuleInfo* nsExternalHelperAppService::mLog = nullptr;
+LazyLogModule nsExternalHelperAppService::mLog("HelperAppService");
 
 // Using level 3 here because the OSHelperAppServices use a log level
 // of LogLevel::Debug (4), and we want less detailed output here
@@ -382,7 +382,7 @@ static nsresult GetDownloadDirectory(nsIFile **_directory,
   // In the case where we do not have the permission we will start the
   // download to the app cache directory and later move it to the final
   // destination after prompting for the permission.
-  auto downloadDir = widget::DownloadsIntegration::GetTemporaryDownloadDirectory();
+  auto downloadDir = java::DownloadsIntegration::GetTemporaryDownloadDirectory();
 
   nsresult rv;
   if (downloadDir) {
@@ -497,7 +497,7 @@ struct nsDefaultMimeTypeEntry {
  * Default extension->mimetype mappings. These are not overridable.
  * If you add types here, make sure they are lowercase, or you'll regret it.
  */
-static nsDefaultMimeTypeEntry defaultMimeEntries [] = 
+static const nsDefaultMimeTypeEntry defaultMimeEntries[] =
 {
   // The following are those extensions that we're asked about during startup,
   // sorted by order used
@@ -522,6 +522,7 @@ static nsDefaultMimeTypeEntry defaultMimeEntries [] =
   { APPLICATION_OGG, "ogg" },
   { AUDIO_OGG, "oga" },
   { AUDIO_OGG, "opus" },
+  { APPLICATION_PDF, "pdf" },
   { VIDEO_WEBM, "webm" },
   { AUDIO_WEBM, "webm" },
 #if defined(MOZ_WMF)
@@ -557,7 +558,7 @@ struct nsExtraMimeTypeEntry {
  * overridden by user helper app prefs.
  * If you add types here, make sure they are lowercase, or you'll regret it.
  */
-static nsExtraMimeTypeEntry extraMimeEntries [] =
+static const nsExtraMimeTypeEntry extraMimeEntries[] =
 {
 #if defined(XP_MACOSX) // don't define .bin on the mac...use internet config to look that up...
   { APPLICATION_OCTET_STREAM, "exe,com", "Binary File" },
@@ -634,7 +635,7 @@ static nsExtraMimeTypeEntry extraMimeEntries [] =
  * File extensions for which decoding should be disabled.
  * NOTE: These MUST be lower-case and ASCII.
  */
-static nsDefaultMimeTypeEntry nonDecodableExtensions [] = {
+static const nsDefaultMimeTypeEntry nonDecodableExtensions[] = {
   { APPLICATION_GZIP, "gz" }, 
   { APPLICATION_GZIP, "tgz" },
   { APPLICATION_ZIP, "zip" },
@@ -660,12 +661,6 @@ nsresult nsExternalHelperAppService::Init()
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (!obs)
     return NS_ERROR_FAILURE;
-
-  if (!mLog) {
-    mLog = PR_NewLogModule("HelperAppService");
-    if (!mLog)
-      return NS_ERROR_OUT_OF_MEMORY;
-  }
 
   nsresult rv = obs->AddObserver(this, "profile-before-change", true);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1575,6 +1570,13 @@ nsExternalAppHandler::MaybeApplyDecodingForExtension(nsIRequest *aRequest)
   // Turn off content encoding conversions if needed
   bool applyConversion = true;
 
+  // First, check to see if conversion is already disabled.  If so, we
+  // have nothing to do here.
+  encChannel->GetApplyConversion(&applyConversion);
+  if (!applyConversion) {
+    return;
+  }
+
   nsCOMPtr<nsIURL> sourceURL(do_QueryInterface(mSourceUrl));
   if (sourceURL)
   {
@@ -1919,7 +1921,7 @@ void nsExternalAppHandler::SendStatusChange(ErrorType type, nsresult rv, nsIRequ
                 nsresult qiRv;
                 nsCOMPtr<nsIPrompt> prompter(do_GetInterface(GetDialogParent(), &qiRv));
                 nsXPIDLString title;
-                bundle->FormatStringFromName(MOZ_UTF16("title"),
+                bundle->FormatStringFromName(u"title",
                                              strings,
                                              1,
                                              getter_Copies(title));
@@ -2303,11 +2305,11 @@ void nsExternalAppHandler::RequestSaveDestination(const nsAFlatString &aDefaultF
   RefPtr<nsExternalAppHandler> kungFuDeathGrip(this);
   nsCOMPtr<nsIHelperAppLauncherDialog> dlg(mDialog);
 
-  rv = mDialog->PromptForSaveToFileAsync(this,
-                                         GetDialogParent(),
-                                         aDefaultFile.get(),
-                                         aFileExtension.get(),
-                                         mForceSave);
+  rv = dlg->PromptForSaveToFileAsync(this,
+                                     GetDialogParent(),
+                                     aDefaultFile.get(),
+                                     aFileExtension.get(),
+                                     mForceSave);
   if (NS_FAILED(rv)) {
     Cancel(NS_BINDING_ABORTED);
   }
@@ -2862,7 +2864,6 @@ NS_IMETHODIMP nsExternalHelperAppService::GetTypeFromFile(nsIFile* aFile, nsACSt
 {
   NS_ENSURE_ARG_POINTER(aFile);
   nsresult rv;
-  nsCOMPtr<nsIMIMEInfo> info;
 
   // Get the Extension
   nsAutoString fileName;

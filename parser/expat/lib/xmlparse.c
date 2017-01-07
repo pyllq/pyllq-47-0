@@ -26,7 +26,9 @@
 #define XmlGetInternalEncoding XmlGetUtf16InternalEncoding
 #define XmlGetInternalEncodingNS XmlGetUtf16InternalEncodingNS
 #define XmlEncode XmlUtf16Encode
-#define MUST_CONVERT(enc, s) (!(enc)->isUtf16 || (((unsigned long)s) & 1))
+
+/* Using pointer subtraction to convert to integer type. */
+#define MUST_CONVERT(enc, s) (!(enc)->isUtf16 || (((char *)(s) - (char *)NULL) & 1))
 typedef unsigned short ICHAR;
 #else
 #define XML_ENCODE_MAX XML_UTF8_ENCODE_MAX
@@ -1563,6 +1565,8 @@ XML_Parse(XML_Parser parser, const char *s, int len, int isFinal)
     nLeftOver = s + len - end;
     if (nLeftOver) {
       if (buffer == NULL || nLeftOver > bufferLim - buffer) {
+/* BEGIN MOZILLA CHANGE (check for overflow) */
+#if 0
         /* FIXME avoid integer overflow */
         char *temp;
         temp = (buffer == NULL
@@ -1580,6 +1584,30 @@ XML_Parse(XML_Parser parser, const char *s, int len, int isFinal)
           return XML_STATUS_ERROR;
         }
         bufferLim = buffer + len * 2;
+#else
+        char *temp;
+        int newLen = len * 2;
+        if (newLen < 0) {
+          errorCode = XML_ERROR_NO_MEMORY;
+          return XML_STATUS_ERROR;
+        }
+        temp = (buffer == NULL
+                ? (char *)MALLOC(newLen)
+                : (char *)REALLOC(buffer, newLen));
+        if (temp == NULL) {
+          errorCode = XML_ERROR_NO_MEMORY;
+          return XML_STATUS_ERROR;
+        }
+        buffer = temp;
+        if (!buffer) {
+          errorCode = XML_ERROR_NO_MEMORY;
+          eventPtr = eventEndPtr = NULL;
+          processor = errorProcessor;
+          return XML_STATUS_ERROR;
+        }
+        bufferLim = buffer + newLen;
+#endif
+/* END MOZILLA CHANGE */
       }
       memcpy(buffer, end, nLeftOver);
     }
@@ -6284,6 +6312,9 @@ poolGrow(STRING_POOL *pool)
   }
   if (pool->blocks && pool->start == pool->blocks->s) {
     int blockSize = (int)(pool->end - pool->start)*2;
+    if (blockSize < 0)
+      return XML_FALSE;
+
     pool->blocks = (BLOCK *)
       pool->mem->realloc_fcn(pool->blocks,
                              (offsetof(BLOCK, s)
@@ -6298,10 +6329,17 @@ poolGrow(STRING_POOL *pool)
   else {
     BLOCK *tem;
     int blockSize = (int)(pool->end - pool->start);
+    if (blockSize < 0)
+      return XML_FALSE;
+
     if (blockSize < INIT_BLOCK_SIZE)
       blockSize = INIT_BLOCK_SIZE;
     else
       blockSize *= 2;
+
+    if (blockSize < 0)
+      return XML_FALSE;
+
     tem = (BLOCK *)pool->mem->malloc_fcn(offsetof(BLOCK, s)
                                         + blockSize * sizeof(XML_Char));
     if (!tem)

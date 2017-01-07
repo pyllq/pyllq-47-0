@@ -74,27 +74,6 @@ def _find_marionette_in_args(*args, **kwargs):
         raise
     return m
 
-def uses_marionette(func):
-    """Decorator which creates a marionette session and deletes it
-    afterwards if one doesn't already exist.
-    """
-    @wraps(func)
-    def _(*args, **kwargs):
-        m = _find_marionette_in_args(*args, **kwargs)
-        delete_session = False
-        if not m.session:
-            delete_session = True
-            m.start_session()
-
-        m.set_context(m.CONTEXT_CHROME)
-        ret = func(*args, **kwargs)
-
-        if delete_session:
-            m.delete_session()
-
-        return ret
-    return _
-
 
 def _raw_log():
     import logging
@@ -165,7 +144,7 @@ def test_environment(xrePath, env=None, crashreporter=True, debugger=False,
 
     # Set WebRTC logging in case it is not set yet
     env.setdefault(
-        'NSPR_LOG_MODULES',
+        'MOZ_LOG',
         'signaling:3,mtransport:4,datachannel:4,jsep:4,MediaPipelineFactory:4'
     )
     env.setdefault('R_LOG_LEVEL', '6')
@@ -206,6 +185,8 @@ def test_environment(xrePath, env=None, crashreporter=True, debugger=False,
                 log.info("LSan enabled.")
                 asanOptions.append('detect_leaks=1')
                 lsanOptions = ["exitcode=0"]
+                # Uncomment out the next line to report the addresses of leaked objects.
+                #lsanOptions.append("report_objects=1")
                 suppressionsFile = os.path.join(
                     lsanPath, 'lsan_suppressions.txt')
                 if os.path.exists(suppressionsFile):
@@ -219,7 +200,7 @@ def test_environment(xrePath, env=None, crashreporter=True, debugger=False,
             if len(asanOptions):
                 env['ASAN_OPTIONS'] = ':'.join(asanOptions)
 
-        except OSError, err:
+        except OSError as err:
             log.info("Failed determine available memory, disabling ASan"
                      " low-memory configuration: %s" % err.strerror)
         except:

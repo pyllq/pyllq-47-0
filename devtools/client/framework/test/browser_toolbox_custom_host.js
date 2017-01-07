@@ -3,28 +3,25 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
+const TEST_URL = "data:text/html,test custom host";
+
 function test() {
   let {Toolbox} = require("devtools/client/framework/toolbox");
 
-  let toolbox, iframe, target, tab;
-
-  gBrowser.selectedTab = gBrowser.addTab();
-  target = TargetFactory.forTab(gBrowser.selectedTab);
+  let toolbox, iframe, target;
 
   window.addEventListener("message", onMessage);
 
   iframe = document.createElement("iframe");
   document.documentElement.appendChild(iframe);
 
-  gBrowser.selectedBrowser.addEventListener("load", function onLoad(evt) {
-    gBrowser.selectedBrowser.removeEventListener(evt.type, onLoad, true);
+  addTab(TEST_URL).then(function (tab) {
+    target = TargetFactory.forTab(tab);
     let options = {customIframe: iframe};
     gDevTools.showToolbox(target, null, Toolbox.HostType.CUSTOM, options)
              .then(testCustomHost, console.error)
              .then(null, console.error);
-  }, true);
-
-  content.location = "data:text/html,test custom host";
+  });
 
   function onMessage(event) {
     info("onMessage: " + event.data);
@@ -38,7 +35,7 @@ function test() {
 
   function testCustomHost(t) {
     toolbox = t;
-    is(toolbox.doc.defaultView.top, window, "Toolbox is included in browser.xul");
+    is(toolbox.win.top, window, "Toolbox is included in browser.xul");
     is(toolbox.doc, iframe.contentDocument, "Toolbox is in the custom iframe");
     executeSoon(() => gBrowser.removeCurrentTab());
   }
@@ -50,7 +47,7 @@ function test() {
     // toolbox.destroy() returns a singleton promise that ensures
     // everything is cleaned up before proceeding.
     toolbox.destroy().then(() => {
-      toolbox = iframe = target = tab = null;
+      toolbox = iframe = target = null;
       finish();
     });
   }

@@ -580,7 +580,7 @@ static bool
 InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
                 HandleFunction fun, HandleScript script, IonScript* ionScript,
                 SnapshotIterator& iter, bool invalidate, BaselineStackBuilder& builder,
-                AutoValueVector& startFrameFormals, MutableHandleFunction nextCallee,
+                MutableHandle<GCVector<Value>> startFrameFormals, MutableHandleFunction nextCallee,
                 jsbytecode** callPC, const ExceptionBailoutInfo* excInfo)
 {
     // The Baseline frames we will reconstruct on the heap are not rooted, so GC
@@ -1013,7 +1013,7 @@ InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
             // Not every monitored op has a monitored fallback stub, e.g.
             // JSOP_NEWOBJECT, which always returns the same type for a
             // particular script/pc location.
-            ICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
+            BaselineICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
             ICFallbackStub* fallbackStub = icEntry.firstStub()->getChainFallback();
             if (fallbackStub->isMonitoredFallback())
                 enterMonitorChain = true;
@@ -1028,7 +1028,7 @@ InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
         builder.setResumeFramePtr(prevFramePtr);
 
         if (enterMonitorChain) {
-            ICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
+            BaselineICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
             ICFallbackStub* fallbackStub = icEntry.firstStub()->getChainFallback();
             MOZ_ASSERT(fallbackStub->isMonitoredFallback());
             JitSpew(JitSpew_BaselineBailouts, "      [TYPE-MONITOR CHAIN]");
@@ -1090,16 +1090,13 @@ InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
                 //
                 // Note that we never resume at this pc, it is set for the sake
                 // of frame iterators giving the correct answer.
-                //
-                // We also set nativeCodeForPC to nullptr as this address
-                // won't be used anywhere.
                 jsbytecode* throwPC = script->offsetToPC(iter.pcOffset());
                 builder.setResumePC(throwPC);
-                nativeCodeForPC = nullptr;
+                nativeCodeForPC = baselineScript->nativeCodeForPC(script, throwPC);
             } else {
                 nativeCodeForPC = baselineScript->nativeCodeForPC(script, pc, &slotInfo);
-                MOZ_ASSERT(nativeCodeForPC);
             }
+            MOZ_ASSERT(nativeCodeForPC);
 
             unsigned numUnsynced = slotInfo.numUnsynced();
 
@@ -1180,7 +1177,7 @@ InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
 
     // Calculate and write out return address.
     // The icEntry in question MUST have an inlinable fallback stub.
-    ICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
+    BaselineICEntry& icEntry = baselineScript->icEntryFromPCOffset(pcOff);
     MOZ_ASSERT(IsInlinableFallback(icEntry.firstStub()->getChainFallback()));
     if (!builder.writePtr(baselineScript->returnAddressForIC(icEntry), "ReturnAddr"))
         return false;
@@ -1494,7 +1491,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
 
     if (!excInfo)
         iter.ionScript()->incNumBailouts();
-    iter.script()->updateBaselineOrIonRaw(cx);
+    iter.script()->updateBaselineOrIonRaw(cx->runtime());
 
     // Allocate buffer to hold stack replacement data.
     BaselineStackBuilder builder(iter, 1024);
@@ -1533,7 +1530,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
     RootedScript caller(cx);
     jsbytecode* callerPC = nullptr;
     RootedFunction fun(cx, callee);
-    AutoValueVector startFrameFormals(cx);
+    Rooted<GCVector<Value>> startFrameFormals(cx, GCVector<Value>(cx));
 
     gc::AutoSuppressGC suppress(cx);
 
@@ -1563,7 +1560,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
         jsbytecode* callPC = nullptr;
         RootedFunction nextCallee(cx, nullptr);
         if (!InitFromBailout(cx, caller, callerPC, fun, scr, iter.ionScript(),
-                             snapIter, invalidate, builder, startFrameFormals,
+                             snapIter, invalidate, builder, &startFrameFormals,
                              &nextCallee, &callPC, passExcInfo ? excInfo : nullptr))
         {
             return BAILOUT_RETURN_FATAL_ERROR;
@@ -1723,6 +1720,8 @@ CopyFromRematerializedFrame(JSContext* cx, JitActivation* act, uint8_t* fp, size
     for (size_t i = 0; i < frame->script()->nfixed(); i++)
         *frame->valueSlot(i) = rematFrame->locals()[i];
 
+    frame->setReturnValue(rematFrame->returnValue());
+
     if (rematFrame->hasCachedSavedFrame())
         frame->setHasCachedSavedFrame();
 
@@ -1747,7 +1746,7 @@ jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfo)
 {
     // The caller pushes R0 and R1 on the stack without rooting them.
     // Since GC here is very unlikely just suppress it.
-    JSContext* cx = GetJSContextFromJitCode();
+    JSContext* cx = GetJSContextFromMainThread();
     js::gc::AutoSuppressGC suppressGC(cx);
 
     JitSpew(JitSpew_BaselineBailouts, "  Done restoring frames");
@@ -1891,9 +1890,7 @@ jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfo)
       case Bailout_NonObjectInput:
       case Bailout_NonStringInput:
       case Bailout_NonSymbolInput:
-      case Bailout_NonSimdBool32x4Input:
-      case Bailout_NonSimdInt32x4Input:
-      case Bailout_NonSimdFloat32x4Input:
+      case Bailout_UnexpectedSimdInput:
       case Bailout_NonSharedTypedArrayInput:
       case Bailout_Debugger:
       case Bailout_UninitializedThis:

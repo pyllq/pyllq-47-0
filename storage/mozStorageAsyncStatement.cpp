@@ -27,7 +27,7 @@
 
 #include "mozilla/Logging.h"
 
-extern PRLogModuleInfo *gStorageLog;
+extern mozilla::LazyLogModule gStorageLog;
 
 namespace mozilla {
 namespace storage {
@@ -44,7 +44,7 @@ NS_IMPL_CI_INTERFACE_GETTER(AsyncStatement,
 class AsyncStatementClassInfo : public nsIClassInfo
 {
 public:
-  MOZ_CONSTEXPR AsyncStatementClassInfo() {}
+  constexpr AsyncStatementClassInfo() {}
 
   NS_DECL_ISUPPORTS_INHERITED
 

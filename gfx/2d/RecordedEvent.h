@@ -24,10 +24,10 @@ const uint32_t kMagicInt = 0xc001feed;
 // loss of backwards compatibility. Old streams will not work in a player
 // using a newer major revision. And new streams will not work in a player
 // using an older major revision.
-const uint16_t kMajorRevision = 4;
+const uint16_t kMajorRevision = 5;
 // A change in minor revision means additions of new events. New streams will
 // not play in older players.
-const uint16_t kMinorRevision = 1;
+const uint16_t kMinorRevision = 0;
 
 struct ReferencePtr
 {
@@ -138,9 +138,10 @@ struct RadialGradientPatternStorage
 struct SurfacePatternStorage
 {
   ExtendMode mExtend;
-  Filter mFilter;
+  SamplingFilter mSamplingFilter;
   ReferencePtr mSurface;
   Matrix mMatrix;
+  IntRect mSamplingRect;
 };
 
 struct PatternStorage
@@ -192,6 +193,7 @@ public:
     FILTERNODESETINPUT,
     CREATESIMILARDRAWTARGET,
     FONTDATA,
+    FONTDESC,
     PUSHLAYER,
     POPLAYER,
   };
@@ -201,7 +203,15 @@ public:
 
   static std::string GetEventName(EventType aType);
 
-  virtual void PlayEvent(Translator *aTranslator) const {}
+  /**
+   * Play back this event using the translator. Note that derived classes should
+   * only return false when there is a fatal error, as it will probably mean the
+   * translation will abort.
+   * @param aTranslator Translator to be used for retrieving other referenced
+   *                    objects and making playback decisions.
+   * @return true unless a fatal problem has occurred and playback should abort.
+   */
+  virtual bool PlayEvent(Translator *aTranslator) const { return true; }
 
   virtual void RecordToStream(std::ostream &aStream) const {}
 
@@ -261,7 +271,7 @@ public:
     , mHasExistingData(aHasExistingData), mExistingData(aExistingData)
   {}
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -288,7 +298,7 @@ public:
     : RecordedEvent(DRAWTARGETDESTRUCTION), mRefPtr(aRefPtr)
   {}
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -315,7 +325,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -341,7 +351,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -367,7 +377,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -395,7 +405,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -421,7 +431,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -450,7 +460,7 @@ public:
   }
   virtual ~RecordedFillGlyphs();
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -477,7 +487,7 @@ public:
     StorePattern(mMask, aMask);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -503,7 +513,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -527,7 +537,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -550,7 +560,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -573,7 +583,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -594,7 +604,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -614,7 +624,7 @@ public:
     : RecordedDrawingEvent(POPCLIP, aDT)
   {}
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -637,7 +647,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -663,7 +673,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -682,7 +692,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -706,7 +716,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -734,7 +744,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -764,7 +774,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -786,7 +796,7 @@ public:
   MOZ_IMPLICIT RecordedPathCreation(PathRecording *aPath);
   ~RecordedPathCreation();
   
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -810,7 +820,7 @@ public:
   {
   }
   
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -836,7 +846,7 @@ public:
 
   ~RecordedSourceSurfaceCreation();
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -863,7 +873,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -887,7 +897,7 @@ public:
 
   ~RecordedFilterNodeCreation();
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -910,7 +920,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -936,7 +946,7 @@ public:
 
   ~RecordedGradientStopsCreation();
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -962,7 +972,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -984,7 +994,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -1018,7 +1028,7 @@ public:
 
   ~RecordedFontData();
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -1042,6 +1052,51 @@ private:
   MOZ_IMPLICIT RecordedFontData(std::istream &aStream);
 };
 
+class RecordedFontDescriptor : public RecordedEvent {
+public:
+
+  static void FontDescCb(const uint8_t *aData, uint32_t aSize,
+                         Float aFontSize, void* aBaton)
+  {
+    auto recordedFontDesc = static_cast<RecordedFontDescriptor*>(aBaton);
+    recordedFontDesc->SetFontDescriptor(aData, aSize, aFontSize);
+  }
+
+  explicit RecordedFontDescriptor(ScaledFont* aScaledFont)
+    : RecordedEvent(FONTDESC)
+    , mType(aScaledFont->GetType())
+    , mRefPtr(aScaledFont)
+  {
+    mHasDesc = aScaledFont->GetFontDescriptor(FontDescCb, this);
+  }
+
+  ~RecordedFontDescriptor();
+
+  bool IsValid() const { return mHasDesc; }
+
+  virtual bool PlayEvent(Translator *aTranslator) const;
+
+  virtual void RecordToStream(std::ostream &aStream) const;
+  virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
+
+  virtual std::string GetName() const { return "Font Desc"; }
+  virtual ReferencePtr GetObjectRef() const { return mRefPtr; }
+
+private:
+  friend class RecordedEvent;
+
+  void SetFontDescriptor(const uint8_t* aData, uint32_t aSize, Float aFontSize);
+
+  bool mHasDesc;
+
+  FontType mType;
+  Float mFontSize;
+  std::vector<uint8_t> mData;
+  ReferencePtr mRefPtr;
+
+  MOZ_IMPLICIT RecordedFontDescriptor(std::istream &aStream);
+};
+
 class RecordedScaledFontCreation : public RecordedEvent {
 public:
 
@@ -1053,7 +1108,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -1079,7 +1134,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -1104,7 +1159,7 @@ public:
     StorePattern(mPattern, aPattern);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
 
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
@@ -1156,7 +1211,7 @@ public:
     memcpy(&mPayload.front(), aFloat, sizeof(Float) * aSize);
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
 
@@ -1191,7 +1246,7 @@ public:
   {
   }
 
-  virtual void PlayEvent(Translator *aTranslator) const;
+  virtual bool PlayEvent(Translator *aTranslator) const;
   virtual void RecordToStream(std::ostream &aStream) const;
   virtual void OutputSimpleEventInfo(std::stringstream &aStringStream) const;
 

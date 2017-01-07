@@ -9,6 +9,7 @@
 
 #include "WMF.h"
 #include "MFTDecoder.h"
+#include "nsAutoPtr.h"
 #include "nsRect.h"
 #include "WMFMediaDataDecoder.h"
 #include "mozilla/RefPtr.h"
@@ -41,9 +42,16 @@ public:
 
   void ConfigurationChanged(const TrackInfo& aConfig) override;
 
-  const char* GetDescriptionName() const override;
+  const char* GetDescriptionName() const override
+  {
+    nsCString failureReason;
+    return IsHardwareAccelerated(failureReason)
+      ? "wmf hardware video decoder" : "wmf software video decoder";
+  }
 
 private:
+
+  bool ValidateVideoInfo();
 
   bool InitializeDXVA(bool aForceD3D9);
 
@@ -95,6 +103,7 @@ private:
   uint32_t mNullOutputCount;
   bool mGotValidOutputAfterNullOutput;
   bool mGotExcessiveNullOutput;
+  bool mIsValid;
 };
 
 } // namespace mozilla

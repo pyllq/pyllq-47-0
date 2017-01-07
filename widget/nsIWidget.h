@@ -6,13 +6,13 @@
 #ifndef nsIWidget_h__
 #define nsIWidget_h__
 
+#include "mozilla/UniquePtr.h"
 #include "nsISupports.h"
 #include "nsColor.h"
 #include "nsRect.h"
 #include "nsStringGlue.h"
 
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsWidgetInitData.h"
 #include "nsTArray.h"
 #include "nsITheme.h"
@@ -39,9 +39,9 @@ class   nsIContent;
 class   ViewWrapper;
 class   nsIScreen;
 class   nsIRunnable;
+class   nsIKeyEventInPluginCallback;
 
 namespace mozilla {
-class CompositorVsyncDispatcher;
 namespace dom {
 class TabChild;
 } // namespace dom
@@ -52,7 +52,7 @@ namespace layers {
 class AsyncDragMetrics;
 class Composer2D;
 class Compositor;
-class CompositorChild;
+class CompositorBridgeChild;
 class LayerManager;
 class LayerManagerComposite;
 class PLayerTransactionChild;
@@ -64,6 +64,9 @@ class SourceSurface;
 } // namespace gfx
 namespace widget {
 class TextEventDispatcher;
+class TextEventDispatcherListener;
+class CompositorWidget;
+class CompositorWidgetInitData;
 } // namespace widget
 } // namespace mozilla
 
@@ -127,9 +130,13 @@ typedef void* nsNativeWidget;
 #if defined(MOZ_WIDGET_GTK)
 // set/get nsPluginNativeWindowGtk, e10s specific
 #define NS_NATIVE_PLUGIN_OBJECT_PTR    104
+#ifdef MOZ_X11
+#define NS_NATIVE_COMPOSITOR_DISPLAY   105
+#endif // MOZ_X11
 #endif
 #ifdef MOZ_WIDGET_ANDROID
 #define NS_NATIVE_NEW_EGL_SURFACE      100
+#define NS_JAVA_SURFACE                101
 #endif
 
 #define NS_IWIDGET_IID \
@@ -163,13 +170,13 @@ enum nsTransparencyMode {
  */
 
 enum nsCursor {   ///(normal cursor,       usually rendered as an arrow)
-                eCursor_standard, 
+                eCursor_standard,
                   ///(system is busy,      usually rendered as a hourglass or watch)
-                eCursor_wait, 
+                eCursor_wait,
                   ///(Selecting something, usually rendered as an IBeam)
-                eCursor_select, 
+                eCursor_select,
                   ///(can hyper-link,      usually rendered as a human hand)
-                eCursor_hyperlink, 
+                eCursor_hyperlink,
                   ///(north/south/west/east edge sizing)
                 eCursor_n_resize,
                 eCursor_s_resize,
@@ -205,7 +212,7 @@ enum nsCursor {   ///(normal cursor,       usually rendered as an arrow)
                 eCursor_none,
                 // This one better be the last one in this list.
                 eCursorCount
-                }; 
+                };
 
 enum nsTopLevelWidgetZPlacement { // for PlaceBehind()
   eZPlacementBottom = 0,  // bottom of the window stack
@@ -320,13 +327,14 @@ private:
  * The base class for all the widgets. It provides the interface for
  * all basic and necessary functionality.
  */
-class nsIWidget : public nsISupports {
+class nsIWidget : public nsISupports
+{
   protected:
     typedef mozilla::dom::TabChild TabChild;
 
   public:
     typedef mozilla::layers::Composer2D Composer2D;
-    typedef mozilla::layers::CompositorChild CompositorChild;
+    typedef mozilla::layers::CompositorBridgeChild CompositorBridgeChild;
     typedef mozilla::layers::AsyncDragMetrics AsyncDragMetrics;
     typedef mozilla::layers::FrameMetrics FrameMetrics;
     typedef mozilla::layers::LayerManager LayerManager;
@@ -342,7 +350,8 @@ class nsIWidget : public nsISupports {
     typedef mozilla::widget::NativeIMEContext NativeIMEContext;
     typedef mozilla::widget::SizeConstraints SizeConstraints;
     typedef mozilla::widget::TextEventDispatcher TextEventDispatcher;
-    typedef mozilla::CompositorVsyncDispatcher CompositorVsyncDispatcher;
+    typedef mozilla::widget::TextEventDispatcherListener
+      TextEventDispatcherListener;
     typedef mozilla::LayoutDeviceIntMargin LayoutDeviceIntMargin;
     typedef mozilla::LayoutDeviceIntPoint LayoutDeviceIntPoint;
     typedef mozilla::LayoutDeviceIntRect LayoutDeviceIntRect;
@@ -380,9 +389,9 @@ class nsIWidget : public nsISupports {
       ClearNativeTouchSequence(nullptr);
     }
 
-        
+
     /**
-     * Create and initialize a widget. 
+     * Create and initialize a widget.
      *
      * All the arguments can be null in which case a top level window
      * with size 0 is created. The event callback function has to be
@@ -391,10 +400,10 @@ class nsIWidget : public nsISupports {
      * hook called synchronously. The return value determines whether
      * the event goes to the default window procedure or it is hidden
      * to the os. The assumption is that if the event handler returns
-     * false the widget does not see the event. The widget should not 
-     * automatically clear the window to the background color. The 
-     * calling code must handle paint messages and clear the background 
-     * itself. 
+     * false the widget does not see the event. The widget should not
+     * automatically clear the window to the background color. The
+     * calling code must handle paint messages and clear the background
+     * itself.
      *
      * In practice at least one of aParent and aNativeParent will be null. If
      * both are null the widget isn't parented (e.g. context menus or
@@ -457,7 +466,7 @@ class nsIWidget : public nsISupports {
                 bool aForceUseIWidgetParent = false) = 0;
 
     /**
-     * Attach to a top level widget. 
+     * Attach to a top level widget.
      *
      * In cases where a top level chrome widget is being used as a content
      * container, attach a secondary listener and update the device
@@ -491,7 +500,7 @@ class nsIWidget : public nsISupports {
     //@}
 
     /**
-     * Close and destroy the internal native window. 
+     * Close and destroy the internal native window.
      * This method does not delete the widget.
      */
 
@@ -509,12 +518,12 @@ class nsIWidget : public nsISupports {
      *
      * Change the widget's parent. Null parents are allowed.
      *
-     * @param     aNewParent   new parent 
+     * @param     aNewParent   new parent
      */
     NS_IMETHOD SetParent(nsIWidget* aNewParent) = 0;
 
     /**
-     * Return the parent Widget of this Widget or nullptr if this is a 
+     * Return the parent Widget of this Widget or nullptr if this is a
      * top level window
      *
      * @return the parent widget or nullptr if it does not have a parent
@@ -553,11 +562,6 @@ class nsIWidget : public nsISupports {
     virtual mozilla::DesktopToLayoutDeviceScale GetDesktopToDeviceScale() = 0;
 
     /**
-     * Returns the CompositorVsyncDispatcher associated with this widget
-     */
-    virtual CompositorVsyncDispatcher* GetCompositorVsyncDispatcher() = 0;
-
-    /**
      * Return the default scale factor for the window. This is the
      * default number of device pixels per CSS pixel to use. This should
      * depend on OS/platform settings such as the Mac's "UI scale factor"
@@ -586,7 +590,7 @@ class nsIWidget : public nsISupports {
     nsIWidget* GetFirstChild() const {
         return mFirstChild;
     }
-    
+
     /**
      * Return the last child of this widget.  Will return null if
      * there are no children.
@@ -601,14 +605,14 @@ class nsIWidget : public nsISupports {
     nsIWidget* GetNextSibling() const {
         return mNextSibling;
     }
-    
+
     /**
      * Set the next sibling of this widget
      */
     void SetNextSibling(nsIWidget* aSibling) {
         mNextSibling = aSibling;
     }
-    
+
     /**
      * Return the previous sibling of this widget
      */
@@ -796,7 +800,7 @@ class nsIWidget : public nsISupports {
     virtual void SetZIndex(int32_t aZIndex) = 0;
 
     /**
-     * Gets the widget's z-index. 
+     * Gets the widget's z-index.
      */
     int32_t GetZIndex()
     {
@@ -978,7 +982,7 @@ class nsIWidget : public nsISupports {
     NS_IMETHOD SetCursor(imgIContainer* aCursor,
                          uint32_t aHotspotX, uint32_t aHotspotY) = 0;
 
-    /** 
+    /**
      * Get the window type of this widget.
      */
     nsWindowType WindowType() { return mWindowType; }
@@ -1081,6 +1085,28 @@ class nsIWidget : public nsISupports {
     static void UpdateRegisteredPluginWindowVisibility(uintptr_t aOwnerWidget,
                                                        nsTArray<uintptr_t>& aPluginIds);
 
+#if defined(XP_WIN)
+    /**
+     * Iterates over the list of registered plugins and for any that are owned
+     * by aOwnerWidget and visible it takes a snapshot.
+     *
+     * @param aOwnerWidget only captures visible widgets owned by this
+     */
+    static void CaptureRegisteredPlugins(uintptr_t aOwnerWidget);
+
+    /**
+     * Take a scroll capture for this widget if possible.
+     */
+    virtual void UpdateScrollCapture() = 0;
+
+    /**
+     * Creates an async ImageContainer to hold scroll capture images that can be
+     * used if the plugin is hidden during scroll.
+     * @return the async container ID of the created ImageContainer.
+     */
+    virtual uint64_t CreateScrollCaptureContainer() = 0;
+#endif
+
     /**
      * Set the shadow style of the window.
      *
@@ -1131,7 +1157,7 @@ class nsIWidget : public nsISupports {
      */
     virtual void SetUseBrightTitlebarForeground(bool aBrightForeground) {}
 
-    /** 
+    /**
      * Hide window chrome (borders, buttons) for this widget.
      *
      */
@@ -1205,21 +1231,17 @@ class nsIWidget : public nsISupports {
     /**
      * Return the widget's LayerManager. The layer tree for that
      * LayerManager is what gets rendered to the widget.
-     *
-     * @param aAllowRetaining an outparam that states whether the returned
-     * layer manager should be used for retained layers
      */
-    inline LayerManager* GetLayerManager(bool* aAllowRetaining = nullptr)
+    inline LayerManager* GetLayerManager()
     {
         return GetLayerManager(nullptr, mozilla::layers::LayersBackend::LAYERS_NONE,
-                               LAYER_MANAGER_CURRENT, aAllowRetaining);
+                               LAYER_MANAGER_CURRENT);
     }
 
-    inline LayerManager* GetLayerManager(LayerManagerPersistence aPersistence,
-                                         bool* aAllowRetaining = nullptr)
+    inline LayerManager* GetLayerManager(LayerManagerPersistence aPersistence)
     {
         return GetLayerManager(nullptr, mozilla::layers::LayersBackend::LAYERS_NONE,
-                               aPersistence, aAllowRetaining);
+                               aPersistence);
     }
 
     /**
@@ -1229,8 +1251,7 @@ class nsIWidget : public nsISupports {
      */
     virtual LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager,
                                           LayersBackend aBackendHint,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) = 0;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) = 0;
 
     /**
      * Called before each layer manager transaction to allow any preparation
@@ -1239,93 +1260,6 @@ class nsIWidget : public nsISupports {
      * Always called on the main thread.
      */
     virtual void PrepareWindowEffects() = 0;
-
-    /**
-     * Called when shutting down the LayerManager to clean-up any cached resources.
-     *
-     * Always called from the compositing thread, which may be the main-thread if
-     * OMTC is not enabled.
-     */
-    virtual void CleanupWindowEffects() = 0;
-
-    /**
-     * Called before rendering using OMTC. Returns false when the widget is
-     * not ready to be rendered (for example while the window is closed).
-     *
-     * Always called from the compositing thread, which may be the main-thread if
-     * OMTC is not enabled.
-     */
-    virtual bool PreRender(LayerManagerComposite* aManager) = 0;
-
-    /**
-     * Called after rendering using OMTC. Not called when rendering was
-     * cancelled by a negative return value from PreRender.
-     *
-     * Always called from the compositing thread, which may be the main-thread if
-     * OMTC is not enabled.
-     */
-    virtual void PostRender(LayerManagerComposite* aManager) = 0;
-
-    /**
-     * Called before the LayerManager draws the layer tree.
-     *
-     * Always called from the compositing thread.
-     */
-    virtual void DrawWindowUnderlay(LayerManagerComposite* aManager,
-                                    LayoutDeviceIntRect aRect) = 0;
-
-    /**
-     * Called after the LayerManager draws the layer tree
-     *
-     * Always called from the compositing thread.
-     */
-    virtual void DrawWindowOverlay(LayerManagerComposite* aManager,
-                                   LayoutDeviceIntRect aRect) = 0;
-
-    /**
-     * Return a DrawTarget for the window which can be composited into.
-     *
-     * Called by BasicCompositor on the compositor thread for OMTC drawing
-     * before each composition.
-     *
-     * The window may specify its buffer mode. If unspecified, it is assumed
-     * to require double-buffering.
-     */
-    virtual already_AddRefed<mozilla::gfx::DrawTarget> StartRemoteDrawing() = 0;
-    virtual already_AddRefed<mozilla::gfx::DrawTarget> StartRemoteDrawingInRegion(LayoutDeviceIntRegion& aInvalidRegion,
-                                                                                  mozilla::layers::BufferMode* aBufferMode) {
-      return StartRemoteDrawing();
-    }
-
-    /**
-     * Ensure that what was painted into the DrawTarget returned from
-     * StartRemoteDrawing reaches the screen.
-     *
-     * Called by BasicCompositor on the compositor thread for OMTC drawing
-     * after each composition.
-     */
-    virtual void EndRemoteDrawing() = 0;
-    virtual void EndRemoteDrawingInRegion(mozilla::gfx::DrawTarget* aDrawTarget, LayoutDeviceIntRegion& aInvalidRegion) {
-      EndRemoteDrawing();
-    }
-
-    /**
-     * A hook for the widget to prepare a Compositor, during the latter's initialization.
-     *
-     * If this method returns true, it means that the widget will be able to
-     * present frames from the compoositor.
-     * Returning false will cause the compositor's initialization to fail, and
-     * a different compositor backend will be used (if any).
-     */
-    virtual bool InitCompositor(mozilla::layers::Compositor*) { return true; }
-
-    /**
-     * Clean up any resources used by Start/EndRemoteDrawing.
-     *
-     * Called by BasicCompositor on the compositor thread for OMTC drawing
-     * when the compositor is destroyed.
-     */
-    virtual void CleanupRemoteDrawing() = 0;
 
     /**
      * Called when Gecko knows which themed widgets exist in this window.
@@ -1415,16 +1349,15 @@ class nsIWidget : public nsISupports {
                              nsEventStatus & aStatus) = 0;
 
     /**
+     * Dispatches an event to APZ only.
+     * No-op in the child process.
+     */
+    virtual void DispatchEventToAPZOnly(mozilla::WidgetInputEvent* aEvent) = 0;
+
+    /**
      * Dispatches an event that must be handled by APZ first, when APZ is
      * enabled. If invoked in the child process, it is forwarded to the
      * parent process synchronously.
-     */
-    virtual nsEventStatus DispatchAPZAwareEvent(mozilla::WidgetInputEvent* aEvent) = 0;
-
-    /**
-     * Dispatches an event that must be transformed by APZ first, but is not
-     * actually handled by APZ. If invoked in the child process, it is
-     * forwarded to the parent process synchronously.
      */
     virtual nsEventStatus DispatchInputEvent(mozilla::WidgetInputEvent* aEvent) = 0;
 
@@ -1445,10 +1378,10 @@ class nsIWidget : public nsISupports {
      *
      */
     NS_IMETHOD EnableDragDrop(bool aEnable) = 0;
-   
+
     /**
      * Enables/Disables system mouse capture.
-     * @param aCapture true enables mouse capture, false disables mouse capture 
+     * @param aCapture true enables mouse capture, false disables mouse capture
      *
      */
     NS_IMETHOD CaptureMouse(bool aCapture) = 0;
@@ -1462,7 +1395,7 @@ class nsIWidget : public nsISupports {
      * Enables/Disables system capture of any and all events that would cause a
      * popup to be rolled up. aListener should be set to a non-null value for
      * any popups that are not managed by the popup manager.
-     * @param aDoCapture true enables capture, false disables capture 
+     * @param aDoCapture true enables capture, false disables capture
      *
      */
     NS_IMETHOD CaptureRollupEvents(nsIRollupListener* aListener, bool aDoCapture) = 0;
@@ -1474,8 +1407,8 @@ class nsIWidget : public nsISupports {
      * the Mac.  The notification should be suppressed if the window is already
      * in the foreground and should be dismissed when the user brings this window
      * to the foreground.
-     * @param aCycleCount Maximum number of times to animate the window per system 
-     *                    conventions. If set to -1, cycles indefinitely until 
+     * @param aCycleCount Maximum number of times to animate the window per system
+     *                    conventions. If set to -1, cycles indefinitely until
      *                    window is brought into the foreground.
      */
     NS_IMETHOD GetAttention(int32_t aCycleCount) = 0;
@@ -1494,9 +1427,9 @@ class nsIWidget : public nsISupports {
      * Ignored on any platform that does not support it. Ignored by widgets that
      * do not represent windows.
      *
-     * @param aColor  The color to set the title bar background to. Alpha values 
-     *                other than fully transparent (0) are respected if possible  
-     *                on the platform. An alpha of 0 will cause the window to 
+     * @param aColor  The color to set the title bar background to. Alpha values
+     *                other than fully transparent (0) are respected if possible
+     *                on the platform. An alpha of 0 will cause the window to
      *                draw with the default style for the platform.
      *
      * @param aActive Whether the color should be applied to active or inactive
@@ -1683,7 +1616,7 @@ class nsIWidget : public nsISupports {
      *
      * @param aPointerId The touch point id to create or update.
      * @param aPointerState one or more of the touch states listed above
-     * @param aScreenX, aScreenY screen coords of this event
+     * @param aPoint coords of this event
      * @param aPressure 0.0 -> 1.0 float val indicating pressure
      * @param aOrientation 0 -> 359 degree value indicating the
      * orientation of the pointer. Use 90 for normal taps.
@@ -1692,7 +1625,7 @@ class nsIWidget : public nsISupports {
      */
     virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
                                                 TouchPointerState aPointerState,
-                                                ScreenIntPoint aPointerScreenPoint,
+                                                LayoutDeviceIntPoint aPoint,
                                                 double aPointerPressure,
                                                 uint32_t aPointerOrientation,
                                                 nsIObserver* aObserver) = 0;
@@ -1705,7 +1638,7 @@ class nsIWidget : public nsISupports {
      * @param aObserver The observer that will get notified once the events
      * have been dispatched.
      */
-    virtual nsresult SynthesizeNativeTouchTap(ScreenIntPoint aPointerScreenPoint,
+    virtual nsresult SynthesizeNativeTouchTap(LayoutDeviceIntPoint aPoint,
                                               bool aLongTap,
                                               nsIObserver* aObserver);
 
@@ -1718,30 +1651,18 @@ class nsIWidget : public nsISupports {
      */
     virtual nsresult ClearNativeTouchSequence(nsIObserver* aObserver);
 
-    /*
-     * Snapshot the contents of the widget by reading pixels back from the
-     * Operating System. Unlike RenderDocument(), this does not read from our
-     * own backbuffers, so that we can test if there is a difference in how
-     * our buffers are being presented.
-     *
-     * This is only supported for widgets using OMTC.
-     */
-    already_AddRefed<mozilla::gfx::SourceSurface> SnapshotWidgetOnScreen();
-
-    /*
-     * Implementation of SnapshotWidgetOnScreen. This is invoked by the
-     * compositor for SnapshotWidgetOnScreen(), and should not be called
-     * otherwise.
-     */
-    virtual bool CaptureWidgetOnScreen(RefPtr<mozilla::gfx::DrawTarget> aDT) = 0;
-
     virtual void StartAsyncScrollbarDrag(const AsyncDragMetrics& aDragMetrics) = 0;
+
+    // If this widget supports out-of-process compositing, it can override
+    // this method to provide additional information to the compositor.
+    virtual void GetCompositorWidgetInitData(mozilla::widget::CompositorWidgetInitData* aInitData)
+    {}
 
 private:
   class LongTapInfo
   {
   public:
-    LongTapInfo(int32_t aPointerId, ScreenIntPoint& aPoint,
+    LongTapInfo(int32_t aPointerId, LayoutDeviceIntPoint& aPoint,
                 mozilla::TimeDuration aDuration,
                 nsIObserver* aObserver) :
       mPointerId(aPointerId),
@@ -1753,7 +1674,7 @@ private:
     }
 
     int32_t mPointerId;
-    ScreenIntPoint mPosition;
+    LayoutDeviceIntPoint mPosition;
     mozilla::TimeDuration mDuration;
     nsCOMPtr<nsIObserver> mObserver;
     mozilla::TimeStamp mStamp;
@@ -1761,7 +1682,7 @@ private:
 
   static void OnLongTapTimerCallback(nsITimer* aTimer, void* aClosure);
 
-  nsAutoPtr<LongTapInfo> mLongTapTouchPoint;
+  mozilla::UniquePtr<LongTapInfo> mLongTapTouchPoint;
   nsCOMPtr<nsITimer> mLongTapTimer;
   static int32_t sPointerIdCounter;
 
@@ -1784,7 +1705,7 @@ public:
      * This is used for native menu system testing.
      *
      * Updates a native menu at the position specified by the index string.
-     * The index string is a string of positive integers separated by the "|" 
+     * The index string is a string of positive integers separated by the "|"
      * (pipe) character.
      *
      * Example: 1|0|4
@@ -1831,7 +1752,7 @@ public:
     /*
      * Tell the plugin has focus.  It is unnecessary to use IPC
      */
-    bool PluginHasFocus() 
+    bool PluginHasFocus()
     {
       return GetInputContext().mIMEState.mEnabled == IMEState::PLUGIN;
     }
@@ -1944,12 +1865,6 @@ public:
     NS_IMETHOD ReparentNativeWidget(nsIWidget* aNewParent) = 0;
 
     /**
-     * Return the internal format of the default framebuffer for this
-     * widget.
-     */
-    virtual uint32_t GetGLFrameBufferFormat() { return 0; /*GL_NONE*/ }
-
-    /**
      * Return true if widget has it's own GL context
      */
     virtual bool HasGLContext() { return false; }
@@ -2019,17 +1934,7 @@ public:
      * If this isn't directly compositing to its window surface,
      * return the compositor which is doing that on our behalf.
      */
-    virtual CompositorChild* GetRemoteRenderer()
-    { return nullptr; }
-
-    /**
-     * If this widget has a more efficient composer available for its
-     * native framebuffer, return it.
-     *
-     * This can be called from a non-main thread, but that thread must
-     * hold a strong reference to this.
-     */
-    virtual Composer2D* GetComposer2D()
+    virtual CompositorBridgeChild* GetRemoteRenderer()
     { return nullptr; }
 
     /**
@@ -2049,10 +1954,56 @@ public:
      */
     NS_IMETHOD_(TextEventDispatcher*) GetTextEventDispatcher() = 0;
 
+    /**
+     * GetNativeTextEventDispatcherListener() returns a
+     * TextEventDispatcherListener instance which is used when the widget
+     * instance handles native IME and/or keyboard events.
+     */
+    NS_IMETHOD_(TextEventDispatcherListener*)
+      GetNativeTextEventDispatcherListener() = 0;
+
     virtual void ZoomToRect(const uint32_t& aPresShellId,
                             const FrameMetrics::ViewID& aViewId,
                             const CSSRect& aRect,
                             const uint32_t& aFlags) = 0;
+
+    /**
+     * OnWindowedPluginKeyEvent() is called when native key event is
+     * received in the focused plugin process directly in PluginInstanceChild.
+     *
+     * @param aKeyEventData     The native key event data.  The actual type
+     *                          copied into NativeEventData depends on the
+     *                          caller.  Please check PluginInstanceChild.
+     * @param aCallback         Callback interface.  When this returns
+     *                          NS_SUCCESS_EVENT_HANDLED_ASYNCHRONOUSLY,
+     *                          the event handler has to call this callback.
+     *                          Otherwise, the caller should do that instead.
+     * @return                  NS_ERROR_* if this fails to handle the event.
+     *                          NS_SUCCESS_EVENT_CONSUMED if the key event is
+     *                          consumed.
+     *                          NS_OK if the key event isn't consumed.
+     *                          NS_SUCCESS_EVENT_HANDLED_ASYNCHRONOUSLY if the
+     *                          key event will be handled asynchronously.
+     */
+    virtual nsresult OnWindowedPluginKeyEvent(
+                       const mozilla::NativeEventData& aKeyEventData,
+                       nsIKeyEventInPluginCallback* aCallback);
+
+
+    /**
+     * LookUpDictionary shows the dictionary for the word around current point.
+     *
+     * @param aText            the word to look up dictiorary.
+     * @param aFontRangeArray  text decoration of aText
+     * @param aIsVertical      true if the word is vertical layout
+     * @param aPoint           top-left point of aText
+     */
+    virtual void LookUpDictionary(
+                   const nsAString& aText,
+                   const nsTArray<mozilla::FontRange>& aFontRangeArray,
+                   const bool aIsVertical,
+                   const LayoutDeviceIntPoint& aPoint)
+    { }
 
 protected:
     /**

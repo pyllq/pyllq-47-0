@@ -4,12 +4,18 @@
 # http://creativecommons.org/publicdomain/zero/1.0/
 #
 
-from __future__ import with_statement
-import sys, os, unittest, tempfile, shutil, re, pprint
 import mozinfo
+import mozunit
+import os
+import pprint
+import re
+import shutil
+import sys
+import tempfile
+import unittest
 
+from buildconfig import substs
 from StringIO import StringIO
-
 from mozlog import structured
 from mozbuild.base import MozbuildObject
 os.environ.pop('MOZ_OBJDIR', None)
@@ -22,7 +28,6 @@ mozinfo.find_and_update_from_json()
 objdir = build_obj.topobjdir.encode("utf-8")
 
 if mozinfo.isMac:
-  from buildconfig import substs
   xpcshellBin = os.path.join(objdir, "dist", substs['MOZ_MACBUNDLE_NAME'], "Contents", "MacOS", "xpcshell")
 else:
   xpcshellBin = os.path.join(objdir, "dist", "bin", "xpcshell")
@@ -414,6 +419,10 @@ class XPCShellTestsTests(unittest.TestCase):
                                                       {"tbpl": self.log})
         self.x = XPCShellTests(logger)
         self.x.harness_timeout = 15
+        self.symbols_path = None
+        candidate_path = os.path.join(build_obj.distdir, 'crashreporter-symbols')
+        if (os.path.isdir(candidate_path)):
+          self.symbols_path = candidate_path
 
     def tearDown(self):
         shutil.rmtree(self.tempdir)
@@ -449,15 +458,14 @@ tail =
 
 """ + "\n".join(testlines))
 
-    def assertTestResult(self, expected, shuffle=False, verbose=False,
-                         symbolsPath=None):
+    def assertTestResult(self, expected, shuffle=False, verbose=False):
         """
         Assert that self.x.runTests with manifest=self.manifest
         returns |expected|.
         """
         self.assertEquals(expected,
                           self.x.runTests(xpcshellBin,
-                                          symbolsPath=symbolsPath,
+                                          symbolsPath=self.symbols_path,
                                           manifest=self.manifest,
                                           mozInfo=mozinfo.info,
                                           shuffle=shuffle,
@@ -527,14 +535,6 @@ tail =
         """
         When an assertion is hit, we should produce a useful stack.
         """
-        # Passing symbolsPath will cause the stack fixer to use
-        # fix_stack_using_bpsyms and exercise the fileid utility in
-        # this test.
-        symbolsPath = None
-        candidate_path = os.path.join(build_obj.distdir, 'crashreporter-symbols')
-        if os.path.isdir(candidate_path):
-          symbolsPath = candidate_path
-
         self.writeFile("test_assert.js", '''
           add_test(function test_asserts_immediately() {
             Components.classes["@mozilla.org/xpcom/debug;1"]
@@ -545,7 +545,7 @@ tail =
         ''')
 
         self.writeManifest(["test_assert.js"])
-        self.assertTestResult(False, symbolsPath=symbolsPath)
+        self.assertTestResult(False)
 
         self.assertInLog("###!!! ASSERTION")
         log_lines = self.log.getvalue().splitlines()
@@ -857,6 +857,11 @@ add_test({
         self.writeManifest(["test_simple_uncaught_rejection.js"])
 
         self.assertTestResult(False)
+        self.assertInLog(TEST_FAIL_STRING)
+        if not substs.get('RELEASE_BUILD'):
+          # async stacks are currently not enabled in release builds.
+          self.assertInLog("test_simple_uncaught_rejection.js:3:3")
+        self.assertInLog("Test rejection.")
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
@@ -869,6 +874,9 @@ add_test({
         self.writeManifest(["test_simple_uncaught_rejection_jsm.js"])
 
         self.assertTestResult(False)
+        self.assertInLog(TEST_FAIL_STRING)
+        self.assertInLog("test_simple_uncaught_rejection_jsm.js:4:16")
+        self.assertInLog("Test rejection.")
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
@@ -1341,4 +1349,4 @@ add_test({
         self.assertNotInLog(TEST_FAIL_STRING)
 
 if __name__ == "__main__":
-    unittest.main(verbosity=3)
+    mozunit.main()

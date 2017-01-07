@@ -11,6 +11,7 @@
 #include "base/basictypes.h"
 #include "base/message_loop.h"
 
+#include "mozilla/Function.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Vector.h"
@@ -19,8 +20,11 @@
 #include "mozilla/ipc/Neutering.h"
 #endif // defined(OS_WIN)
 #include "mozilla/ipc/Transport.h"
+#if defined(MOZ_CRASHREPORTER) && defined(OS_WIN)
+#include "mozilla/mozalloc_oom.h"
+#include "nsExceptionHandler.h"
+#endif
 #include "MessageLink.h"
-#include "nsAutoPtr.h"
 
 #include <deque>
 #include <stack>
@@ -73,6 +77,7 @@ class MessageChannel : HasResultCodes
     static const int32_t kNoTimeout;
 
     typedef IPC::Message Message;
+    typedef IPC::MessageInfo MessageInfo;
     typedef mozilla::ipc::Transport Transport;
 
     explicit MessageChannel(MessageListener *aListener);
@@ -108,6 +113,11 @@ class MessageChannel : HasResultCodes
     {
         mAbortOnError = abort;
     }
+
+    // Call aInvoke for each pending message until it returns false.
+    // XXX: You must get permission from an IPC peer to use this function
+    //      since it requires custom deserialization and re-orders events.
+    void PeekMessages(mozilla::function<bool(const Message& aMsg)> aInvoke);
 
     // Misc. behavioral traits consumers can request for this channel
     enum ChannelFlags {
@@ -266,7 +276,7 @@ class MessageChannel : HasResultCodes
     bool HasPendingEvents();
 
     void ProcessPendingRequests(AutoEnterTransaction& aTransaction);
-    bool ProcessPendingRequest(const Message &aUrgent);
+    bool ProcessPendingRequest(Message &&aUrgent);
 
     void MaybeUndeferIncall();
     void EnqueuePendingMessages();
@@ -276,7 +286,7 @@ class MessageChannel : HasResultCodes
     bool DequeueOne(Message *recvd);
 
     // Dispatches an incoming message to its appropriate handler.
-    void DispatchMessage(const Message &aMsg);
+    void DispatchMessage(Message &&aMsg);
 
     // DispatchMessage will route to one of these functions depending on the
     // protocol type of the message.
@@ -284,7 +294,7 @@ class MessageChannel : HasResultCodes
     void DispatchUrgentMessage(const Message &aMsg);
     void DispatchAsyncMessage(const Message &aMsg);
     void DispatchRPCMessage(const Message &aMsg);
-    void DispatchInterruptMessage(const Message &aMsg, size_t aStackDepth);
+    void DispatchInterruptMessage(Message &&aMsg, size_t aStackDepth);
 
     // Return true if the wait ended because a notification was received.
     //
@@ -355,7 +365,7 @@ class MessageChannel : HasResultCodes
 
     void DebugAbort(const char* file, int line, const char* cond,
                     const char* why,
-                    bool reply=false) const;
+                    bool reply=false);
 
     // This method is only safe to call on the worker thread, or in a
     // debugger with all threads paused.
@@ -451,20 +461,91 @@ class MessageChannel : HasResultCodes
     }
 
   private:
-    typedef IPC::Message::msgid_t msgid_t;
-    typedef std::deque<Message> MessageQueue;
-    typedef std::map<size_t, Message> MessageMap;
+#if defined(MOZ_CRASHREPORTER) && defined(OS_WIN)
+    // TODO: Remove the condition OS_WIN above once we move to GCC 5 or higher,
+    // the code will be able to get compiled as std::deque will meet C++11
+    // allocator requirements.
+    template<class T>
+    struct AnnotateAllocator
+    {
+      typedef T value_type;
+      AnnotateAllocator(MessageChannel& channel) : mChannel(channel) {}
+      template<class U> AnnotateAllocator(const AnnotateAllocator<U>& other) :
+        mChannel(other.mChannel) {}
+      template<class U> bool operator==(const AnnotateAllocator<U>&) { return true; }
+      template<class U> bool operator!=(const AnnotateAllocator<U>&) { return false; }
+      T* allocate(size_t n) {
+        void* p = ::operator new(n * sizeof(T), std::nothrow);
+        if (!p && n) {
+          // Sort the pending messages by its type, note the sorting algorithm
+          // has to be in-place to avoid memory allocation.
+          MessageQueue& q = mChannel.mPending;
+          std::sort(q.begin(), q.end(), [](const Message& a, const Message& b) {
+            return a.type() < b.type();
+          });
 
+          // Iterate over the sorted queue to find the message that has the
+          // highest number of count.
+          char* topName = nullptr;
+          char* curName = nullptr;
+          msgid_t topType = 0, curType = 0;
+          uint32_t topCount = 0, curCount = 0;
+          for (MessageQueue::iterator it = q.begin(); it != q.end(); ++it) {
+            Message &msg = *it;
+            if (msg.type() == curType) {
+              ++curCount;
+            } else {
+              if (curCount > topCount) {
+                topName = curName;
+                topType = curType;
+                topCount = curCount;
+              }
+              curName = const_cast<char*>(msg.name());
+              curType = msg.type();
+              curCount = 1;
+            }
+          }
+          // In case the last type is the top one.
+          if (curCount > topCount) {
+            topName = curName;
+            topType = curType;
+            topCount = curCount;
+          }
+
+          CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("NumberOfPendingIPC"),
+                                             nsPrintfCString("%zu", q.size()));
+          CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("TopPendingIPCCount"),
+                                             nsPrintfCString("%u", topCount));
+          CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("TopPendingIPCName"),
+                                             nsPrintfCString("%s(0x%x)", topName, topType));
+
+          mozalloc_handle_oom(n * sizeof(T));
+        }
+        return static_cast<T*>(p);
+      }
+      void deallocate(T* p, size_t n) {
+        ::operator delete(p);
+      }
+      MessageChannel& mChannel;
+    };
+    typedef std::deque<Message, AnnotateAllocator<Message>> MessageQueue;
+#else
+    typedef std::deque<Message> MessageQueue;
+#endif
+    typedef std::map<size_t, Message> MessageMap;
+    typedef IPC::Message::msgid_t msgid_t;
+
+    // XXXkhuey this can almost certainly die.
     // All dequeuing tasks require a single point of cancellation,
     // which is handled via a reference-counted task.
     class RefCountedTask
     {
       public:
-        explicit RefCountedTask(CancelableTask* aTask)
+        explicit RefCountedTask(already_AddRefed<CancelableRunnable> aTask)
           : mTask(aTask)
         { }
       private:
-        ~RefCountedTask() { delete mTask; }
+        ~RefCountedTask() { }
       public:
         void Run() { mTask->Run(); }
         void Cancel() { mTask->Cancel(); }
@@ -472,18 +553,27 @@ class MessageChannel : HasResultCodes
         NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RefCountedTask)
 
       private:
-        CancelableTask* mTask;
+        RefPtr<CancelableRunnable> mTask;
     };
 
     // Wrap an existing task which can be cancelled at any time
     // without the wrapper's knowledge.
-    class DequeueTask : public Task
+    class DequeueTask : public CancelableRunnable
     {
       public:
         explicit DequeueTask(RefCountedTask* aTask)
           : mTask(aTask)
         { }
-        void Run() override { mTask->Run(); }
+        NS_IMETHOD Run() override {
+          if (mTask) {
+            mTask->Run();
+          }
+          return NS_OK;
+        }
+        nsresult Cancel() override {
+          mTask = nullptr;
+          return NS_OK;
+        }
 
       private:
         RefPtr<RefCountedTask> mTask;
@@ -496,7 +586,7 @@ class MessageChannel : HasResultCodes
     Side mSide;
     MessageLink* mLink;
     MessageLoop* mWorkerLoop;           // thread where work is done
-    CancelableTask* mChannelErrorTask;  // NotifyMaybeChannelError runnable
+    RefPtr<CancelableRunnable> mChannelErrorTask;  // NotifyMaybeChannelError runnable
 
     // id() of mWorkerLoop.  This persists even after mWorkerLoop is cleared
     // during channel shutdown.
@@ -633,7 +723,7 @@ class MessageChannel : HasResultCodes
     // Each stack refers to a different protocol and the stacks are mutually
     // exclusive: multiple outcalls of the same kind cannot be initiated while
     // another is active.
-    std::stack<Message> mInterruptStack;
+    std::stack<MessageInfo> mInterruptStack;
 
     // This is what we think the Interrupt stack depth is on the "other side" of this
     // Interrupt channel.  We maintain this variable so that we can detect racy Interrupt

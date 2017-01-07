@@ -63,6 +63,7 @@ nsDisplayBackgroundGeometry::nsDisplayBackgroundGeometry(nsDisplayBackgroundImag
   : nsDisplayItemGeometry(aItem, aBuilder)
   , nsImageGeometryMixin(aItem, aBuilder)
   , mPositioningArea(aItem->GetPositioningArea())
+  , mDestRect(aItem->GetDestRect())
 {}
 
 void
@@ -70,6 +71,7 @@ nsDisplayBackgroundGeometry::MoveBy(const nsPoint& aOffset)
 {
   nsDisplayItemGeometry::MoveBy(aOffset);
   mPositioningArea.MoveBy(aOffset);
+  mDestRect.MoveBy(aOffset);
 }
 
 nsDisplayThemedBackgroundGeometry::nsDisplayThemedBackgroundGeometry(nsDisplayThemedBackground* aItem,
@@ -106,6 +108,7 @@ nsDisplayBoxShadowOuterGeometry::nsDisplayBoxShadowOuterGeometry(nsDisplayItem* 
 
 nsDisplaySVGEffectsGeometry::nsDisplaySVGEffectsGeometry(nsDisplaySVGEffects* aItem, nsDisplayListBuilder* aBuilder)
   : nsDisplayItemGeometry(aItem, aBuilder)
+  , nsImageGeometryMixin(aItem, aBuilder)
   , mBBox(aItem->BBoxInUserSpace())
   , mUserSpaceOffset(aItem->UserSpaceOffset())
   , mFrameOffsetToReferenceFrame(aItem->ToReferenceFrame())

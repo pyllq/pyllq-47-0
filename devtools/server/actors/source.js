@@ -7,14 +7,17 @@
 "use strict";
 
 const { Cc, Ci } = require("chrome");
+const Services = require("Services");
 const { BreakpointActor, setBreakpointAtEntryPoints } = require("devtools/server/actors/breakpoint");
 const { OriginalLocation, GeneratedLocation } = require("devtools/server/actors/common");
 const { createValueGrip } = require("devtools/server/actors/object");
+const { ActorClassWithSpec, Arg, RetVal, method } = require("devtools/shared/protocol");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
 const { assert, fetch } = DevToolsUtils;
-const { dirname, joinURI } = require("devtools/shared/path");
+const { joinURI } = require("devtools/shared/path");
 const promise = require("promise");
 const { defer, resolve, reject, all } = promise;
+const { sourceSpec } = require("devtools/shared/specs/source");
 
 loader.lazyRequireGetter(this, "SourceMapConsumer", "source-map", true);
 loader.lazyRequireGetter(this, "SourceMapGenerator", "source-map", true);
@@ -24,11 +27,11 @@ function isEvalSource(source) {
   let introType = source.introductionType;
   // These are all the sources that are essentially eval-ed (either
   // by calling eval or passing a string to one of these functions).
-  return (introType === 'eval' ||
-          introType === 'Function' ||
-          introType === 'eventHandler' ||
-          introType === 'setTimeout' ||
-          introType === 'setInterval');
+  return (introType === "eval" ||
+          introType === "Function" ||
+          introType === "eventHandler" ||
+          introType === "setTimeout" ||
+          introType === "setInterval");
 }
 
 exports.isEvalSource = isEvalSource;
@@ -42,7 +45,7 @@ function getSourceURL(source, window) {
     if (source.displayURL && source.introductionScript &&
        !isEvalSource(source.introductionScript.source)) {
 
-      if (source.introductionScript.source.url === 'debugger eval code') {
+      if (source.introductionScript.source.url === "debugger eval code") {
         if (window) {
           // If this is a named eval script created from the console, make it
           // relative to the current page. window is only available
@@ -51,14 +54,13 @@ function getSourceURL(source, window) {
         }
       }
       else {
-        return joinURI(dirname(source.introductionScript.source.url),
-                       source.displayURL);
+        return joinURI(source.introductionScript.source.url, source.displayURL);
       }
     }
 
     return source.displayURL;
   }
-  else if (source.url === 'debugger eval code') {
+  else if (source.url === "debugger eval code") {
     // Treat code evaluated by the console as unnamed eval scripts
     return null;
   }
@@ -134,50 +136,46 @@ function resolveURIToLocalPath(aURI) {
  * @param Debugger.Source generatedSource
  *        Optional, passed in when aSourceMap is also passed in. The generated
  *        source object that introduced this source.
+ * @param Boolean isInlineSource
+ *        Optional. True if this is an inline source from a HTML or XUL page.
  * @param String contentType
  *        Optional. The content type of this source, if immediately available.
  */
-function SourceActor({ source, thread, originalUrl, generatedSource,
-                       isInlineSource, contentType }) {
-  this._threadActor = thread;
-  this._originalUrl = originalUrl;
-  this._source = source;
-  this._generatedSource = generatedSource;
-  this._contentType = contentType;
-  this._isInlineSource = isInlineSource;
+let SourceActor = ActorClassWithSpec(sourceSpec, {
+  typeName: "source",
 
-  this.onSource = this.onSource.bind(this);
-  this._invertSourceMap = this._invertSourceMap.bind(this);
-  this._encodeAndSetSourceMapURL = this._encodeAndSetSourceMapURL.bind(this);
-  this._getSourceText = this._getSourceText.bind(this);
+  initialize: function ({ source, thread, originalUrl, generatedSource,
+                          isInlineSource, contentType }) {
+    this._threadActor = thread;
+    this._originalUrl = originalUrl;
+    this._source = source;
+    this._generatedSource = generatedSource;
+    this._contentType = contentType;
+    this._isInlineSource = isInlineSource;
 
-  this._mapSourceToAddon();
+    this.onSource = this.onSource.bind(this);
+    this._invertSourceMap = this._invertSourceMap.bind(this);
+    this._encodeAndSetSourceMapURL = this._encodeAndSetSourceMapURL.bind(this);
+    this._getSourceText = this._getSourceText.bind(this);
 
-  if (this.threadActor.sources.isPrettyPrinted(this.url)) {
-    this._init = this.onPrettyPrint({
-      indent: this.threadActor.sources.prettyPrintIndent(this.url)
-    }).then(null, error => {
-      DevToolsUtils.reportException("SourceActor", error);
-    });
-  } else {
-    this._init = null;
-  }
-}
+    this._mapSourceToAddon();
 
-SourceActor.prototype = {
-  constructor: SourceActor,
-  actorPrefix: "source",
-
-  _oldSourceMap: null,
-  _init: null,
-  _addonID: null,
-  _addonPath: null,
+    if (this.threadActor.sources.isPrettyPrinted(this.url)) {
+      this._init = this.prettyPrint(
+        this.threadActor.sources.prettyPrintIndent(this.url)
+      ).then(null, error => {
+        DevToolsUtils.reportException("SourceActor", error);
+      });
+    } else {
+      this._init = null;
+    }
+  },
 
   get isSourceMapped() {
-    return !this.isInlineSource && (
+    return !!(!this.isInlineSource && (
       this._originalURL || this._generatedSource ||
         this.threadActor.sources.isPrettyPrinted(this.url)
-    );
+    ));
   },
 
   get isInlineSource() {
@@ -187,7 +185,6 @@ SourceActor.prototype = {
   get threadActor() { return this._threadActor; },
   get sources() { return this._threadActor.sources; },
   get dbg() { return this.threadActor.dbg; },
-  get scripts() { return this.threadActor.scripts; },
   get source() { return this._source; },
   get generatedSource() { return this._generatedSource; },
   get breakpointActorMap() { return this.threadActor.breakpointActorMap; },
@@ -216,11 +213,14 @@ SourceActor.prototype = {
 
     return {
       actor: this.actorID,
+      generatedUrl: this.generatedSource ? this.generatedSource.url : null,
       url: this.url ? this.url.split(" -> ").pop() : null,
       addonID: this._addonID,
       addonPath: this._addonPath,
       isBlackBoxed: this.threadActor.sources.isBlackBoxed(this.url),
       isPrettyPrinted: this.threadActor.sources.isPrettyPrinted(this.url),
+      isSourceMapped: this.isSourceMapped,
+      sourceMapURL: source ? source.sourceMapURL : null,
       introductionUrl: introductionUrl ? introductionUrl.split(" -> ").pop() : null,
       introductionType: source ? source.introductionType : null
     };
@@ -232,7 +232,7 @@ SourceActor.prototype = {
     }
   },
 
-  _mapSourceToAddon: function() {
+  _mapSourceToAddon: function () {
     try {
       var nsuri = Services.io.newURI(this.url.split(" -> ").pop(), null, null);
     }
@@ -242,43 +242,47 @@ SourceActor.prototype = {
     }
 
     let localURI = resolveURIToLocalPath(nsuri);
+    if (!localURI) {
+      return;
+    }
 
-    let id = {};
-    if (localURI && mapURIToAddonID(localURI, id)) {
-      this._addonID = id.value;
+    let id = mapURIToAddonID(localURI);
+    if (!id) {
+      return;
+    }
+    this._addonID = id;
 
-      if (localURI instanceof Ci.nsIJARURI) {
-        // The path in the add-on is easy for jar: uris
-        this._addonPath = localURI.JAREntry;
+    if (localURI instanceof Ci.nsIJARURI) {
+      // The path in the add-on is easy for jar: uris
+      this._addonPath = localURI.JAREntry;
+    }
+    else if (localURI instanceof Ci.nsIFileURL) {
+      // For file: uris walk up to find the last directory that is part of the
+      // add-on
+      let target = localURI.file;
+      let path = target.leafName;
+
+      // We can assume that the directory containing the source file is part
+      // of the add-on
+      let root = target.parent;
+      let file = root.parent;
+      while (file && mapURIToAddonID(Services.io.newFileURI(file))) {
+        path = root.leafName + "/" + path;
+        root = file;
+        file = file.parent;
       }
-      else if (localURI instanceof Ci.nsIFileURL) {
-        // For file: uris walk up to find the last directory that is part of the
-        // add-on
-        let target = localURI.file;
-        let path = target.leafName;
 
-        // We can assume that the directory containing the source file is part
-        // of the add-on
-        let root = target.parent;
-        let file = root.parent;
-        while (file && mapURIToAddonID(Services.io.newFileURI(file), {})) {
-          path = root.leafName + "/" + path;
-          root = file;
-          file = file.parent;
-        }
-
-        if (!file) {
-          const error = new Error("Could not find the root of the add-on for " + this.url);
-          DevToolsUtils.reportException("SourceActor.prototype._mapSourceToAddon", error)
-          return;
-        }
-
-        this._addonPath = path;
+      if (!file) {
+        const error = new Error("Could not find the root of the add-on for " + this.url);
+        DevToolsUtils.reportException("SourceActor.prototype._mapSourceToAddon", error);
+        return;
       }
+
+      this._addonPath = path;
     }
   },
 
-  _reportLoadSourceError: function (error, map=null) {
+  _reportLoadSourceError: function (error, map = null) {
     try {
       DevToolsUtils.reportException("SourceActor", error);
 
@@ -329,16 +333,17 @@ SourceActor.prototype = {
         }
       }
 
-      // Use `source.text` if it exists, is not the "no source"
-      // string, and the content type of the source is JavaScript. It
-      // will be "no source" if the Debugger API wasn't able to load
+      // Use `source.text` if it exists, is not the "no source" string, and
+      // the content type of the source is JavaScript or it is synthesized
+      // wasm. It will be "no source" if the Debugger API wasn't able to load
       // the source because sources were discarded
-      // (javascript.options.discardSystemSource == true). Re-fetch
-      // non-JS sources to get the contentType from the headers.
+      // (javascript.options.discardSystemSource == true). Re-fetch non-JS
+      // sources to get the contentType from the headers.
       if (this.source &&
           this.source.text !== "[no source]" &&
           this._contentType &&
-          this._contentType.indexOf('javascript') !== -1) {
+          (this._contentType.indexOf("javascript") !== -1 ||
+           this._contentType === "text/wasm")) {
         return toResolvedContent(this.source.text);
       }
       else {
@@ -348,7 +353,35 @@ SourceActor.prototype = {
         // fetching the original text for sourcemapped code, and the
         // page hasn't requested it before (if it has, it was a
         // previous debugging session).
-        let sourceFetched = fetch(this.url, { loadFromCache: this.isInlineSource });
+        let loadFromCache = this.isInlineSource;
+
+        // Fetch the sources with the same principal as the original document
+        let win = this.threadActor._parent.window;
+        let principal, cacheKey;
+        // On xpcshell, we don't have a window but a Sandbox
+        if (!isWorker && win instanceof Ci.nsIDOMWindow) {
+          let webNav = win.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIWebNavigation);
+          let channel = webNav.currentDocumentChannel;
+          principal = channel.loadInfo.loadingPrincipal;
+
+          // Retrieve the cacheKey in order to load POST requests from cache
+          // Note that chrome:// URLs don't support this interface.
+          if (loadFromCache &&
+            webNav.currentDocumentChannel instanceof Ci.nsICacheInfoChannel) {
+            cacheKey = webNav.currentDocumentChannel.cacheKey;
+            assert(
+              cacheKey,
+              "Could not fetch the cacheKey from the related document."
+            );
+          }
+        }
+
+        let sourceFetched = fetch(this.url, {
+          principal,
+          cacheKey,
+          loadFromCache
+        });
 
         // Record the contentType we just learned during fetching
         return sourceFetched
@@ -368,11 +401,6 @@ SourceActor.prototype = {
    * @return Array - Executable lines of the current script
    **/
   getExecutableLines: function () {
-    // Check if the original source is source mapped
-    let packet = {
-      from: this.actorID
-    };
-
     function sortLines(lines) {
       // Converting the Set into an array
       lines = [...lines];
@@ -399,14 +427,12 @@ SourceActor.prototype = {
           }
         }
 
-        packet.lines = sortLines(lines);
-        return packet;
+        return sortLines(lines);
       });
     }
 
     let lines = this.getExecutableOffsets(this.source, true);
-    packet.lines = sortLines(lines);
-    return packet;
+    return sortLines(lines);
   },
 
   /**
@@ -415,9 +441,9 @@ SourceActor.prototype = {
    * @param Boolean onlyLine - will return only the line number
    * @return Set - Executable offsets/lines of the script
    **/
-  getExecutableOffsets: function  (source, onlyLine) {
+  getExecutableOffsets: function (source, onlyLine) {
     let offsets = new Set();
-    for (let s of this.threadActor.scripts.getScriptsBySource(source)) {
+    for (let s of this.dbg.findScripts({ source })) {
       for (let offset of s.getAllColumnOffsets()) {
         offsets.add(onlyLine ? offset.lineNumber : offset);
       }
@@ -434,7 +460,6 @@ SourceActor.prototype = {
       .then(this._getSourceText)
       .then(({ content, contentType }) => {
         return {
-          from: this.actorID,
           source: createValueGrip(content, this.threadActor.threadLifetimePool,
             this.threadActor.objectGrip),
           contentType: contentType
@@ -442,19 +467,15 @@ SourceActor.prototype = {
       })
       .then(null, aError => {
         reportError(aError, "Got an exception during SA_onSource: ");
-        return {
-          "from": this.actorID,
-          "error": this.url,
-          "message": "Could not load the source for " + this.url + ".\n"
-            + DevToolsUtils.safeErrorString(aError)
-        };
+        throw new Error("Could not load the source for " + this.url + ".\n" +
+                        DevToolsUtils.safeErrorString(aError));
       });
   },
 
   /**
    * Handler for the "prettyPrint" packet.
    */
-  onPrettyPrint: function ({ indent }) {
+  prettyPrint: function (indent) {
     this.threadActor.sources.prettyPrint(this.url, indent);
     return this._getSourceText()
       .then(this._sendToPrettyPrintWorker(indent))
@@ -468,12 +489,8 @@ SourceActor.prototype = {
       })
       .then(this.onSource)
       .then(null, error => {
-        this.onDisablePrettyPrint();
-        return {
-          from: this.actorID,
-          error: "prettyPrintError",
-          message: DevToolsUtils.safeErrorString(error)
-        };
+        this.disablePrettyPrint();
+        throw new Error(DevToolsUtils.safeErrorString(error));
       });
   },
 
@@ -495,7 +512,7 @@ SourceActor.prototype = {
         url: this.url,
         indent: aIndent,
         source: content
-      })
+      });
     };
   },
 
@@ -542,7 +559,7 @@ SourceActor.prototype = {
    * pretty printing a source mapped source, we need to compose the existing
    * source map with our new one.
    */
-  _encodeAndSetSourceMapURL: function  ({ map: sm }) {
+  _encodeAndSetSourceMapURL: function ({ map: sm }) {
     let source = this.generatedSource || this.source;
     let sources = this.threadActor.sources;
 
@@ -568,7 +585,7 @@ SourceActor.prototype = {
   /**
    * Handler for the "disablePrettyPrint" packet.
    */
-  onDisablePrettyPrint: function () {
+  disablePrettyPrint: function () {
     let source = this.generatedSource || this.source;
     let sources = this.threadActor.sources;
     let sm = sources.getSourceMap(source);
@@ -579,7 +596,7 @@ SourceActor.prototype = {
       sources.setSourceMapHard(source,
                                this._oldSourceMapping.url,
                                this._oldSourceMapping.map);
-       this._oldSourceMapping = null;
+      this._oldSourceMapping = null;
     }
 
     this.threadActor.sources.disablePrettyPrint(this.url);
@@ -589,27 +606,21 @@ SourceActor.prototype = {
   /**
    * Handler for the "blackbox" packet.
    */
-  onBlackBox: function (aRequest) {
+  blackbox: function () {
     this.threadActor.sources.blackBox(this.url);
-    let packet = {
-      from: this.actorID
-    };
     if (this.threadActor.state == "paused"
         && this.threadActor.youngestFrame
         && this.threadActor.youngestFrame.script.url == this.url) {
-      packet.pausedInSource = true;
+      return true;
     }
-    return packet;
+    return false;
   },
 
   /**
    * Handler for the "unblackbox" packet.
    */
-  onUnblackBox: function (aRequest) {
+  unblackbox: function () {
     this.threadActor.sources.unblackBox(this.url);
-    return {
-      from: this.actorID
-    };
   },
 
   /**
@@ -622,15 +633,14 @@ SourceActor.prototype = {
    *          A promise that resolves to a JSON object representing the
    *          response.
    */
-  onSetBreakpoint: function (request) {
+  setBreakpoint: function (line, column, condition) {
     if (this.threadActor.state !== "paused") {
-      return {
+      throw {
         error: "wrongState",
         message: "Cannot set breakpoint while debuggee is running."
       };
     }
 
-    let { location: { line, column }, condition } = request;
     let location = new OriginalLocation(this, line, column);
     return this._getOrCreateBreakpointActor(
       location,
@@ -707,10 +717,17 @@ SourceActor.prototype = {
         actor,
         GeneratedLocation.fromOriginalLocation(originalLocation)
       )) {
-        const scripts = this.scripts.getScriptsBySourceActorAndLine(
-          this,
-          originalLine
-        );
+        const query = { line: originalLine };
+        // For most cases, we have a real source to query for. The
+        // only time we don't is for HTML pages. In that case we want
+        // to query for scripts in an HTML page based on its URL, as
+        // there could be several sources within an HTML page.
+        if (this.source) {
+          query.source = this.source;
+        } else {
+          query.url = this.url;
+        }
+        const scripts = this.dbg.findScripts(query);
 
         // Never do breakpoint sliding for column breakpoints.
         // Additionally, never do breakpoint sliding if no scripts
@@ -825,11 +842,15 @@ SourceActor.prototype = {
       generatedLastColumn
     } = generatedLocation;
 
-    // Find all scripts that match the given source actor and line number.
-    let scripts = this.scripts.getScriptsBySourceActorAndLine(
-      generatedSourceActor,
-      generatedLine
-    );
+    // Find all scripts that match the given source actor and line
+    // number.
+    const query = { line: generatedLine };
+    if (generatedSourceActor.source) {
+      query.source = generatedSourceActor.source;
+    } else {
+      query.url = generatedSourceActor.url;
+    }
+    let scripts = this.dbg.findScripts(query);
 
     scripts = scripts.filter((script) => !actor.hasScript(script));
 
@@ -850,8 +871,8 @@ SourceActor.prototype = {
       for (let script of scripts) {
         let columnToOffsetMap = script.getAllColumnOffsets()
                                       .filter(({ lineNumber }) => {
-          return lineNumber === generatedLine;
-        });
+                                        return lineNumber === generatedLine;
+                                      });
         for (let { columnNumber: column, offset } of columnToOffsetMap) {
           if (column >= generatedColumn && column <= generatedLastColumn) {
             entryPoints.push({ script, offsets: [offset] });
@@ -866,17 +887,6 @@ SourceActor.prototype = {
     setBreakpointAtEntryPoints(actor, entryPoints);
     return true;
   }
-};
-
-SourceActor.prototype.requestTypes = {
-  "source": SourceActor.prototype.onSource,
-  "blackbox": SourceActor.prototype.onBlackBox,
-  "unblackbox": SourceActor.prototype.onUnblackBox,
-  "prettyPrint": SourceActor.prototype.onPrettyPrint,
-  "disablePrettyPrint": SourceActor.prototype.onDisablePrettyPrint,
-  "getExecutableLines": SourceActor.prototype.getExecutableLines,
-  "setBreakpoint": SourceActor.prototype.onSetBreakpoint
-};
+});
 
 exports.SourceActor = SourceActor;
-

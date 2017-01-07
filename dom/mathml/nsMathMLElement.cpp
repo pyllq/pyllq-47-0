@@ -136,7 +136,7 @@ nsMathMLElement::UnbindFromTree(bool aDeep, bool aNullParent)
   // be under a different xml:base, so forget the cached state now.
   Link::ResetLinkState(false, Link::ElementHasHref());
   
-  nsIDocument* doc = GetCurrentDoc();
+  nsIDocument* doc = GetUncomposedDoc();
   if (doc) {
     doc->UnregisterPendingLinkUpdate(this);
   }
@@ -381,7 +381,7 @@ nsMathMLElement::ParseNumericValue(const nsString& aString,
     return false;
   }
 
-  if (ParseNamedSpaceValue(aString, aCSSValue, aFlags)) {
+  if (ParseNamedSpaceValue(str, aCSSValue, aFlags)) {
     return true;
   }
 
@@ -473,6 +473,7 @@ nsMathMLElement::ParseNumericValue(const nsString& aString,
   else if (unit.EqualsLiteral("mm")) cssUnit = eCSSUnit_Millimeter;
   else if (unit.EqualsLiteral("pt")) cssUnit = eCSSUnit_Point;
   else if (unit.EqualsLiteral("pc")) cssUnit = eCSSUnit_Pica;
+  else if (unit.EqualsLiteral("q")) cssUnit = eCSSUnit_Quarter;
   else { // unexpected unit
     if (!(aFlags & PARSE_SUPPRESS_WARNINGS)) {
       ReportLengthParseError(aString, aDocument);
@@ -1086,8 +1087,7 @@ nsMathMLElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
       (aNameSpaceID == kNameSpaceID_None ||
        aNameSpaceID == kNameSpaceID_XLink)) {
     if (aNameSpaceID == kNameSpaceID_XLink) {
-      WarnDeprecated(MOZ_UTF16("xlink:href"),
-                     MOZ_UTF16("href"), OwnerDoc());
+      WarnDeprecated(u"xlink:href", u"href", OwnerDoc());
     }
     Link::ResetLinkState(!!aNotify, true);
   }

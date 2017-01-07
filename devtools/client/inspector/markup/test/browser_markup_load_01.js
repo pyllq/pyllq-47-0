@@ -13,7 +13,7 @@ const server = createTestHTTPServer();
 // Register a slow image handler so we can simulate a long time between
 // a reload and the load event firing.
 server.registerContentType("gif", "image/gif");
-server.registerPathHandler("/slow.gif", function(metadata, response) {
+server.registerPathHandler("/slow.gif", function (metadata, response) {
   info("Image has been requested");
   response.processAsync();
   setTimeout(() => {
@@ -32,7 +32,7 @@ const TEST_URL = "data:text/html," +
   "</body>" +
   "</html>";
 
-add_task(function*() {
+add_task(function* () {
   let {inspector, testActor, tab} = yield openInspectorForURL(TEST_URL);
   let domContentLoaded = waitForLinkedBrowserEvent(tab, "DOMContentLoaded");
   let pageLoaded = waitForLinkedBrowserEvent(tab, "load");
@@ -58,11 +58,11 @@ function* chooseWithInspectElementContextMenu(selector, testActor) {
     button: 2
   }, gBrowser.selectedBrowser);
 
-  yield testActor.synthesizeKey({key: "Q", options: {}});
+  yield EventUtils.synthesizeKey("Q", {});
 }
 
 function waitForLinkedBrowserEvent(tab, event) {
-  let def = promise.defer();
+  let def = defer();
   tab.linkedBrowser.addEventListener(event, function cb() {
     tab.linkedBrowser.removeEventListener(event, cb, true);
     def.resolve();

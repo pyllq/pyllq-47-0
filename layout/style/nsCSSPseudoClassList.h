@@ -132,16 +132,21 @@ CSS_PSEUDO_CLASS(scope, ":scope", 0, "layout.css.scope-pseudo.enabled")
 
 // :not needs to come at the end of the non-bit pseudo-class list, since
 // it doesn't actually get directly matched on in SelectorMatches.
-CSS_PSEUDO_CLASS(notPseudo, ":not", 0, "")
+CSS_PSEUDO_CLASS(negation, ":not", 0, "")
 
-// :-moz-dir(ltr) and :-moz-dir(rtl) match elements whose resolved
-// directionality in the markup language is ltr or rtl respectively
-CSS_STATE_DEPENDENT_PSEUDO_CLASS(dir, ":-moz-dir", 0, "",
+// :dir(ltr) and :dir(rtl) match elements whose resolved
+// directionality in the markup language is ltr or rtl respectively.
+CSS_STATE_DEPENDENT_PSEUDO_CLASS(dir, ":dir", 0, "",
+                                 NS_EVENT_STATE_LTR | NS_EVENT_STATE_RTL)
+// prefix version is deprecated and will be removed per bug 1270406.
+CSS_STATE_DEPENDENT_PSEUDO_CLASS(mozDir, ":-moz-dir", 0, "",
                                  NS_EVENT_STATE_LTR | NS_EVENT_STATE_RTL)
 
 CSS_STATE_PSEUDO_CLASS(link, ":link", 0, "", NS_EVENT_STATE_UNVISITED)
 // what matches :link or :visited
 CSS_STATE_PSEUDO_CLASS(mozAnyLink, ":-moz-any-link", 0, "",
+                       NS_EVENT_STATE_VISITED | NS_EVENT_STATE_UNVISITED)
+CSS_STATE_PSEUDO_CLASS(anyLink, ":any-link", 0, "",
                        NS_EVENT_STATE_VISITED | NS_EVENT_STATE_UNVISITED)
 CSS_STATE_PSEUDO_CLASS(visited, ":visited", 0, "", NS_EVENT_STATE_VISITED)
 
@@ -158,6 +163,8 @@ CSS_STATE_PSEUDO_CLASS(indeterminate, ":indeterminate", 0, "",
 
 CSS_STATE_PSEUDO_CLASS(mozDevtoolsHighlighted, ":-moz-devtools-highlighted", 0, "",
                        NS_EVENT_STATE_DEVTOOLS_HIGHLIGHTED)
+CSS_STATE_PSEUDO_CLASS(mozStyleeditorTransitioning, ":-moz-styleeditor-transitioning", 0, "",
+                       NS_EVENT_STATE_STYLEEDITOR_TRANSITIONING)
 
 // Matches the element which is being displayed full-screen, and
 // any containing frames.
@@ -166,10 +173,6 @@ CSS_STATE_PSEUDO_CLASS(fullscreen, ":fullscreen",
                        "full-screen-api.unprefix.enabled",
                        NS_EVENT_STATE_FULL_SCREEN)
 CSS_STATE_PSEUDO_CLASS(mozFullScreen, ":-moz-full-screen", 0, "", NS_EVENT_STATE_FULL_SCREEN)
-
-// Matches any element which is an ancestor of the DOM full-screen element,
-// or an ancestor of a containing frame of the full-screen element.
-CSS_STATE_PSEUDO_CLASS(mozFullScreenAncestor, ":-moz-full-screen-ancestor", 0, "", NS_EVENT_STATE_FULL_SCREEN_ANCESTOR)
 
 // Matches if the element is focused and should show a focus ring
 CSS_STATE_PSEUDO_CLASS(mozFocusRing, ":-moz-focusring", 0, "", NS_EVENT_STATE_FOCUSRING)

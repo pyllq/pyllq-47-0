@@ -38,12 +38,7 @@ InitArgsFromArrayLike(JSContext* cx, HandleValue v, InvokeArgs* args)
     if (!GetLengthProperty(cx, obj, &len))
         return false;
 
-    // Allocate space for the arguments.
-    if (len > ARGS_LENGTH_MAX) {
-        JS_ReportErrorNumber(cx, GetErrorMessage, nullptr, JSMSG_TOO_MANY_FUN_APPLY_ARGS);
-        return false;
-    }
-    if (!args->init(len))
+    if (!args->init(cx, len))
         return false;
 
     // Steps 6-8.
@@ -70,18 +65,13 @@ Reflect_apply(JSContext* cx, unsigned argc, Value* vp)
     }
 
     // Steps 2-3.
-    FastInvokeGuard fig(cx, args.get(0));
+    FastCallGuard fig(cx, args.get(0));
     InvokeArgs& invokeArgs = fig.args();
     if (!InitArgsFromArrayLike(cx, args.get(2), &invokeArgs))
         return false;
-    invokeArgs.setCallee(args.get(0));
-    invokeArgs.setThis(args.get(1));
 
     // Steps 4-5. This is specified to be a tail call, but isn't.
-    if (!fig.invoke(cx))
-        return false;
-    args.rval().set(invokeArgs.rval());
-    return true;
+    return fig.call(cx, args.get(0), args.get(1), args.rval());
 }
 
 /* ES6 26.1.2 Reflect.construct(target, argumentsList [, newTarget]) */

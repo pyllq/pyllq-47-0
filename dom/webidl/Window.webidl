@@ -13,6 +13,7 @@
  * https://dvcs.w3.org/hg/webperf/raw-file/tip/specs/NavigationTiming/Overview.html
  * https://dvcs.w3.org/hg/webcrypto-api/raw-file/tip/spec/Overview.html
  * http://dvcs.w3.org/hg/speech-api/raw-file/tip/speechapi.html
+ * https://w3c.github.io/webappsec-secure-contexts/#monkey-patching-global-object
  */
 
 interface ApplicationCache;
@@ -23,7 +24,7 @@ interface nsIDOMCrypto;
 typedef any Transferable;
 
 // http://www.whatwg.org/specs/web-apps/current-work/
-[PrimaryGlobal, NeedResolve]
+[PrimaryGlobal, LegacyUnenumerableNamedProperties, NeedResolve]
 /*sealed*/ interface Window : EventTarget {
   // the current browsing context
   [Unforgeable, Constant, StoreInSlot,
@@ -35,6 +36,8 @@ typedef any Transferable;
   [PutForwards=href, Unforgeable, Throws,
    CrossOriginReadable, CrossOriginWritable] readonly attribute Location? location;
   [Throws] readonly attribute History history;
+  [Func="CustomElementsRegistry::IsCustomElementsEnabled"]
+  readonly attribute CustomElementsRegistry customElements;
   [Replaceable, Throws] readonly attribute BarProp locationbar;
   [Replaceable, Throws] readonly attribute BarProp menubar;
   [Replaceable, Throws] readonly attribute BarProp personalbar;
@@ -88,15 +91,21 @@ typedef any Transferable;
 Window implements GlobalEventHandlers;
 Window implements WindowEventHandlers;
 
+// https://w3c.github.io/manifest/#oninstall-attribute
+partial interface Window {
+  [Pref="dom.manifest.oninstall"]
+  attribute EventHandler oninstall;
+};
+
 // http://www.whatwg.org/specs/web-apps/current-work/
 [NoInterfaceObject, Exposed=(Window,Worker)]
 interface WindowTimers {
   [Throws] long setTimeout(Function handler, optional long timeout = 0, any... arguments);
   [Throws] long setTimeout(DOMString handler, optional long timeout = 0, any... unused);
-  [Throws] void clearTimeout(optional long handle = 0);
+  void clearTimeout(optional long handle = 0);
   [Throws] long setInterval(Function handler, optional long timeout, any... arguments);
   [Throws] long setInterval(DOMString handler, optional long timeout, any... unused);
-  [Throws] void clearInterval(optional long handle = 0);
+  void clearInterval(optional long handle = 0);
 };
 Window implements WindowTimers;
 
@@ -412,10 +421,9 @@ partial interface Window {
 };
 #endif
 
-// ConsoleAPI
+// https://w3c.github.io/webappsec-secure-contexts/#monkey-patching-global-object
 partial interface Window {
-  [Replaceable, GetterThrows]
-  readonly attribute Console console;
+  readonly attribute boolean isSecureContext;
 };
 
 #ifdef HAVE_SIDEBAR

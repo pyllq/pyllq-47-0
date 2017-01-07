@@ -19,6 +19,8 @@ var {getInplaceEditorForSpan: inplaceEditor} =
 
 const ROOT_TEST_DIR = getRootDirectory(gTestPath);
 const FRAME_SCRIPT_URL = ROOT_TEST_DIR + "doc_frame_script.js";
+const _STRINGS = Services.strings.createBundle(
+  "chrome://devtools-shared/locale/styleinspector.properties");
 
 registerCleanupFunction(() => {
   Services.prefs.clearUserPref("devtools.defaultColorUnit");
@@ -32,7 +34,7 @@ registerCleanupFunction(() => {
  * script, so they can run on remote targets too.
  */
 var _addTab = addTab;
-addTab = function(url) {
+addTab = function (url) {
   return _addTab(url).then(tab => {
     info("Loading the helper frame script " + FRAME_SCRIPT_URL);
     let browser = tab.linkedBrowser;
@@ -40,76 +42,6 @@ addTab = function(url) {
     return tab;
   });
 };
-
-/**
- * Open the toolbox, with the inspector tool visible, and the rule-view
- * sidebar tab selected.
- *
- * @return a promise that resolves when the inspector is ready and the rule
- * view is visible and ready
- */
-function openRuleView() {
-  return openInspectorSidebarTab("ruleview").then(data => {
-    return {
-      toolbox: data.toolbox,
-      inspector: data.inspector,
-      testActor: data.testActor,
-      view: data.inspector.ruleview.view
-    };
-  });
-}
-
-/**
- * Set the inspector's current selection to null so that no node is selected
- *
- * @param {InspectorPanel} inspector
- *        The instance of InspectorPanel currently loaded in the toolbox
- * @return a promise that resolves when the inspector is updated
- */
-function clearCurrentNodeSelection(inspector) {
-  info("Clearing the current selection");
-  let updated = inspector.once("inspector-updated");
-  inspector.selection.setNodeFront(null);
-  return updated;
-}
-
-/**
- * Wait for eventName on target to be delivered a number of times.
- *
- * @param {Object} target
- *        An observable object that either supports on/off or
- *        addEventListener/removeEventListener
- * @param {String} eventName
- * @param {Number} numTimes
- *        Number of deliveries to wait for.
- * @param {Boolean} useCapture
- *        Optional, for addEventListener/removeEventListener
- * @return A promise that resolves when the event has been handled
- */
-function waitForNEvents(target, eventName, numTimes, useCapture = false) {
-  info("Waiting for event: '" + eventName + "' on " + target + ".");
-
-  let deferred = promise.defer();
-  let count = 0;
-
-  for (let [add, remove] of [
-    ["addEventListener", "removeEventListener"],
-    ["addListener", "removeListener"],
-    ["on", "off"]
-  ]) {
-    if ((add in target) && (remove in target)) {
-      target[add](eventName, function onEvent(...aArgs) {
-        if (++count == numTimes) {
-          target[remove](eventName, onEvent, useCapture);
-          deferred.resolve.apply(deferred, aArgs);
-        }
-      }, useCapture);
-      break;
-    }
-  }
-
-  return deferred.promise;
-}
 
 /**
  * Wait for a content -> chrome message on the message manager (the window
@@ -125,7 +57,7 @@ function waitForContentMessage(name) {
 
   let mm = gBrowser.selectedBrowser.messageManager;
 
-  let def = promise.defer();
+  let def = defer();
   mm.addMessageListener(name, function onMessage(msg) {
     mm.removeMessageListener(name, onMessage);
     def.resolve(msg.data);
@@ -225,7 +157,7 @@ function* waitForComputedStyleProperty(selector, pseudo, name, expected) {
  *
  * @return a promise that resolves to the inplace-editor element when ready
  */
-var focusEditableField = Task.async(function*(ruleView, editable, xOffset = 1,
+var focusEditableField = Task.async(function* (ruleView, editable, xOffset = 1,
     yOffset = 1, options = {}) {
   let onFocus = once(editable.parentNode, "focus", true);
   info("Clicking on editable field to turn to edit mode");
@@ -238,36 +170,6 @@ var focusEditableField = Task.async(function*(ruleView, editable, xOffset = 1,
 
   return onEdit;
 });
-
-/**
- * Given a tooltip object instance (see Tooltip.js), checks if it is set to
- * toggle and hover and if so, checks if the given target is a valid hover
- * target. This won't actually show the tooltip (the less we interact with XUL
- * panels during test runs, the better).
- *
- * @return a promise that resolves when the answer is known
- */
-function isHoverTooltipTarget(tooltip, target) {
-  if (!tooltip._basedNode || !tooltip.panel) {
-    return promise.reject(new Error(
-      "The tooltip passed isn't set to toggle on hover or is not a tooltip"));
-  }
-  return tooltip.isValidHoverTarget(target);
-}
-
-/**
- * Same as isHoverTooltipTarget except that it will fail the test if there is no
- * tooltip defined on hover of the given element
- *
- * @return a promise
- */
-function assertHoverTooltipOn(tooltip, element) {
-  return isHoverTooltipTarget(tooltip, element).then(() => {
-    ok(true, "A tooltip is defined on hover of the given element");
-  }, () => {
-    ok(false, "No tooltip is defined on hover of the given element");
-  });
-}
 
 /**
  * When a tooltip is closed, this ends up "commiting" the value changed within
@@ -285,22 +187,6 @@ function* hideTooltipAndWaitForRuleViewChanged(tooltip, view) {
 }
 
 /**
- * Listen for a new tab to open and return a promise that resolves when one
- * does and completes the load event.
- *
- * @return a promise that resolves to the tab object
- */
-var waitForTab = Task.async(function*() {
-  info("Waiting for a tab to open");
-  yield once(gBrowser.tabContainer, "TabOpen");
-  let tab = gBrowser.selectedTab;
-  let browser = tab.linkedBrowser;
-  yield once(browser, "load", true);
-  info("The tab load completed");
-  return tab;
-});
-
-/**
  * Polls a given generator function waiting for it to return true.
  *
  * @param {Function} validatorFn
@@ -313,7 +199,7 @@ var waitForTab = Task.async(function*() {
  * @return a promise that resolves when the function returned true or rejects
  * if the timeout is reached
  */
-var waitForSuccess = Task.async(function*(validatorFn, desc = "untitled") {
+var waitForSuccess = Task.async(function* (validatorFn, desc = "untitled") {
   let i = 0;
   while (true) {
     info("Checking: " + desc);
@@ -329,38 +215,6 @@ var waitForSuccess = Task.async(function*(validatorFn, desc = "untitled") {
     yield new Promise(r => setTimeout(r, 200));
   }
 });
-
-/**
- * Get the dataURL for the font family tooltip.
- *
- * @param {String} font
- *        The font family value.
- * @param {object} nodeFront
- *        The NodeActor that will used to retrieve the dataURL for the
- *        font family tooltip contents.
- */
-var getFontFamilyDataURL = Task.async(function*(font, nodeFront) {
-  let fillStyle = (Services.prefs.getCharPref("devtools.theme") === "light") ?
-      "black" : "white";
-
-  let {data} = yield nodeFront.getFontFamilyDataURL(font, fillStyle);
-  let dataURL = yield data.string();
-  return dataURL;
-});
-
-/**
- * Simulate the key input for the given input in the window.
- *
- * @param {String} input
- *        The string value to input
- * @param {Window} win
- *        The window containing the panel
- */
-function synthesizeKeys(input, win) {
-  for (let key of input.split("")) {
-    EventUtils.synthesizeKey(key, {}, win);
-  }
-}
 
 /**
  * Get the DOMNode for a css rule in the rule-view that corresponds to the given
@@ -484,11 +338,16 @@ function getRuleViewSelectorHighlighterIcon(view, selectorText) {
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var simulateColorPickerChange = Task.async(function*(ruleView, colorPicker,
+var simulateColorPickerChange = Task.async(function* (ruleView, colorPicker,
     newRgba, expectedChange) {
+  let onComputedStyleChanged;
+  if (expectedChange) {
+    let {selector, name, value} = expectedChange;
+    onComputedStyleChanged = waitForComputedStyleProperty(selector, null, name, value);
+  }
   let onRuleViewChanged = ruleView.once("ruleview-changed");
   info("Getting the spectrum colorpicker object");
-  let spectrum = yield colorPicker.spectrum;
+  let spectrum = colorPicker.spectrum;
   info("Setting the new color");
   spectrum.rgb = newRgba;
   info("Applying the change");
@@ -499,8 +358,7 @@ var simulateColorPickerChange = Task.async(function*(ruleView, colorPicker,
 
   if (expectedChange) {
     info("Waiting for the style to be applied on the page");
-    let {selector, name, value} = expectedChange;
-    yield waitForComputedStyleProperty(selector, null, name, value);
+    yield onComputedStyleChanged;
   }
 });
 
@@ -525,7 +383,7 @@ var simulateColorPickerChange = Task.async(function*(ruleView, colorPicker,
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var openColorPickerAndSelectColor = Task.async(function*(view, ruleIndex,
+var openColorPickerAndSelectColor = Task.async(function* (view, ruleIndex,
     propIndex, newRgba, expectedChange) {
   let ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
   let propEditor = ruleEditor.rule.textProps[propIndex].editor;
@@ -563,7 +421,7 @@ var openColorPickerAndSelectColor = Task.async(function*(view, ruleIndex,
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var openCubicBezierAndChangeCoords = Task.async(function*(view, ruleIndex,
+var openCubicBezierAndChangeCoords = Task.async(function* (view, ruleIndex,
     propIndex, coords, expectedChange) {
   let ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
   let propEditor = ruleEditor.rule.textProps[propIndex].editor;
@@ -620,23 +478,6 @@ function getRuleViewLinkTextByIndex(view, index) {
 }
 
 /**
- * Get the rule editor from the rule-view given its index
- *
- * @param {CssRuleView} view
- *        The instance of the rule-view panel
- * @param {Number} childrenIndex
- *        The children index of the element to get
- * @param {Number} nodeIndex
- *        The child node index of the element to get
- * @return {DOMNode} The rule editor if any at this index
- */
-function getRuleViewRuleEditor(view, childrenIndex, nodeIndex) {
-  return nodeIndex !== undefined ?
-    view.element.children[childrenIndex].childNodes[nodeIndex]._ruleEditor :
-    view.element.children[childrenIndex]._ruleEditor;
-}
-
-/**
  * Simulate adding a new property in an existing rule in the rule-view.
  *
  * @param {CssRuleView} view
@@ -659,9 +500,9 @@ function getRuleViewRuleEditor(view, childrenIndex, nodeIndex) {
  *        property to be blurred. Set to false if you don't want this.
  * @return {TextProperty} The instance of the TextProperty that was added
  */
-var addProperty = Task.async(function*(view, ruleIndex, name, value,
-                                       commitValueWith = "VK_RETURN",
-                                       blurNewProperty = true) {
+var addProperty = Task.async(function* (view, ruleIndex, name, value,
+                                        commitValueWith = "VK_RETURN",
+                                        blurNewProperty = true) {
   info("Adding new property " + name + ":" + value + " to rule " + ruleIndex);
 
   let ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
@@ -717,8 +558,8 @@ var addProperty = Task.async(function*(view, ruleIndex, name, value,
  *        focused. This parameter is true by default, and that causes the new
  *        property to be blurred. Set to false if you don't want this.
  */
-var setProperty = Task.async(function*(view, textProp, value,
-                                       blurNewProperty = true) {
+var setProperty = Task.async(function* (view, textProp, value,
+                                        blurNewProperty = true) {
   yield focusEditableField(view, textProp.editor.valueSpan);
 
   let onPreview = view.once("ruleview-changed");
@@ -750,8 +591,8 @@ var setProperty = Task.async(function*(view, textProp, value,
  *        focused. This parameter is true by default, and that causes the new
  *        property to be blurred. Set to false if you don't want this.
  */
-var removeProperty = Task.async(function*(view, textProp,
-                                          blurNewProperty = true) {
+var removeProperty = Task.async(function* (view, textProp,
+                                           blurNewProperty = true) {
   yield focusEditableField(view, textProp.editor.nameSpan);
 
   let onModifications = view.once("ruleview-changed");
@@ -773,7 +614,7 @@ var removeProperty = Task.async(function*(view, textProp,
  * @param {TextProperty} textProp
  *        The instance of the TextProperty to be enabled/disabled
  */
-var togglePropStatus = Task.async(function*(view, textProp) {
+var togglePropStatus = Task.async(function* (view, textProp) {
   let onRuleViewRefreshed = view.once("ruleview-changed");
   textProp.editor.enable.click();
   yield onRuleViewRefreshed;
@@ -787,7 +628,7 @@ var togglePropStatus = Task.async(function*(view, textProp) {
  * @return a promise that resolves to the newly created editor when ready and
  * focused
  */
-var focusNewRuleViewProperty = Task.async(function*(ruleEditor) {
+var focusNewRuleViewProperty = Task.async(function* (ruleEditor) {
   info("Clicking on a close ruleEditor brace to start editing a new property");
   ruleEditor.closeBrace.scrollIntoView();
   let editor = yield focusEditableField(ruleEditor.ruleView,
@@ -812,7 +653,7 @@ var focusNewRuleViewProperty = Task.async(function*(ruleEditor) {
  * @return a promise that resolves when the new property name has been entered
  * and once the value field is focused
  */
-var createNewRuleViewProperty = Task.async(function*(ruleEditor, inputValue) {
+var createNewRuleViewProperty = Task.async(function* (ruleEditor, inputValue) {
   info("Creating a new property editor");
   let editor = yield focusNewRuleViewProperty(ruleEditor);
 
@@ -836,7 +677,7 @@ var createNewRuleViewProperty = Task.async(function*(ruleEditor, inputValue) {
  * @return a promise that resolves when the rule-view is filtered for the
  * search term
  */
-var setSearchFilter = Task.async(function*(view, searchValue) {
+var setSearchFilter = Task.async(function* (view, searchValue) {
   info("Setting filter text to \"" + searchValue + "\"");
   let win = view.styleWindow;
   let searchField = view.searchField;
@@ -863,6 +704,7 @@ function* reloadPage(inspector, testActor) {
 
 /**
  * Create a new rule by clicking on the "add rule" button.
+ * This will leave the selector inplace-editor active.
  *
  * @param {InspectorPanel} inspector
  *        The instance of InspectorPanel currently loaded in the toolbox
@@ -876,4 +718,75 @@ function* addNewRule(inspector, view) {
 
   info("Waiting for rule view to change");
   yield view.once("ruleview-changed");
+}
+
+/**
+ * Create a new rule by clicking on the "add rule" button, dismiss the editor field and
+ * verify that the selector is correct.
+ *
+ * @param {InspectorPanel} inspector
+ *        The instance of InspectorPanel currently loaded in the toolbox
+ * @param {CssRuleView} view
+ *        The instance of the rule-view panel
+ * @param {String} expectedSelector
+ *        The value we expect the selector to have
+ * @param {Number} expectedIndex
+ *        The index we expect the rule to have in the rule-view
+ * @return a promise that resolves after the rule has been added
+ */
+function* addNewRuleAndDismissEditor(inspector, view, expectedSelector, expectedIndex) {
+  yield addNewRule(inspector, view);
+
+  info("Getting the new rule at index " + expectedIndex);
+  let ruleEditor = getRuleViewRuleEditor(view, expectedIndex);
+  let editor = ruleEditor.selectorText.ownerDocument.activeElement;
+  is(editor.value, expectedSelector,
+     "The editor for the new selector has the correct value: " + expectedSelector);
+
+  info("Pressing escape to leave the editor");
+  EventUtils.synthesizeKey("VK_ESCAPE", {});
+
+  is(ruleEditor.selectorText.textContent, expectedSelector,
+     "The new selector has the correct text: " + expectedSelector);
+}
+
+/**
+ * Simulate a sequence of non-character keys (return, escape, tab) and wait for
+ * a given element to receive the focus.
+ *
+ * @param {CssRuleView} view
+ *        The instance of the rule-view panel
+ * @param {DOMNode} element
+ *        The element that should be focused
+ * @param {Array} keys
+ *        Array of non-character keys, the part that comes after "DOM_VK_" eg.
+ *        "RETURN", "ESCAPE"
+ * @return a promise that resolves after the element received the focus
+ */
+function* sendKeysAndWaitForFocus(view, element, keys) {
+  let onFocus = once(element, "focus", true);
+  for (let key of keys) {
+    EventUtils.sendKey(key, view.styleWindow);
+  }
+  yield onFocus;
+}
+
+/**
+ * Open the style editor context menu and return all of it's items in a flat array
+ * @param {CssRuleView} view
+ *        The instance of the rule-view panel
+ * @return An array of MenuItems
+ */
+function openStyleContextMenuAndGetAllItems(view, target) {
+  let menu = view._contextmenu._openMenu({target: target});
+
+  // Flatten all menu items into a single array to make searching through it easier
+  let allItems = [].concat.apply([], menu.items.map(function addItem(item) {
+    if (item.submenu) {
+      return addItem(item.submenu.items);
+    }
+    return item;
+  }));
+
+  return allItems;
 }

@@ -28,25 +28,12 @@ public:
 
   virtual bool RecvUpdateFrame(const FrameMetrics& frame) override;
 
-  virtual bool RecvRequestFlingSnap(const ViewID& aScrollID,
-                                    const CSSPoint& aDestination) override;
-
-  virtual bool RecvAcknowledgeScrollUpdate(const ViewID& aScrollId,
-                                           const uint32_t& aScrollGeneration) override;
-
-  virtual bool RecvHandleDoubleTap(const CSSPoint& aPoint,
-                                   const Modifiers& aModifiers,
-                                   const ScrollableLayerGuid& aGuid) override;
-
-  virtual bool RecvHandleSingleTap(const CSSPoint& aPoint,
-                                   const Modifiers& aModifiers,
-                                   const ScrollableLayerGuid& aGuid,
-                                   const bool& aCallTakeFocusForClickFromTap) override;
-
-  virtual bool RecvHandleLongTap(const CSSPoint& aPoint,
-                                 const Modifiers& aModifiers,
-                                 const ScrollableLayerGuid& aGuid,
-                                 const uint64_t& aInputBlockId) override;
+  virtual bool RecvHandleTap(const TapType& aType,
+                             const LayoutDevicePoint& aPoint,
+                             const Modifiers& aModifiers,
+                             const ScrollableLayerGuid& aGuid,
+                             const uint64_t& aInputBlockId,
+                             const bool& aCallTakeFocusForClickFromTap) override;
 
   virtual bool RecvNotifyAPZStateChange(const ViewID& aViewId,
                                         const APZStateChange& aChange,

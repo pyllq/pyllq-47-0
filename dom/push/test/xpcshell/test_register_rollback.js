@@ -29,7 +29,6 @@ add_task(function* test_register_rollback() {
   PushServiceWebSocket._generateID = () => channelID;
   PushService.init({
     serverURI: "wss://push.example.org/",
-    networkInfo: new MockDesktopNetworkInfo(),
     db: makeStub(db, {
       put(prev, record) {
         return Promise.reject('universe has imploded');
@@ -59,6 +58,7 @@ add_task(function* test_register_rollback() {
         },
         onUnregister(request) {
           equal(request.channelID, channelID, 'Unregister: wrong channel ID');
+          equal(request.code, 200, 'Expected manual unregister reason');
           this.serverSendMsg(JSON.stringify({
             messageType: 'unregister',
             status: 200,

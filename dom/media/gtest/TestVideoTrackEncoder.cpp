@@ -9,6 +9,7 @@
 #include "VP8TrackEncoder.h"
 #include "ImageContainer.h"
 #include "MediaStreamGraph.h"
+#include "MediaStreamListener.h"
 #include "WebMWriter.h" // TODO: it's weird to include muxer header to get the class definition of VP8 METADATA
 
 using ::testing::TestWithParam;
@@ -87,7 +88,7 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
@@ -124,7 +125,7 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
@@ -161,7 +162,7 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
@@ -249,9 +250,6 @@ TEST(VP8VideoTrackEncoder, FetchMetaData)
 }
 
 // Encode test
-// XXX(bug 1018402): Disable this test when compiled with VS2013 because it
-// crashes.
-#if !defined(_MSC_VER) || _MSC_VER < 1800
 TEST(VP8VideoTrackEncoder, FrameEncode)
 {
   // Initiate VP8 encoder
@@ -271,7 +269,10 @@ TEST(VP8VideoTrackEncoder, FrameEncode)
   for (nsTArray<RefPtr<Image>>::size_type i = 0; i < images.Length(); i++)
   {
     RefPtr<Image> image = images[i];
-    segment.AppendFrame(image.forget(), mozilla::StreamTime(90000), generator.GetSize());
+    segment.AppendFrame(image.forget(),
+                        mozilla::StreamTime(90000),
+                        generator.GetSize(),
+                        PRINCIPAL_HANDLE_NONE);
   }
 
   // track change notification.
@@ -281,7 +282,6 @@ TEST(VP8VideoTrackEncoder, FrameEncode)
   EncodedFrameContainer container;
   EXPECT_TRUE(NS_SUCCEEDED(encoder.GetEncodedTrack(container)));
 }
-#endif // _MSC_VER
 
 // EOS test
 TEST(VP8VideoTrackEncoder, EncodeComplete)
@@ -293,7 +293,7 @@ TEST(VP8VideoTrackEncoder, EncodeComplete)
 
   // track end notification.
   VideoSegment segment;
-  encoder.NotifyQueuedTrackChanges(nullptr, 0, 0, MediaStreamListener::TRACK_EVENT_ENDED, segment);
+  encoder.NotifyQueuedTrackChanges(nullptr, 0, 0, TrackEventCommand::TRACK_EVENT_ENDED, segment);
 
   // Pull Encoded Data back from encoder. Since we have sent
   // EOS to encoder, encoder.GetEncodedTrack should return

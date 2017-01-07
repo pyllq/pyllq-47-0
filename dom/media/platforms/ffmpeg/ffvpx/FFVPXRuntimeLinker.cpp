@@ -49,7 +49,6 @@ FFVPXRuntimeLinker::Init()
     return sLinkStatus == LinkStatus_SUCCEEDED;
   }
 
-  MOZ_ASSERT(NS_IsMainThread());
   sLinkStatus = LinkStatus_FAILED;
 
   // We retrieve the path of the lgpllibs library as this is where mozavcodec
@@ -95,7 +94,7 @@ FFVPXRuntimeLinker::Init()
     sFFVPXLib.mAVCodecLib = MozAVLink(libname);
     PR_FreeLibraryName(libname);
   }
-  if (sFFVPXLib.Link()) {
+  if (sFFVPXLib.Link() == FFmpegLibWrapper::LinkResult::Success) {
     sLinkStatus = LinkStatus_SUCCEEDED;
     return true;
   }

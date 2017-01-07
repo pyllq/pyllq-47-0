@@ -31,19 +31,15 @@ function test() {
 }
 
 function init() {
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
-  let target = TargetFactory.forTab(gBrowser.selectedTab);
-  let linkedBrowser = tab.linkedBrowser;
+  addTab(TEST_URI).then(tab => {
+    let target = TargetFactory.forTab(tab);
+    let linkedBrowser = tab.linkedBrowser;
 
-  linkedBrowser.messageManager.loadFrameScript(COMMON_FRAME_SCRIPT_URL, false);
-  linkedBrowser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
+    linkedBrowser.messageManager.loadFrameScript(COMMON_FRAME_SCRIPT_URL, false);
+    linkedBrowser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
 
-  gBrowser.selectedBrowser.addEventListener("load", function onLoad(evt) {
-    gBrowser.selectedBrowser.removeEventListener(evt.type, onLoad, true);
     gDevTools.showToolbox(target).then(testSelectTool);
-  }, true);
-
-  content.location = TEST_URI;
+  });
 }
 
 function testSelectTool(aToolbox) {
@@ -58,6 +54,10 @@ function register() {
 
 function unregister(swr) {
   return executeInContent("devtools:sw-test:unregister");
+}
+
+function registerAndUnregisterInFrame() {
+  return executeInContent("devtools:sw-test:iframe:register-and-unregister");
 }
 
 function testRegisterFails(data) {
@@ -83,7 +83,7 @@ function toggleServiceWorkersTestingCheckbox() {
 }
 
 function reload() {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   gBrowser.selectedBrowser.addEventListener("load", function onLoad(evt) {
     gBrowser.selectedBrowser.removeEventListener(evt.type, onLoad, true);
@@ -107,12 +107,14 @@ function start() {
     .then(register)
     .then(testRegisterSuccesses)
     .then(unregister)
+    .then(registerAndUnregisterInFrame)
+    .then(testRegisterSuccesses)
     // Workers should be turned back off when we closes the toolbox
     .then(toolbox.destroy.bind(toolbox))
     .then(reload)
     .then(register)
     .then(testRegisterFails)
-    .catch(function(e) {
+    .catch(function (e) {
       ok(false, "Some test failed with error " + e);
     }).then(finishUp);
 }

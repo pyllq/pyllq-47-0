@@ -59,9 +59,6 @@ const QUERYTYPE_AUTOFILL_URL        = 2;
 // "comment" back into the title and the tag.
 const TITLE_TAGS_SEPARATOR = " \u2013 ";
 
-// This separator identifies the search engine name in the title.
-const TITLE_SEARCH_ENGINE_SEPARATOR = " \u00B7\u2013\u00B7 ";
-
 // Telemetry probes.
 const TELEMETRY_1ST_RESULT = "PLACES_AUTOCOMPLETE_1ST_RESULT_TIME_MS";
 const TELEMETRY_6_FIRST_RESULTS = "PLACES_AUTOCOMPLETE_6_FIRST_RESULTS_TIME_MS";
@@ -112,6 +109,8 @@ const SQL_BOOKMARK_TAGS_FRAGMENT =
 
 // TODO bug 412736: in case of a frecency tie, we might break it with h.typed
 // and h.visit_count.  That is slower though, so not doing it yet...
+// NB: as a slight performance optimization, we only evaluate the "btitle"
+// and "tags" queries for bookmarked entries.
 function defaultQuery(conditions = "") {
   let query =
     `SELECT :query_type, h.url, h.title, f.url, ${SQL_BOOKMARK_TAGS_FRAGMENT},
@@ -121,7 +120,12 @@ function defaultQuery(conditions = "") {
      LEFT JOIN moz_openpages_temp t ON t.url = h.url
      WHERE h.frecency <> 0
        AND AUTOCOMPLETE_MATCH(:searchString, h.url,
-                              IFNULL(btitle, h.title), tags,
+                              CASE WHEN bookmarked THEN
+                                IFNULL(btitle, h.title)
+                              ELSE h.title END,
+                              CASE WHEN bookmarked THEN
+                                tags
+                              ELSE '' END,
                               h.visit_count, h.typed,
                               bookmarked, t.open_count,
                               :matchBehavior, :searchBehavior)
@@ -135,7 +139,7 @@ const SQL_SWITCHTAB_QUERY =
   `SELECT :query_type, t.url, t.url, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
           t.open_count, NULL
    FROM moz_openpages_temp t
-   LEFT JOIN moz_places h ON h.url = t.url
+   LEFT JOIN moz_places h ON h.url_hash = hash(t.url) AND h.url = t.url
    WHERE h.id IS NULL
      AND AUTOCOMPLETE_MATCH(:searchString, t.url, t.url, NULL,
                             NULL, NULL, NULL, t.open_count,
@@ -572,24 +576,6 @@ function stripHttpAndTrim(spec) {
 }
 
 /**
- * Make a moz-action: URL for a given action and set of parameters.
- *
- * @param action
- *        Name of the action
- * @param params
- *        Object, whose keys are parameter names and values are the
- *        corresponding parameter values.
- * @return String representation of the built moz-action: URL
- */
-function makeActionURL(action, params) {
-  let encodedParams = {};
-  for (let key in params) {
-    encodedParams[key] = encodeURIComponent(params[key]);
-  }
-  return "moz-action:" + action + "," + JSON.stringify(encodedParams);
-}
-
-/**
  * Returns the key to be used for a URL in a map for the purposes of removing
  * duplicate entries - any 2 URLs that should be considered the same should
  * return the same key. For some moz-action URLs this will unwrap the params
@@ -901,19 +887,27 @@ Search.prototype = {
     // to true so that when the result is added, "heuristic" can be included in
     // its style.
     this._addingHeuristicFirstMatch = true;
-    yield this._matchFirstHeuristicResult(conn);
+    let hasHeuristic = yield this._matchFirstHeuristicResult(conn);
     this._addingHeuristicFirstMatch = false;
+    if (!this.pending)
+      return;
 
     // We sleep a little between adding the heuristicFirstMatch and matching
     // any other searches so we aren't kicking off potentially expensive
     // searches on every keystroke.
-    yield this._sleep(Prefs.delay);
-    if (!this.pending)
-      return;
+    // Though, if there's no heuristic result, we start searching immediately,
+    // since autocomplete may be waiting for us.
+    if (hasHeuristic) {
+      yield this._sleep(Prefs.delay);
+      if (!this.pending)
+        return;
+    }
 
-    yield this._matchSearchSuggestions();
-    if (!this.pending)
-      return;
+    if (this._enableActions) {
+      yield this._matchSearchSuggestions();
+      if (!this.pending)
+        return;
+    }
 
     for (let [query, params] of queries) {
       yield conn.executeCached(query, params, this._onResultRow.bind(this));
@@ -953,7 +947,7 @@ Search.prototype = {
       // This may be a Places keyword.
       let matched = yield this._matchPlacesKeyword();
       if (matched) {
-        return;
+        return true;
       }
     }
 
@@ -962,7 +956,7 @@ Search.prototype = {
       // with an alias - which works like a keyword.
       let matched = yield this._matchSearchEngineAlias();
       if (matched) {
-        return;
+        return true;
       }
     }
 
@@ -971,7 +965,7 @@ Search.prototype = {
       // It may also look like a URL we know from the database.
       let matched = yield this._matchKnownUrl(conn);
       if (matched) {
-        return;
+        return true;
       }
     }
 
@@ -979,7 +973,7 @@ Search.prototype = {
       // Or it may look like a URL we know about from search engines.
       let matched = yield this._matchSearchEngineUrl();
       if (matched) {
-        return;
+        return true;
       }
     }
 
@@ -993,7 +987,7 @@ Search.prototype = {
       // but isn't in the whitelist.
       let matched = yield this._matchUnknownUrl();
       if (matched) {
-        return;
+        return true;
       }
     }
 
@@ -1002,9 +996,11 @@ Search.prototype = {
       // using the current search engine.
       let matched = yield this._matchCurrentSearchEngine();
       if (matched) {
-        return;
+        return true;
       }
     }
+
+    return false;
   },
 
   *_matchSearchSuggestions() {
@@ -1126,8 +1122,10 @@ Search.prototype = {
     let escapedURL = entry.url.href.replace("%s", queryString);
 
     let style = (this._enableActions ? "action " : "") + "keyword";
-    let actionURL = makeActionURL("keyword", { url: escapedURL,
-                                               input: this._originalSearchString });
+    let actionURL = PlacesUtils.mozActionURI("keyword", {
+      url: escapedURL,
+      input: this._originalSearchString,
+    });
     let value = this._enableActions ? actionURL : escapedURL;
     // The title will end up being "host: queryString"
     let comment = entry.url.host;
@@ -1225,7 +1223,7 @@ Search.prototype = {
     if (match.engineAlias) {
       actionURLParams.alias = match.engineAlias;
     }
-    let value = makeActionURL("searchengine", actionURLParams);
+    let value = PlacesUtils.mozActionURI("searchengine", actionURLParams);
 
     this._addMatch({
       value: value,
@@ -1257,9 +1255,9 @@ Search.prototype = {
       let match = {
         // We include the deviceName in the action URL so we can render it in
         // the URLBar.
-        value: makeActionURL("remotetab", { url, deviceName }),
+        value: PlacesUtils.mozActionURI("remotetab", { url, deviceName }),
         comment: title || url,
-        style: "action",
+        style: "action remotetab",
         // we want frecency > FRECENCY_DEFAULT so it doesn't get pushed out
         // by "remote" matches.
         frecency: FRECENCY_DEFAULT + 1,
@@ -1317,7 +1315,7 @@ Search.prototype = {
     let escapedURL = uri.spec;
     let displayURL = textURIService.unEscapeURIForUI("UTF-8", uri.spec);
 
-    let value = makeActionURL("visiturl", {
+    let value = PlacesUtils.mozActionURI("visiturl", {
       url: escapedURL,
       input: this._originalSearchString,
     });
@@ -1385,10 +1383,15 @@ Search.prototype = {
       return;
     }
 
-    // Use the special separator that the binding will use to style the item.
-    match.style = "search " + match.style;
-    match.comment = parseResult.terms + TITLE_SEARCH_ENGINE_SEPARATOR +
-                    parseResult.engineName;
+    // Turn the match into a searchengine action with a favicon.
+    match.value = PlacesUtils.mozActionURI("searchengine", {
+      engineName: parseResult.engineName,
+      input: parseResult.terms,
+      searchQuery: parseResult.terms,
+    });
+    match.comment = parseResult.engineName;
+    match.icon = match.icon || match.iconUrl;
+    match.style = "action searchengine favicon";
   },
 
   _addMatch(match) {
@@ -1425,7 +1428,7 @@ Search.prototype = {
       match.style += " heuristic";
     }
 
-    match.icon = match.icon || PlacesUtils.favicons.defaultFavicon.spec;
+    match.icon = match.icon || "";
     match.finalCompleteValue = match.finalCompleteValue || "";
 
     this._result.insertMatchAt(this._getInsertIndexForMatch(match),
@@ -1553,7 +1556,7 @@ Search.prototype = {
     let url = escapedURL;
     let action = null;
     if (this._enableActions && openPageCount > 0 && this.hasBehavior("openpage")) {
-      url = makeActionURL("switchtab", {url: escapedURL});
+      url = PlacesUtils.mozActionURI("switchtab", {url: escapedURL});
       action = "switchtab";
     }
 
@@ -1958,6 +1961,8 @@ UnifiedComplete.prototype = {
     TelemetryStopwatch.cancel(TELEMETRY_6_FIRST_RESULTS, this);
     // Clear state now to avoid race conditions, see below.
     let search = this._currentSearch;
+    if (!search)
+      return;
     this._lastLowResultsSearchSuggestion = search._lastLowResultsSearchSuggestion;
     delete this._currentSearch;
 

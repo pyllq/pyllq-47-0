@@ -23,6 +23,8 @@ add_task(function* testNarrate() {
 
     ok(NarrateTestUtils.isVisible(popup), "popup toggled");
 
+    yield NarrateTestUtils.waitForVoiceOptions(content);
+
     let voiceOptions = $(NarrateTestUtils.VOICE_OPTIONS);
     ok(!NarrateTestUtils.isVisible(voiceOptions),
       "voice options are initially hidden");
@@ -43,7 +45,7 @@ add_task(function* testNarrate() {
     $(NarrateTestUtils.START).click();
     let speechinfo = (yield promiseEvent).detail;
     is(speechinfo.voice, TEST_VOICE, "correct voice is being used");
-    is(speechinfo.paragraph, 0, "first paragraph is being spoken");
+    let paragraph = speechinfo.paragraph;
 
     NarrateTestUtils.isStartedState(content, ok);
 
@@ -51,7 +53,20 @@ add_task(function* testNarrate() {
     $(NarrateTestUtils.FORWARD).click();
     speechinfo = (yield promiseEvent).detail;
     is(speechinfo.voice, TEST_VOICE, "same voice is used");
-    is(speechinfo.paragraph, 1, "second paragraph is being spoken");
+    isnot(speechinfo.paragraph, paragraph, "next paragraph is being spoken");
+
+    NarrateTestUtils.isStartedState(content, ok);
+
+    paragraph = speechinfo.paragraph;
+    $(NarrateTestUtils.STOP).click();
+    yield ContentTaskUtils.waitForCondition(
+      () => !$(NarrateTestUtils.STOP), "transitioned to stopped state");
+    NarrateTestUtils.isStoppedState(content, ok);
+
+    promiseEvent = ContentTaskUtils.waitForEvent(content, "paragraphstart");
+    $(NarrateTestUtils.START).click();
+    speechinfo = (yield promiseEvent).detail;
+    is(speechinfo.paragraph, paragraph, "read same paragraph again");
 
     NarrateTestUtils.isStartedState(content, ok);
 
@@ -60,7 +75,7 @@ add_task(function* testNarrate() {
     promiseEvent = ContentTaskUtils.waitForEvent(content, "paragraphstart");
     prefChanged = NarrateTestUtils.waitForPrefChange("narrate.rate");
     $(NarrateTestUtils.RATE).focus();
-    eventUtils.sendKey("PAGE_UP", content);
+    eventUtils.sendKey("UP", content);
     let newspeechinfo = (yield promiseEvent).detail;
     is(newspeechinfo.paragraph, speechinfo.paragraph, "same paragraph");
     isnot(newspeechinfo.rate, speechinfo.rate, "rate changed");
@@ -92,10 +107,24 @@ add_task(function* testNarrate() {
     yield promiseEvent;
     ok(NarrateTestUtils.isVisible(popup), "popup stays visible after scroll");
 
-    promiseEvent = ContentTaskUtils.waitForEvent(content, "paragraphend");
     toggle.click();
-    yield promiseEvent;
     ok(!NarrateTestUtils.isVisible(popup), "popup is dismissed while speaking");
-    ok(true, "speech stopped when popup is dismissed");
+    NarrateTestUtils.isStartedState(content, ok);
+
+    // Go forward all the way to the end of the article. We should eventually
+    // stop.
+    do {
+      promiseEvent = Promise.race([
+        ContentTaskUtils.waitForEvent(content, "paragraphstart"),
+        ContentTaskUtils.waitForEvent(content, "paragraphsdone")]);
+      $(NarrateTestUtils.FORWARD).click();
+    } while ((yield promiseEvent).type == "paragraphstart");
+
+    // This is to make sure we are not actively scrolling when the tab closes.
+    content.scroll(0, 0);
+
+    yield ContentTaskUtils.waitForCondition(
+      () => !$(NarrateTestUtils.STOP), "transitioned to stopped state");
+    NarrateTestUtils.isStoppedState(content, ok);
   });
 });

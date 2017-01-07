@@ -8,13 +8,13 @@
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 
+#include "mozilla/RefPtr.h"
 #include "nsIStringBundle.h"
 #include "nsIUUIDGenerator.h"
 #include "nsIXULAppInfo.h"
 
 //#include "AudioSession.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
@@ -26,7 +26,7 @@
 namespace mozilla {
 namespace widget {
 
-/* 
+/*
  * To take advantage of what Vista+ have to offer with respect to audio,
  * we need to maintain an audio session.  This class wraps IAudioSessionControl
  * and implements IAudioSessionEvents (for callbacks from Windows)
@@ -201,7 +201,7 @@ AudioSession::Start()
     MOZ_ASSERT(XRE_IsParentProcess(),
                "Should only get here in a chrome process!");
 
-    nsCOMPtr<nsIStringBundleService> bundleService = 
+    nsCOMPtr<nsIStringBundleService> bundleService =
       do_GetService(NS_STRINGBUNDLE_CONTRACTID);
     NS_ENSURE_TRUE(bundleService, NS_ERROR_FAILURE);
     nsCOMPtr<nsIStringBundle> bundle;
@@ -209,7 +209,7 @@ AudioSession::Start()
                                 getter_AddRefs(bundle));
     NS_ENSURE_TRUE(bundle, NS_ERROR_FAILURE);
 
-    bundle->GetStringFromName(MOZ_UTF16("brandFullName"),
+    bundle->GetStringFromName(u"brandFullName",
                               getter_Copies(mDisplayName));
 
     wchar_t *buffer;
@@ -296,10 +296,11 @@ AudioSession::Start()
 void
 AudioSession::StopInternal()
 {
-  if (mAudioSessionControl) {
+  if (mAudioSessionControl &&
+      (mState == STARTED || mState == STOPPED)) {
     mAudioSessionControl->UnregisterAudioSessionNotification(this);
-    mAudioSessionControl = nullptr;
   }
+  mAudioSessionControl = nullptr;
 }
 
 nsresult
@@ -408,7 +409,7 @@ AudioSession::OnSessionDisconnected(AudioSessionDisconnectReason aReason)
   // Run our code asynchronously.  Per MSDN we can't do anything interesting
   // in this callback.
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethod(this, &AudioSession::OnSessionDisconnectedInternal);
+    NewRunnableMethod(this, &AudioSession::OnSessionDisconnectedInternal);
   NS_DispatchToMainThread(runnable);
   return S_OK;
 }

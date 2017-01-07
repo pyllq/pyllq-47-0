@@ -91,6 +91,11 @@ this.AutoCompleteE10S = {
   },
 
   _initPopup: function(browserWindow, rect, direction) {
+    if (this._popupCache) {
+      this._popupCache.browserWindow.removeEventListener("unload", this);
+    }
+    browserWindow.addEventListener("unload", this);
+
     this._popupCache = { browserWindow, rect, direction };
 
     this.browser = browserWindow.gBrowser.selectedBrowser;
@@ -104,6 +109,18 @@ this.AutoCompleteE10S = {
     this.y = rect.top;
     this.width = rect.width;
     this.height = rect.height;
+  },
+
+  handleEvent: function(evt) {
+    if (evt.type === "unload") {
+      this._uninitPopup();
+    }
+  },
+
+  _uninitPopup: function() {
+    this._popupCache = null;
+    this.browser = null;
+    this.popup = null;
   },
 
   _showPopup: function(results) {
@@ -147,8 +164,22 @@ this.AutoCompleteE10S = {
     this._showPopup(results);
   },
 
-  removeEntry(index) {
-    this._resultCache.removeValueAt(index, true);
+  removeLogin(login) {
+    Services.logins.removeLogin(login);
+
+    // It's possible to race and have the deleted login no longer be in our
+    // resultCache's logins, so we remove it from the database above and only
+    // deal with our resultCache below.
+    let idx = this._resultCache.logins.findIndex(cur => {
+      return login.guid === cur.QueryInterface(Ci.nsILoginMetaInfo).guid
+    });
+    if (idx !== -1) {
+      this.removeEntry(idx, false);
+    }
+  },
+
+  removeEntry(index, updateDB = true) {
+    this._resultCache.removeValueAt(index, updateDB);
 
     let selectedIndex = this.popup.selectedIndex;
     this.showPopupWithResults(this._popupCache.browserWindow,
@@ -256,6 +287,7 @@ this.AutoCompleteE10S = {
         AutoCompleteE10SView.clearResults();
         break;
     }
+    return undefined;
   },
 
   handleEnter: function(aIsPopupSelection) {

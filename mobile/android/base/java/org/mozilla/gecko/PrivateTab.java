@@ -7,8 +7,10 @@ package org.mozilla.gecko;
 
 import android.content.Context;
 
+import android.support.v4.content.ContextCompat;
+
+import org.json.JSONObject;
 import org.mozilla.gecko.db.BrowserDB;
-import org.mozilla.gecko.util.ColorUtils;
 
 public class PrivateTab extends Tab {
     public PrivateTab(Context context, int id, String url, boolean external, int parentId, String title) {
@@ -16,12 +18,15 @@ public class PrivateTab extends Tab {
 
         // Init background to private_toolbar_grey to ensure flicker-free
         // private tab creation. Page loads will reset it to white as expected.
-        final int bgColor = ColorUtils.getColor(context, R.color.tabs_tray_grey_pressed);
+        final int bgColor = ContextCompat.getColor(context, R.color.tabs_tray_grey_pressed);
         setBackgroundColor(bgColor);
     }
 
     @Override
     protected void saveThumbnailToDB(final BrowserDB db) {}
+
+    @Override
+    public void setMetadata(JSONObject metadata) {}
 
     @Override
     public boolean isPrivate() {

@@ -26,8 +26,6 @@ var ReaderParent = {
     "Reader:ArticleGet",
     "Reader:FaviconRequest",
     "Reader:UpdateReaderButton",
-    "Reader:SetIntPref",
-    "Reader:SetCharPref",
   ],
 
   init: function() {
@@ -47,7 +45,10 @@ var ReaderParent = {
           }
         }, e => {
           if (e && e.newURL) {
-            message.target.loadURI("about:reader?url=" + encodeURIComponent(e.newURL));
+            // Make sure the target browser is still alive before trying to send data back.
+            if (message.target.messageManager) {
+              message.target.messageManager.sendAsyncMessage("Reader:ArticleData", { newURL: e.newURL });
+            }
           }
         });
         break;
@@ -76,29 +77,18 @@ var ReaderParent = {
         this.updateReaderButton(browser);
         break;
       }
-      case "Reader:SetIntPref": {
-        if (message.data && message.data.name !== undefined) {
-          Services.prefs.setIntPref(message.data.name, message.data.value);
-        }
-        break;
-      }
-      case "Reader:SetCharPref": {
-        if (message.data && message.data.name !== undefined) {
-          Services.prefs.setCharPref(message.data.name, message.data.value);
-        }
-        break;
-      }
     }
   },
 
   updateReaderButton: function(browser) {
-    let win = browser.ownerDocument.defaultView;
+    let win = browser.ownerGlobal;
     if (browser != win.gBrowser.selectedBrowser) {
       return;
     }
 
     let button = win.document.getElementById("reader-mode-button");
     let command = win.document.getElementById("View:ReaderView");
+    let key = win.document.getElementById("toggleReaderMode");
     if (browser.currentURI.spec.startsWith("about:reader")) {
       button.setAttribute("readeractive", true);
       button.hidden = false;
@@ -107,6 +97,7 @@ var ReaderParent = {
       command.setAttribute("label", closeText);
       command.setAttribute("hidden", false);
       command.setAttribute("accesskey", gStringBundle.GetStringFromName("readerView.close.accesskey"));
+      key.setAttribute("disabled", false);
     } else {
       button.removeAttribute("readeractive");
       button.hidden = !browser.isArticle;
@@ -115,6 +106,7 @@ var ReaderParent = {
       command.setAttribute("label", enterText);
       command.setAttribute("hidden", !browser.isArticle);
       command.setAttribute("accesskey", gStringBundle.GetStringFromName("readerView.enter.accesskey"));
+      key.setAttribute("disabled", !browser.isArticle);
     }
 
     let currentUriHost = browser.currentURI && browser.currentURI.asciiHost;
@@ -145,20 +137,9 @@ var ReaderParent = {
   },
 
   toggleReaderMode: function(event) {
-    let win = event.target.ownerDocument.defaultView;
+    let win = event.target.ownerGlobal;
     let browser = win.gBrowser.selectedBrowser;
-    let url = browser.currentURI.spec;
-
-    if (url.startsWith("about:reader")) {
-      let originalURL = ReaderMode.getOriginalUrl(url);
-      if (!originalURL) {
-        Cu.reportError("Error finding original URL for about:reader URL: " + url);
-      } else {
-        win.openUILinkIn(originalURL, "current", {"allowPinnedTabHostChange": true});
-      }
-    } else {
-      browser.messageManager.sendAsyncMessage("Reader:ParseDocument", { url: url });
-    }
+    browser.messageManager.sendAsyncMessage("Reader:ToggleReaderMode");
   },
 
   /**
@@ -167,7 +148,7 @@ var ReaderParent = {
    * @param browser The <browser> that the tour should be started for.
    */
   showReaderModeInfoPanel(browser) {
-    let win = browser.ownerDocument.defaultView;
+    let win = browser.ownerGlobal;
     let targetPromise = UITour.getTarget(win, "readerMode-urlBar");
     targetPromise.then(target => {
       let browserBundle = Services.strings.createBundle("chrome://browser/locale/browser.properties");

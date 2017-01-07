@@ -194,6 +194,7 @@ public:
   virtual void MoveBy(const nsPoint& aOffset) override;
 
   nsRect mPositioningArea;
+  nsRect mDestRect;
 };
 
 class nsDisplayThemedBackgroundGeometry : public nsDisplayItemGeometry
@@ -241,6 +242,7 @@ public:
 };
 
 class nsDisplaySVGEffectsGeometry : public nsDisplayItemGeometry
+  , public nsImageGeometryMixin<nsDisplaySVGEffectsGeometry>
 {
 public:
   nsDisplaySVGEffectsGeometry(nsDisplaySVGEffects* aItem, nsDisplayListBuilder* aBuilder);

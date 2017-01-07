@@ -11,7 +11,7 @@
 // Helper Classes
 #include "nsStyleCoord.h"
 #include "nsSize.h"
-#include "nsHTMLReflowState.h"
+#include "mozilla/ReflowInput.h"
 #include "nsIServiceManager.h"
 #include "nsComponentManagerUtils.h"
 #include "nsXPIDLString.h"
@@ -57,6 +57,7 @@
 #include "nsPIWindowWatcher.h"
 #include "nsIPrompt.h"
 #include "nsITabParent.h"
+#include "nsITabChild.h"
 #include "nsRect.h"
 #include "nsIWebBrowserChromeFocus.h"
 #include "nsIContent.h"
@@ -443,6 +444,34 @@ nsDocShellTreeOwner::GetPrimaryTabParent(nsITabParent** aTab)
 }
 
 NS_IMETHODIMP
+nsDocShellTreeOwner::GetPrimaryContentSize(int32_t* aWidth,
+                                           int32_t* aHeight)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsDocShellTreeOwner::SetPrimaryContentSize(int32_t aWidth,
+                                           int32_t aHeight)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsDocShellTreeOwner::GetRootShellSize(int32_t* aWidth,
+                                      int32_t* aHeight)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsDocShellTreeOwner::SetRootShellSize(int32_t aWidth,
+                                      int32_t aHeight)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 nsDocShellTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
                                  int32_t aCX, int32_t aCY)
 {
@@ -455,6 +484,19 @@ nsDocShellTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
   }
 
   if (aShellItem == mWebBrowser->mDocShell) {
+    nsCOMPtr<nsITabChild> tabChild = do_QueryInterface(webBrowserChrome);
+    if (tabChild) {
+      // The XUL window to resize is in the parent process, but there we
+      // won't be able to get aShellItem to do the hack in nsXULWindow::SizeShellTo,
+      // so let's send the width and height of aShellItem too.
+      nsCOMPtr<nsIBaseWindow> shellAsWin(do_QueryInterface(aShellItem));
+      NS_ENSURE_TRUE(shellAsWin, NS_ERROR_FAILURE);
+
+      int32_t width = 0;
+      int32_t height = 0;
+      shellAsWin->GetSize(&width, &height);
+      return tabChild->RemoteSizeShellTo(aCX, aCY, width, height);
+    }
     return webBrowserChrome->SizeBrowserTo(aCX, aCY);
   }
 
@@ -523,6 +565,13 @@ nsDocShellTreeOwner::GetTargetableShellCount(uint32_t* aResult)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsDocShellTreeOwner::GetHasPrimaryContent(bool* aResult)
+{
+  *aResult = mPrimaryTabParent || mPrimaryContentShell;
+  return NS_OK;
+}
+
 //*****************************************************************************
 // nsDocShellTreeOwner::nsIBaseWindow
 //*****************************************************************************
@@ -578,7 +627,8 @@ NS_IMETHODIMP
 nsDocShellTreeOwner::SetPositionDesktopPix(int32_t aX, int32_t aY)
 {
   if (mWebBrowser) {
-    return mWebBrowser->SetPositionDesktopPix(aX, aY);
+    nsresult rv = mWebBrowser->SetPositionDesktopPix(aX, aY);
+    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   double scale = 1.0;
@@ -632,7 +682,7 @@ nsDocShellTreeOwner::GetSize(int32_t* aCX, int32_t* aCY)
 
 NS_IMETHODIMP
 nsDocShellTreeOwner::SetPositionAndSize(int32_t aX, int32_t aY, int32_t aCX,
-                                        int32_t aCY, bool aRepaint)
+                                        int32_t aCY, uint32_t aFlags)
 {
   nsCOMPtr<nsIEmbeddingSiteWindow> ownerWin = GetOwnerWin();
   if (ownerWin) {
@@ -1004,7 +1054,7 @@ nsDocShellTreeOwner::HandleEvent(nsIDOMEvent* aEvent)
     nsAutoString eventType;
     aEvent->GetType(eventType);
     if (eventType.EqualsLiteral("dragover")) {
-      bool canDropLink;
+      bool canDropLink = false;
       handler->CanDropLink(dragEvent, false, &canDropLink);
       if (canDropLink) {
         aEvent->PreventDefault();
@@ -1064,198 +1114,6 @@ nsDocShellTreeOwner::GetOwnerRequestor()
   return req.forget();
 }
 
-class DefaultTooltipTextProvider final : public nsITooltipTextProvider
-{
-public:
-  DefaultTooltipTextProvider();
-
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSITOOLTIPTEXTPROVIDER
-
-protected:
-  ~DefaultTooltipTextProvider() {}
-
-  nsCOMPtr<nsIAtom> mTag_dialogHeader;
-};
-
-NS_IMPL_ISUPPORTS(DefaultTooltipTextProvider, nsITooltipTextProvider)
-
-DefaultTooltipTextProvider::DefaultTooltipTextProvider()
-{
-  // There are certain element types which we don't want to use
-  // as tool tip text.
-  mTag_dialogHeader = do_GetAtom("dialogheader");
-}
-
-// A helper routine that determines whether we're still interested in SVG
-// titles. We need to stop at the SVG root element that has a document node
-// parent.
-static bool
-UseSVGTitle(nsIDOMElement* aCurrElement)
-{
-  nsCOMPtr<dom::Element> element(do_QueryInterface(aCurrElement));
-  if (!element || !element->IsSVGElement() || !element->GetParentNode()) {
-    return false;
-  }
-
-  return element->GetParentNode()->NodeType() != nsIDOMNode::DOCUMENT_NODE;
-}
-
-NS_IMETHODIMP
-DefaultTooltipTextProvider::GetNodeText(nsIDOMNode* aNode, char16_t** aText,
-                                        bool* aResult)
-{
-  NS_ENSURE_ARG_POINTER(aNode);
-  NS_ENSURE_ARG_POINTER(aText);
-
-  nsString outText;
-
-  nsCOMPtr<nsINode> node = do_QueryInterface(aNode);
-
-  bool lookingForSVGTitle = true;
-  bool found = false;
-  nsCOMPtr<nsIDOMNode> current(aNode);
-
-  // If the element implement the constraint validation API and has no title,
-  // show the validation message, if any.
-  nsCOMPtr<nsIConstraintValidation> cvElement = do_QueryInterface(current);
-  if (cvElement) {
-    nsCOMPtr<nsIContent> content = do_QueryInterface(cvElement);
-    nsCOMPtr<nsIAtom> titleAtom = do_GetAtom("title");
-
-    nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(content);
-    bool formHasNoValidate = false;
-    mozilla::dom::Element* form = formControl->GetFormElement();
-    if (form) {
-      nsCOMPtr<nsIAtom> noValidateAtom = do_GetAtom("novalidate");
-      formHasNoValidate = form->HasAttr(kNameSpaceID_None, noValidateAtom);
-    }
-
-    if (!content->HasAttr(kNameSpaceID_None, titleAtom) && !formHasNoValidate) {
-      cvElement->GetValidationMessage(outText);
-      found = !outText.IsEmpty();
-    }
-  }
-
-  while (!found && current) {
-    nsCOMPtr<nsIDOMElement> currElement(do_QueryInterface(current));
-    if (currElement) {
-      nsCOMPtr<nsIContent> content(do_QueryInterface(currElement));
-      if (content) {
-        if (!content->IsAnyOfXULElements(nsGkAtoms::dialog,
-                                         mTag_dialogHeader,
-                                         nsGkAtoms::window)) {
-          // first try the normal title attribute...
-          if (!content->IsSVGElement()) {
-            // If the element is an <input type="file"> without a title,
-            // we should show the current file selection.
-            if (content->IsHTMLElement(nsGkAtoms::input) &&
-                content->AttrValueIs(kNameSpaceID_None, nsGkAtoms::type,
-                                     NS_LITERAL_STRING("file"), eIgnoreCase) &&
-                !content->HasAttr(kNameSpaceID_None, nsGkAtoms::title)) {
-              found = true;
-              nsCOMPtr<nsIDOMFileList> fileList;
-              nsCOMPtr<nsIDOMHTMLInputElement> currInputElement(do_QueryInterface(currElement));
-              nsresult rv = currInputElement->GetFiles(getter_AddRefs(fileList));
-              NS_ENSURE_SUCCESS(rv, rv);
-              if (!fileList) {
-                return NS_ERROR_FAILURE;
-              }
-
-              nsCOMPtr<nsIStringBundleService> bundleService =
-                mozilla::services::GetStringBundleService();
-              if (!bundleService) {
-                return NS_ERROR_FAILURE;
-              }
-
-              nsCOMPtr<nsIStringBundle> bundle;
-              rv = bundleService->CreateBundle("chrome://global/locale/layout/HtmlForm.properties",
-                                                        getter_AddRefs(bundle));
-              NS_ENSURE_SUCCESS(rv, rv);
-              uint32_t listLength = 0;
-              rv = fileList->GetLength(&listLength);
-              NS_ENSURE_SUCCESS(rv, rv);
-              if (listLength == 0) {
-                if (content->HasAttr(kNameSpaceID_None, nsGkAtoms::multiple)) {
-                  rv = bundle->GetStringFromName(MOZ_UTF16("NoFilesSelected"),
-                                                 getter_Copies(outText));
-                } else {
-                  rv = bundle->GetStringFromName(MOZ_UTF16("NoFileSelected"),
-                                                 getter_Copies(outText));
-                }
-                NS_ENSURE_SUCCESS(rv, rv);
-              } else {
-                FileList* fl = static_cast<FileList*>(fileList.get());
-                fl->Item(0)->GetName(outText);
-
-                // For UX and performance (jank) reasons we cap the number of
-                // files that we list in the tooltip to 20 plus a "and xxx more"
-                // line, or to 21 if exactly 21 files were picked.
-                const uint32_t TRUNCATED_FILE_COUNT = 20;
-                uint32_t count = std::min(listLength, TRUNCATED_FILE_COUNT);
-                for (uint32_t i = 1; i < count; ++i) {
-                  nsString fileName;
-                  fl->Item(i)->GetName(fileName);
-                  outText.Append(NS_LITERAL_STRING("\n"));
-                  outText.Append(fileName);
-                }
-              }
-            } else if (NS_SUCCEEDED(currElement->GetAttribute(NS_LITERAL_STRING("title"), outText)) &&
-                       outText.Length()) {
-              found = true;
-            }
-          }
-          if (!found) {
-            // ...ok, that didn't work, try it in the XLink namespace
-            NS_NAMED_LITERAL_STRING(xlinkNS, "http://www.w3.org/1999/xlink");
-            nsCOMPtr<mozilla::dom::Link> linkContent(
-              do_QueryInterface(currElement));
-            if (linkContent) {
-              nsCOMPtr<nsIURI> uri(linkContent->GetURIExternal());
-              if (uri) {
-                currElement->GetAttributeNS(
-                  xlinkNS, NS_LITERAL_STRING("title"), outText);
-                if (outText.Length()) {
-                  found = true;
-                }
-              }
-            } else {
-              if (lookingForSVGTitle) {
-                lookingForSVGTitle = UseSVGTitle(currElement);
-              }
-              if (lookingForSVGTitle) {
-                nsINodeList* childNodes = content->ChildNodes();
-                uint32_t childNodeCount = childNodes->Length();
-                for (uint32_t i = 0; i < childNodeCount; i++) {
-                  nsIContent* child = childNodes->Item(i);
-                  if (child->IsSVGElement(nsGkAtoms::title)) {
-                    static_cast<dom::SVGTitleElement*>(child)->GetTextContent(outText);
-                    if (outText.Length()) {
-                      found = true;
-                    }
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // not found here, walk up to the parent and keep trying
-    if (!found) {
-      nsCOMPtr<nsIDOMNode> temp(current);
-      temp->GetParentNode(getter_AddRefs(current));
-    }
-  }
-
-  *aResult = found;
-  *aText = (found) ? ToNewUnicode(outText) : nullptr;
-
-  return NS_OK;
-}
-
 NS_IMPL_ISUPPORTS(ChromeTooltipListener, nsIDOMEventListener)
 
 ChromeTooltipListener::ChromeTooltipListener(nsWebBrowser* aInBrowser,
@@ -1265,12 +1123,14 @@ ChromeTooltipListener::ChromeTooltipListener(nsWebBrowser* aInBrowser,
   , mTooltipListenerInstalled(false)
   , mMouseClientX(0)
   , mMouseClientY(0)
+  , mMouseScreenX(0)
+  , mMouseScreenY(0)
   , mShowingTooltip(false)
   , mTooltipShownOnce(false)
 {
   mTooltipTextProvider = do_GetService(NS_TOOLTIPTEXTPROVIDER_CONTRACTID);
   if (!mTooltipTextProvider) {
-    mTooltipTextProvider = new DefaultTooltipTextProvider();
+    mTooltipTextProvider = do_GetService(NS_DEFAULTTOOLTIPTEXTPROVIDER_CONTRACTID);
   }
 }
 
@@ -1460,7 +1320,8 @@ ChromeTooltipListener::MouseMove(nsIDOMEvent* aMouseEvent)
 // Tell the registered chrome that they should show the tooltip.
 NS_IMETHODIMP
 ChromeTooltipListener::ShowTooltip(int32_t aInXCoords, int32_t aInYCoords,
-                                   const nsAString& aInTipText)
+                                   const nsAString& aInTipText,
+                                   const nsAString& aTipDir)
 {
   nsresult rv = NS_OK;
 
@@ -1469,7 +1330,8 @@ ChromeTooltipListener::ShowTooltip(int32_t aInXCoords, int32_t aInYCoords,
     do_QueryInterface(mWebBrowserChrome));
   if (tooltipListener) {
     rv = tooltipListener->OnShowTooltip(aInXCoords, aInYCoords,
-                                        PromiseFlatString(aInTipText).get());
+                                        PromiseFlatString(aInTipText).get(),
+                                        PromiseFlatString(aTipDir).get());
     if (NS_SUCCEEDED(rv)) {
       mShowingTooltip = true;
     }
@@ -1558,14 +1420,17 @@ ChromeTooltipListener::sTooltipCallback(nsITimer* aTimer,
     // off a timer to auto-hide it.
 
     nsXPIDLString tooltipText;
+    nsXPIDLString directionText;
     if (self->mTooltipTextProvider) {
       bool textFound = false;
 
       self->mTooltipTextProvider->GetNodeText(
-        self->mPossibleTooltipNode, getter_Copies(tooltipText), &textFound);
+        self->mPossibleTooltipNode, getter_Copies(tooltipText),
+        getter_Copies(directionText), &textFound);
 
       if (textFound) {
         nsString tipText(tooltipText);
+        nsString dirText(directionText);
         LayoutDeviceIntPoint screenDot = widget->WidgetToScreenOffset();
         double scaleFactor = 1.0;
         if (shell->GetPresContext()) {
@@ -1576,7 +1441,7 @@ ChromeTooltipListener::sTooltipCallback(nsITimer* aTimer,
         // ShowTooltip expects widget-relative position.
         self->ShowTooltip(self->mMouseScreenX - screenDot.x / scaleFactor,
                           self->mMouseScreenY - screenDot.y / scaleFactor,
-                          tipText);
+                          tipText, dirText);
       }
     }
 

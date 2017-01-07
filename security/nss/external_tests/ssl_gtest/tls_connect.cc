@@ -5,6 +5,9 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "tls_connect.h"
+extern "C" {
+#include "libssl_internals.h"
+}
 
 #include <iostream>
 
@@ -18,26 +21,71 @@ namespace nss_test {
 static const std::string kTlsModesStreamArr[] = {"TLS"};
 ::testing::internal::ParamGenerator<std::string>
   TlsConnectTestBase::kTlsModesStream = ::testing::ValuesIn(kTlsModesStreamArr);
+static const std::string kTlsModesDatagramArr[] = {"DTLS"};
+::testing::internal::ParamGenerator<std::string>
+TlsConnectTestBase::kTlsModesDatagram =
+      ::testing::ValuesIn(kTlsModesDatagramArr);
 static const std::string kTlsModesAllArr[] = {"TLS", "DTLS"};
 ::testing::internal::ParamGenerator<std::string>
   TlsConnectTestBase::kTlsModesAll = ::testing::ValuesIn(kTlsModesAllArr);
+
 static const uint16_t kTlsV10Arr[] = {SSL_LIBRARY_VERSION_TLS_1_0};
 ::testing::internal::ParamGenerator<uint16_t>
   TlsConnectTestBase::kTlsV10 = ::testing::ValuesIn(kTlsV10Arr);
 static const uint16_t kTlsV11Arr[] = {SSL_LIBRARY_VERSION_TLS_1_1};
 ::testing::internal::ParamGenerator<uint16_t>
   TlsConnectTestBase::kTlsV11 = ::testing::ValuesIn(kTlsV11Arr);
+static const uint16_t kTlsV12Arr[] = {SSL_LIBRARY_VERSION_TLS_1_2};
+::testing::internal::ParamGenerator<uint16_t>
+  TlsConnectTestBase::kTlsV12 = ::testing::ValuesIn(kTlsV12Arr);
+static const uint16_t kTlsV10V11Arr[] = {SSL_LIBRARY_VERSION_TLS_1_0,
+                                         SSL_LIBRARY_VERSION_TLS_1_1};
+::testing::internal::ParamGenerator<uint16_t>
+  TlsConnectTestBase::kTlsV10V11 = ::testing::ValuesIn(kTlsV10V11Arr);
+static const uint16_t kTlsV10ToV12Arr[] = {SSL_LIBRARY_VERSION_TLS_1_0,
+                                           SSL_LIBRARY_VERSION_TLS_1_1,
+                                           SSL_LIBRARY_VERSION_TLS_1_2};
+::testing::internal::ParamGenerator<uint16_t>
+  TlsConnectTestBase::kTlsV10ToV12 = ::testing::ValuesIn(kTlsV10ToV12Arr);
 static const uint16_t kTlsV11V12Arr[] = {SSL_LIBRARY_VERSION_TLS_1_1,
                                          SSL_LIBRARY_VERSION_TLS_1_2};
 ::testing::internal::ParamGenerator<uint16_t>
   TlsConnectTestBase::kTlsV11V12 = ::testing::ValuesIn(kTlsV11V12Arr);
-// TODO: add TLS 1.3
-static const uint16_t kTlsV12PlusArr[] = {SSL_LIBRARY_VERSION_TLS_1_2};
+
+static const uint16_t kTlsV11PlusArr[] = {
+#ifdef NSS_ENABLE_TLS_1_3
+  SSL_LIBRARY_VERSION_TLS_1_3,
+#endif
+  SSL_LIBRARY_VERSION_TLS_1_2,
+  SSL_LIBRARY_VERSION_TLS_1_1
+};
+::testing::internal::ParamGenerator<uint16_t>
+  TlsConnectTestBase::kTlsV11Plus = ::testing::ValuesIn(kTlsV11PlusArr);
+static const uint16_t kTlsV12PlusArr[] = {
+#ifdef NSS_ENABLE_TLS_1_3
+  SSL_LIBRARY_VERSION_TLS_1_3,
+#endif
+  SSL_LIBRARY_VERSION_TLS_1_2
+};
 ::testing::internal::ParamGenerator<uint16_t>
   TlsConnectTestBase::kTlsV12Plus = ::testing::ValuesIn(kTlsV12PlusArr);
-static const uint16_t kTlsV13Arr[] = {SSL_LIBRARY_VERSION_TLS_1_3};
+#ifdef NSS_ENABLE_TLS_1_3
+static const uint16_t kTlsV13Arr[] = {
+  SSL_LIBRARY_VERSION_TLS_1_3
+};
 ::testing::internal::ParamGenerator<uint16_t>
   TlsConnectTestBase::kTlsV13 = ::testing::ValuesIn(kTlsV13Arr);
+#endif
+static const uint16_t kTlsVAllArr[] = {
+#ifdef NSS_ENABLE_TLS_1_3
+  SSL_LIBRARY_VERSION_TLS_1_3,
+#endif
+  SSL_LIBRARY_VERSION_TLS_1_2,
+  SSL_LIBRARY_VERSION_TLS_1_1,
+  SSL_LIBRARY_VERSION_TLS_1_0
+};
+::testing::internal::ParamGenerator<uint16_t>
+  TlsConnectTestBase::kTlsVAll = ::testing::ValuesIn(kTlsVAllArr);
 
 static std::string VersionString(uint16_t version) {
   switch(version) {
@@ -60,34 +108,57 @@ static std::string VersionString(uint16_t version) {
 
 TlsConnectTestBase::TlsConnectTestBase(Mode mode, uint16_t version)
       : mode_(mode),
-        client_(new TlsAgent("client", TlsAgent::CLIENT, mode_, ssl_kea_rsa)),
-        server_(new TlsAgent("server", TlsAgent::SERVER, mode_, ssl_kea_rsa)),
+        client_(new TlsAgent(TlsAgent::kClient, TlsAgent::CLIENT, mode_)),
+        server_(new TlsAgent(TlsAgent::kServerRsa, TlsAgent::SERVER, mode_)),
+        client_model_(nullptr),
+        server_model_(nullptr),
         version_(version),
         expected_resumption_mode_(RESUME_NONE),
         session_ids_(),
-        expect_extended_master_secret_(false) {
-  std::cerr << "Version: " << mode_ << " " << VersionString(version_) << std::endl;
+        expect_extended_master_secret_(false),
+        expect_early_data_accepted_(false) {
+  std::string v;
+  if (mode_ == DGRAM && version_ == SSL_LIBRARY_VERSION_TLS_1_1) {
+    v = "1.0";
+  } else {
+    v = VersionString(version_);
+  }
+  std::cerr << "Version: " << mode_ << " " << v << std::endl;
 }
 
 TlsConnectTestBase::~TlsConnectTestBase() {
 }
 
-void TlsConnectTestBase::SetUp() {
-  // Configure a fresh session cache.
-  SSL_ConfigServerSessionIDCache(1024, 0, 0, g_working_dir_path.c_str());
-
+void TlsConnectTestBase::ClearStats() {
   // Clear statistics.
   SSL3Statistics* stats = SSL_GetStatistics();
   memset(stats, 0, sizeof(*stats));
+}
 
+void TlsConnectTestBase::ClearServerCache() {
+  SSL_ShutdownServerSessionIDCache();
+  SSLInt_ClearSessionTicketKey();
+  SSL_ConfigServerSessionIDCache(1024, 0, 0, g_working_dir_path.c_str());
+}
+
+void TlsConnectTestBase::SetUp() {
+  SSL_ConfigServerSessionIDCache(1024, 0, 0, g_working_dir_path.c_str());
+  SSLInt_ClearSessionTicketKey();
+  ClearStats();
   Init();
 }
 
 void TlsConnectTestBase::TearDown() {
   delete client_;
   delete server_;
+  if (client_model_) {
+    ASSERT_NE(server_model_, nullptr);
+    delete client_model_;
+    delete server_model_;
+  }
 
   SSL_ClearSessionCache();
+  SSLInt_ClearSessionTicketKey();
   SSL_ShutdownServerSessionIDCache();
 }
 
@@ -104,22 +175,20 @@ void TlsConnectTestBase::Init() {
   }
 }
 
-void TlsConnectTestBase::Reset(const std::string& server_name, SSLKEAType kea) {
+void TlsConnectTestBase::Reset() {
+  // Take a copy of the name because it's about to disappear.
+  std::string name = server_->name();
+  Reset(name);
+}
+
+void TlsConnectTestBase::Reset(const std::string& server_name) {
   delete client_;
   delete server_;
 
-  client_ = new TlsAgent("client", TlsAgent::CLIENT, mode_, kea);
-  server_ = new TlsAgent(server_name, TlsAgent::SERVER, mode_, kea);
+  client_ = new TlsAgent(TlsAgent::kClient, TlsAgent::CLIENT, mode_);
+  server_ = new TlsAgent(server_name, TlsAgent::SERVER, mode_);
 
   Init();
-}
-
-void TlsConnectTestBase::ResetRsa() {
-  Reset("server", ssl_kea_rsa);
-}
-
-void TlsConnectTestBase::ResetEcdsa() {
-  Reset("ecdsa", ssl_kea_ecdh);
 }
 
 void TlsConnectTestBase::ExpectResumption(SessionResumptionMode expected) {
@@ -131,8 +200,8 @@ void TlsConnectTestBase::ExpectResumption(SessionResumptionMode expected) {
 }
 
 void TlsConnectTestBase::EnsureTlsSetup() {
-  EXPECT_TRUE(client_->EnsureTlsSetup());
-  EXPECT_TRUE(server_->EnsureTlsSetup());
+  EXPECT_TRUE(server_->EnsureTlsSetup(server_model_ ? server_model_->ssl_fd() : nullptr));
+  EXPECT_TRUE(client_->EnsureTlsSetup(client_model_ ? client_model_->ssl_fd() : nullptr));
 }
 
 void TlsConnectTestBase::Handshake() {
@@ -153,11 +222,28 @@ void TlsConnectTestBase::EnableExtendedMasterSecret() {
 }
 
 void TlsConnectTestBase::Connect() {
-  server_->StartConnect();
-  client_->StartConnect();
+  server_->StartConnect(server_model_ ? server_model_->ssl_fd() : nullptr);
+  client_->StartConnect(client_model_ ? client_model_->ssl_fd() : nullptr);
   Handshake();
   CheckConnected();
 }
+
+void TlsConnectTestBase::ConnectWithCipherSuite(uint16_t cipher_suite)
+{
+  EnsureTlsSetup();
+  client_->EnableSingleCipher(cipher_suite);
+
+  Connect();
+  SendReceive();
+
+  // Check that we used the right cipher suite.
+  uint16_t actual;
+  EXPECT_TRUE(client_->cipher_suite(&actual));
+  EXPECT_EQ(cipher_suite, actual);
+  EXPECT_TRUE(server_->cipher_suite(&actual));
+  EXPECT_EQ(cipher_suite, actual);
+}
+
 
 void TlsConnectTestBase::CheckConnected() {
   // Check the version is as expected
@@ -169,7 +255,7 @@ void TlsConnectTestBase::CheckConnected() {
   EXPECT_EQ(TlsAgent::STATE_CONNECTED, client_->state());
   EXPECT_EQ(TlsAgent::STATE_CONNECTED, server_->state());
 
-  int16_t cipher_suite1, cipher_suite2;
+  uint16_t cipher_suite1, cipher_suite2;
   bool ret = client_->cipher_suite(&cipher_suite1);
   EXPECT_TRUE(ret);
   ret = server_->cipher_suite(&cipher_suite2);
@@ -191,16 +277,24 @@ void TlsConnectTestBase::CheckConnected() {
   }
 
   CheckExtendedMasterSecret();
-
+  CheckEarlyDataAccepted();
   CheckResumption(expected_resumption_mode_);
+  client_->CheckSecretsDestroyed();
+  server_->CheckSecretsDestroyed();
 }
 
-void TlsConnectTestBase::CheckKeys(SSLKEAType keaType,
-                                   SSLAuthType authType) const {
-  client_->CheckKEAType(keaType);
-  server_->CheckKEAType(keaType);
-  client_->CheckAuthType(authType);
-  server_->CheckAuthType(authType);
+void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
+                                   SSLAuthType auth_type,
+                                   size_t kea_size) const {
+  if (kea_size) {
+    client_->CheckKEA(kea_type, kea_size);
+    server_->CheckKEA(kea_type, kea_size);
+  } else {
+    client_->CheckKEA(kea_type);
+    server_->CheckKEA(kea_type);
+  }
+  client_->CheckAuthType(auth_type);
+  server_->CheckAuthType(auth_type);
 }
 
 void TlsConnectTestBase::ConnectExpectFail() {
@@ -216,25 +310,45 @@ void TlsConnectTestBase::SetExpectedVersion(uint16_t version) {
   server_->SetExpectedVersion(version);
 }
 
-void TlsConnectTestBase::DisableDheCiphers() {
-  client_->DisableCiphersByKeyExchange(ssl_kea_dh);
-  server_->DisableCiphersByKeyExchange(ssl_kea_dh);
+void TlsConnectTestBase::DisableAllCiphers() {
+  EnsureTlsSetup();
+  client_->DisableAllCiphers();
+  server_->DisableAllCiphers();
 }
 
-void TlsConnectTestBase::DisableEcdheCiphers() {
-  client_->DisableCiphersByKeyExchange(ssl_kea_ecdh);
-  server_->DisableCiphersByKeyExchange(ssl_kea_ecdh);
+void TlsConnectTestBase::EnableOnlyStaticRsaCiphers() {
+  DisableAllCiphers();
+
+  client_->EnableCiphersByKeyExchange(ssl_kea_rsa);
+  server_->EnableCiphersByKeyExchange(ssl_kea_rsa);
 }
 
-void TlsConnectTestBase::DisableDheAndEcdheCiphers() {
-  DisableDheCiphers();
-  DisableEcdheCiphers();
+void TlsConnectTestBase::EnableOnlyDheCiphers() {
+  DisableAllCiphers();
+
+  client_->EnableCiphersByKeyExchange(ssl_kea_dh);
+  client_->EnableCiphersByKeyExchange(ssl_kea_dh_psk);
+  server_->EnableCiphersByKeyExchange(ssl_kea_dh);
+  server_->EnableCiphersByKeyExchange(ssl_kea_dh_psk);
+}
+
+void TlsConnectTestBase::EnableSomeEcdhCiphers() {
+  client_->EnableCiphersByAuthType(ssl_auth_ecdh_rsa);
+  client_->EnableCiphersByAuthType(ssl_auth_ecdh_ecdsa);
+  server_->EnableCiphersByAuthType(ssl_auth_ecdh_rsa);
+  server_->EnableCiphersByAuthType(ssl_auth_ecdh_ecdsa);
 }
 
 void TlsConnectTestBase::ConfigureSessionCache(SessionResumptionMode client,
                                                SessionResumptionMode server) {
   client_->ConfigureSessionCache(client);
   server_->ConfigureSessionCache(server);
+  if ((server & RESUME_TICKET) != 0) {
+    // This is an abomination.  NSS encrypts session tickets with the server's
+    // RSA public key.  That means we need the server to have an RSA certificate
+    // even if it won't be used for the connection.
+    server_->ConfigServerCert(TlsAgent::kServerRsaDecrypt);
+  }
 }
 
 void TlsConnectTestBase::CheckResumption(SessionResumptionMode expected) {
@@ -250,8 +364,11 @@ void TlsConnectTestBase::CheckResumption(SessionResumptionMode expected) {
   EXPECT_EQ(stateless_ct, stats->hch_sid_stateless_resumes);
   EXPECT_EQ(stateless_ct, stats->hsh_sid_stateless_resumes);
 
-  if (resume_ct) {
+  if (resume_ct &&
+      client_->version() < SSL_LIBRARY_VERSION_TLS_1_3) {
     // Check that the last two session ids match.
+    // TLS 1.3 doesn't do session id-based resumption. It's all
+    // tickets.
     EXPECT_EQ(2U, session_ids_.size());
     EXPECT_EQ(session_ids_[session_ids_.size()-1],
               session_ids_[session_ids_.size()-2]);
@@ -259,13 +376,36 @@ void TlsConnectTestBase::CheckResumption(SessionResumptionMode expected) {
 }
 
 void TlsConnectTestBase::EnableAlpn() {
-  // A simple value of "a", "b".  Note that the preferred value of "a" is placed
-  // at the end, because the NSS API follows the now defunct NPN specification,
-  // which places the preferred (and default) entry at the end of the list.
-  // NSS will move this final entry to the front when used with ALPN.
-  static const uint8_t val[] = { 0x01, 0x62, 0x01, 0x61 };
-  client_->EnableAlpn(val, sizeof(val));
-  server_->EnableAlpn(val, sizeof(val));
+  client_->EnableAlpn(alpn_dummy_val_, sizeof(alpn_dummy_val_));
+  server_->EnableAlpn(alpn_dummy_val_, sizeof(alpn_dummy_val_));
+}
+
+void TlsConnectTestBase::EnableAlpn(const uint8_t *val, size_t len) {
+  client_->EnableAlpn(val, len);
+  server_->EnableAlpn(val, len);
+}
+
+void TlsConnectTestBase::EnsureModelSockets() {
+  // Make sure models agents are available.
+  if (!client_model_) {
+    ASSERT_EQ(server_model_, nullptr);
+    client_model_ = new TlsAgent(TlsAgent::kClient, TlsAgent::CLIENT, mode_);
+    server_model_ = new TlsAgent(TlsAgent::kServerRsa, TlsAgent::SERVER, mode_);
+  }
+
+  // Initialise agents.
+  ASSERT_TRUE(client_model_->Init());
+  ASSERT_TRUE(server_model_->Init());
+
+  // Set desired properties on the models.
+  // For now only ALPN.
+  client_model_->EnableAlpn(alpn_dummy_val_, sizeof(alpn_dummy_val_));
+  server_model_->EnableAlpn(alpn_dummy_val_, sizeof(alpn_dummy_val_));
+}
+
+void TlsConnectTestBase::CheckAlpn(const std::string& val) {
+  client_->CheckAlpn(SSL_NEXT_PROTO_SELECTED, val);
+  server_->CheckAlpn(SSL_NEXT_PROTO_NEGOTIATED, val);
 }
 
 void TlsConnectTestBase::EnableSrtp() {
@@ -284,13 +424,67 @@ void TlsConnectTestBase::SendReceive() {
   Receive(50);
 }
 
+// Do a first connection so we can do 0-RTT on the second one.
+void TlsConnectTestBase::SetupForZeroRtt() {
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  client_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_1,
+                           SSL_LIBRARY_VERSION_TLS_1_3);
+  server_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_1,
+                           SSL_LIBRARY_VERSION_TLS_1_3);
+  server_->Set0RttEnabled(true); // So we signal that we allow 0-RTT.
+  Connect();
+  SendReceive(); // Need to read so that we absorb the session ticket.
+  CheckKeys(ssl_kea_ecdh, ssl_auth_rsa_sign);
+
+  Reset();
+  client_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_1,
+                           SSL_LIBRARY_VERSION_TLS_1_3);
+  server_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_1,
+                           SSL_LIBRARY_VERSION_TLS_1_3);
+  server_->StartConnect();
+  client_->StartConnect();
+}
+
+void TlsConnectTestBase::ZeroRttSendReceive(
+    bool expect_readable,
+    std::function<bool()> post_clienthello_check) {
+  const char *k0RttData = "ABCDEF";
+  const PRInt32 k0RttDataLen = static_cast<PRInt32>(strlen(k0RttData));
+
+  client_->Handshake(); // Send ClientHello.
+  if (post_clienthello_check) {
+    if (!post_clienthello_check())
+      return;
+  }
+  PRInt32 rv = PR_Write(client_->ssl_fd(),
+                        k0RttData, k0RttDataLen); // 0-RTT write.
+  EXPECT_EQ(k0RttDataLen, rv);
+  server_->Handshake(); // Consume ClientHello, EE, Finished.
+
+  std::vector<uint8_t> buf(k0RttDataLen);
+  rv = PR_Read(server_->ssl_fd(), buf.data(), k0RttDataLen); // 0-RTT read
+  if (expect_readable) {
+    std::cerr << "0-RTT read " << rv << " bytes\n";
+    EXPECT_EQ(k0RttDataLen, rv);
+  } else {
+    EXPECT_EQ(SECFailure, rv);
+    EXPECT_EQ(PR_WOULD_BLOCK_ERROR, PORT_GetError());
+  }
+
+  // Do a second read. this should fail.
+  rv = PR_Read(server_->ssl_fd(),
+               buf.data(), k0RttDataLen);
+  EXPECT_EQ(SECFailure, rv);
+  EXPECT_EQ(PR_WOULD_BLOCK_ERROR, PORT_GetError());
+
+}
+
 void TlsConnectTestBase::Receive(size_t amount) {
   WAIT_(client_->received_bytes() == amount &&
         server_->received_bytes() == amount, 2000);
   ASSERT_EQ(amount, client_->received_bytes());
   ASSERT_EQ(amount, server_->received_bytes());
 }
-
 
 void TlsConnectTestBase::ExpectExtendedMasterSecret(bool expected) {
   expect_extended_master_secret_ = expected;
@@ -299,6 +493,15 @@ void TlsConnectTestBase::ExpectExtendedMasterSecret(bool expected) {
 void TlsConnectTestBase::CheckExtendedMasterSecret() {
   client_->CheckExtendedMasterSecret(expect_extended_master_secret_);
   server_->CheckExtendedMasterSecret(expect_extended_master_secret_);
+}
+
+void TlsConnectTestBase::ExpectEarlyDataAccepted(bool expected) {
+  expect_early_data_accepted_ = expected;
+}
+
+void TlsConnectTestBase::CheckEarlyDataAccepted() {
+  client_->CheckEarlyDataAccepted(expect_early_data_accepted_);
+  server_->CheckEarlyDataAccepted(expect_early_data_accepted_);
 }
 
 TlsConnectGeneric::TlsConnectGeneric()
@@ -312,5 +515,15 @@ TlsConnectPre12::TlsConnectPre12()
 TlsConnectTls12::TlsConnectTls12()
   : TlsConnectTestBase(TlsConnectTestBase::ToMode(GetParam()),
                        SSL_LIBRARY_VERSION_TLS_1_2) {}
+
+TlsConnectTls12Plus::TlsConnectTls12Plus()
+  : TlsConnectTestBase(TlsConnectTestBase::ToMode(std::get<0>(GetParam())),
+                       std::get<1>(GetParam())) {}
+
+#ifdef NSS_ENABLE_TLS_1_3
+TlsConnectTls13::TlsConnectTls13()
+  : TlsConnectTestBase(TlsConnectTestBase::ToMode(GetParam()),
+                       SSL_LIBRARY_VERSION_TLS_1_3) {}
+#endif
 
 } // namespace nss_test

@@ -49,19 +49,22 @@ var gPrivacyPane = {
    * Initialize autocomplete to ensure prefs are in sync.
    */
   _initAutocomplete: function () {
-    let unifiedCompletePref = false;
-    try {
-      unifiedCompletePref =
-        Services.prefs.getBoolPref("browser.urlbar.unifiedcomplete");
-    } catch (ex) {}
+    Components.classes["@mozilla.org/autocomplete/search;1?name=unifiedcomplete"]
+              .getService(Components.interfaces.mozIPlacesAutoComplete);
+  },
 
-    if (unifiedCompletePref) {
-      Components.classes["@mozilla.org/autocomplete/search;1?name=unifiedcomplete"]
-                .getService(Components.interfaces.mozIPlacesAutoComplete);
-    } else {
-      Components.classes["@mozilla.org/autocomplete/search;1?name=history"]
-                .getService(Components.interfaces.mozIPlacesAutoComplete);
+  /**
+   * Show the Containers UI depending on the privacy.userContext.ui.enabled pref.
+   */
+  _initBrowserContainers: function () {
+    if (!Services.prefs.getBoolPref("privacy.userContext.ui.enabled")) {
+      return;
     }
+
+    let link = document.getElementById("browserContainersLearnMore");
+    link.href = Services.urlFormatter.formatURLPref("app.support.baseURL") + "containers";
+
+    document.getElementById("browserContainersbox").hidden = false;
   },
 
   /**
@@ -84,6 +87,7 @@ var gPrivacyPane = {
     this._initTrackingProtection();
     this._initTrackingProtectionPBM();
     this._initAutocomplete();
+    this._initBrowserContainers();
 
     setEventListener("privacy.sanitize.sanitizeOnShutdown", "change",
                      gPrivacyPane._updateSanitizeSettingsButton);
@@ -381,23 +385,15 @@ var gPrivacyPane = {
         return;
       }
 
-      const Cc = Components.classes, Ci = Components.interfaces;
-      let brandName = document.getElementById("bundleBrand").getString("brandShortName");
-      let bundle = document.getElementById("bundlePreferences");
-      let msg = bundle.getFormattedString(autoStart.checked ?
-                                          "featureEnableRequiresRestart" : "featureDisableRequiresRestart",
-                                          [brandName]);
-      let title = bundle.getFormattedString("shouldRestartTitle", [brandName]);
-      let prompts = Cc["@mozilla.org/embedcomp/prompt-service;1"].getService(Ci.nsIPromptService);
-      let shouldProceed = prompts.confirm(window, title, msg)
-      if (shouldProceed) {
+      let buttonIndex = confirmRestartPrompt(autoStart.checked, 1,
+                                             true, false);
+      if (buttonIndex == CONFIRM_RESTART_PROMPT_RESTART_NOW) {
+        const Cc = Components.classes, Ci = Components.interfaces;
         let cancelQuit = Cc["@mozilla.org/supports-PRBool;1"]
                            .createInstance(Ci.nsISupportsPRBool);
         Services.obs.notifyObservers(cancelQuit, "quit-application-requested",
                                      "restart");
-        shouldProceed = !cancelQuit.data;
-
-        if (shouldProceed) {
+        if (!cancelQuit.data) {
           pref.value = autoStart.hasAttribute('checked');
           let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"]
                              .getService(Ci.nsIAppStartup);

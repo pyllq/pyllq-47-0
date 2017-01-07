@@ -78,7 +78,7 @@ function handleRequest(request, response) {
         break;
       }
       case "html": {
-        let content = params.filter((s) => s.includes("res="))[0].split("=")[1];
+        let content = (params.filter((s) => s.includes("res="))[0] || "").split("=")[1];
         response.setStatusLine(request.httpVersion, status, "OK");
         response.setHeader("Content-Type", "text/html; charset=utf-8", false);
         setCacheHeaders();
@@ -120,7 +120,7 @@ function handleRequest(request, response) {
         break;
       }
       case "jsonp": {
-        let fun = params.filter((s) => s.includes("jsonp="))[0].split("=")[1];
+        let fun = (params.filter((s) => s.includes("jsonp="))[0] || "").split("=")[1];
         response.setStatusLine(request.httpVersion, status, "OK");
         response.setHeader("Content-Type", "text/json; charset=utf-8", false);
         setCacheHeaders();
@@ -129,7 +129,7 @@ function handleRequest(request, response) {
         break;
       }
       case "jsonp2": {
-        let fun = params.filter((s) => s.includes("jsonp="))[0].split("=")[1];
+        let fun = (params.filter((s) => s.includes("jsonp="))[0] || "").split("=")[1];
         response.setStatusLine(request.httpVersion, status, "OK");
         response.setHeader("Content-Type", "text/json; charset=utf-8", false);
         setCacheHeaders();
@@ -201,6 +201,14 @@ function handleRequest(request, response) {
       case "flash": {
         response.setStatusLine(request.httpVersion, status, "OK");
         response.setHeader("Content-Type", "application/x-shockwave-flash", false);
+        setCacheHeaders();
+        response.finish();
+        break;
+      }
+      case "ws": {
+        response.setStatusLine(request.httpVersion, 101, "Switching Protocols");
+        response.setHeader("Connection", "upgrade", false);
+        response.setHeader("Upgrade", "websocket", false);
         setCacheHeaders();
         response.finish();
         break;

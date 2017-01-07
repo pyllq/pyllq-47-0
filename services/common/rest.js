@@ -20,7 +20,7 @@ Cu.import("resource://services-common/utils.js");
 XPCOMUtils.defineLazyModuleGetter(this, "CryptoUtils",
                                   "resource://services-crypto/utils.js");
 
-const Prefs = new Preferences("services.common.rest.");
+const Prefs = new Preferences("services.common.");
 
 /**
  * Single use HTTP requests to RESTish resources.
@@ -316,6 +316,7 @@ RESTRequest.prototype = {
     channel.loadFlags |= this.loadFlags;
     channel.notificationCallbacks = this;
 
+    this._log.debug(`${method} request to ${this.uri.spec}`);
     // Set request headers.
     let headers = this._headers;
     for (let key in headers) {
@@ -604,6 +605,10 @@ RESTRequest.prototype = {
   asyncOnChannelRedirect:
     function asyncOnChannelRedirect(oldChannel, newChannel, flags, callback) {
 
+    let oldSpec = (oldChannel && oldChannel.URI) ? oldChannel.URI.spec : "<undefined>";
+    let newSpec = (newChannel && newChannel.URI) ? newChannel.URI.spec : "<undefined>";
+    this._log.debug("Channel redirect: " + oldSpec + ", " + newSpec + ", " + flags);
+
     try {
       newChannel.QueryInterface(Ci.nsIHttpChannel);
     } catch (ex) {
@@ -642,7 +647,7 @@ this.RESTResponse = function RESTResponse() {
 }
 RESTResponse.prototype = {
 
-  _logName: "Sync.RESTResponse",
+  _logName: "Services.Common.RESTResponse",
 
   /**
    * Corresponding REST request

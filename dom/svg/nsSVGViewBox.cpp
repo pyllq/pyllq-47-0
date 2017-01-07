@@ -67,6 +67,11 @@ void
 nsSVGViewBox::Init()
 {
   mHasBaseVal = false;
+  // We shouldn't use mBaseVal for rendering (its usages should be guarded with
+  // "mHasBaseVal" checks), but just in case we do by accident, this will
+  // ensure that we treat it as "none" and ignore its numeric values:
+  mBaseVal.none = true;
+
   mAnimVal = nullptr;
 }
 
@@ -202,7 +207,7 @@ nsSVGViewBox::GetBaseValueString(nsAString& aValue) const
   }
   char16_t buf[200];
   nsTextFormatter::snprintf(buf, sizeof(buf)/sizeof(char16_t),
-                            MOZ_UTF16("%g %g %g %g"),
+                            u"%g %g %g %g",
                             (double)mBaseVal.x, (double)mBaseVal.y,
                             (double)mBaseVal.width, (double)mBaseVal.height);
   aValue.Assign(buf);

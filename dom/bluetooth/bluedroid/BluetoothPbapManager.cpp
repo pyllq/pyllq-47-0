@@ -10,16 +10,15 @@
 #include "BluetoothService.h"
 #include "BluetoothSocket.h"
 #include "BluetoothUtils.h"
-#include "BluetoothUuid.h"
+#include "BluetoothUuidHelper.h"
 
 #include "mozilla/dom/BluetoothPbapParametersBinding.h"
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/ipc/BlobParent.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
-#include "nsAutoPtr.h"
 #include "nsIInputStream.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
@@ -258,7 +257,7 @@ BluetoothPbapManager::Listen()
 // Virtual function of class SocketConsumer
 void
 BluetoothPbapManager::ReceiveSocketData(BluetoothSocket* aSocket,
-                                        nsAutoPtr<UnixSocketBuffer>& aMessage)
+                                        UniquePtr<UnixSocketBuffer>& aMessage)
 {
   MOZ_ASSERT(NS_IsMainThread());
 

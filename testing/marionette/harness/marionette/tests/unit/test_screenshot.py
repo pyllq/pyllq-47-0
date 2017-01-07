@@ -3,8 +3,10 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import base64
+import hashlib
 import imghdr
 import struct
+import time
 import urllib
 
 from unittest import skip
@@ -46,11 +48,11 @@ class ScreenCaptureTestCase(MarionetteTestCase):
 class Chrome(ScreenCaptureTestCase):
     @property
     def primary_window_dimensions(self):
-        current_window = self.marionette.current_window_handle
+        current_window = self.marionette.current_chrome_window_handle
         self.marionette.switch_to_window(self.original_window)
         with self.marionette.using_context("chrome"):
             rv = tuple(self.marionette.execute_script("""
-                let el = document.getElementsByTagName("window")[0];
+                let el = document.documentElement;
                 let rect = el.getBoundingClientRect();
                 return [rect.width, rect.height];
                 """))
@@ -60,7 +62,7 @@ class Chrome(ScreenCaptureTestCase):
     def setUp(self):
         ScreenCaptureTestCase.setUp(self)
         self.marionette.set_context("chrome")
-        self.original_window = self.marionette.current_window_handle
+        self.original_window = self.marionette.current_chrome_window_handle
 
     def tearDown(self):
         self.marionette.switch_to_window(self.original_window)
@@ -82,19 +84,29 @@ class Chrome(ScreenCaptureTestCase):
 
     # This tests that GeckoDriver#takeScreenshot uses
     # currentContext.document.documentElement instead of looking for a
-    # <window> element, which does not exist for secondary windows.
+    # <window> element, which does not exist for all windows.
     def test_secondary_windows(self):
+        self.assertEqual(len(self.marionette.chrome_window_handles), 1)
         ss = self.marionette.screenshot()
         self.marionette.execute_script("""
-            window.open('chrome://marionette/content/doesnotexist.xul',
-            'foo',
-            'chrome');
+            window.open('chrome://marionette/content/test_dialog.xul', 'foo',
+                        'dialog,height=200,width=300');
             """)
-        self.marionette.switch_to_window("foo")
+        self.assertEqual(len(self.marionette.chrome_window_handles), 2)
+        # TODO: Bug 1288769 prevents us from switching to the dialog via its name
+        # self.marionette.switch_to_window('foo')
+        new_win = None
+        for win in self.marionette.chrome_window_handles:
+            if win != self.original_window:
+                new_win = win
+                break
+        self.marionette.switch_to_window(new_win)
         ss = self.marionette.screenshot()
         size = self.get_image_dimensions(ss)
         self.assert_png(ss)
         self.assertNotEqual(self.primary_window_dimensions, size)
+
+        self.marionette.close_chrome_window()
 
 
 class Content(ScreenCaptureTestCase):
@@ -191,3 +203,10 @@ class Content(ScreenCaptureTestCase):
     def test_unknown_format(self):
         with self.assertRaises(ValueError):
             self.marionette.screenshot(format="cheese")
+
+    def test_hash_format(self):
+        self.marionette.navigate(box)
+        el = self.marionette.find_element(By.TAG_NAME, "div")
+        content = self.marionette.screenshot(element=el, format="hash")
+        hash = hashlib.sha256(ELEMENT).hexdigest()
+        self.assertEqual(content, hash)

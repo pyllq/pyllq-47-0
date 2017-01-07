@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const Ci = Components.interfaces;
 const Cu = Components.utils;
 
 const NET_STRINGS_URI = "chrome://devtools/locale/netmonitor.properties";
@@ -17,17 +16,17 @@ const NAMED_SLICE_MIN_ANGLE = TAU / 8;
 const NAMED_SLICE_TEXT_DISTANCE_RATIO = 1.9;
 const HOVERED_SLICE_TRANSLATE_DISTANCE_RATIO = 20;
 
-Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
-Cu.import("resource://devtools/shared/event-emitter.js");
+const { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.jsm");
+const EventEmitter = require("devtools/shared/event-emitter");
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 
 this.EXPORTED_SYMBOLS = ["Chart"];
 
 /**
  * Localization convenience methods.
  */
-var L10N = new ViewHelpers.L10N(NET_STRINGS_URI);
+var L10N = new LocalizationHelper(NET_STRINGS_URI);
 
 /**
  * A factory for creating charts.
@@ -131,11 +130,11 @@ function createPieTableChart(document, { title, diameter, data, strings, totals,
   let proxy = new PieTableChart(container, pie, table);
 
   pie.on("click", (event, item) => {
-    proxy.emit(event, item)
+    proxy.emit(event, item);
   });
 
   table.on("click", (event, item) => {
-    proxy.emit(event, item)
+    proxy.emit(event, item);
   });
 
   pie.on("mouseover", (event, item) => {

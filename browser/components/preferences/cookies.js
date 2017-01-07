@@ -7,7 +7,10 @@ const nsICookie = Components.interfaces.nsICookie;
 
 Components.utils.import("resource://gre/modules/PluralForm.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm")
-Components.utils.import("resource:///modules/UserContextUI.jsm");
+Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "ContextualIdentityService",
+                                  "resource://gre/modules/ContextualIdentityService.jsm");
 
 var gCookiesWindow = {
   _cm               : Components.classes["@mozilla.org/cookiemanager;1"]
@@ -76,11 +79,24 @@ var gCookiesWindow = {
                                                aCookieB.originAttributes);
   },
 
+  _isPrivateCookie: function (aCookie) {
+      let { userContextId } = aCookie.originAttributes;
+      if (!userContextId) {
+        // Default identity is public.
+        return false;
+      }
+      return !ContextualIdentityService.getIdentityFromId(userContextId).public;
+  },
+
   observe: function (aCookie, aTopic, aData) {
     if (aTopic != "cookie-changed")
       return;
 
     if (aCookie instanceof Components.interfaces.nsICookie) {
+      if (this._isPrivateCookie(aCookie)) {
+        return;
+      }
+
       var strippedHost = this._makeStrippedHost(aCookie.host);
       if (aData == "changed")
         this._handleCookieChanged(aCookie, strippedHost);
@@ -487,6 +503,10 @@ var gCookiesWindow = {
     while (e.hasMoreElements()) {
       var cookie = e.getNext();
       if (cookie && cookie instanceof Components.interfaces.nsICookie) {
+        if (this._isPrivateCookie(cookie)) {
+          continue;
+        }
+
         var strippedHost = this._makeStrippedHost(cookie.host);
         this._addCookie(strippedHost, cookie, hostCount);
       }
@@ -516,7 +536,7 @@ var gCookiesWindow = {
       return this._bundle.getString("defaultUserContextLabel");
     }
 
-    return UserContextUI.getUserContextLabel(aUserContextId);
+    return ContextualIdentityService.getUserContextLabel(aUserContextId);
   },
 
   _updateCookieData: function (aItem) {

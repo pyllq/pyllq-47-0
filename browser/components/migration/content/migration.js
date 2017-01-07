@@ -34,12 +34,17 @@ var MigrationWizard = {
     let args = window.arguments;
     let entryPointId = args[0] || MigrationUtils.MIGRATION_ENTRYPOINT_UNKNOWN;
     Services.telemetry.getHistogramById("FX_MIGRATION_ENTRY_POINT").add(entryPointId);
+    this.isInitialMigration = entryPointId == MigrationUtils.MIGRATION_ENTRYPOINT_FIRSTRUN;
 
     if (args.length > 1) {
       this._source = args[1];
       this._migrator = args[2] instanceof kIMig ?  args[2] : null;
       this._autoMigrate = args[3].QueryInterface(kIPStartup);
       this._skipImportSourcePage = args[4];
+      if (this._migrator && args[5]) {
+        let sourceProfiles = this._migrator.sourceProfiles;
+        this._selectedProfile = sourceProfiles.find(profile => profile.id == args[5]);
+      }
 
       if (this._autoMigrate) {
         // Show the "nothing" option in the automigrate case to provide an
@@ -78,6 +83,7 @@ var MigrationWizard = {
     this._wiz.canRewind = false;
 
     var selectedMigrator = null;
+    this._availableMigrators = [];
 
     // Figure out what source apps are are available to import from:
     var group = document.getElementById("importSourceGroup");
@@ -90,11 +96,21 @@ var MigrationWizard = {
           // one, or if it is the migrator that was passed to us.
           if (!selectedMigrator || this._source == migratorKey)
             selectedMigrator = group.childNodes[i];
+          this._availableMigrators.push([migratorKey, migrator]);
         } else {
           // Hide this option
           group.childNodes[i].hidden = true;
         }
       }
+    }
+    if (this.isInitialMigration) {
+      Services.telemetry.getHistogramById("FX_STARTUP_MIGRATION_BROWSER_COUNT")
+        .add(this._availableMigrators.length);
+      let defaultBrowser = MigrationUtils.getMigratorKeyForDefaultBrowser();
+      // This will record 0 for unknown default browser IDs.
+      defaultBrowser = MigrationUtils.getSourceIdForTelemetry(defaultBrowser);
+      Services.telemetry.getHistogramById("FX_STARTUP_MIGRATION_EXISTING_DEFAULT_BROWSER")
+        .add(defaultBrowser);
     }
 
     group.addEventListener("command", toggleCloseBrowserWarning);
@@ -161,6 +177,7 @@ var MigrationWizard = {
       else
         this._selectedProfile = null;
     }
+    return undefined;
   },
 
   // 2 - [Profile Selection]
@@ -297,38 +314,14 @@ var MigrationWizard = {
     singleStart.setAttribute("label", mainStr);
     singleStart.setAttribute("value", "DEFAULT");
 
-    var source = null;
-    switch (this._source) {
-      case "ie":
-        source = "sourceNameIE";
-        break;
-      case "safari":
-        source = "sourceNameSafari";
-        break;
-      case "canary":
-        source = "sourceNameCanary";
-        break;
-      case "chrome":
-        source = "sourceNameChrome";
-        break;
-      case "chromium":
-        source = "sourceNameChromium";
-        break;
-      case "firefox":
-        source = "sourceNameFirefox";
-        break;
-      case "360se":
-        source = "sourceName360se";
-        break;
-    }
+    var appName = MigrationUtils.getBrowserName(this._source);
 
     // semi-wallpaper for crash when multiple profiles exist, since we haven't initialized mSourceProfile in places
     this._migrator.getMigrateData(this._selectedProfile, this._autoMigrate);
 
     var oldHomePageURL = this._migrator.sourceHomePageURL;
 
-    if (oldHomePageURL && source) {
-      var appName = MigrationUtils.getLocalizedString(source);
+    if (oldHomePageURL && appName) {
       var oldHomePageLabel =
         brandBundle.getFormattedString("homePageImport", [appName]);
       var oldHomePage = document.getElementById("oldHomePage");
@@ -431,9 +424,18 @@ var MigrationWizard = {
         label.removeAttribute("style");
       break;
     case "Migration:Ended":
+      if (this.isInitialMigration) {
+        // Ensure errors in reporting data recency do not affect the rest of the migration.
+        try {
+          this.reportDataRecencyTelemetry();
+        } catch (ex) {
+          Cu.reportError(ex);
+        }
+      }
       if (this._autoMigrate) {
-        Services.telemetry.getKeyedHistogramById("FX_MIGRATION_HOMEPAGE_IMPORTED")
-                          .add(this._source, !!this._newHomePage);
+        let hasImportedHomepage = !!(this._newHomePage && this._newHomePage != "DEFAULT");
+        Services.telemetry.getKeyedHistogramById("FX_MIGRATION_IMPORTED_HOMEPAGE")
+                          .add(this._source, hasImportedHomepage);
         if (this._newHomePage) {
           try {
             // set homepage properly
@@ -515,5 +517,31 @@ var MigrationWizard = {
     this._wiz.getButton("cancel").disabled = true;
     this._wiz.canRewind = false;
     this._listItems("doneItems");
-  }
+  },
+
+  reportDataRecencyTelemetry() {
+    let histogram = Services.telemetry.getKeyedHistogramById("FX_STARTUP_MIGRATION_DATA_RECENCY");
+    let lastUsedPromises = [];
+    for (let [key, migrator] of this._availableMigrators) {
+      // No block-scoped let in for...of loop conditions, so get the source:
+      let localKey = key;
+      lastUsedPromises.push(migrator.getLastUsedDate().then(date => {
+        const ONE_YEAR = 24 * 365;
+        let diffInHours = Math.round((Date.now() - date) / (60 * 60 * 1000));
+        if (diffInHours > ONE_YEAR) {
+          diffInHours = ONE_YEAR;
+        }
+        histogram.add(localKey, diffInHours);
+        return [localKey, diffInHours];
+      }));
+    }
+    Promise.all(lastUsedPromises).then(migratorUsedTimeDiff => {
+      // Sort low to high.
+      migratorUsedTimeDiff.sort(([keyA, diffA], [keyB, diffB]) => diffA - diffB);
+      let usedMostRecentBrowser = migratorUsedTimeDiff.length && this._source == migratorUsedTimeDiff[0][0];
+      let usedRecentBrowser =
+        Services.telemetry.getKeyedHistogramById("FX_STARTUP_MIGRATION_USED_RECENT_BROWSER");
+      usedRecentBrowser.add(this._source, usedMostRecentBrowser);
+    });
+  },
 };

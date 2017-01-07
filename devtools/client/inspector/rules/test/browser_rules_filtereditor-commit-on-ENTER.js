@@ -7,7 +7,7 @@
 
 const TEST_URL = URL_ROOT + "doc_filter.html";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab(TEST_URL);
   let {view} = yield openRuleView();
 
@@ -25,7 +25,7 @@ add_task(function*() {
 
   info("Get the cssfilter widget instance");
   let filterTooltip = view.tooltips.filterEditor;
-  let widget = yield filterTooltip.widget;
+  let widget = filterTooltip.widget;
 
   info("Set a new value in the cssfilter widget");
   onRuleViewChanged = view.once("ruleview-changed");

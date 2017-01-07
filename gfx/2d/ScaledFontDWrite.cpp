@@ -20,8 +20,6 @@
 #include "cairo-win32.h"
 #endif
 
-#include "nsDebug.h"
-
 namespace mozilla {
 namespace gfx {
 
@@ -172,7 +170,7 @@ ScaledFontDWrite::GetFontDataFromSystemFonts(IDWriteFactory* aFactory)
   hr = mFont->GetFontFamily(getter_AddRefs(mFontFamily));
   if (FAILED(hr)) {
     gfxCriticalNote << "Failed to get font family from font face. Code: " << hexa(hr);
-    return false;
+    return DefaultToArialFont(systemFonts);
   }
 
   return true;
@@ -210,6 +208,10 @@ ScaledFontDWrite::CopyGlyphsToBuilder(const GlyphBuffer &aBuffer, PathBuilder *a
   PathBuilderD2D *pathBuilderD2D =
     static_cast<PathBuilderD2D*>(aBuilder);
 
+  if (pathBuilderD2D->IsFigureActive()) {
+    gfxCriticalNote << "Attempting to copy glyphs to PathBuilderD2D with active figure.";
+  }
+
   CopyGlyphsToSink(aBuffer, pathBuilderD2D->GetSink());
 }
 
@@ -230,9 +232,13 @@ ScaledFontDWrite::CopyGlyphsToSink(const GlyphBuffer &aBuffer, ID2D1GeometrySink
     offsets[i].ascenderOffset = -aBuffer.mGlyphs[i].mPosition.y;
   }
 
-  mFontFace->GetGlyphRunOutline(mSize, &indices.front(), &advances.front(),
-                                &offsets.front(), aBuffer.mNumGlyphs,
-                                FALSE, FALSE, aSink);
+  HRESULT hr =
+    mFontFace->GetGlyphRunOutline(mSize, &indices.front(), &advances.front(),
+                                  &offsets.front(), aBuffer.mNumGlyphs,
+                                  FALSE, FALSE, aSink);
+  if (FAILED(hr)) {
+    gfxCriticalNote << "Failed to copy glyphs to geometry sink. Code: " << hexa(hr);
+  }
 }
 
 bool

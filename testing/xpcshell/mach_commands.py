@@ -7,6 +7,7 @@
 from __future__ import absolute_import, unicode_literals, print_function
 
 import argparse
+import errno
 import os
 import shutil
 import sys
@@ -122,6 +123,18 @@ class XPCShellRunner(MozbuildObject):
         if kwargs["failure_manifest"] is None:
             kwargs["failure_manifest"] = os.path.join(self.statedir, 'xpcshell.failures.ini')
 
+        # Use the object directory for the temp directory to minimize the chance
+        # of file scanning. The overhead from e.g. search indexers and anti-virus
+        # scanners like Windows Defender can add tons of overhead to test execution.
+        # We encourage people to disable these things in the object directory.
+        temp_dir = os.path.join(self.topobjdir, 'temp')
+        try:
+            os.mkdir(temp_dir)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+        kwargs['tempDir'] = temp_dir
+
         # Python through 2.7.2 has issues with unicode in some of the
         # arguments. Work around that.
         filtered_args = {}
@@ -206,7 +219,10 @@ class AndroidXPCShellRunner(MozbuildObject):
                     print ("using APK: %s" % kwargs["localAPK"])
                     break
             else:
-                raise Exception("You must specify an APK")
+                raise Exception("APK not found in objdir. You must specify an APK.")
+
+        if not kwargs["sequential"]:
+            kwargs["sequential"] = True
 
         options = argparse.Namespace(**kwargs)
         xpcshell = remotexpcshelltests.XPCShellRemote(dm, options, log)
@@ -344,13 +360,14 @@ class MachCommands(MachCommandBase):
             m.tests.extend(test_objects)
             params['manifest'] = m
 
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(test_objects)
+
         # We should probably have a utility function to ensure the tree is
         # ready to run tests. Until then, we just create the state dir (in
         # case the tree wasn't built with mach).
         self._ensure_state_subdir_exists('.')
 
-        driver = self._spawn(BuildDriver)
-        driver.install_tests(remove=False)
 
         params['log'] = structured.commandline.setup_logging("XPCShellTests",
                                                              params,

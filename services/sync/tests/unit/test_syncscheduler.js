@@ -29,6 +29,11 @@ Service.engineManager.register(CatapultEngine);
 var scheduler = new SyncScheduler(Service);
 var clientsEngine = Service.clientsEngine;
 
+// Don't remove stale clients when syncing. This is a test-only workaround
+// that lets us add clients directly to the store, without losing them on
+// the next sync.
+clientsEngine._removeRemoteClient = id => {};
+
 function sync_httpd_setup() {
   let global = new ServerWBO("global", {
     syncID: Service.syncID,
@@ -69,6 +74,7 @@ function setUp(server) {
 function cleanUpAndGo(server) {
   let deferred = Promise.defer();
   Utils.nextTick(function () {
+    clientsEngine._store.wipe();
     Service.startOver();
     if (server) {
       server.stop(deferred.resolve);
@@ -84,6 +90,7 @@ function run_test() {
 
   Log.repository.getLogger("Sync.Service").level = Log.Level.Trace;
   Log.repository.getLogger("Sync.scheduler").level = Log.Level.Trace;
+  validate_all_future_pings();
 
   // The scheduler checks Weave.fxaEnabled to determine whether to use
   // FxA defaults or legacy defaults.  As .fxaEnabled checks the username, we
@@ -141,15 +148,26 @@ add_test(function test_prefAttributes() {
               Svc.Prefs.get("scheduler.immediateInterval") * 1000);
 
   _("Custom values for prefs will take effect after a restart.");
-  Svc.Prefs.set("scheduler.sync11.singleDeviceInterval", 42);
-  Svc.Prefs.set("scheduler.idleInterval", 23);
-  Svc.Prefs.set("scheduler.activeInterval", 18);
+  Svc.Prefs.set("scheduler.sync11.singleDeviceInterval", 420);
+  Svc.Prefs.set("scheduler.idleInterval", 230);
+  Svc.Prefs.set("scheduler.activeInterval", 180);
   Svc.Prefs.set("scheduler.immediateInterval", 31415);
   scheduler.setDefaults();
-  do_check_eq(scheduler.idleInterval, 23000);
-  do_check_eq(scheduler.singleDeviceInterval, 42000);
-  do_check_eq(scheduler.activeInterval, 18000);
+  do_check_eq(scheduler.idleInterval, 230000);
+  do_check_eq(scheduler.singleDeviceInterval, 420000);
+  do_check_eq(scheduler.activeInterval, 180000);
   do_check_eq(scheduler.immediateInterval, 31415000);
+
+  _("Custom values for interval prefs can't be less than 60 seconds.");
+  Svc.Prefs.set("scheduler.sync11.singleDeviceInterval", 42);
+  Svc.Prefs.set("scheduler.idleInterval", 50);
+  Svc.Prefs.set("scheduler.activeInterval", 50);
+  Svc.Prefs.set("scheduler.immediateInterval", 10);
+  scheduler.setDefaults();
+  do_check_eq(scheduler.idleInterval, 60000);
+  do_check_eq(scheduler.singleDeviceInterval, 60000);
+  do_check_eq(scheduler.activeInterval, 60000);
+  do_check_eq(scheduler.immediateInterval, 60000);
 
   Svc.Prefs.resetBranch("");
   scheduler.setDefaults();
@@ -824,9 +842,9 @@ add_identity_test(this, function* test_sync_X_Weave_Backoff() {
   Service.sync();
 
   do_check_true(Status.backoffInterval >= BACKOFF * 1000);
-  // Allowing 1 second worth of of leeway between when Status.minimumNextSync
+  // Allowing 3 seconds worth of of leeway between when Status.minimumNextSync
   // was set and when this line gets executed.
-  let minimumExpectedDelay = (BACKOFF - 1) * 1000;
+  let minimumExpectedDelay = (BACKOFF - 3) * 1000;
   do_check_true(Status.minimumNextSync >= Date.now() + minimumExpectedDelay);
 
   // Verify that the next sync is actually going to wait that long.
@@ -883,9 +901,9 @@ add_identity_test(this, function* test_sync_503_Retry_After() {
 
   do_check_true(Status.enforceBackoff);
   do_check_true(Status.backoffInterval >= BACKOFF * 1000);
-  // Allowing 1 second worth of of leeway between when Status.minimumNextSync
+  // Allowing 3 seconds worth of of leeway between when Status.minimumNextSync
   // was set and when this line gets executed.
-  let minimumExpectedDelay = (BACKOFF - 1) * 1000;
+  let minimumExpectedDelay = (BACKOFF - 3) * 1000;
   do_check_true(Status.minimumNextSync >= Date.now() + minimumExpectedDelay);
 
   // Verify that the next sync is actually going to wait that long.

@@ -3,7 +3,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import traceback
-import types
 
 
 class InstallGeckoError(Exception):
@@ -31,13 +30,13 @@ class MarionetteException(Exception):
             be displayed in the exception's string representation.
 
         """
-
-        self.msg = message
         self.cause = cause
         self.stacktrace = stacktrace
 
+        super(MarionetteException, self).__init__(message)
+
     def __str__(self):
-        msg = str(self.msg)
+        msg = str(self.message)
         tb = None
 
         if self.cause:
@@ -50,7 +49,7 @@ class MarionetteException(Exception):
             st = "".join(["\t%s\n" % x for x in self.stacktrace.splitlines()])
             msg += "\nstacktrace:\n%s" % st
 
-        return "".join(traceback.format_exception(self.__class__, msg, tb))
+        return "".join(traceback.format_exception(self.__class__, msg, tb)).strip()
 
 
 class ElementNotSelectableException(MarionetteException):
@@ -63,6 +62,7 @@ class InvalidArgumentException(MarionetteException):
 
 class InvalidSessionIdException(MarionetteException):
     status = "invalid session id"
+
 
 class TimeoutException(MarionetteException):
     code = (21,)
@@ -98,8 +98,8 @@ class ElementNotVisibleException(MarionetteException):
     code = (11,)
     status = "element not visible"
 
-    def __init__(
-        self, message="Element is not currently visible and may not be manipulated",
+    def __init__(self,
+                 message="Element is not currently visible and may not be manipulated",
                  stacktrace=None, cause=None):
         super(ElementNotVisibleException, self).__init__(
             message, cause=cause, stacktrace=stacktrace)

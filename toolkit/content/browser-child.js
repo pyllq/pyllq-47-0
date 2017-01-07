@@ -5,6 +5,7 @@
 var Cc = Components.classes;
 var Ci = Components.interfaces;
 var Cu = Components.utils;
+var Cr = Components.results;
 
 Cu.import("resource://gre/modules/AppConstants.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -130,6 +131,7 @@ var WebProgressListener = {
       json.documentURI = content.document.documentURIObject.spec;
       json.charset = content.document.characterSet;
       json.mayEnableCharacterEncodingMenu = docShell.mayEnableCharacterEncodingMenu;
+      json.inLoadURI = WebNavigation.inLoadURI;
     }
 
     this._send("Content:StateChange", json, objects);
@@ -170,6 +172,7 @@ var WebProgressListener = {
       json.mayEnableCharacterEncodingMenu = docShell.mayEnableCharacterEncodingMenu;
       json.principal = content.document.nodePrincipal;
       json.synthetic = content.document.mozSyntheticDocument;
+      json.inLoadURI = WebNavigation.inLoadURI;
 
       if (AppConstants.MOZ_CRASHREPORTER && CrashReporter.enabled) {
         let uri = aLocationURI.clone();
@@ -208,6 +211,10 @@ var WebProgressListener = {
     return true;
   },
 
+  sendLoadCallResult() {
+    sendAsyncMessage("Content:LoadURIResult");
+  },
+
   QueryInterface: function QueryInterface(aIID) {
     if (aIID.equals(Ci.nsIWebProgressListener) ||
         aIID.equals(Ci.nsIWebProgressListener2) ||
@@ -231,12 +238,19 @@ var WebNavigation =  {
     addMessageListener("WebNavigation:GoForward", this);
     addMessageListener("WebNavigation:GotoIndex", this);
     addMessageListener("WebNavigation:LoadURI", this);
+    addMessageListener("WebNavigation:SetOriginAttributes", this);
     addMessageListener("WebNavigation:Reload", this);
     addMessageListener("WebNavigation:Stop", this);
   },
 
   get webNavigation() {
     return docShell.QueryInterface(Ci.nsIWebNavigation);
+  },
+
+  _inLoadURI: false,
+
+  get inLoadURI() {
+    return this._inLoadURI;
   },
 
   receiveMessage: function(message) {
@@ -256,6 +270,9 @@ var WebNavigation =  {
                      message.data.postData, message.data.headers,
                      message.data.baseURI);
         break;
+      case "WebNavigation:SetOriginAttributes":
+        this.setOriginAttributes(message.data.originAttributes);
+        break;
       case "WebNavigation:Reload":
         this.reload(message.data.flags);
         break;
@@ -265,19 +282,30 @@ var WebNavigation =  {
     }
   },
 
+  _wrapURIChangeCall(fn) {
+    this._inLoadURI = true;
+    try {
+      fn();
+    } finally {
+      this._inLoadURI = false;
+      WebProgressListener.sendLoadCallResult();
+    }
+  },
+
   goBack: function() {
     if (this.webNavigation.canGoBack) {
-      this.webNavigation.goBack();
+      this._wrapURIChangeCall(() => this.webNavigation.goBack());
     }
   },
 
   goForward: function() {
-    if (this.webNavigation.canGoForward)
-      this.webNavigation.goForward();
+    if (this.webNavigation.canGoForward) {
+      this._wrapURIChangeCall(() => this.webNavigation.goForward());
+    }
   },
 
   gotoIndex: function(index) {
-    this.webNavigation.gotoIndex(index);
+    this._wrapURIChangeCall(() => this.webNavigation.gotoIndex(index));
   },
 
   loadURI: function(uri, flags, referrer, referrerPolicy, postData, headers, baseURI) {
@@ -300,8 +328,16 @@ var WebNavigation =  {
       headers = makeInputStream(headers);
     if (baseURI)
       baseURI = Services.io.newURI(baseURI, null, null);
-    this.webNavigation.loadURIWithOptions(uri, flags, referrer, referrerPolicy,
-                                          postData, headers, baseURI);
+    this._wrapURIChangeCall(() => {
+      return this.webNavigation.loadURIWithOptions(uri, flags, referrer, referrerPolicy,
+                                                   postData, headers, baseURI);
+    });
+  },
+
+  setOriginAttributes: function(originAttributes) {
+    if (originAttributes) {
+      this.webNavigation.setOriginAttributesBeforeLoading(originAttributes);
+    }
   },
 
   reload: function(flags) {
@@ -334,6 +370,7 @@ var SecurityUI = {
 var ControllerCommands = {
   init: function () {
     addMessageListener("ControllerCommands:Do", this);
+    addMessageListener("ControllerCommands:DoWithParams", this);
   },
 
   receiveMessage: function(message) {
@@ -341,6 +378,23 @@ var ControllerCommands = {
       case "ControllerCommands:Do":
         if (docShell.isCommandEnabled(message.data))
           docShell.doCommand(message.data);
+        break;
+
+      case "ControllerCommands:DoWithParams":
+        var data = message.data;
+        if (docShell.isCommandEnabled(data.cmd)) {
+          var params = Cc["@mozilla.org/embedcomp/command-params;1"].
+                       createInstance(Ci.nsICommandParams);
+          for (var name in data.params) {
+            var value = data.params[name];
+            if (value.type == "long") {
+              params.setLongValue(name, parseInt(value.value));
+            } else {
+              throw Cr.NS_ERROR_NOT_IMPLEMENTED;
+            }
+          }
+          docShell.doCommandWithParams(data.cmd, params);
+        }
         break;
     }
   }
@@ -441,13 +495,13 @@ addMessageListener("TextZoom", function (aMessage) {
 
 addEventListener("FullZoomChange", function () {
   if (ZoomManager.refreshFullZoom()) {
-    sendAsyncMessage("FullZoomChange", { value:  ZoomManager.fullZoom});
+    sendAsyncMessage("FullZoomChange", { value: ZoomManager.fullZoom });
   }
 }, false);
 
 addEventListener("TextZoomChange", function (aEvent) {
   if (ZoomManager.refreshTextZoom()) {
-    sendAsyncMessage("TextZoomChange", { value:  ZoomManager.textZoom});
+    sendAsyncMessage("TextZoomChange", { value: ZoomManager.textZoom });
   }
 }, false);
 
@@ -615,10 +669,10 @@ addMessageListener("PermitUnload", msg => {
 var outerWindowID = content.QueryInterface(Ci.nsIInterfaceRequestor)
                            .getInterface(Ci.nsIDOMWindowUtils)
                            .outerWindowID;
-var initData = sendSyncMessage("Browser:Init", {outerWindowID: outerWindowID});
-if (initData.length && initData[0]) {
-  docShell.useGlobalHistory = initData[0].useGlobalHistory;
-  if (initData[0].initPopup) {
-    setTimeout(() => AutoCompletePopup.init(), 0);
+sendAsyncMessage("Browser:Init", {outerWindowID: outerWindowID});
+addMessageListener("Browser:InitReceived", function onInitReceived(msg) {
+  removeMessageListener("Browser:InitReceived", onInitReceived);
+  if (msg.data.initPopup) {
+    AutoCompletePopup.init();
   }
-}
+});

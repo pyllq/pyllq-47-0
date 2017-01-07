@@ -127,10 +127,14 @@ public class Distribution {
      * {@link org.mozilla.gecko.distribution.Distribution#exists()} will return
      * false. In the other two callbacks, it will return true.
      */
-    @WorkerThread
     public interface ReadyCallback {
+        @WorkerThread
         void distributionNotFound();
+
+        @WorkerThread
         void distributionFound(Distribution distribution);
+
+        @WorkerThread
         void distributionArrivedLate(Distribution distribution);
     }
 
@@ -220,7 +224,14 @@ public class Distribution {
             public void run() {
                 boolean distributionSet = distribution.doInit();
                 if (distributionSet) {
-                    GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Distribution:Set", ""));
+                    String preferencesJSON = "";
+                    try {
+                        final File descFile = distribution.getDistributionFile("preferences.json");
+                        preferencesJSON = FileUtils.readStringFromFile(descFile);
+                    } catch (IOException e) {
+                        Log.e(LOGTAG, "Error getting distribution descriptor file.", e);
+                    }
+                    GeckoAppShell.notifyObservers("Distribution:Set", preferencesJSON);
                 }
             }
         });
@@ -320,7 +331,7 @@ public class Distribution {
         runLateReadyQueue();
 
         // Make sure that changes to search defaults are applied immediately.
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Distribution:Changed", ""));
+        GeckoAppShell.notifyObservers("Distribution:Changed", "");
     }
 
     /**
@@ -360,7 +371,7 @@ public class Distribution {
         }
 
         try {
-            JSONObject all = new JSONObject(FileUtils.getFileContents(descFile));
+            JSONObject all = FileUtils.readJSONObjectFromFile(descFile);
 
             if (!all.has("Global")) {
                 Log.e(LOGTAG, "Distribution preferences.json has no Global entry!");
@@ -392,7 +403,7 @@ public class Distribution {
         }
 
         try {
-            final JSONObject all = new JSONObject(FileUtils.getFileContents(descFile));
+            final JSONObject all = FileUtils.readJSONObjectFromFile(descFile);
 
             if (!all.has("AndroidPreferences")) {
                 return new JSONObject();
@@ -419,7 +430,7 @@ public class Distribution {
         }
 
         try {
-            return new JSONArray(FileUtils.getFileContents(bookmarks));
+            return new JSONArray(FileUtils.readStringFromFile(bookmarks));
         } catch (IOException e) {
             Log.e(LOGTAG, "Error getting bookmarks", e);
             Telemetry.addToHistogram(HISTOGRAM_CODE_CATEGORY, CODE_CATEGORY_MALFORMED_DISTRIBUTION);
@@ -595,7 +606,7 @@ public class Distribution {
         } else {
             value = status / 100;
         }
-        
+
         Telemetry.addToHistogram(HISTOGRAM_CODE_CATEGORY, value);
 
         if (status != 200) {
@@ -929,7 +940,10 @@ public class Distribution {
             }
         }
 
-        return new String[] { baseDirectory };
+        return new String[] {
+                baseDirectory + "/default",
+                baseDirectory
+        };
     }
 
     /**

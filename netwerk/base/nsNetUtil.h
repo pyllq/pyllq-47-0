@@ -569,7 +569,7 @@ nsresult NS_BackgroundOutputStream(nsIOutputStream **result,
                                    uint32_t          segmentSize  = 0,
                                    uint32_t          segmentCount = 0);
 
-MOZ_WARN_UNUSED_RESULT nsresult
+MOZ_MUST_USE nsresult
 NS_NewBufferedInputStream(nsIInputStream **result,
                           nsIInputStream  *str,
                           uint32_t         bufferSize);
@@ -910,6 +910,22 @@ nsresult NS_LinkRedirectChannels(uint32_t channelId,
 nsresult NS_MakeRandomInvalidURLString(nsCString &result);
 
 /**
+ * Helper function which checks whether the channel can be
+ * openend using Open2() or has to fall back to opening
+ * the channel using Open().
+ */
+nsresult NS_MaybeOpenChannelUsingOpen2(nsIChannel* aChannel,
+                                       nsIInputStream **aStream);
+
+/**
+ * Helper function which checks whether the channel can be
+ * openend using AsyncOpen2() or has to fall back to opening
+ * the channel using AsyncOpen().
+ */
+nsresult NS_MaybeOpenChannelUsingAsyncOpen2(nsIChannel* aChannel,
+                                            nsIStreamListener *aListener);
+
+/**
  * Helper function to determine whether urlString is Java-compatible --
  * whether it can be passed to the Java URL(String) constructor without the
  * latter throwing a MalformedURLException, or without Java otherwise
@@ -998,6 +1014,13 @@ nsresult NS_ShouldSecureUpgrade(nsIURI* aURI,
                                 bool aAllowSTS,
                                 bool& aShouldUpgrade);
 
+/**
+ * Returns an https URI for channels that need to go through secure upgrades.
+ */
+nsresult NS_GetSecureUpgradedURI(nsIURI* aURI, nsIURI** aUpgradedURI);
+
+nsresult NS_CompareLoadInfoAndLoadContext(nsIChannel *aChannel);
+
 namespace mozilla {
 namespace net {
 
@@ -1016,7 +1039,7 @@ bool InScriptableRange(uint64_t val);
 
 // Include some function bodies for callers with external linkage
 #ifndef MOZILLA_INTERNAL_API
-#include "nsNetUtil.inl"
+#include "nsNetUtilInlines.h"
 #endif
 
 #endif // !nsNetUtil_h__

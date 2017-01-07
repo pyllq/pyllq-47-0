@@ -22,7 +22,6 @@ const Log = Cu.import("resource://gre/modules/AndroidLog.jsm", {}).AndroidLog.bi
 
 const {
   PushCrypto,
-  base64UrlDecode,
   concatArray,
   getCryptoParams,
 } = Cu.import("resource://gre/modules/PushCrypto.jsm");
@@ -60,10 +59,6 @@ this.PushServiceAndroidGCM = {
                       PushRecordAndroidGCM);
   },
 
-  serviceType: function() {
-    return "AndroidGCM";
-  },
-
   validServerURI: function(serverURI) {
     if (!serverURI) {
       return false;
@@ -72,9 +67,9 @@ this.PushServiceAndroidGCM = {
     if (serverURI.scheme == "https") {
       return true;
     }
-    if (prefs.get("debug") && serverURI.scheme == "http") {
-      // Accept HTTP endpoints when debugging.
-      return true;
+    if (serverURI.scheme == "http") {
+      // Allow insecure server URLs for development and testing.
+      return !!prefs.get("testing.allowInsecureServerURL");
     }
     console.info("Unsupported Android GCM dom.push.serverURL scheme", serverURI.scheme);
     return false;
@@ -118,12 +113,15 @@ this.PushServiceAndroidGCM = {
         };
         cryptoParams = getCryptoParams(headers);
         // Ciphertext is (urlsafe) Base 64 encoded.
-        message = base64UrlDecode(data.message);
+        message = ChromeUtils.base64URLDecode(data.message, {
+          // The Push server may append padding.
+          padding: "ignore",
+        });
       }
 
       console.debug("Delivering message to main PushService:", message, cryptoParams);
       this._mainPushService.receivedPushMessage(
-        data.channelID, message, cryptoParams, (record) => {
+        data.channelID, "", message, cryptoParams, (record) => {
           // Always update the stored record.
           return record;
         });
@@ -147,11 +145,19 @@ this.PushServiceAndroidGCM = {
     prefs.observe("debug", this);
     Services.obs.addObserver(this, "PushServiceAndroidGCM:ReceivedPushMessage", false);
 
-    return this._configure(serverURL, !!prefs.get("debug"));
+    return this._configure(serverURL, !!prefs.get("debug")).then(() => {
+      Messaging.sendRequestForResult({
+        type: "PushServiceAndroidGCM:Initialized"
+      });
+    });
   },
 
   uninit: function() {
     console.debug("uninit()");
+    Messaging.sendRequestForResult({
+      type: "PushServiceAndroidGCM:Uninitialized"
+    });
+
     this._mainPushService = null;
     Services.obs.removeObserver(this, "PushServiceAndroidGCM:ReceivedPushMessage");
     prefs.ignore("debug", this);
@@ -195,24 +201,18 @@ this.PushServiceAndroidGCM = {
     console.debug("disconnect");
   },
 
-  request: function(action, record) {
-    switch (action) {
-    case "register":
-      console.debug("register:", record);
-      return this._register(record);
-    case "unregister":
-      console.debug("unregister: ", record);
-      return this._unregister(record);
-    default:
-      console.debug("Ignoring unrecognized request action:", action);
-    }
-  },
-
-  _register: function(record) {
+  register: function(record) {
+    console.debug("register:", record);
     let ctime = Date.now();
+    let appServerKey = record.appServerKey ?
+      ChromeUtils.base64URLEncode(record.appServerKey, {
+        // The Push server requires padding.
+        pad: true,
+      }) : null;
     // Caller handles errors.
     return Messaging.sendRequestForResult({
       type: "PushServiceAndroidGCM:SubscribeChannel",
+      appServerKey: appServerKey,
     }).then(data => {
       console.debug("Got data:", data);
       return PushCrypto.generateKeys()
@@ -229,16 +229,23 @@ this.PushServiceAndroidGCM = {
             p256dhPublicKey: exportedKeys[0],
             p256dhPrivateKey: exportedKeys[1],
             authenticationSecret: PushCrypto.generateAuthenticationSecret(),
+            appServerKey: record.appServerKey,
           })
       );
     });
   },
 
-  _unregister: function(record) {
+  unregister: function(record) {
+    console.debug("unregister: ", record);
     return Messaging.sendRequestForResult({
       type: "PushServiceAndroidGCM:UnsubscribeChannel",
       channelID: record.keyID,
     });
+  },
+
+  reportDeliveryError: function(messageID, reason) {
+    console.warn("reportDeliveryError: Ignoring message delivery error",
+      messageID, reason);
   },
 };
 

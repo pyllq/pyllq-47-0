@@ -31,6 +31,11 @@ pref("browser.chromeURL", "chrome://browser/content/");
 // expiration (but low-memory conditions may still require the tab to be zombified).
 pref("browser.tabs.expireTime", 900);
 
+// Disables zombification of background tabs under memory pressure.
+// Intended for use in testing, where we don't want the tab running the
+// test harness code to be zombified.
+pref("browser.tabs.disableBackgroundZombification", false);
+
 // Control whether tab content should try to load from disk cache when network
 // is offline.
 // Controlled by Switchboard experiment "offline-cache".
@@ -48,10 +53,12 @@ pref("browser.zoom.siteSpecific", false);
 pref("browser.zoom.pyllq-clamp-images", true);
 pref("browser.zoom.pyllq-hide-floaties", true);
 
+// fixes some website dependencies on webkit
+// see dom/base/WebKitCSSMatrix.cpp
+pref("layout.css.DOMMatrix.enabled", true);
 pref("layout.css.prefixes.webkit", true);
-// see consolelogcat
 
-pref("general.useragent.override","Pyllq/47.0 Mozilla/5.0 (Linux; U; Android 4.0.3; en;) AppleWebkit/537.36 (KHTML, like Gecko) Version/4.0 Mobile Safari/537.36");
+//pref("general.useragent.override","Pyllq/47.0 Mozilla/5.0 (Linux; U; Android 4.0.3; en;) AppleWebkit/537.36 (KHTML, like Gecko) Version/4.0 Mobile Safari/537.36");
 
 // Mobile will use faster, less durable mode.
 pref("toolkit.storage.synchronous", 0);
@@ -142,15 +149,16 @@ pref("browser.display.remotetabs.timeout", 10);
 pref("browser.sessionhistory.max_total_viewers", 1);
 pref("browser.sessionhistory.max_entries", 50);
 pref("browser.sessionhistory.contentViewerTimeout", 360);
+pref("browser.sessionhistory.bfcacheIgnoreMemoryPressure", false);
 
 /* session store */
 pref("browser.sessionstore.resume_session_once", false);
 pref("browser.sessionstore.resume_from_crash", true);
 pref("browser.sessionstore.interval", 10000); // milliseconds
-pref("browser.sessionstore.max_tabs_undo", 5);
+pref("browser.sessionstore.max_tabs_undo", 10);
 pref("browser.sessionstore.max_resumed_crashes", 1);
-pref("browser.sessionstore.recent_crashes", 0);
 pref("browser.sessionstore.privacy_level", 0); // saving data: 0 = all, 1 = unencrypted sites, 2 = never
+pref("browser.sessionstore.debug_logging", false);
 
 /* these should help performance */
 pref("mozilla.widget.force-24bpp", true);
@@ -201,8 +209,7 @@ pref("dom.forms.number", true);
 /* extension manager and xpinstall */
 pref("xpinstall.whitelist.directRequest", false);
 pref("xpinstall.whitelist.fileRequest", false);
-pref("xpinstall.whitelist.add", "https://addons.mozilla.org");
-pref("xpinstall.whitelist.add.180", "https://marketplace.firefox.com");
+pref("xpinstall.whitelist.add", "https://addons.mozilla.org,https://testpilot.firefox.com");
 
 //pref("xpinstall.signatures.required", true);
 
@@ -243,22 +250,12 @@ pref("extensions.getAddons.getWithPerformance.url", "https://services.addons.moz
 pref("extensions.getLocales.get.url", "");
 pref("extensions.compatability.locales.buildid", "0");
 
-/* blocklist preferences */
-pref("extensions.blocklist.enabled", true);
-// OneCRL freshness checking depends on this value, so if you change it,
-// please also update security.onecrl.maximum_staleness_in_seconds.
-pref("extensions.blocklist.interval", 86400);
-pref("extensions.blocklist.url", "https://blocklist.addons.mozilla.org/blocklist/3/%APP_ID%/%APP_VERSION%/%PRODUCT%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/%PING_COUNT%/%TOTAL_PING_COUNT%/%DAYS_SINCE_LAST_PING%/");
-pref("extensions.blocklist.detailsURL", "https://www.mozilla.com/%LOCALE%/blocklist/");
-
-// Kinto blocklist preferences
-pref("services.kinto.base", "https://firefox.settings.services.mozilla.com/v1");
-pref("services.kinto.bucket", "blocklists");
-pref("services.kinto.onecrl.collection", "certificates");
-pref("services.kinto.onecrl.checked", 0);
-
 /* Don't let XPIProvider install distribution add-ons; we do our own thing on mobile. */
 pref("extensions.installDistroAddons", false);
+
+// Add-on content security policies.
+pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
+pref("extensions.webextensions.default-content-security-policy", "script-src 'self'; object-src 'self';");
 
 /* block popups by default, and notify the user about blocked popups */
 pref("dom.disable_open_during_load", true);
@@ -307,9 +304,6 @@ pref("browser.search.order.US.3", "chrome://browser/locale/region.properties");
 
 // disable updating
 pref("browser.search.update", false);
-
-// enable tracking protection for private browsing
-pref("privacy.trackingprotection.pbmode.enabled", true);
 
 // disable search suggestions by default
 pref("browser.search.suggest.enabled", true);
@@ -424,7 +418,6 @@ pref("javascript.options.mem.gc_high_frequency_low_limit_mb", 10);
 pref("javascript.options.mem.gc_low_frequency_heap_growth", 120);
 pref("javascript.options.mem.high_water_mark", 16);
 pref("javascript.options.mem.gc_allocation_threshold_mb", 3);
-pref("javascript.options.mem.gc_decommit_threshold_mb", 1);
 pref("javascript.options.mem.gc_min_empty_chunk_count", 1);
 pref("javascript.options.mem.gc_max_empty_chunk_count", 2);
 #else
@@ -434,8 +427,6 @@ pref("javascript.options.mem.high_water_mark", 32);
 pref("dom.max_chrome_script_run_time", 0); // disable slow script dialog for chrome
 pref("dom.max_script_run_time", 20);
 
-// JS error console
-pref("devtools.errorconsole.enabled", false);
 // Absolute path to the devtools unix domain socket file used
 // to communicate with a usb cable via adb forward.
 pref("devtools.debugger.unix-domain-socket", "/data/data/@ANDROID_PACKAGE_NAME@/firefox-debugger-socket");
@@ -502,7 +493,8 @@ pref("plugin.default.state", 1);
 // product URLs
 // The breakpad report server to link to in about:crashes
 pref("breakpad.reportURL", "http://crash-stats.chinesebrowser.com/report/index/");
-pref("app.support.baseURL", "http://support.chinesebrowser.com/1/mobile/%VERSION%/%OS%/%LOCALE%/");
+pref("app.support.baseURL", "https://support.chinesebrowser.com/1/mobile/%VERSION%/%OS%/%LOCALE%/");
+
 // Used to submit data to input from about:feedback
 pref("app.feedback.postURL", "https://input.chinesebrowser.com/api/v1/feedback/");
 
@@ -511,14 +503,14 @@ pref("app.feedback.postURL", "https://input.chinesebrowser.com/api/v1/feedback/"
 pref("app.feedbackURL", "about:feedback");
 
 pref("app.privacyURL", "https://www.chinesebrowser.com/privacy/");
-pref("app.creditsURL", "http://www.chinesebrowser.com/credits/");
+pref("app.creditsURL", "https://www.chinesebrowser.com/credits/");
 pref("app.channelURL", "");
 #if MOZ_UPDATE_CHANNEL == aurora
-pref("app.releaseNotesURL", "http://www.chinesebrowser.com");
+pref("app.releaseNotesURL", "https://www.chinesebrowser.com");
 #elif MOZ_UPDATE_CHANNEL == beta
-pref("app.releaseNotesURL", "http://www.chinesebrowser.com/releasenotes/");
+pref("app.releaseNotesURL", "https://www.chinesebrowser.com/releasenotes/");
 #else
-pref("app.releaseNotesURL", "http://www.chinesebrowser.com/releasenotes/");
+pref("app.releaseNotesURL", "https://www.chinesebrowser.com/releasenotes/");
 #endif
 
 pref("app.faqURL", "https://support.chinesebrowser.com/1/mobile/%VERSION%/%OS%/%LOCALE%/faq");
@@ -533,15 +525,6 @@ pref("security.mixed_content.block_active_content", true);
 
 // Enable pinning
 pref("security.cert_pinning.enforcement_level", 1);
-
-// NB: Changes to this pref affect CERT_CHAIN_SHA1_POLICY_STATUS telemetry.
-// See the comment in CertVerifier.cpp.
-// Allow SHA-1 certificates
-pref("security.pki.sha1_enforcement_level", 0);
-
-// Required blocklist freshness for OneCRL OCSP bypass
-// (default is 1.25x extensions.blocklist.interval, or 30 hours)
-pref("security.onecrl.maximum_staleness_in_seconds", 108000);
 
 // Only fetch OCSP for EV certificates
 pref("security.OCSP.enabled", 2);
@@ -601,12 +584,13 @@ pref("ui.dragThresholdX", 25);
 pref("ui.dragThresholdY", 25);
 
 pref("layers.acceleration.disabled", false);
-pref("layers.offmainthreadcomposition.enabled", true);
 pref("layers.async-video.enabled", true);
 
-#ifdef MOZ_ANDROID_APZ
-pref("layers.async-pan-zoom.enabled", true);
-// APZ prefs that are different from B2G
+#ifndef MOZ_ANDROID_APZ
+pref("layers.async-pan-zoom.enabled", false);
+#endif
+
+pref("apz.content_response_timeout", 600);
 pref("apz.allow_immediate_handoff", false);
 pref("apz.touch_start_tolerance", "0.06");
 pref("apz.axis_lock.breakout_angle", "0.7853982");    // PI / 4 (45 degrees)
@@ -617,12 +601,12 @@ pref("apz.fling_curve_function_y1", "0.46");
 pref("apz.fling_curve_function_x2", "0.05");
 pref("apz.fling_curve_function_y2", "1.00");
 pref("apz.fling_curve_threshold_inches_per_ms", "0.01");
+// apz.fling_friction and apz.fling_stopped_threshold are currently ignored by Fennec.
 pref("apz.fling_friction", "0.004");
-pref("apz.fling_stopped_threshold", "0.1");
+pref("apz.fling_stopped_threshold", "0.0");
 pref("apz.max_velocity_inches_per_ms", "0.07");
 pref("apz.fling_accel_interval_ms", 750);
 pref("apz.overscroll.enabled", true);
-#endif
 
 pref("layers.progressive-paint", true);
 pref("layers.low-precision-buffer", true);
@@ -671,48 +655,9 @@ pref("media.mediasource.enabled", true);
 // optimize images memory usage
 pref("image.downscale-during-decode.enabled", true);
 
-#ifdef MOZ_SAFE_BROWSING
-pref("browser.safebrowsing.enabled", true);
-pref("browser.safebrowsing.malware.enabled", true);
 pref("browser.safebrowsing.downloads.enabled", false);
-pref("browser.safebrowsing.downloads.remote.enabled", false);
-pref("browser.safebrowsing.downloads.remote.timeout_ms", 10000);
-pref("browser.safebrowsing.downloads.remote.url", "https://sb-ssl.google.com/safebrowsing/clientreport/download?key=%GOOGLE_API_KEY%");
-pref("browser.safebrowsing.downloads.remote.block_dangerous",            true);
-pref("browser.safebrowsing.downloads.remote.block_dangerous_host",       true);
-pref("browser.safebrowsing.downloads.remote.block_potentially_unwanted", false);
-pref("browser.safebrowsing.downloads.remote.block_uncommon",             false);
-pref("browser.safebrowsing.debug", false);
-
-pref("browser.safebrowsing.provider.google.lists", "goog-badbinurl-shavar,goog-downloadwhite-digest256,goog-phish-shavar,goog-malware-shavar,goog-unwanted-shavar");
-pref("browser.safebrowsing.provider.google.updateURL", "https://safebrowsing.google.com/safebrowsing/downloads?client=SAFEBROWSING_ID&appver=%VERSION%&pver=2.2&key=%GOOGLE_API_KEY%");
-pref("browser.safebrowsing.provider.google.gethashURL", "https://safebrowsing.google.com/safebrowsing/gethash?client=SAFEBROWSING_ID&appver=%VERSION%&pver=2.2");
-pref("browser.safebrowsing.provider.google.reportURL", "https://safebrowsing.google.com/safebrowsing/diagnostic?client=%NAME%&hl=%LOCALE%&site=");
-
-pref("browser.safebrowsing.reportPhishMistakeURL", "https://%LOCALE%.phish-error.mozilla.com/?hl=%LOCALE%&url=");
-pref("browser.safebrowsing.reportPhishURL", "https://%LOCALE%.phish-report.mozilla.com/?hl=%LOCALE%&url=");
-pref("browser.safebrowsing.reportMalwareMistakeURL", "https://%LOCALE%.malware-error.mozilla.com/?hl=%LOCALE%&url=");
 
 pref("browser.safebrowsing.id", @MOZ_APP_UA_NAME@);
-
-// Name of the about: page contributed by safebrowsing to handle display of error
-// pages on phishing/malware hits.  (bug 399233)
-pref("urlclassifier.alternate_error_page", "blocked");
-
-// The number of random entries to send with a gethash request.
-pref("urlclassifier.gethashnoise", 4);
-
-// Gethash timeout for Safebrowsing.
-pref("urlclassifier.gethash.timeout_ms", 5000);
-
-// If an urlclassifier table has not been updated in this number of seconds,
-// a gethash request will be forced to check that the result is still in
-// the database.
-pref("urlclassifier.max-complete-age", 2700);
-
-// Tables for application reputation.
-pref("urlclassifier.downloadBlockTable", "goog-badbinurl-shavar");
-#endif
 
 // True if this is the first time we are showing about:firstrun
 pref("browser.firstrun.show.uidiscovery", true);
@@ -735,7 +680,6 @@ pref("services.push.enabled", false);
 pref("device.camera.enabled", false);
 pref("media.realtime_decoder.enabled", true);
 
-pref("dom.report_all_js_exceptions", true);
 pref("javascript.options.showInConsole", true);
 
 pref("full-screen-api.enabled", true);
@@ -819,8 +763,8 @@ pref("app.orientation.default", "");
 // back to the system.
 pref("memory.free_dirty_pages", true);
 
-pref("layout.imagevisibility.numscrollportwidths", 1);
-pref("layout.imagevisibility.numscrollportheights", 1);
+pref("layout.framevisibility.numscrollportwidths", 1);
+pref("layout.framevisibility.numscrollportheights", 1);
 
 pref("layers.enable-tiles", true);
 
@@ -925,33 +869,18 @@ pref("reader.toolbar.vertical", false);
 pref("toolkit.telemetry.unified", false);
 
 // Unified AccessibleCarets (touch-caret and selection-carets).
-#ifdef NIGHTLY_BUILD
 pref("layout.accessiblecaret.enabled", true);
-#else
-pref("layout.accessiblecaret.enabled", false);
-#endif
 
 // AccessibleCaret CSS for the Android L style assets.
 pref("layout.accessiblecaret.width", "22.0");
 pref("layout.accessiblecaret.height", "22.0");
 pref("layout.accessiblecaret.margin-left", "-11.5");
 
-// Android hides the selection bars at the two ends of the selection highlight.
-pref("layout.accessiblecaret.bar.enabled", false);
-
 // Android needs to show the caret when long tapping on an empty content.
 pref("layout.accessiblecaret.caret_shown_when_long_tapping_on_empty_content", true);
 
-// Android needs persistent carets and actionbar. Turn off the caret timeout.
-pref("layout.accessiblecaret.timeout_ms", 0);
-
 // Android generates long tap (mouse) events.
 pref("layout.accessiblecaret.use_long_tap_injector", false);
-
-// AccessibleCarets behaviour is extended to support Android specific
-// requirements to hide carets while maintaining ActionBar visiblity during page
-// scroll.
-pref("layout.accessiblecaret.extendedvisibility", true);
 
 // Androids carets are always tilt to match the text selection guideline.
 pref("layout.accessiblecaret.always_tilt", true);
@@ -962,6 +891,10 @@ pref("layout.accessiblecaret.allow_script_change_updates", true);
 
 // Optionally provide haptic feedback on longPress selection events.
 pref("layout.accessiblecaret.hapticfeedback", true);
+
+// Initial text selection on long-press is enhanced to provide
+// a smarter phone-number selection for direct-dial ActionBar action.
+pref("layout.accessiblecaret.extend_selection_for_phone_number", true);
 
 // Disable sending console to logcat on release builds.
 #ifdef RELEASE_BUILD
@@ -981,6 +914,17 @@ pref("dom.vr.enabled", true);
 pref("browser.tabs.showAudioPlayingIcon", true);
 
 pref("dom.serviceWorkers.enabled", true);
+pref("dom.serviceWorkers.interception.enabled", true);
+pref("dom.serviceWorkers.openWindow.enabled", true);
+
+pref("dom.push.debug", false);
+// The upstream autopush endpoint must have the Google API key corresponding to
+// the App's sender ID; we bake this assumption directly into the URL.
+pref("dom.push.maxRecentMessageIDsPerSubscription", 0);
+
+#ifdef MOZ_ANDROID_GCM
+pref("dom.push.enabled", true);
+#endif
 
 // The remote content URL where FxAccountsWebChannel messages originate.  Must use HTTPS.
 pref("identity.fxaccounts.remote.webchannel.uri", "https://accounts.firefox.com");
@@ -997,3 +941,13 @@ pref("identity.sync.tokenserver.uri", "https://token.services.mozilla.com/1.0/sy
 // Enable Presentation API
 pref("dom.presentation.enabled", true);
 pref("dom.presentation.discovery.enabled", true);
+pref("dom.presentation.discovery.legacy.enabled", true); // for TV 2.5 backward capability
+
+pref("dom.audiochannel.audioCompeting", true);
+pref("dom.audiochannel.mediaControl", true);
+
+// Space separated list of URLS that are allowed to send objects (instead of
+// only strings) through webchannels. This list is duplicated in browser/app/profile/firefox.js
+pref("webchannel.allowObject.urlWhitelist", "https://accounts.firefox.com https://content.cdn.mozilla.net https://input.mozilla.org https://support.mozilla.org https://install.mozilla.org");
+
+pref("media.openUnsupportedTypeWithExternalApp", true);

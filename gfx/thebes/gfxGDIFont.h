@@ -45,7 +45,7 @@ public:
     virtual bool SetupCairoFont(DrawTarget* aDrawTarget) override;
 
     /* override Measure to add padding for antialiasing */
-    virtual RunMetrics Measure(gfxTextRun *aTextRun,
+    virtual RunMetrics Measure(const gfxTextRun *aTextRun,
                                uint32_t aStart, uint32_t aEnd,
                                BoundingBoxType aBoundingBoxType,
                                DrawTarget *aDrawTargetForTightBoundingBox,
@@ -86,7 +86,7 @@ protected:
                            const char16_t *aText,
                            uint32_t        aOffset,
                            uint32_t        aLength,
-                           int32_t         aScript,
+                           Script          aScript,
                            bool            aVertical,
                            gfxShapedText  *aShapedText) override;
 
@@ -106,11 +106,11 @@ protected:
     bool                  mNeedsBold;
 
     // cache of glyph IDs (used for non-sfnt fonts only)
-    nsAutoPtr<nsDataHashtable<nsUint32HashKey,uint32_t> > mGlyphIDs;
+    mozilla::UniquePtr<nsDataHashtable<nsUint32HashKey,uint32_t> > mGlyphIDs;
     SCRIPT_CACHE          mScriptCache;
 
     // cache of glyph widths in 16.16 fixed-point pixels
-    nsAutoPtr<nsDataHashtable<nsUint32HashKey,int32_t> > mGlyphWidths;
+    mozilla::UniquePtr<nsDataHashtable<nsUint32HashKey,int32_t> > mGlyphWidths;
 };
 
 #endif /* GFX_GDIFONT_H */

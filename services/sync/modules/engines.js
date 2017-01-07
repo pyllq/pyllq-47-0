@@ -814,7 +814,13 @@ SyncEngine.prototype = {
     return this._previousFailed;
   },
   set previousFailed(val) {
-    let cb = (error) => this._log.error("Failed to set previousFailed", error);
+    let cb = (error) => {
+      if (error) {
+        this._log.error("Failed to set previousFailed", error);
+      } else {
+        this._log.debug("Successfully wrote previousFailed.");
+      }
+    }
     // Coerce the array to a string for more efficient comparison.
     if (val + "" == this._previousFailed) {
       return;
@@ -1229,13 +1235,11 @@ SyncEngine.prototype = {
   },
 
   _noteApplyFailure: function () {
-    Services.telemetry.getKeyedHistogramById(
-      "WEAVE_ENGINE_APPLY_FAILURES").add(this.name);
+    // here would be a good place to record telemetry...
   },
 
   _noteApplyNewFailure: function () {
-    Services.telemetry.getKeyedHistogramById(
-      "WEAVE_ENGINE_APPLY_NEW_FAILURES").add(this.name);
+    // here would be a good place to record telemetry...
   },
 
   /**
@@ -1449,6 +1453,8 @@ SyncEngine.prototype = {
       this._log.trace("Preparing " + modifiedIDs.length +
                       " outgoing records");
 
+      let counts = { sent: modifiedIDs.length, failed: 0 };
+
       // collection we'll upload
       let up = new Collection(this.engineURL, null, this.service);
       let handleResponse = resp => {
@@ -1464,6 +1470,7 @@ SyncEngine.prototype = {
           this.lastSync = modified;
 
         let failed_ids = Object.keys(resp.obj.failed);
+        counts.failed += failed_ids.length;
         if (failed_ids.length)
           this._log.debug("Records that will be uploaded again because "
                           + "the server couldn't store them: "
@@ -1500,6 +1507,7 @@ SyncEngine.prototype = {
         this._store._sleep(0);
       }
       postQueue.flush();
+      Observers.notify("weave:engine:sync:uploaded", counts, this.name);
     }
   },
 

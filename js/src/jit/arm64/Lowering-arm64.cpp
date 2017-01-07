@@ -95,11 +95,25 @@ LIRGeneratorARM64::lowerForALUInt64(LInstructionHelper<INT64_PIECES, 2 * INT64_P
 }
 
 void
-LIRGeneratorARM64::lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, 0>* ins,
+LIRGeneratorARM64::lowerForMulInt64(LMulI64* ins, MMul* mir, MDefinition* lhs, MDefinition* rhs)
+{
+    MOZ_CRASH("NYI");
+}
+
+template<size_t Temps>
+void
+LIRGeneratorARM64::lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, Temps>* ins,
                                       MDefinition* mir, MDefinition* lhs, MDefinition* rhs)
 {
     MOZ_CRASH("NYI");
 }
+
+template void LIRGeneratorARM64::lowerForShiftInt64(
+    LInstructionHelper<INT64_PIECES, INT64_PIECES+1, 0>* ins, MDefinition* mir,
+    MDefinition* lhs, MDefinition* rhs);
+template void LIRGeneratorARM64::lowerForShiftInt64(
+    LInstructionHelper<INT64_PIECES, INT64_PIECES+1, 1>* ins, MDefinition* mir,
+    MDefinition* lhs, MDefinition* rhs);
 
 void
 LIRGeneratorARM64::lowerForBitAndAndBranch(LBitAndAndBranch* baab, MInstruction* mir,
@@ -202,6 +216,12 @@ LIRGeneratorARM64::visitAsmJSNeg(MAsmJSNeg* ins)
 }
 
 void
+LIRGeneratorARM64::visitAsmSelect(MAsmSelect* ins)
+{
+    MOZ_CRASH("visitAsmSelect");
+}
+
+void
 LIRGeneratorARM64::lowerUDiv(MDiv* div)
 {
     MOZ_CRASH("lowerUDiv");
@@ -235,12 +255,6 @@ void
 LIRGeneratorARM64::visitAsmJSStoreHeap(MAsmJSStoreHeap* ins)
 {
     MOZ_CRASH("visitAsmJSStoreHeap");
-}
-
-void
-LIRGeneratorARM64::visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr* ins)
-{
-    MOZ_CRASH("visitAsmJSLoadFuncPtr");
 }
 
 void
@@ -280,30 +294,6 @@ LIRGeneratorARM64::visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStat
 }
 
 void
-LIRGeneratorARM64::visitSimdBinaryArith(MSimdBinaryArith* ins)
-{
-    MOZ_CRASH("NYI");
-}
-
-void
-LIRGeneratorARM64::visitSimdSelect(MSimdSelect* ins)
-{
-    MOZ_CRASH("NYI");
-}
-
-void
-LIRGeneratorARM64::visitSimdSplatX4(MSimdSplatX4* ins)
-{
-    MOZ_CRASH("NYI");
-}
-
-void
-LIRGeneratorARM64::visitSimdValueX4(MSimdValueX4* ins)
-{
-    MOZ_CRASH("NYI");
-}
-
-void
 LIRGeneratorARM64::visitAtomicTypedArrayElementBinop(MAtomicTypedArrayElementBinop* ins)
 {
     MOZ_CRASH("NYI");
@@ -337,7 +327,43 @@ LIRGeneratorARM64::visitRandom(MRandom* ins)
 }
 
 void
-LIRGeneratorARM64::visitTruncateToInt64(MTruncateToInt64* ins)
+LIRGeneratorARM64::visitWasmTruncateToInt64(MWasmTruncateToInt64* ins)
 {
     MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitWasmBoundsCheck(MWasmBoundsCheck* ins)
+{
+    MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitWasmLoad(MWasmLoad* ins)
+{
+    MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitWasmStore(MWasmStore* ins)
+{
+    MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitInt64ToFloatingPoint(MInt64ToFloatingPoint* ins)
+{
+    MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitCopySign(MCopySign* ins)
+{
+    MOZ_CRASH("NY");
+}
+
+void
+LIRGeneratorARM64::visitExtendInt32ToInt64(MExtendInt32ToInt64* ins)
+{
+    MOZ_CRASH("NYI");
 }

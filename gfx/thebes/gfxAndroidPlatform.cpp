@@ -25,13 +25,9 @@
 #include "cairo.h"
 #include "VsyncSource.h"
 
-#ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
-#endif
-
 #ifdef MOZ_WIDGET_GONK
 #include <cutils/properties.h>
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
 #include "HwcComposer2D.h"
 #endif
 
@@ -71,7 +67,7 @@ public:
     }
 
     NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                              nsISupports* aData, bool aAnonymize)
+                              nsISupports* aData, bool aAnonymize) override
     {
         return MOZ_COLLECT_REPORT(
             "explicit/freetype", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
@@ -170,11 +166,12 @@ IsJapaneseLocale()
 
 void
 gfxAndroidPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
-                                           int32_t aRunScript,
+                                           Script aRunScript,
                                            nsTArray<const char*>& aFontList)
 {
     static const char kDroidSansJapanese[] = "Droid Sans Japanese";
     static const char kMotoyaLMaru[] = "MotoyaLMaru";
+    static const char kNotoSansCJKJP[] = "Noto Sans CJK JP";
     static const char kNotoColorEmoji[] = "Noto Color Emoji";
 #ifdef MOZ_WIDGET_GONK
     static const char kFirefoxEmoji[] = "Firefox Emoji";
@@ -231,12 +228,14 @@ gfxAndroidPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
         case 0xf9: case 0xfa:
             if (IsJapaneseLocale()) {
                 aFontList.AppendElement(kMotoyaLMaru);
+                aFontList.AppendElement(kNotoSansCJKJP);
                 aFontList.AppendElement(kDroidSansJapanese);
             }
             break;
         default:
             if (block >= 0x2e && block <= 0x9f && IsJapaneseLocale()) {
                 aFontList.AppendElement(kMotoyaLMaru);
+                aFontList.AppendElement(kNotoSansCJKJP);
                 aFontList.AppendElement(kDroidSansJapanese);
             }
             break;
@@ -246,35 +245,10 @@ gfxAndroidPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
     aFontList.AppendElement("Droid Sans Fallback");
 }
 
-nsresult
-gfxAndroidPlatform::GetFontList(nsIAtom *aLangGroup,
-                                const nsACString& aGenericFamily,
-                                nsTArray<nsString>& aListOfFonts)
-{
-    gfxPlatformFontList::PlatformFontList()->GetFontList(aLangGroup,
-                                                         aGenericFamily,
-                                                         aListOfFonts);
-    return NS_OK;
-}
-
 void
 gfxAndroidPlatform::GetSystemFontList(InfallibleTArray<FontListEntry>* retValue)
 {
     gfxFT2FontList::PlatformFontList()->GetSystemFontList(retValue);
-}
-
-nsresult
-gfxAndroidPlatform::UpdateFontList()
-{
-    gfxPlatformFontList::PlatformFontList()->UpdateFontList();
-    return NS_OK;
-}
-
-nsresult
-gfxAndroidPlatform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
-{
-    gfxPlatformFontList::PlatformFontList()->GetStandardFamilyName(aFontName, aFamilyName);
-    return NS_OK;
 }
 
 gfxPlatformFontList*
@@ -324,34 +298,6 @@ FT_Library
 gfxAndroidPlatform::GetFTLibrary()
 {
     return gPlatformFTLibrary;
-}
-
-gfxFontEntry*
-gfxAndroidPlatform::LookupLocalFont(const nsAString& aFontName,
-                                    uint16_t aWeight,
-                                    int16_t aStretch,
-                                    uint8_t aStyle)
-{
-    return gfxPlatformFontList::PlatformFontList()->LookupLocalFont(aFontName,
-                                                                    aWeight,
-                                                                    aStretch,
-                                                                    aStyle);
-}
-
-gfxFontEntry* 
-gfxAndroidPlatform::MakePlatformFont(const nsAString& aFontName,
-                                     uint16_t aWeight,
-                                     int16_t aStretch,
-                                     uint8_t aStyle,
-                                     const uint8_t* aFontData,
-                                     uint32_t aLength)
-{
-    return gfxPlatformFontList::PlatformFontList()->MakePlatformFont(aFontName,
-                                                                     aWeight,
-                                                                     aStretch,
-                                                                     aStyle,
-                                                                     aFontData,
-                                                                     aLength);
 }
 
 already_AddRefed<ScaledFont>
@@ -436,6 +382,12 @@ public:
 
     ~GonkDisplay()
     {
+      MOZ_ASSERT(NS_IsMainThread());
+    }
+
+    virtual void Shutdown() override
+    {
+      MOZ_ASSERT(NS_IsMainThread());
       DisableVsync();
     }
 

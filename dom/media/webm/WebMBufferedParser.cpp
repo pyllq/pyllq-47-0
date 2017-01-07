@@ -9,11 +9,10 @@
 #include "nsThreadUtils.h"
 #include <algorithm>
 
-#define WEBM_DEBUG(arg, ...) MOZ_LOG(gWebMDemuxerLog, mozilla::LogLevel::Debug, ("WebMBufferedParser(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+extern mozilla::LazyLogModule gMediaDemuxerLog;
+#define WEBM_DEBUG(arg, ...) MOZ_LOG(gMediaDemuxerLog, mozilla::LogLevel::Debug, ("WebMBufferedParser(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
 namespace mozilla {
-
-extern LazyLogModule gWebMDemuxerLog;
 
 static uint32_t
 VIntLength(unsigned char aFirstByte, uint32_t* aMask)
@@ -332,16 +331,22 @@ bool WebMBufferedState::GetOffsetForTime(uint64_t aTime, int64_t* aOffset)
 {
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
 
+  if(mTimeMapping.IsEmpty()) {
+    return false;
+  }
+
   uint64_t time = aTime;
   if (time > 0) {
     time = time - 1;
   }
   uint32_t idx = mTimeMapping.IndexOfFirstElementGt(time, TimeComparator());
   if (idx == mTimeMapping.Length()) {
-    return false;
+    // Clamp to end
+    *aOffset = mTimeMapping[mTimeMapping.Length() - 1].mSyncOffset;
+  } else {
+    // Idx is within array or has been clamped to start
+    *aOffset = mTimeMapping[idx].mSyncOffset;
   }
-
-  *aOffset = mTimeMapping[idx].mSyncOffset;
   return true;
 }
 

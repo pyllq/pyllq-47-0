@@ -61,7 +61,7 @@ function whenDelayedStartupFinished(aWindow, aCallback) {
   }, "browser-delayed-startup-finished", false);
 }
 
-function updateTabContextMenu(tab) {
+function updateTabContextMenu(tab, onOpened) {
   let menu = document.getElementById("tabContextMenu");
   if (!tab)
     tab = gBrowser.selectedTab;
@@ -69,7 +69,15 @@ function updateTabContextMenu(tab) {
   tab.dispatchEvent(evt);
   menu.openPopup(tab, "end_after", 0, 0, true, false, evt);
   is(TabContextMenu.contextTab, tab, "TabContextMenu context is the expected tab");
-  menu.hidePopup();
+  const onFinished = () => menu.hidePopup();
+  if (onOpened) {
+    return Task.spawn(function*() {
+      yield onOpened();
+      onFinished();
+    });
+  } else {
+    onFinished();
+  }
 }
 
 function openToolbarCustomizationUI(aCallback, aBrowserWin) {
@@ -382,13 +390,32 @@ function promiseHistoryClearedState(aURIs, aShouldBeCleared) {
  *
  * @param aExpectedURL
  *        The URL of the document that is expected to load.
+ * @param aStopFromProgressListener
+ *        Whether to cancel the load directly from the progress listener. Defaults to true.
+ *        If you're using this method to avoid hitting the network, you want the default (true).
+ *        However, the browser UI will behave differently for loads stopped directly from
+ *        the progress listener (effectively in the middle of a call to loadURI) and so there
+ *        are cases where you may want to avoid stopping the load directly from within the
+ *        progress listener callback.
  * @return promise
  */
-function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser) {
-  function content_script() {
+function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser, aStopFromProgressListener=true) {
+  function content_script(aStopFromProgressListener) {
     let { interfaces: Ci, utils: Cu } = Components;
     Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
     let wp = docShell.QueryInterface(Ci.nsIWebProgress);
+
+    function stopContent(now, uri) {
+      if (now) {
+        /* Hammer time. */
+        content.stop();
+
+        /* Let the parent know we're done. */
+        sendAsyncMessage("Test:WaitForDocLoadAndStopIt", { uri });
+      } else {
+        setTimeout(stopContent.bind(null, true, uri), 0);
+      }
+    }
 
     let progressListener = {
       onStateChange: function (webProgress, req, flags, status) {
@@ -401,11 +428,7 @@ function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser
           let chan = req.QueryInterface(Ci.nsIChannel);
           dump(`waitForDocLoadAndStopIt: Document start: ${chan.URI.spec}\n`);
 
-          /* Hammer time. */
-          content.stop();
-
-          /* Let the parent know we're done. */
-          sendAsyncMessage("Test:WaitForDocLoadAndStopIt", { uri: chan.originalURI.spec });
+          stopContent(aStopFromProgressListener, chan.originalURI.spec);
         }
       },
       QueryInterface: XPCOMUtils.generateQI(["nsISupportsWeakReference"])
@@ -432,7 +455,7 @@ function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser
     }
 
     let mm = aBrowser.messageManager;
-    mm.loadFrameScript("data:,(" + content_script.toString() + ")();", true);
+    mm.loadFrameScript("data:,(" + content_script.toString() + ")(" + aStopFromProgressListener + ");", true);
     mm.addMessageListener("Test:WaitForDocLoadAndStopIt", complete);
     info("waitForDocLoadAndStopIt: Waiting for URL: " + aExpectedURL);
   });
@@ -541,7 +564,7 @@ var FullZoomHelper = {
   },
 
   reset: function reset() {
-    return new Promise(resolve => FullZoom.reset(resolve));
+    return FullZoom.reset();
   },
 
   BACK: 0,
@@ -587,40 +610,45 @@ var FullZoomHelper = {
  *        The tab to load into.
  * @param [optional] url
  *        The url to load, or the current url.
- * @param [optional] event
- *        The load event type to wait for.  Defaults to "load".
  * @return {Promise} resolved when the event is handled.
  * @resolves to the received event
  * @rejects if a valid load event is not received within a meaningful interval
  */
-function promiseTabLoadEvent(tab, url, eventType="load")
+function promiseTabLoadEvent(tab, url)
 {
   let deferred = Promise.defer();
-  info("Wait tab event: " + eventType);
+  info("Wait tab event: load");
 
-  function handle(event) {
-    if (event.originalTarget != tab.linkedBrowser.contentDocument ||
-        event.target.location.href == "about:blank" ||
-        (url && event.target.location.href != url)) {
-      info("Skipping spurious '" + eventType + "'' event" +
-           " for " + event.target.location.href);
-      return;
+  function handle(loadedUrl) {
+    if (loadedUrl === "about:blank" || (url && loadedUrl !== url)) {
+      info(`Skipping spurious load event for ${loadedUrl}`);
+      return false;
     }
-    clearTimeout(timeout);
-    tab.linkedBrowser.removeEventListener(eventType, handle, true);
-    info("Tab event received: " + eventType);
-    deferred.resolve(event);
+
+    info("Tab event received: load");
+    return true;
   }
 
+  // Create two promises: one resolved from the content process when the page
+  // loads and one that is rejected if we take too long to load the url.
+  let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
+
   let timeout = setTimeout(() => {
-    tab.linkedBrowser.removeEventListener(eventType, handle, true);
-    deferred.reject(new Error("Timed out while waiting for a '" + eventType + "'' event"));
+    deferred.reject(new Error("Timed out while waiting for a 'load' event"));
   }, 30000);
 
-  tab.linkedBrowser.addEventListener(eventType, handle, true, true);
+  loaded.then(() => {
+    clearTimeout(timeout);
+    deferred.resolve()
+  });
+
   if (url)
-    tab.linkedBrowser.loadURI(url);
-  return deferred.promise;
+    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+
+  // Promise.all rejects if either promise rejects (i.e. if we time out) and
+  // if our loaded promise resolves before the timeout, then we resolve the
+  // timeout promise as well, causing the all promise to resolve.
+  return Promise.all([deferred.promise, loaded]);
 }
 
 /**
@@ -636,119 +664,6 @@ function promiseTabLoadEvent(tab, url, eventType="load")
  */
 function waitForNewTabEvent(aTabBrowser) {
   return promiseWaitForEvent(aTabBrowser.tabContainer, "TabOpen");
-}
-
-/**
- * Waits for a window with the given URL to exist.
- *
- * @param url
- *        The url of the window.
- * @return {Promise} resolved when the window exists.
- * @resolves to the window
- */
-function promiseWindow(url) {
-  info("expecting a " + url + " window");
-  return new Promise(resolve => {
-    Services.obs.addObserver(function obs(win) {
-      win.QueryInterface(Ci.nsIDOMWindow);
-      win.addEventListener("load", function loadHandler() {
-        win.removeEventListener("load", loadHandler);
-
-        if (win.location.href !== url) {
-          info("ignoring a window with this url: " + win.location.href);
-          return;
-        }
-
-        Services.obs.removeObserver(obs, "domwindowopened");
-        resolve(win);
-      });
-    }, "domwindowopened", false);
-  });
-}
-
-function promiseIndicatorWindow() {
-  // We don't show the indicator window on Mac.
-  if ("nsISystemStatusBar" in Ci)
-    return Promise.resolve();
-
-  return promiseWindow("chrome://browser/content/webrtcIndicator.xul");
-}
-
-function assertWebRTCIndicatorStatus(expected) {
-  let ui = Cu.import("resource:///modules/webrtcUI.jsm", {}).webrtcUI;
-  let expectedState = expected ? "visible" : "hidden";
-  let msg = "WebRTC indicator " + expectedState;
-  if (!expected && ui.showGlobalIndicator) {
-    // It seems the global indicator is not always removed synchronously
-    // in some cases.
-    info("waiting for the global indicator to be hidden");
-    yield promiseWaitForCondition(() => !ui.showGlobalIndicator);
-  }
-  is(ui.showGlobalIndicator, !!expected, msg);
-
-  let expectVideo = false, expectAudio = false, expectScreen = false;
-  if (expected) {
-    if (expected.video)
-      expectVideo = true;
-    if (expected.audio)
-      expectAudio = true;
-    if (expected.screen)
-      expectScreen = true;
-  }
-  is(ui.showCameraIndicator, expectVideo, "camera global indicator as expected");
-  is(ui.showMicrophoneIndicator, expectAudio, "microphone global indicator as expected");
-  is(ui.showScreenSharingIndicator, expectScreen, "screen global indicator as expected");
-
-  let windows = Services.wm.getEnumerator("navigator:browser");
-  while (windows.hasMoreElements()) {
-    let win = windows.getNext();
-    let menu = win.document.getElementById("tabSharingMenu");
-    is(menu && !menu.hidden, !!expected, "WebRTC menu should be " + expectedState);
-  }
-
-  if (!("nsISystemStatusBar" in Ci)) {
-    if (!expected) {
-      let win = Services.wm.getMostRecentWindow("Browser:WebRTCGlobalIndicator");
-      if (win) {
-        yield new Promise((resolve, reject) => {
-          win.addEventListener("unload", function listener(e) {
-            if (e.target == win.document) {
-              win.removeEventListener("unload", listener);
-              resolve();
-            }
-          }, false);
-        });
-      }
-    }
-    let indicator = Services.wm.getEnumerator("Browser:WebRTCGlobalIndicator");
-    let hasWindow = indicator.hasMoreElements();
-    is(hasWindow, !!expected, "popup " + msg);
-    if (hasWindow) {
-      let document = indicator.getNext().document;
-      let docElt = document.documentElement;
-
-      if (document.readyState != "complete") {
-        info("Waiting for the sharing indicator's document to load");
-        let deferred = Promise.defer();
-        document.addEventListener("readystatechange",
-                                  function onReadyStateChange() {
-          if (document.readyState != "complete")
-            return;
-          document.removeEventListener("readystatechange", onReadyStateChange);
-          deferred.resolve();
-        });
-        yield deferred.promise;
-      }
-
-      for (let item of ["video", "audio", "screen"]) {
-        let expectedValue = (expected && expected[item]) ? "true" : "";
-        is(docElt.getAttribute("sharing" + item), expectedValue,
-           item + " global indicator attribute as expected");
-      }
-
-      ok(!indicator.hasMoreElements(), "only one global indicator window");
-    }
-  }
 }
 
 /**
@@ -783,7 +698,7 @@ function assertMixedContentBlockingState(tabbrowser, states = {}) {
   let identityBox = gIdentityHandler._identityBox;
   let classList = identityBox.classList;
   let connectionIcon = doc.getElementById("connection-icon");
-  let connectionIconImage = tabbrowser.ownerGlobal.getComputedStyle(connectionIcon, "").
+  let connectionIconImage = tabbrowser.ownerGlobal.getComputedStyle(connectionIcon).
                          getPropertyValue("list-style-image");
 
   let stateSecure = gIdentityHandler._state & Ci.nsIWebProgressListener.STATE_IS_SECURE;
@@ -824,7 +739,7 @@ function assertMixedContentBlockingState(tabbrowser, states = {}) {
         "Using active loaded icon");
     }
     if (activeBlocked && !passiveLoaded) {
-      is(connectionIconImage, "url(\"chrome://browser/skin/identity-mixed-active-blocked.svg\")",
+      is(connectionIconImage, "url(\"chrome://browser/skin/identity-secure.svg\")",
         "Using active blocked icon");
     }
     if (passiveLoaded && !(activeLoaded || activeBlocked)) {
@@ -860,10 +775,9 @@ function assertMixedContentBlockingState(tabbrowser, states = {}) {
   // Make sure the correct icon is visible in the Control Center.
   // This logic is controlled with CSS, so this helps prevent regressions there.
   let securityView = doc.getElementById("identity-popup-securityView");
-  let securityContent = doc.getElementById("identity-popup-security-content");
-  let securityViewBG = tabbrowser.ownerGlobal.getComputedStyle(securityView, "").
+  let securityViewBG = tabbrowser.ownerGlobal.getComputedStyle(securityView).
                        getPropertyValue("background-image");
-  let securityContentBG = tabbrowser.ownerGlobal.getComputedStyle(securityView, "").
+  let securityContentBG = tabbrowser.ownerGlobal.getComputedStyle(securityView).
                           getPropertyValue("background-image");
 
   if (stateInsecure) {
@@ -916,17 +830,8 @@ function assertMixedContentBlockingState(tabbrowser, states = {}) {
   return new Promise(resolve => executeSoon(resolve));
 }
 
-function makeActionURI(action, params) {
-  let encodedParams = {};
-  for (let key in params) {
-    encodedParams[key] = encodeURIComponent(params[key]);
-  }
-  let url = "moz-action:" + action + "," + JSON.stringify(encodedParams);
-  return NetUtil.newURI(url);
-}
-
 function is_hidden(element) {
-  var style = element.ownerDocument.defaultView.getComputedStyle(element, "");
+  var style = element.ownerGlobal.getComputedStyle(element);
   if (style.display == "none")
     return true;
   if (style.visibility != "visible")
@@ -942,7 +847,7 @@ function is_hidden(element) {
 }
 
 function is_visible(element) {
-  var style = element.ownerDocument.defaultView.getComputedStyle(element, "");
+  var style = element.ownerGlobal.getComputedStyle(element);
   if (style.display == "none")
     return false;
   if (style.visibility != "visible")
@@ -992,35 +897,13 @@ function promisePopupHidden(popup) {
 }
 
 function promiseNotificationShown(notification) {
-  let win = notification.browser.ownerDocument.defaultView;
+  let win = notification.browser.ownerGlobal;
   if (win.PopupNotifications.panel.state == "open") {
-    return Promise.resolved();
+    return Promise.resolve();
   }
   let panelPromise = promisePopupShown(win.PopupNotifications.panel);
   notification.reshow();
   return panelPromise;
-}
-
-function promiseSearchComplete(win = window) {
-  return promisePopupShown(win.gURLBar.popup).then(() => {
-    function searchIsComplete() {
-      return win.gURLBar.controller.searchStatus >=
-        Ci.nsIAutoCompleteController.STATUS_COMPLETE_NO_MATCH;
-    }
-
-    // Wait until there are at least two matches.
-    return new Promise(resolve => waitForCondition(searchIsComplete, resolve));
-  });
-}
-
-function promiseAutocompleteResultPopup(inputText, win = window) {
-  waitForFocus(() => {
-    win.gURLBar.focus();
-    win.gURLBar.value = inputText;
-    win.gURLBar.controller.startSearch(inputText);
-  }, win);
-
-  return promiseSearchComplete(win);
 }
 
 /**
@@ -1224,4 +1107,85 @@ function promiseErrorPageLoaded(browser) {
       resolve();
     }, false, true);
   });
+}
+
+function* loadBadCertPage(url) {
+  const EXCEPTION_DIALOG_URI = "chrome://pippki/content/exceptionDialog.xul";
+  let exceptionDialogResolved = new Promise(function(resolve) {
+    // When the certificate exception dialog has opened, click the button to add
+    // an exception.
+    let certExceptionDialogObserver = {
+      observe: function(aSubject, aTopic, aData) {
+        if (aTopic == "cert-exception-ui-ready") {
+          Services.obs.removeObserver(this, "cert-exception-ui-ready");
+          let certExceptionDialog = getCertExceptionDialog(EXCEPTION_DIALOG_URI);
+          ok(certExceptionDialog, "found exception dialog");
+          executeSoon(function() {
+            certExceptionDialog.documentElement.getButton("extra1").click();
+            resolve();
+          });
+        }
+      }
+    };
+
+    Services.obs.addObserver(certExceptionDialogObserver,
+                             "cert-exception-ui-ready", false);
+  });
+
+  yield BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+  yield promiseErrorPageLoaded(gBrowser.selectedBrowser);
+  yield ContentTask.spawn(gBrowser.selectedBrowser, null, function*() {
+    content.document.getElementById("exceptionDialogButton").click();
+  });
+  yield exceptionDialogResolved;
+  yield BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+}
+
+// Utility function to get a handle on the certificate exception dialog.
+// Modified from toolkit/components/passwordmgr/test/prompt_common.js
+function getCertExceptionDialog(aLocation) {
+  let enumerator = Services.wm.getXULWindowEnumerator(null);
+
+  while (enumerator.hasMoreElements()) {
+    let win = enumerator.getNext();
+    let windowDocShell = win.QueryInterface(Ci.nsIXULWindow).docShell;
+
+    let containedDocShells = windowDocShell.getDocShellEnumerator(
+                                      Ci.nsIDocShellTreeItem.typeChrome,
+                                      Ci.nsIDocShell.ENUMERATE_FORWARDS);
+    while (containedDocShells.hasMoreElements()) {
+      // Get the corresponding document for this docshell
+      let childDocShell = containedDocShells.getNext();
+      let childDoc = childDocShell.QueryInterface(Ci.nsIDocShell)
+                                  .contentViewer
+                                  .DOMDocument;
+
+      if (childDoc.location.href == aLocation) {
+        return childDoc;
+      }
+    }
+  }
+}
+
+function setupRemoteClientsFixture(fixture) {
+  let oldRemoteClientsGetter =
+    Object.getOwnPropertyDescriptor(gFxAccounts, "remoteClients").get;
+
+  Object.defineProperty(gFxAccounts, "remoteClients", {
+    get: function() { return fixture; }
+  });
+  return oldRemoteClientsGetter;
+}
+
+function restoreRemoteClients(getter) {
+  Object.defineProperty(gFxAccounts, "remoteClients", {
+    get: getter
+  });
+}
+
+function* openMenuItemSubmenu(id) {
+  let menuPopup = document.getElementById(id).menupopup;
+  let menuPopupPromise = BrowserTestUtils.waitForEvent(menuPopup, "popupshown");
+  menuPopup.showPopup();
+  yield menuPopupPromise;
 }

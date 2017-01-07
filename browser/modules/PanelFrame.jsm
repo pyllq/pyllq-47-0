@@ -81,11 +81,6 @@ var PanelFrameInternal = {
         attrs["message"] = "true";
         attrs["messagemanagergroup"] = aType;
       }
-      if (aType == "loop") {
-        attrs.message = true;
-        attrs.messagemanagergroup = "social";
-        attrs.autocompletepopup = "PopupAutoComplete";
-      }
       for (let [k, v] of Iterator(attrs)) {
         frame.setAttribute(k, v);
       }
@@ -162,14 +157,18 @@ var PanelFrame = {
       dispatchPanelEvent(aType + "FrameHide");
     });
 
-    panel.addEventListener("popupshown", function onpopupshown() {
-      panel.removeEventListener("popupshown", onpopupshown);
+    panel.addEventListener("popupshowing", function onpopupshowing() {
+      panel.removeEventListener("popupshowning", onpopupshowing);
       // This attribute is needed on both the button and the
       // containing toolbaritem since the buttons on OS X have
       // moz-appearance:none, while their container gets
       // moz-appearance:toolbarbutton due to the way that toolbar buttons
       // get combined on OS X.
       anchorBtn.setAttribute("open", "true");
+    });
+
+    panel.addEventListener("popupshown", function onpopupshown() {
+      panel.removeEventListener("popupshown", onpopupshown);
 
       mm.sendAsyncMessage("WaitForDOMContentLoaded");
       mm.addMessageListener("DOMContentLoaded", function onloaded() {

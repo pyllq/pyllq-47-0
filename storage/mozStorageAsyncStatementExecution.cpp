@@ -50,7 +50,7 @@ typedef AsyncExecuteStatements::StatementDataArray StatementDataArray;
 /**
  * Notifies a callback with a result set.
  */
-class CallbackResultNotifier : public nsRunnable
+class CallbackResultNotifier : public Runnable
 {
 public:
   CallbackResultNotifier(mozIStorageStatementCallback *aCallback,
@@ -70,10 +70,9 @@ public:
       // Hold a strong reference to the callback while notifying it, so that if
       // it spins the event loop, the callback won't be released and freed out
       // from under us.
-      nsCOMPtr<mozIStorageStatementCallback> callback =
-        do_QueryInterface(mCallback);
+      nsCOMPtr<mozIStorageStatementCallback> callback = mCallback;
 
-      (void)mCallback->HandleResult(mResults);
+      (void)callback->HandleResult(mResults);
     }
 
     return NS_OK;
@@ -88,7 +87,7 @@ private:
 /**
  * Notifies the calling thread that an error has occurred.
  */
-class ErrorNotifier : public nsRunnable
+class ErrorNotifier : public Runnable
 {
 public:
   ErrorNotifier(mozIStorageStatementCallback *aCallback,
@@ -106,10 +105,9 @@ public:
       // Hold a strong reference to the callback while notifying it, so that if
       // it spins the event loop, the callback won't be released and freed out
       // from under us.
-      nsCOMPtr<mozIStorageStatementCallback> callback =
-        do_QueryInterface(mCallback);
+      nsCOMPtr<mozIStorageStatementCallback> callback = mCallback;
 
-      (void)mCallback->HandleError(mErrorObj);
+      (void)callback->HandleError(mErrorObj);
     }
 
     return NS_OK;
@@ -125,7 +123,7 @@ private:
  * Notifies the calling thread that the statement has finished executing.  Takes
  * ownership of the StatementData so it is released on the proper thread.
  */
-class CompletionNotifier : public nsRunnable
+class CompletionNotifier : public Runnable
 {
 public:
   /**

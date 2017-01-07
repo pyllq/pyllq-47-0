@@ -492,7 +492,7 @@ nsresult nsZipArchive::ExtractFile(nsZipItem *item, const char *outname,
 
   // Directory extraction is handled in nsJAR::Extract,
   // so the item to be extracted should never be a directory
-  PR_ASSERT(!item->IsDirectory());
+  MOZ_ASSERT(!item->IsDirectory());
 
   Bytef outbuf[ZIP_BUFLEN];
 
@@ -720,10 +720,11 @@ MOZ_WIN_MEM_TRY_BEGIN
 
   //-- Read the central directory headers
   uint32_t sig = 0;
-  while (buf + int32_t(sizeof(uint32_t)) <= endp &&
-         (sig = xtolong(buf)) == CENTRALSIG) {
+  while ((buf + int32_t(sizeof(uint32_t)) > buf) &&
+         (buf + int32_t(sizeof(uint32_t)) <= endp) &&
+         ((sig = xtolong(buf)) == CENTRALSIG)) {
     // Make sure there is enough data available.
-    if (endp - buf < ZIPCENTRAL_SIZE) {
+    if ((buf > endp) || (endp - buf < ZIPCENTRAL_SIZE)) {
       nsZipArchive::sFileCorruptedReason = "nsZipArchive: central directory too small";
       return NS_ERROR_FILE_CORRUPTED;
     }
@@ -774,7 +775,7 @@ MOZ_WIN_MEM_TRY_BEGIN
   }
 
   // Make the comment available for consumers.
-  if (endp - buf >= ZIPEND_SIZE) {
+  if ((endp >= buf) && (endp - buf >= ZIPEND_SIZE)) {
     ZipEnd *zipend = (ZipEnd *)buf;
 
     buf += ZIPEND_SIZE;
@@ -877,7 +878,7 @@ nsZipHandle* nsZipArchive::GetFD()
 //---------------------------------------------
 uint32_t nsZipArchive::GetDataOffset(nsZipItem* aItem)
 {
-  PR_ASSERT (aItem);
+  MOZ_ASSERT(aItem);
 MOZ_WIN_MEM_TRY_BEGIN
   //-- read local header to get variable length values and calculate
   //-- the real data offset
@@ -908,7 +909,7 @@ MOZ_WIN_MEM_TRY_CATCH(return 0)
 //---------------------------------------------
 const uint8_t* nsZipArchive::GetData(nsZipItem* aItem)
 {
-  PR_ASSERT (aItem);
+  MOZ_ASSERT(aItem);
 MOZ_WIN_MEM_TRY_BEGIN
   uint32_t offset = GetDataOffset(aItem);
 
@@ -1004,7 +1005,7 @@ nsZipFind::~nsZipFind()
  */
 static uint32_t HashName(const char* aName, uint16_t len)
 {
-  PR_ASSERT(aName != 0);
+  MOZ_ASSERT(aName != 0);
 
   const uint8_t* p = (const uint8_t*)aName;
   const uint8_t* endp = p + len;

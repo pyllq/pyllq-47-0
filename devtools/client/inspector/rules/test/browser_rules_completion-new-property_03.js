@@ -9,7 +9,7 @@
 
 const TEST_URI = "<h1 style='color: red'>Header</h1>";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {toolbox, inspector, view} = yield openRuleView();
 
@@ -41,7 +41,7 @@ function* runAutocompletionTest(toolbox, inspector, view) {
   editor.popup.selectedIndex = itemIndex;
 
   let node = editor.popup._list.childNodes[itemIndex];
-  EventUtils.synthesizeMouseAtCenter(node, {}, view.styleWindow);
+  EventUtils.synthesizeMouseAtCenter(node, {}, editor.popup._window);
 
   is(editor.input.value, "background-color", "Correct value is autocompleted");
 }

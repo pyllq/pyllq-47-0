@@ -21,7 +21,7 @@ const TEST_URI = "data:text/html;charset=utf-8,<html><style>" +
                  "};" +
                  "</style><div></div></html>";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab(TEST_URI);
 
   info("Open the responsive design mode and set its size to 500x500 to start");
@@ -81,12 +81,12 @@ function* testEscapeOpensSplitConsole(inspector) {
 }
 
 function* testMenuItem(rdm) {
-  is(document.getElementById("Tools:ResponsiveUI").getAttribute("checked"),
+  is(document.getElementById("menu_responsiveUI").getAttribute("checked"),
      "true", "The menu item is checked");
 
   yield closeRDM(rdm);
 
-  is(document.getElementById("Tools:ResponsiveUI").getAttribute("checked"),
+  is(document.getElementById("menu_responsiveUI").getAttribute("checked"),
      "false", "The menu item is unchecked");
 }
 

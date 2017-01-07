@@ -10,7 +10,7 @@ include protocol PBlob;
 include protocol PBluetooth;
 include protocol PBrowser;
 include protocol PCellBroadcast;
-include protocol PCompositor;
+include protocol PCompositorBridge;
 include protocol PContentBridge;
 include protocol PContentPermissionRequest;
 include protocol PCycleCollectWithLogs;
@@ -21,7 +21,6 @@ include protocol PHandlerService;
 include protocol PDeviceStorageRequest;
 include protocol PFileDescriptorSet;
 include protocol PFMRadio;
-include protocol PFileSystemRequest;
 include protocol PHal;
 include protocol PHeapSnapshotTempFileHelper;
 include protocol PIcc;
@@ -41,7 +40,9 @@ include protocol PGMPService;
 include protocol PPluginModule;
 include protocol PGMP;
 include protocol PPrinting;
+include protocol PSendStream;
 include protocol POfflineCacheUpdate;
+include protocol PRenderFrame;
 include protocol PScreenManager;
 include protocol PSharedBufferManager;
 include protocol PSms;
@@ -56,6 +57,7 @@ include protocol PWebBrowserPersistDocument;
 include protocol PWebrtcGlobal;
 include protocol PPresentation;
 include protocol PVRManager;
+include protocol PFlyWebPublishedServer;
 include DOMTypes;
 include JavaScriptTypes;
 include InputStreamParams;
@@ -65,7 +67,7 @@ include PluginTypes;
 include ProtocolTypes;
 include PBackgroundSharedTypes;
 include PContentPermission;
-include BrowserConfiguration;
+include ServiceWorkerConfiguration;
 include GraphicsMessages;
 include ProfilerTypes;
 
@@ -91,10 +93,13 @@ using mozilla::hal::ProcessPriority from "mozilla/HalTypes.h";
 using mozilla::gfx::IntSize from "mozilla/gfx/2D.h";
 using mozilla::dom::TabId from "mozilla/dom/ipc/IdType.h";
 using mozilla::dom::ContentParentId from "mozilla/dom/ipc/IdType.h";
+using mozilla::LayoutDeviceIntPoint from "Units.h";
 using struct LookAndFeelInt from "mozilla/widget/WidgetMessageUtils.h";
 using class mozilla::dom::ipc::StructuredCloneData from "ipc/IPCMessageUtils.h";
 using mozilla::DataStorageType from "ipc/DataStorageIPCUtils.h";
 using mozilla::DocShellOriginAttributes from "mozilla/ipc/BackgroundUtils.h";
+using struct mozilla::layers::TextureFactoryIdentifier from "mozilla/layers/CompositorTypes.h";
+using struct mozilla::dom::FlyWebPublishOptions from "mozilla/dom/FlyWebPublishOptionsIPCSerializer.h";
 
 union ChromeRegistryItem
 {
@@ -265,71 +270,6 @@ union FMRadioRequestParams
   FMRadioRequestCancelSeekParams;
 };
 
-struct FileSystemCreateDirectoryParams
-{
-  nsString filesystem;
-  nsString realPath;
-};
-
-union FileSystemFileDataValue
-{
-  uint8_t[];
-  PBlob;
-};
-
-struct FileSystemCreateFileParams
-{
-  nsString filesystem;
-  nsString realPath;
-  FileSystemFileDataValue data;
-  bool replace;
-};
-
-struct FileSystemGetDirectoryListingParams
-{
-  nsString filesystem;
-  nsString realPath;
-  // 'filters' could be an array rather than a semicolon separated string
-  // (we'd then use InfallibleTArray<nsString> internally), but that is
-  // wasteful.  E10s requires us to pass the filters over as a string anyway,
-  // so avoiding using an array avoids serialization on the side passing the
-  // filters.  Since an nsString can share its buffer when copied,
-  // using that instead of InfallibleTArray<nsString> makes copying the filters
-  // around in any given process a bit more efficient too, since copying a
-  // single nsString is cheaper than copying InfallibleTArray member data and
-  // each nsString that it contains.
-  nsString filters;
-};
-
-struct FileSystemGetFileOrDirectoryParams
-{
-  nsString filesystem;
-  nsString realPath;
-};
-
-union FileSystemPathOrFileValue
-{
-  nsString;
-  PBlob;
-};
-
-struct FileSystemRemoveParams
-{
-  nsString filesystem;
-  nsString directory;
-  FileSystemPathOrFileValue target;
-  bool recursive;
-};
-
-union FileSystemParams
-{
-  FileSystemCreateDirectoryParams;
-  FileSystemCreateFileParams;
-  FileSystemGetDirectoryListingParams;
-  FileSystemGetFileOrDirectoryParams;
-  FileSystemRemoveParams;
-};
-
 union PrefValue {
   nsCString;
   int32_t;
@@ -351,14 +291,6 @@ struct DataStorageItem {
   nsCString key;
   nsCString value;
   DataStorageType type;
-};
-
-struct DataStoreSetting {
-  nsString name;
-  nsString originURL;
-  nsString manifestURL;
-  bool readOnly;
-  bool enabled;
 };
 
 // Note: Any changes to this structure should also be changed in
@@ -407,37 +339,7 @@ struct DomainPolicyClone
     URIParams[] superWhitelist;
 };
 
-struct GamepadAdded {
-    nsString id;
-    uint32_t index;
-    uint32_t mapping;
-    uint32_t num_buttons;
-    uint32_t num_axes;
-};
 
-struct GamepadRemoved {
-    uint32_t index;
-};
-
-struct GamepadAxisInformation {
-    uint32_t index;
-    uint32_t axis;
-    double value;
-};
-
-struct GamepadButtonInformation {
-    uint32_t index;
-    uint32_t button;
-    bool pressed;
-    double value;
-};
-
-union GamepadChangeEvent {
-    GamepadAdded;
-    GamepadRemoved;
-    GamepadAxisInformation;
-    GamepadButtonInformation;
-};
 
 struct FrameScriptInfo
 {
@@ -455,16 +357,36 @@ struct AndroidSystemInfo
     bool     isTablet;
 };
 
+struct GetFilesResponseSuccess
+{
+  PBlob[] blobs;
+};
+
+struct GetFilesResponseFailure
+{
+  nsresult errorCode;
+};
+
+union GetFilesResponseResult
+{
+  GetFilesResponseSuccess;
+  GetFilesResponseFailure;
+};
+
+struct BlobURLRegistrationData
+{
+    nsCString url;
+    PBlob blob;
+    Principal principal;
+};
+
 prio(normal upto urgent) sync protocol PContent
 {
     parent spawns PPluginModule;
 
-    parent opens PCompositor;
     parent opens PProcessHangMonitor;
     parent opens PSharedBufferManager;
-    parent opens PImageBridge;
     parent opens PGMPService;
-    parent opens PVRManager;
     child opens PBackground;
 
     manages PAPZ;
@@ -476,7 +398,6 @@ prio(normal upto urgent) sync protocol PContent
     manages PCrashReporter;
     manages PCycleCollectWithLogs;
     manages PDeviceStorageRequest;
-    manages PFileSystemRequest;
     manages PPSMContentDownloader;
     manages PExternalHelperApp;
     manages PFileDescriptorSet;
@@ -491,6 +412,7 @@ prio(normal upto urgent) sync protocol PContent
     manages PNecko;
     manages POfflineCacheUpdate;
     manages PPrinting;
+    manages PSendStream;
     manages PScreenManager;
     manages PSms;
     manages PSpeechSynthesis;
@@ -503,6 +425,7 @@ prio(normal upto urgent) sync protocol PContent
     manages PWebBrowserPersistDocument;
     manages PWebrtcGlobal;
     manages PPresentation;
+    manages PFlyWebPublishedServer;
 
 both:
     // Depending on exactly how the new browser is being created, it might be
@@ -545,6 +468,11 @@ both:
                                      uint64_t aOuterWindowID);
 
 child:
+    // Give the content process its endpoints to the compositor.
+    async InitCompositor(Endpoint<PCompositorBridgeChild> compositor);
+    async InitImageBridge(Endpoint<PImageBridgeChild> bridge);
+    async InitVRManager(Endpoint<PVRManagerChild> endpoint);
+
     /**
      * Enable system-level sandboxing features, if available.  Can
      * usually only be performed zero or one times.  The child may
@@ -561,10 +489,7 @@ child:
      * Communication between the PuppetBidiKeyboard and the actual
      * BidiKeyboard hosted by the parent
      */
-    async BidiKeyboardNotify(bool isLangRTL);
-
-    async DataStoreNotify(uint32_t aAppId, nsString aName,
-                          nsString aManifestURL);
+    async BidiKeyboardNotify(bool isLangRTL, bool haveBidiKeyboards);
 
     /**
      * Dump this process's GC and CC logs to the provided files.
@@ -583,6 +508,8 @@ child:
     async RegisterChrome(ChromePackage[] packages, SubstitutionMapping[] substitutions,
                          OverrideMapping[] overrides, nsCString locale, bool reset);
     async RegisterChromeItem(ChromeRegistryItem item);
+
+    async ClearImageCache(bool privateLoader, bool chrome);
 
     async SetOffline(bool offline);
     async SetConnectivity(bool connectivity);
@@ -608,8 +535,6 @@ child:
     // nsIPermissionManager messages
     async AddPermission(Permission permission);
 
-    async ScreenSizeChanged(IntSize size);
-
     async Volumes(VolumeInfo[] volumes);
 
     async FlushMemory(nsString reason);
@@ -625,6 +550,16 @@ child:
     async AppInfo(nsCString version, nsCString buildID, nsCString name, nsCString UAName,
                   nsCString ID, nsCString vendor);
     async AppInit();
+
+    /**
+     * Send ServiceWorkerRegistrationData to child process.
+     */
+    async InitServiceWorkers(ServiceWorkerConfiguration aConfig);
+
+    /**
+     * Send BlobURLRegistrationData to child process.
+     */
+    async InitBlobURLs(BlobURLRegistrationData[] registrations);
 
     // Notify child that last-pb-context-exited notification was observed
     async LastPrivateDocShellDestroyed();
@@ -687,7 +622,8 @@ child:
 
     async InvokeDragSession(IPCDataTransfer[] transfers, uint32_t action);
 
-    async EndDragSession(bool aDoneDrag, bool aUserCancelled);
+    async EndDragSession(bool aDoneDrag, bool aUserCancelled,
+                         LayoutDeviceIntPoint aDragEndPoint);
 
     async DomainSetChanged(uint32_t aSetType, uint32_t aChangeType, OptionalURIParams aDomain);
 
@@ -704,11 +640,6 @@ child:
      * a Windows specific call.
      */
     async UpdateWindow(uintptr_t aChildId);
-
-    /**
-     * Send gamepad status update to child.
-     */
-    async GamepadUpdate(GamepadChangeEvent aGamepadEvent);
 
     /**
      * Notify the child that presentation receiver has been launched with the
@@ -728,19 +659,31 @@ child:
     async NotifyGMPsChanged();
 
     /**
+     * Notify the child that cache is emptied.
+     */
+    async NotifyEmptyHTTPCache();
+
+    /**
      * Send a `push` event without data to a service worker in the child.
      */
-    async Push(nsCString scope, Principal principal);
+    async Push(nsCString scope, Principal principal, nsString messageId);
 
     /**
      * Send a `push` event with data to a service worker in the child.
      */
-    async PushWithData(nsCString scope, Principal principal, uint8_t[] data);
+    async PushWithData(nsCString scope, Principal principal,
+                       nsString messageId, uint8_t[] data);
 
     /**
      * Send a `pushsubscriptionchange` event to a service worker in the child.
      */
     async PushSubscriptionChange(nsCString scope, Principal principal);
+
+    /**
+     * Send a Push error message to all service worker clients in the child.
+     */
+    async PushError(nsCString scope, Principal principal, nsString message,
+                    uint32_t flags);
 
     /**
      * Windows specific: associate this content process with the browsers
@@ -749,6 +692,14 @@ child:
     async SetAudioSessionData(nsID aID,
                               nsString aDisplayName,
                               nsString aIconPath);
+
+    async GetFilesResponse(nsID aID, GetFilesResponseResult aResult);
+
+    async BlobURLRegistration(nsCString aURI, PBlob aBlob,
+                              Principal aPrincipal);
+
+    async BlobURLUnregistration(nsCString aURI);
+
 parent:
     /**
      * Tell the content process some attributes of itself.  This is
@@ -766,7 +717,8 @@ parent:
     sync GetProcessAttributes()
         returns (ContentParentId cpId, bool isForApp, bool isForBrowser);
     sync GetXPCOMProcessAttributes()
-        returns (bool isOffline, bool isConnected, bool isLangRTL, nsString[] dictionaries,
+        returns (bool isOffline, bool isConnected, bool isLangRTL,
+                 bool haveBidiKeyboards, nsString[] dictionaries,
                  ClipboardCapabilities clipboardCaps,
                  DomainPolicyClone domainPolicy,
                  StructuredCloneData initialData);
@@ -823,12 +775,51 @@ parent:
     async PRemoteSpellcheckEngine();
     async PDeviceStorageRequest(DeviceStorageParams params);
 
-    async PFileSystemRequest(FileSystemParams params);
-
     sync PCrashReporter(NativeThreadId tid, uint32_t processType);
 
-    prio(urgent) sync GetRandomValues(uint32_t length)
-        returns (uint8_t[] randomValues);
+    /**
+     * Is this token compatible with the provided version?
+     *
+     * |version| The offered version to test
+     * Returns |True| if the offered version is compatible
+     */
+    sync NSSU2FTokenIsCompatibleVersion(nsString version)
+        returns (bool result);
+
+    /**
+     * Return whether the provided KeyHandle belongs to this Token
+     *
+     * |keyHandle| Key Handle to evaluate.
+     * Returns |True| if the Key Handle is ours.
+     */
+    sync NSSU2FTokenIsRegistered(uint8_t[] keyHandle)
+        returns (bool isValidKeyHandle);
+
+    /**
+     * Generates a public/private keypair for the provided application
+     * and challenge, returning the pubkey, challenge response, and
+     * key handle in the registration data.
+     *
+     * |application| The FIDO Application data to associate with the key.
+     * |challenge| The Challenge to satisfy in the response.
+     * |registration| An array containing the pubkey, challenge response,
+     *                     and key handle.
+     */
+    sync NSSU2FTokenRegister(uint8_t[] application, uint8_t[] challenge)
+        returns (uint8_t[] registration);
+
+    /**
+     * Creates a signature over the "param" arguments using the private key
+     * provided in the key handle argument.
+     *
+     * |application| The FIDO Application data to associate with the key.
+     * |challenge| The Challenge to satisfy in the response.
+     * |keyHandle| The Key Handle opaque object to use.
+     * |signature| The resulting signature.
+     */
+    sync NSSU2FTokenSign(uint8_t[] application, uint8_t[] challenge,
+                         uint8_t[] keyHandle)
+        returns (uint8_t[] signature);
 
     async GetSystemMemory(uint64_t getterId);
 
@@ -851,6 +842,8 @@ parent:
     async PNecko();
 
     async PPrinting();
+
+    async PSendStream();
 
     prio(high) sync PScreenManager()
         returns (uint32_t numberOfScreens,
@@ -879,6 +872,8 @@ parent:
 
     async PPresentation();
 
+    async PFlyWebPublishedServer(nsString name, FlyWebPublishOptions params);
+
     // Services remoting
 
     async StartVisitedQuery(URIParams uri);
@@ -886,9 +881,10 @@ parent:
     async SetURITitle(URIParams uri, nsString title);
 
     async LoadURIExternal(URIParams uri, PBrowser windowContext);
+    async ExtProtocolChannelConnectParent(uint32_t registrarId);
 
     // PrefService message
-    sync ReadPrefsArray() returns (PrefSetting[] prefs);
+    sync ReadPrefsArray() returns (PrefSetting[] prefs) verify;
 
     sync ReadFontList() returns (FontListEntry[] retValue);
 
@@ -975,16 +971,10 @@ parent:
 
     async AudioChannelChangeDefVolChannel(int32_t aChannel, bool aHidden);
 
-    sync DataStoreGetStores(nsString aName, nsString aOwner, Principal aPrincipal)
-        returns (DataStoreSetting[] dataStores);
-
     async FilePathUpdateNotify(nsString aType,
                                nsString aStorageName,
                                nsString aFilepath,
                                nsCString aReason);
-
-    // Notify the parent that the child has finished handling a system message.
-    async SystemMessageHandled();
 
     // called by the child (test code only) to propagate volume changes to the parent
     async CreateFakeVolume(nsString fsName, nsString mountPoint);
@@ -1020,7 +1010,8 @@ parent:
                                 bool isAudio,
                                 bool isVideo);
 
-    sync GetGraphicsFeatureStatus(int32_t aFeature) returns (int32_t aStatus, bool aSuccess);
+    sync GetGraphicsFeatureStatus(int32_t aFeature) returns (int32_t aStatus, nsCString aFailureCode,
+                                                             bool aSuccess);
 
     // Graphics errors
     async GraphicsError(nsCString aError);
@@ -1141,22 +1132,6 @@ parent:
     async PContentPermissionRequest(PermissionRequest[] aRequests, Principal aPrincipal,
                                     TabId tabId);
 
-    /**
-     * Send ServiceWorkerRegistrationData to child process.
-     */
-    sync GetBrowserConfiguration(nsCString aUri)
-        returns (BrowserConfiguration aConfig);
-
-    /*
-     * Tells the parent to start the gamepad listening service if it hasn't already.
-     */
-    async GamepadListenerAdded();
-
-    /**
-     * Tells the parent to stop the gamepad listening service if it hasn't already.
-     */
-    async GamepadListenerRemoved();
-
     async Profile(nsCString aProfile);
 
     /**
@@ -1167,19 +1142,21 @@ parent:
 
     sync CreateWindow(nullable PBrowser aThisTab,
                       PBrowser aNewTab,
+                      PRenderFrame aRenderFrame,
                       uint32_t aChromeFlags,
                       bool aCalledFromJS,
                       bool aPositionSpecified,
                       bool aSizeSpecified,
-                      nsCString aURI,
-                      nsString aName,
                       nsCString aFeatures,
                       nsCString aBaseURI,
-                      DocShellOriginAttributes aOpenerOriginAttributes)
+                      DocShellOriginAttributes aOpenerOriginAttributes,
+                      float aFullZoom)
       returns (nsresult rv,
                bool windowOpened,
                FrameScriptInfo[] frameScripts,
-               nsCString urlToLoad);
+               nsCString urlToLoad,
+               TextureFactoryIdentifier textureFactoryIdentifier,
+               uint64_t layersId);
 
     sync GetDeviceStorageLocation(nsString type)
         returns (nsString path);
@@ -1206,9 +1183,48 @@ parent:
      */
     async NotifyBenchmarkResult(nsString aCodecName, uint32_t aDecodeFPS);
 
+    /**
+     * Notify `push-message` observers without data in the parent.
+     */
+    async NotifyPushObservers(nsCString scope, Principal principal,
+                              nsString messageId);
+
+    /**
+     * Notify `push-message` observers with data in the parent.
+     */
+    async NotifyPushObserversWithData(nsCString scope, Principal principal,
+                                      nsString messageId, uint8_t[] data);
+
+    /**
+     * Notify `push-subscription-change` observers in the parent.
+     */
+    async NotifyPushSubscriptionChangeObservers(nsCString scope,
+                                                Principal principal);
+
+    /**
+     * Tell the parent process that the child process is low on memory. This
+     * allows the parent process to save a memory report that can potentially be
+     * sent with a crash report from the content process.
+     */
+     async NotifyLowMemory();
+
+     async GetFilesRequest(nsID aID, nsString aDirectory, bool aRecursiveFlag);
+     async DeleteGetFilesRequest(nsID aID);
+
+     async StoreAndBroadcastBlobURLRegistration(nsCString url, PBlob blob,
+                                                Principal principal);
+
+     async UnstoreAndBroadcastBlobURLUnregistration(nsCString url);
+
 both:
      async AsyncMessage(nsString aMessage, CpowEntry[] aCpows,
                         Principal aPrincipal, ClonedMessageData aData);
+
+    /**
+     * Notify `push-subscription-modified` observers in the parent and child.
+     */
+    async NotifyPushSubscriptionModifiedObservers(nsCString scope,
+                                                  Principal principal);
 };
 
 }

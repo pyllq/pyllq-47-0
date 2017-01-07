@@ -50,12 +50,13 @@ BEGIN_TEST(testTracingIncomingCCWs)
     JS::RootedObject global2(cx, JS_NewGlobalObject(cx, getGlobalClass(), nullptr,
                                                     JS::FireOnNewGlobalHook, options));
     CHECK(global2);
-    CHECK(global1->zone() != global2->zone());
+    CHECK(global1->compartment() != global2->compartment());
 
-    // Define an object in one zone, that is wrapped by a CCW in another zone.
+    // Define an object in one compartment, that is wrapped by a CCW in another
+    // compartment.
 
     JS::RootedObject obj(cx, JS_NewPlainObject(cx));
-    CHECK(obj->zone() == global1->zone());
+    CHECK(obj->compartment() == global1->compartment());
 
     JSAutoCompartment ac(cx, global2);
     JS::RootedObject wrapper(cx, obj);
@@ -63,15 +64,15 @@ BEGIN_TEST(testTracingIncomingCCWs)
     JS::RootedValue v(cx, JS::ObjectValue(*wrapper));
     CHECK(JS_SetProperty(cx, global2, "ccw", v));
 
-    // Ensure that |JS_TraceIncomingCCWs| finds the object wrapped by the CCW.
+    // Ensure that |TraceIncomingCCWs| finds the object wrapped by the CCW.
 
-    JS::ZoneSet zones;
-    CHECK(zones.init());
-    CHECK(zones.put(global1->zone()));
+    JS::CompartmentSet compartments;
+    CHECK(compartments.init());
+    CHECK(compartments.put(global1->compartment()));
 
     void* thing = obj.get();
     CCWTestTracer trc(cx, &thing, JS::TraceKind::Object);
-    JS_TraceIncomingCCWs(&trc, zones);
+    JS::TraceIncomingCCWs(&trc, compartments);
     CHECK(trc.numberOfThingsTraced == 1);
     CHECK(trc.okay);
 
@@ -128,7 +129,8 @@ BEGIN_TEST(testIncrementalRoots)
 
     // This is marked during markRuntime
     JS::AutoObjectVector vec(cx);
-    vec.append(root);
+    if (!vec.append(root))
+        return false;
 
     // Tenure everything so intentionally unrooted objects don't move before we
     // can use them.
@@ -160,13 +162,13 @@ BEGIN_TEST(testIncrementalRoots)
     // descendants. It shouldn't make it all the way through (it gets a budget
     // of 1000, and the graph is about 3000 objects deep).
     js::SliceBudget budget(js::WorkBudget(1000));
-    JS_SetGCParameter(rt, JSGC_MODE, JSGC_MODE_INCREMENTAL);
+    JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_INCREMENTAL);
     rt->gc.startDebugGC(GC_NORMAL, budget);
 
     // We'd better be between iGC slices now. There's always a risk that
     // something will decide that we need to do a full GC (such as gczeal, but
     // that is turned off.)
-    MOZ_ASSERT(JS::IsIncrementalGCInProgress(rt));
+    MOZ_ASSERT(JS::IsIncrementalGCInProgress(cx));
 
     // And assert that the mark bits are as we expect them to be.
     MOZ_ASSERT(vec[0]->asTenured().isMarked());

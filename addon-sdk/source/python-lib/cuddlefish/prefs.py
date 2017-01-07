@@ -37,9 +37,6 @@ DEFAULT_COMMON_PREFS = {
     # shut up some warnings on `about:` page
     'app.releaseNotesURL': 'http://localhost/app-dummy/',
     'app.vendorURL': 'http://localhost/app-dummy/',
-
-    # Don't prompt about e10s
-    'browser.displayedE10SPrompt.1': 5
 }
 
 DEFAULT_NO_CONNECTIONS_PREFS = {
@@ -57,7 +54,7 @@ DEFAULT_NO_CONNECTIONS_PREFS = {
     'browser.newtab.url' : 'about:blank',
     'browser.search.update': False,
     'browser.search.suggest.enabled' : False,
-    'browser.safebrowsing.enabled' : False,
+    'browser.safebrowsing.phishing.enabled' : False,
     'browser.safebrowsing.provider.google.updateURL': 'http://localhost/safebrowsing-dummy/update',
     'browser.safebrowsing.provider.google.gethashURL': 'http://localhost/safebrowsing-dummy/gethash',
     'browser.safebrowsing.malware.reportURL': 'http://localhost/safebrowsing-dummy/malwarereport',
@@ -112,7 +109,6 @@ DEFAULT_FIREFOX_PREFS = {
     'browser.startup.homepage' : 'about:blank',
     'startup.homepage_welcome_url' : 'about:blank',
     'devtools.browsertoolbox.panel': 'jsdebugger',
-    'devtools.errorconsole.enabled' : True,
     'devtools.chrome.enabled' : True,
 
     # From:

@@ -105,7 +105,6 @@ add_task(function* setUp() {
 
   PushService.init({
     serverURI: 'wss://push.example.org/',
-    networkInfo: new MockDesktopNetworkInfo(),
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
@@ -114,6 +113,13 @@ add_task(function* setUp() {
             messageType: 'hello',
             status: 200,
             uaid: userAgentID,
+          }));
+        },
+        onUnregister(request) {
+          this.serverSendMsg(JSON.stringify({
+            messageType: 'unregister',
+            channelID: request.channelID,
+            status: 200,
           }));
         },
       });

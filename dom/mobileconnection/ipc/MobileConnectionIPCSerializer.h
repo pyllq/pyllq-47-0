@@ -13,6 +13,7 @@
 #include "mozilla/dom/MobileConnectionInfo.h"
 #include "mozilla/dom/MobileNetworkInfo.h"
 #include "mozilla/dom/MozMobileConnectionBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 
 using mozilla::AutoJSContext;
 using mozilla::dom::mobileconnection::MobileCallForwardingOptions;
@@ -97,7 +98,7 @@ struct ParamTraits<nsIMobileCallForwardingOptions*>
   }
 
   // Function to de-serialize a MobileCallForwardingOptions.
-  static bool Read(const Message *aMsg, void **aIter, paramType* aResult)
+  static bool Read(const Message *aMsg, PickleIterator* aIter, paramType* aResult)
   {
     // Check if is the null pointer we have transfered.
     bool isNull;
@@ -176,7 +177,7 @@ struct ParamTraits<nsIMobileNetworkInfo*>
   }
 
   // Function to de-serialize a MobileNetworkInfo.
-  static bool Read(const Message *aMsg, void **aIter, paramType* aResult)
+  static bool Read(const Message *aMsg, PickleIterator* aIter, paramType* aResult)
   {
     // Check if is the null pointer we have transfered.
     bool isNull;
@@ -263,7 +264,7 @@ struct ParamTraits<nsIMobileCellInfo*>
   }
 
   // Function to de-serialize a MobileCellInfo.
-  static bool Read(const Message *aMsg, void **aIter, paramType* aResult)
+  static bool Read(const Message *aMsg, PickleIterator* aIter, paramType* aResult)
   {
     // Check if is the null pointer we have transfered.
     bool isNull;
@@ -378,7 +379,7 @@ struct ParamTraits<nsIMobileConnectionInfo*>
   }
 
   // Function to de-serialize a MobileConectionInfo.
-  static bool Read(const Message* aMsg, void **aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     // Check if is the null pointer we have transfered.
     bool isNull;
@@ -541,7 +542,7 @@ struct ParamTraits<MozCallForwardingOptions>
   }
 
   // Function to de-serialize a MozCallForwardingOptions.
-  static bool Read(const Message *aMsg, void **aIter, paramType* aResult)
+  static bool Read(const Message *aMsg, PickleIterator* aIter, paramType* aResult)
   {
     bool wasPassed = false;
     bool isNull = false;

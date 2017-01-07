@@ -52,6 +52,11 @@ this.webrtcUI = {
     mm.removeMessageListener("webrtc:Request", this);
     mm.removeMessageListener("webrtc:CancelRequest", this);
     mm.removeMessageListener("webrtc:UpdateBrowserIndicators", this);
+
+    if (gIndicatorWindow) {
+      gIndicatorWindow.close();
+      gIndicatorWindow = null;
+    }
   },
 
   processIndicators: new Map(),
@@ -109,7 +114,7 @@ this.webrtcUI = {
       let types = {camera: state.camera, microphone: state.microphone,
                    screen: state.screen};
       let browser = aStream.browser;
-      let browserWindow = browser.ownerDocument.defaultView;
+      let browserWindow = browser.ownerGlobal;
       let tab = browserWindow.gBrowser &&
                 browserWindow.gBrowser.getTabForBrowser(browser);
       return {uri: state.documentURI, tab: tab, browser: browser, types: types};
@@ -124,7 +129,7 @@ this.webrtcUI = {
   },
 
   showSharingDoorhanger: function(aActiveStream, aType) {
-    let browserWindow = aActiveStream.browser.ownerDocument.defaultView;
+    let browserWindow = aActiveStream.browser.ownerGlobal;
     if (aActiveStream.tab) {
       browserWindow.gBrowser.selectedTab = aActiveStream.tab;
     } else {
@@ -220,7 +225,18 @@ this.webrtcUI = {
         updateIndicators(aMessage.data, aMessage.target);
         break;
       case "webrtc:UpdateBrowserIndicators":
-        webrtcUI._streams.push({browser: aMessage.target, state: aMessage.data});
+        let id = aMessage.data.windowId;
+        let index;
+        for (index = 0; index < webrtcUI._streams.length; ++index) {
+          if (webrtcUI._streams[index].state.windowId == id)
+            break;
+        }
+        // If there's no documentURI, the update is actually a removal of the
+        // stream, triggered by the recording-window-ended notification.
+        if (!aMessage.data.documentURI && index < webrtcUI._streams.length)
+          webrtcUI._streams.splice(index, 1);
+        else
+          webrtcUI._streams[index] = {browser: aMessage.target, state: aMessage.data};
         updateBrowserSpecificIndicator(aMessage.target, aMessage.data);
         break;
       case "child-process-shutdown":
@@ -254,15 +270,8 @@ function getHost(uri, href) {
   } catch (ex) {}
   if (!host) {
     if (uri && uri.scheme.toLowerCase() == "about") {
-      // Special case-ing Loop/ Hello gUM requests.
-      if (uri.specIgnoringRef == "about:loopconversation") {
-        const kBundleURI = "chrome://browser/locale/loop/loop.properties";
-        let bundle = Services.strings.createBundle(kBundleURI);
-        host = bundle.GetStringFromName("clientShortname2");
-      } else {
-        // For other about URIs, just use the full spec, without any #hash parts.
-        host = uri.specIgnoringRef;
-      }
+      // For about URIs, just use the full spec, without any #hash parts.
+      host = uri.specIgnoringRef;
     } else {
       // This is unfortunate, but we should display *something*...
       const kBundleURI = "chrome://browser/locale/browser.properties";
@@ -279,7 +288,6 @@ function prompt(aBrowser, aRequest) {
        requestTypes: requestTypes} = aRequest;
   let uri = Services.io.newURI(aRequest.documentURI, null, null);
   let host = getHost(uri);
-  let principal = Services.scriptSecurityManager.createCodebasePrincipal(uri, {});
   let chromeDoc = aBrowser.ownerDocument;
   let chromeWin = chromeDoc.defaultView;
   let stringBundle = chromeWin.gNavigatorBundle;
@@ -375,14 +383,12 @@ function prompt(aBrowser, aRequest) {
         if (micPerm == perms.PROMPT_ACTION)
           micPerm = perms.UNKNOWN_ACTION;
 
-        let camPermanentPerm = perms.testExactPermanentPermission(principal, "camera");
         let camPerm = perms.testExactPermission(uri, "camera");
 
-        // Session approval given but never used to allocate a camera, remove
-        // and ask again
-        if (camPerm && !camPermanentPerm) {
-          perms.remove(uri, "camera");
-          camPerm = perms.UNKNOWN_ACTION;
+        let mediaManagerPerm =
+          perms.testExactPermission(uri, "MediaManagerVideo");
+        if (mediaManagerPerm) {
+          perms.remove(uri, "MediaManagerVideo");
         }
 
         if (camPerm == perms.PROMPT_ACTION)
@@ -399,8 +405,12 @@ function prompt(aBrowser, aRequest) {
         if ((!audioDevices.length || micPerm) && (!videoDevices.length || camPerm)) {
           // All permissions we were about to request are already persistently set.
           let allowedDevices = [];
-          if (videoDevices.length && camPerm == perms.ALLOW_ACTION)
+          if (videoDevices.length && camPerm == perms.ALLOW_ACTION) {
             allowedDevices.push(videoDevices[0].deviceIndex);
+            let perms = Services.perms;
+            perms.add(uri, "MediaManagerVideo", perms.ALLOW_ACTION,
+                      perms.EXPIRE_SESSION);
+          }
           if (audioDevices.length && micPerm == perms.ALLOW_ACTION)
             allowedDevices.push(audioDevices[0].deviceIndex);
 
@@ -510,14 +520,6 @@ function prompt(aBrowser, aRequest) {
       if (!sharingAudio)
         listDevices(micMenupopup, audioDevices);
 
-      if (requestTypes.length == 2) {
-        let stringBundle = chromeDoc.defaultView.gNavigatorBundle;
-        if (!sharingScreen)
-          addDeviceToList(camMenupopup, stringBundle.getString("getUserMedia.noVideo.label"), "-1");
-        if (!sharingAudio)
-          addDeviceToList(micMenupopup, stringBundle.getString("getUserMedia.noAudio.label"), "-1");
-      }
-
       this.mainAction.callback = function(aRemember) {
         let allowedDevices = [];
         let perms = Services.perms;
@@ -529,10 +531,12 @@ function prompt(aBrowser, aRequest) {
             allowedDevices.push(videoDeviceIndex);
             // Session permission will be removed after use
             // (it's really one-shot, not for the entire session)
-            perms.add(uri, "camera", perms.ALLOW_ACTION,
-                      aRemember ? perms.EXPIRE_NEVER : perms.EXPIRE_SESSION);
-          } else if (aRemember) {
-            perms.add(uri, "camera", perms.DENY_ACTION);
+            perms.add(uri, "MediaManagerVideo", perms.ALLOW_ACTION,
+                      perms.EXPIRE_SESSION);
+          }
+          if (aRemember) {
+            perms.add(uri, "camera",
+                      allowCamera ? perms.ALLOW_ACTION : perms.DENY_ACTION);
           }
         }
         if (audioDevices.length) {
@@ -585,7 +589,7 @@ function prompt(aBrowser, aRequest) {
 }
 
 function removePrompt(aBrowser, aCallId) {
-  let chromeWin = aBrowser.ownerDocument.defaultView;
+  let chromeWin = aBrowser.ownerGlobal;
   let notification =
     chromeWin.PopupNotifications.getNotification("webRTC-shareDevices", aBrowser);
   if (notification && notification.callID == aCallId)
@@ -867,6 +871,21 @@ function updateIndicators(data, target) {
 }
 
 function updateBrowserSpecificIndicator(aBrowser, aState) {
+  let chromeWin = aBrowser.ownerGlobal;
+  let tabbrowser = chromeWin.gBrowser;
+  if (tabbrowser) {
+    let sharing;
+    if (aState.screen) {
+      sharing = "screen";
+    } else if (aState.camera) {
+      sharing = "camera";
+    } else if (aState.microphone) {
+      sharing = "microphone";
+    }
+
+    tabbrowser.setBrowserSharing(aBrowser, sharing);
+  }
+
   let captureState;
   if (aState.camera && aState.microphone) {
     captureState = "CameraAndMicrophone";
@@ -876,7 +895,6 @@ function updateBrowserSpecificIndicator(aBrowser, aState) {
     captureState = "Microphone";
   }
 
-  let chromeWin = aBrowser.ownerDocument.defaultView;
   let stringBundle = chromeWin.gNavigatorBundle;
 
   let windowId = aState.windowId;
@@ -987,7 +1005,7 @@ function updateBrowserSpecificIndicator(aBrowser, aState) {
 }
 
 function removeBrowserNotification(aBrowser, aNotificationId) {
-  let win = aBrowser.ownerDocument.defaultView;
+  let win = aBrowser.ownerGlobal;
   let notification =
     win.PopupNotifications.getNotification(aNotificationId, aBrowser);
   if (notification)

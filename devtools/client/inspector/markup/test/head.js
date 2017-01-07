@@ -12,7 +12,7 @@ Services.scriptloader.loadSubScript(
 
 var {getInplaceEditorForSpan: inplaceEditor} = require("devtools/client/shared/inplace-editor");
 var clipboard = require("sdk/clipboard");
-var {ActorRegistryFront} = require("devtools/server/actors/actor-registry");
+var {ActorRegistryFront} = require("devtools/shared/fronts/actor-registry");
 
 // If a test times out we want to see the complete log and not just the last few
 // lines.
@@ -20,7 +20,9 @@ SimpleTest.requestCompleteLog();
 
 // Set the testing flag on DevToolsUtils and reset it when the test ends
 DevToolsUtils.testing = true;
-registerCleanupFunction(() => DevToolsUtils.testing = false);
+registerCleanupFunction(() => {
+  DevToolsUtils.testing = false;
+});
 
 // Clear preferences that may be set during the course of tests.
 registerCleanupFunction(() => {
@@ -79,13 +81,27 @@ function getContainerForNodeFront(nodeFront, {markup}) {
  * loaded in the toolbox
  * @return {MarkupContainer}
  */
-var getContainerForSelector = Task.async(function*(selector, inspector) {
+var getContainerForSelector = Task.async(function* (selector, inspector) {
   info("Getting the markup-container for node " + selector);
   let nodeFront = yield getNodeFront(selector, inspector);
   let container = getContainerForNodeFront(nodeFront, inspector);
   info("Found markup-container " + container);
   return container;
 });
+
+/**
+ * Retrieve the nodeValue for the firstChild of a provided selector on the content page.
+ *
+ * @param {String} selector
+ * @param {TestActorFront} testActor The current TestActorFront instance.
+ * @return {String} the nodeValue of the first
+ */
+function* getFirstChildNodeValue(selector, testActor) {
+  let nodeValue = yield testActor.eval(`
+    content.document.querySelector("${selector}").firstChild.nodeValue;
+  `);
+  return nodeValue;
+}
 
 /**
  * Using the markupview's _waitForChildren function, wait for all queued
@@ -97,7 +113,7 @@ var getContainerForSelector = Task.async(function*(selector, inspector) {
  */
 function waitForChildrenUpdated({markup}) {
   info("Waiting for queued children updates to be handled");
-  let def = promise.defer();
+  let def = defer();
   markup._waitForChildren().then(() => {
     executeSoon(def.resolve);
   });
@@ -112,7 +128,7 @@ function waitForChildrenUpdated({markup}) {
  * loaded in the toolbox
  * @return {Promise} Resolves when the node has been selected.
  */
-var clickContainer = Task.async(function*(selector, inspector) {
+var clickContainer = Task.async(function* (selector, inspector) {
   info("Clicking on the markup-container for node " + selector);
 
   let nodeFront = yield getNodeFront(selector, inspector);
@@ -155,10 +171,10 @@ function setEditableFieldValue(field, value, inspector) {
  * loaded in the toolbox
  * @return a promise that resolves when the node has mutated
  */
-var addNewAttributes = Task.async(function*(selector, text, inspector) {
+var addNewAttributes = Task.async(function* (selector, text, inspector) {
   info(`Entering text "${text}" in new attribute field for node ${selector}`);
 
-  let container = yield getContainerForSelector(selector, inspector);
+  let container = yield focusNode(selector, inspector);
   ok(container, "The container for '" + selector + "' was found");
 
   info("Listening for the markupmutation event");
@@ -178,7 +194,7 @@ var addNewAttributes = Task.async(function*(selector, text, inspector) {
  * Note that node.getAttribute() returns attribute values provided by the HTML
  * parser. The parser only provides unescaped entities so &amp; will return &.
  */
-var assertAttributes = Task.async(function*(selector, expected, testActor) {
+var assertAttributes = Task.async(function* (selector, expected, testActor) {
   let {attributes: actual} = yield testActor.getNodeInfo(selector);
 
   is(actual.length, Object.keys(expected).length,
@@ -256,18 +272,6 @@ function searchUsingSelectorSearch(selector, inspector) {
 }
 
 /**
- * This shouldn't be used in the tests, but is useful when writing new tests or
- * debugging existing tests in order to introduce delays in the test steps
- * @param {Number} ms The time to wait
- * @return A promise that resolves when the time is passed
- */
-function wait(ms) {
-  let def = promise.defer();
-  setTimeout(def.resolve, ms);
-  return def.promise;
-}
-
-/**
  * Check to see if the inspector menu items for editing are disabled.
  * Things like Edit As HTML, Delete Node, etc.
  * @param {NodeFront} nodeFront
@@ -277,32 +281,26 @@ function wait(ms) {
  *         the menu items are disabled once the menu has been checked.
  */
 var isEditingMenuDisabled = Task.async(
-function*(nodeFront, inspector, assert = true) {
-  let doc = inspector.panelDoc;
-  let deleteMenuItem = doc.getElementById("node-menu-delete");
-  let editHTMLMenuItem = doc.getElementById("node-menu-edithtml");
-  let pasteHTMLMenuItem = doc.getElementById("node-menu-pasteouterhtml");
-
+function* (nodeFront, inspector, assert = true) {
   // To ensure clipboard contains something to paste.
   clipboard.set("<p>test</p>", "html");
 
-  let menu = inspector.nodemenu;
   yield selectNode(nodeFront, inspector);
-  yield reopenMenu(menu);
+  let allMenuItems = openContextMenuAndGetAllItems(inspector);
 
-  let isDeleteMenuDisabled = deleteMenuItem.hasAttribute("disabled");
-  let isEditHTMLMenuDisabled = editHTMLMenuItem.hasAttribute("disabled");
-  let isPasteHTMLMenuDisabled = pasteHTMLMenuItem.hasAttribute("disabled");
+  let deleteMenuItem = allMenuItems.find(i => i.id === "node-menu-delete");
+  let editHTMLMenuItem = allMenuItems.find(i => i.id === "node-menu-edithtml");
+  let pasteHTMLMenuItem = allMenuItems.find(i => i.id === "node-menu-pasteouterhtml");
 
   if (assert) {
-    ok(isDeleteMenuDisabled, "Delete menu item is disabled");
-    ok(isEditHTMLMenuDisabled, "Edit HTML menu item is disabled");
-    ok(isPasteHTMLMenuDisabled, "Paste HTML menu item is disabled");
+    ok(deleteMenuItem.disabled, "Delete menu item is disabled");
+    ok(editHTMLMenuItem.disabled, "Edit HTML menu item is disabled");
+    ok(pasteHTMLMenuItem.disabled, "Paste HTML menu item is disabled");
   }
 
-  return isDeleteMenuDisabled &&
-         isEditHTMLMenuDisabled &&
-         isPasteHTMLMenuDisabled;
+  return deleteMenuItem.disabled &&
+         editHTMLMenuItem.disabled &&
+         pasteHTMLMenuItem.disabled;
 });
 
 /**
@@ -315,51 +313,26 @@ function*(nodeFront, inspector, assert = true) {
  *         the menu items are enabled once the menu has been checked.
  */
 var isEditingMenuEnabled = Task.async(
-function*(nodeFront, inspector, assert = true) {
-  let doc = inspector.panelDoc;
-  let deleteMenuItem = doc.getElementById("node-menu-delete");
-  let editHTMLMenuItem = doc.getElementById("node-menu-edithtml");
-  let pasteHTMLMenuItem = doc.getElementById("node-menu-pasteouterhtml");
-
+function* (nodeFront, inspector, assert = true) {
   // To ensure clipboard contains something to paste.
   clipboard.set("<p>test</p>", "html");
 
-  let menu = inspector.nodemenu;
   yield selectNode(nodeFront, inspector);
-  yield reopenMenu(menu);
+  let allMenuItems = openContextMenuAndGetAllItems(inspector);
 
-  let isDeleteMenuDisabled = deleteMenuItem.hasAttribute("disabled");
-  let isEditHTMLMenuDisabled = editHTMLMenuItem.hasAttribute("disabled");
-  let isPasteHTMLMenuDisabled = pasteHTMLMenuItem.hasAttribute("disabled");
+  let deleteMenuItem = allMenuItems.find(i => i.id === "node-menu-delete");
+  let editHTMLMenuItem = allMenuItems.find(i => i.id === "node-menu-edithtml");
+  let pasteHTMLMenuItem = allMenuItems.find(i => i.id === "node-menu-pasteouterhtml");
 
   if (assert) {
-    ok(!isDeleteMenuDisabled, "Delete menu item is enabled");
-    ok(!isEditHTMLMenuDisabled, "Edit HTML menu item is enabled");
-    ok(!isPasteHTMLMenuDisabled, "Paste HTML menu item is enabled");
+    ok(!deleteMenuItem.disabled, "Delete menu item is enabled");
+    ok(!editHTMLMenuItem.disabled, "Edit HTML menu item is enabled");
+    ok(!pasteHTMLMenuItem.disabled, "Paste HTML menu item is enabled");
   }
 
-  return !isDeleteMenuDisabled &&
-         !isEditHTMLMenuDisabled &&
-         !isPasteHTMLMenuDisabled;
-});
-
-/**
- * Open a menu (closing it first if necessary).
- * @param {DOMNode} menu A menu that implements hidePopup/openPopup
- * @return a promise that resolves once the menu is opened.
- */
-var reopenMenu = Task.async(function*(menu) {
-  // First close it is if it is already opened.
-  if (menu.state == "closing" || menu.state == "open") {
-    let popuphidden = once(menu, "popuphidden", true);
-    menu.hidePopup();
-    yield popuphidden;
-  }
-
-  // Then open it and return once
-  let popupshown = once(menu, "popupshown", true);
-  menu.openPopup();
-  yield popupshown;
+  return !deleteMenuItem.disabled &&
+         !editHTMLMenuItem.disabled &&
+         !pasteHTMLMenuItem.disabled;
 });
 
 /**
@@ -367,7 +340,7 @@ var reopenMenu = Task.async(function*(menu) {
  * can be used with yield.
  */
 function promiseNextTick() {
-  let deferred = promise.defer();
+  let deferred = defer();
   executeSoon(deferred.resolve);
   return deferred.promise;
 }
@@ -404,13 +377,16 @@ function collapseSelectionAndShiftTab(inspector) {
  */
 function checkFocusedAttribute(attrName, editMode) {
   let focusedAttr = Services.focus.focusedElement;
-  is(focusedAttr ? focusedAttr.parentNode.dataset.attr : undefined,
-     attrName, attrName + " attribute editor is currently focused.");
-  is(focusedAttr ? focusedAttr.tagName : undefined,
-     editMode ? "input" : "span",
-     editMode
-     ? attrName + " is in edit mode"
-     : attrName + " is not in edit mode");
+  ok(focusedAttr, "Has a focused element");
+
+  let dataAttr = focusedAttr.parentNode.dataset.attr;
+  is(dataAttr, attrName, attrName + " attribute editor is currently focused.");
+  if (editMode) {
+    // Using a multiline editor for attributes, the focused element should be a textarea.
+    is(focusedAttr.tagName, "textarea", attrName + "is in edit mode");
+  } else {
+    is(focusedAttr.tagName, "span", attrName + "is not in edit mode");
+  }
 }
 
 /**
@@ -422,7 +398,7 @@ function checkFocusedAttribute(attrName, editMode) {
  *         A promise that resolves with an array of attribute names
  *         (e.g. ["id", "class", "href"])
  */
-var getAttributesFromEditor = Task.async(function*(selector, inspector) {
+var getAttributesFromEditor = Task.async(function* (selector, inspector) {
   let nodeList = (yield getContainerForSelector(selector, inspector))
     .tagLine.querySelectorAll("[data-attr]");
 
@@ -440,6 +416,7 @@ function* waitForMultipleChildrenUpdates(inspector) {
     yield waitForChildrenUpdated(inspector);
     return yield waitForMultipleChildrenUpdates(inspector);
   }
+  return undefined;
 }
 
 /**
@@ -462,7 +439,7 @@ function createTestHTTPServer() {
   let server = new HttpServer();
 
   registerCleanupFunction(function* cleanup() {
-    let destroyed = promise.defer();
+    let destroyed = defer();
     server.stop(() => {
       destroyed.resolve();
     });
@@ -471,20 +448,6 @@ function createTestHTTPServer() {
 
   server.start(-1);
   return server;
-}
-
-/**
- * A helper that simulates a contextmenu event on the given chrome DOM element.
- */
-function contextMenuClick(element) {
-  let evt = element.ownerDocument.createEvent("MouseEvents");
-  let buttonRight = 2;
-
-  evt.initMouseEvent("contextmenu", true, true,
-    element.ownerDocument.defaultView, 1, 0, 0, 0, 0, false, false, false,
-    false, buttonRight, null);
-
-  element.dispatchEvent(evt);
 }
 
 /**
@@ -611,4 +574,80 @@ function* simulateNodeDrop(inspector, selector) {
 function* simulateNodeDragAndDrop(inspector, selector, xOffset, yOffset) {
   yield simulateNodeDrag(inspector, selector, xOffset, yOffset);
   yield simulateNodeDrop(inspector, selector);
+}
+
+/**
+ * Waits until the element has not scrolled for 30 consecutive frames.
+ */
+function* waitForScrollStop(doc) {
+  let el = doc.documentElement;
+  let win = doc.defaultView;
+  let lastScrollTop = el.scrollTop;
+  let stopFrameCount = 0;
+  while (stopFrameCount < 30) {
+    // Wait for a frame.
+    yield new Promise(resolve => win.requestAnimationFrame(resolve));
+
+    // Check if the element has scrolled.
+    if (lastScrollTop == el.scrollTop) {
+      // No scrolling since the last frame.
+      stopFrameCount++;
+    } else {
+      // The element has scrolled. Reset the frame counter.
+      stopFrameCount = 0;
+      lastScrollTop = el.scrollTop;
+    }
+  }
+
+  return lastScrollTop;
+}
+
+/**
+ * Select a node in the inspector and try to delete it using the provided key. After that,
+ * check that the expected element is focused.
+ *
+ * @param {InspectorPanel} inspector
+ *        The current inspector-panel instance.
+ * @param {String} key
+ *        The key to simulate to delete the node
+ * @param {Object}
+ *        - {String} selector: selector of the element to delete.
+ *        - {String} focusedSelector: selector of the element that should be selected
+ *        after deleting the node.
+ *        - {String} pseudo: optional, "before" or "after" if the element focused after
+ *        deleting the node is supposed to be a before/after pseudo-element.
+ */
+function* checkDeleteAndSelection(inspector, key, {selector, focusedSelector, pseudo}) {
+  info("Test deleting node " + selector + " with " + key + ", " +
+       "expecting " + focusedSelector + " to be focused");
+
+  info("Select node " + selector + " and make sure it is focused");
+  yield selectNode(selector, inspector);
+  yield clickContainer(selector, inspector);
+
+  info("Delete the node with: " + key);
+  let mutated = inspector.once("markupmutation");
+  EventUtils.sendKey(key, inspector.panelWin);
+  yield Promise.all([mutated, inspector.once("inspector-updated")]);
+
+  let nodeFront = yield getNodeFront(focusedSelector, inspector);
+  if (pseudo) {
+    // Update the selector for logging in case of failure.
+    focusedSelector = focusedSelector + "::" + pseudo;
+    // Retrieve the :before or :after pseudo element of the nodeFront.
+    let {nodes} = yield inspector.walker.children(nodeFront);
+    nodeFront = pseudo === "before" ? nodes[0] : nodes[nodes.length - 1];
+  }
+
+  is(inspector.selection.nodeFront, nodeFront,
+     focusedSelector + " is selected after deletion");
+
+  info("Check that the node was really removed");
+  let node = yield getNodeFront(selector, inspector);
+  ok(!node, "The node can't be found in the page anymore");
+
+  info("Undo the deletion to restore the original markup");
+  yield undoChange(inspector);
+  node = yield getNodeFront(selector, inspector);
+  ok(node, "The node is back");
 }

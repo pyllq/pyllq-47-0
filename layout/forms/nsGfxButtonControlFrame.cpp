@@ -6,7 +6,6 @@
 #include "nsGfxButtonControlFrame.h"
 #include "nsIFormControl.h"
 #include "nsGkAtoms.h"
-#include "nsAutoPtr.h"
 #include "mozilla/StyleSetHandle.h"
 #include "mozilla/StyleSetHandleInlines.h"
 #include "nsContentUtils.h"
@@ -91,7 +90,7 @@ nsGfxButtonControlFrame::CreateFrameFor(nsIContent*      aContent)
     nsPresContext* presContext = PresContext();
     RefPtr<nsStyleContext> textStyleContext;
     textStyleContext = presContext->StyleSet()->
-      ResolveStyleForNonElement(mStyleContext);
+      ResolveStyleForText(mTextContent, mStyleContext);
 
     newFrame = NS_NewTextFrame(presContext->PresShell(), textStyleContext);
     // initialize the text frame

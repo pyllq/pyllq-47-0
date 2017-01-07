@@ -42,6 +42,8 @@
 #include "mozilla/dom/UnionTypes.h"
 #include "mozilla/ErrorResult.h"
 #include "nsFrameMessageManager.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/GuardObjects.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/TimeStamp.h"
 #include "nsWrapperCacheInlines.h"
@@ -101,11 +103,14 @@ namespace mozilla {
 class DOMEventTargetHelper;
 namespace dom {
 class BarProp;
+struct ChannelPixelLayout;
 class Console;
 class Crypto;
+class CustomElementsRegistry;
 class External;
 class Function;
 class Gamepad;
+enum class ImageBitmapFormat : uint32_t;
 class MediaQueryList;
 class MozSelfSupport;
 class Navigator;
@@ -201,7 +206,6 @@ public:
   // stack depth at which timeout is firing
   uint32_t mFiringDepth;
 
-  // 
   uint32_t mNestingLevel;
 
   // The popup state at timeout creation time if not created from
@@ -402,7 +406,7 @@ public:
   using mozilla::dom::EventTarget::RemoveEventListener;
   virtual void AddEventListener(const nsAString& aType,
                                 mozilla::dom::EventListener* aListener,
-                                bool aUseCapture,
+                                const mozilla::dom::AddEventListenerOptionsOrBoolean& aOptions,
                                 const mozilla::dom::Nullable<bool>& aWantsUntrusted,
                                 mozilla::ErrorResult& aRv) override;
   virtual nsPIDOMWindowOuter* GetOwnerGlobalForBindings() override;
@@ -565,11 +569,36 @@ public:
   bool DialogsAreBeingAbused();
 
   // These functions are used for controlling and determining whether dialogs
-  // (alert, prompt, confirm) are currently allowed in this window.
+  // (alert, prompt, confirm) are currently allowed in this window.  If you want
+  // to temporarily disable dialogs, please use TemporarilyDisableDialogs, not
+  // EnableDialogs/DisableDialogs, because correctly determining whether to
+  // re-enable dialogs is actually quite difficult.
   void EnableDialogs();
   void DisableDialogs();
   // Outer windows only.
   bool AreDialogsEnabled();
+
+  class MOZ_RAII TemporarilyDisableDialogs
+  {
+  public:
+    // Takes an inner _or_ outer window.
+    explicit TemporarilyDisableDialogs(nsGlobalWindow* aWindow
+                                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+    ~TemporarilyDisableDialogs();
+
+  private:
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+
+    // Always an inner window; this is the window whose dialog state we messed
+    // with.  We just want to keep it alive, because we plan to poke at its
+    // members in our destructor.
+    RefPtr<nsGlobalWindow> mTopWindow;
+    // This is not a AutoRestore<bool> because that would require careful
+    // member destructor ordering, which is a bit fragile.  This way we can
+    // explicitly restore things before we drop our ref to mTopWindow.
+    bool mSavedDialogsEnabled;
+  };
+  friend class TemporarilyDisableDialogs;
 
   nsIScriptContext *GetContextInternal()
   {
@@ -849,6 +878,7 @@ public:
   nsLocation* GetLocation(mozilla::ErrorResult& aError);
   nsIDOMLocation* GetLocation() override;
   nsHistory* GetHistory(mozilla::ErrorResult& aError);
+  mozilla::dom::CustomElementsRegistry* CustomElements() override;
   mozilla::dom::BarProp* GetLocationbar(mozilla::ErrorResult& aError);
   mozilla::dom::BarProp* GetMenubar(mozilla::ErrorResult& aError);
   mozilla::dom::BarProp* GetPersonalbar(mozilla::ErrorResult& aError);
@@ -883,10 +913,10 @@ public:
 protected:
   explicit nsGlobalWindow(nsGlobalWindow *aOuterWindow);
   nsPIDOMWindowOuter* GetOpenerWindowOuter();
-  nsPIDOMWindowOuter* GetOpenerWindow(mozilla::ErrorResult& aError);
   // Initializes the mWasOffline member variable
   void InitWasOffline();
 public:
+  nsPIDOMWindowOuter* GetOpenerWindow(mozilla::ErrorResult& aError);
   void GetOpener(JSContext* aCx, JS::MutableHandle<JS::Value> aRetval,
                  mozilla::ErrorResult& aError);
   already_AddRefed<nsPIDOMWindowOuter> GetOpener() override;
@@ -896,6 +926,7 @@ public:
   already_AddRefed<nsPIDOMWindowOuter> GetParent(mozilla::ErrorResult& aError);
   already_AddRefed<nsPIDOMWindowOuter> GetParent() override;
   nsPIDOMWindowOuter* GetScriptableParent() override;
+  nsPIDOMWindowOuter* GetScriptableParentOrNull() override;
   mozilla::dom::Element* GetFrameElementOuter();
   mozilla::dom::Element* GetFrameElement(mozilla::ErrorResult& aError);
   already_AddRefed<nsIDOMElement> GetFrameElement() override;
@@ -922,6 +953,9 @@ public:
 #endif
 
   mozilla::dom::Console* GetConsole(mozilla::ErrorResult& aRv);
+
+  // https://w3c.github.io/webappsec-secure-contexts/#dom-window-issecurecontext
+  bool IsSecureContext() const;
 
   void GetSidebar(mozilla::dom::OwningExternalOrWindowProxy& aResult,
                   mozilla::ErrorResult& aRv);
@@ -971,7 +1005,7 @@ public:
                      int32_t aTimeout,
                      const mozilla::dom::Sequence<JS::Value>& /* unused */,
                      mozilla::ErrorResult& aError);
-  void ClearTimeout(int32_t aHandle, mozilla::ErrorResult& aError);
+  void ClearTimeout(int32_t aHandle);
   int32_t SetInterval(JSContext* aCx, mozilla::dom::Function& aFunction,
                       const mozilla::dom::Optional<int32_t>& aTimeout,
                       const mozilla::dom::Sequence<JS::Value>& aArguments,
@@ -980,7 +1014,7 @@ public:
                       const mozilla::dom::Optional<int32_t>& aTimeout,
                       const mozilla::dom::Sequence<JS::Value>& /* unused */,
                       mozilla::ErrorResult& aError);
-  void ClearInterval(int32_t aHandle, mozilla::ErrorResult& aError);
+  void ClearInterval(int32_t aHandle);
   void Atob(const nsAString& aAsciiBase64String, nsAString& aBinaryData,
             mozilla::ErrorResult& aError);
   void Btoa(const nsAString& aBinaryData, nsAString& aAsciiBase64String,
@@ -1172,6 +1206,14 @@ public:
                     int32_t aSx, int32_t aSy, int32_t aSw, int32_t aSh,
                     mozilla::ErrorResult& aRv);
 
+  already_AddRefed<mozilla::dom::Promise>
+  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+                    int32_t aOffset, int32_t aLength,
+                    mozilla::dom::ImageBitmapFormat aFormat,
+                    const mozilla::dom::Sequence<mozilla::dom::ChannelPixelLayout>& aLayout,
+                    mozilla::ErrorResult& aRv);
+
+
   // ChromeWindow bits.  Do NOT call these unless your window is in
   // fact an nsGlobalChromeWindow.
   uint16_t WindowState();
@@ -1216,7 +1258,8 @@ public:
 
   already_AddRefed<nsWindowRoot> GetWindowRootOuter();
   already_AddRefed<nsWindowRoot> GetWindowRoot(mozilla::ErrorResult& aError);
-  nsPerformance* GetPerformance();
+
+  mozilla::dom::Performance* GetPerformance();
 
 protected:
   // Web IDL helpers
@@ -1400,9 +1443,6 @@ private:
    * @param aExtraArgument Another way to pass arguments in.  This is mutually
    *        exclusive with the argv/argc approach.
    *
-   * @param aJSCallerContext The calling script's context. This must be null
-   *        when aCalledNoScript is true.
-   *
    * @param aReturn [out] The window that was opened, if any.
    *
    * Outer windows only.
@@ -1417,7 +1457,6 @@ private:
                         bool aNavigate,
                         nsIArray *argv,
                         nsISupports *aExtraArgument,
-                        JSContext *aJSCallerContext,
                         nsPIDOMWindowOuter **aReturn);
 
 public:
@@ -1435,8 +1474,7 @@ public:
   int32_t SetTimeoutOrInterval(JSContext* aCx, const nsAString& aHandler,
                                int32_t aTimeout, bool aIsInterval,
                                mozilla::ErrorResult& aError);
-  void ClearTimeoutOrInterval(int32_t aTimerID,
-                              mozilla::ErrorResult& aError);
+  void ClearTimeoutOrInterval(int32_t aTimerID);
 
   // JS specific timeout functions (JS args grabbed from context).
   nsresult ResetTimersForNonBackgroundWindow();
@@ -1467,8 +1505,7 @@ public:
 
   bool PopupWhitelisted();
   PopupControlState RevisePopupAbuseLevel(PopupControlState);
-  void     FireAbuseEvents(bool aBlocked, bool aWindow,
-                           const nsAString &aPopupURL,
+  void     FireAbuseEvents(const nsAString &aPopupURL,
                            const nsAString &aPopupWindowName,
                            const nsAString &aPopupWindowFeatures);
   void FireOfflineStatusEventIfChanged();
@@ -1572,8 +1609,6 @@ public:
 
   virtual void SetKeyboardIndicators(UIStateChangeType aShowAccelerators,
                                      UIStateChangeType aShowFocusRings) override;
-  virtual void GetKeyboardIndicators(bool* aShowAccelerators,
-                                     bool* aShowFocusRings) override;
 
   // Inner windows only.
   void UpdateCanvasFocus(bool aFocusChanged, nsIContent* aNewContent);
@@ -1593,6 +1628,8 @@ protected:
   virtual void UpdateParentTarget() override;
 
   inline int32_t DOMMinTimeoutValue() const;
+
+  void InitializeShowFocusRings();
 
   // Clear the document-dependent slots on our JS wrapper.  Inner windows only.
   void ClearDocumentDependentSlots(JSContext* aCx);
@@ -1663,6 +1700,10 @@ private:
 
   void DisconnectEventTargetObjects();
 
+  // Called only on outer windows to compute the value that will be returned by
+  // IsSecureContext() for the inner window that corresponds to aDocument.
+  bool ComputeIsSecureContext(nsIDocument* aDocument);
+
 protected:
   // This member is also used on both inner and outer windows, but
   // for slightly different purposes. On inner windows it means the
@@ -1683,6 +1724,7 @@ protected:
   // event posted.  If this is set, just ignore window.close() calls.
   bool                          mHavePendingClose : 1;
   bool                          mHadOriginalOpener : 1;
+  bool                          mOriginalOpenerWasSecureContext : 1;
   bool                          mIsPopupSpam : 1;
 
   // Indicates whether scripts are allowed to close this window.
@@ -1717,12 +1759,6 @@ protected:
   bool                   mNeedsFocus : 1;
   bool                   mHasFocus : 1;
 
-  // whether to show keyboard accelerators
-  bool                   mShowAccelerators : 1;
-
-  // whether to show focus rings
-  bool                   mShowFocusRings : 1;
-
   // when true, show focus rings for the current focused content only.
   // This will be reset when another element is focused
   bool                   mShowFocusRingForContent : 1;
@@ -1730,10 +1766,6 @@ protected:
   // true if tab navigation has occurred for this window. Focus rings
   // should be displayed.
   bool                   mFocusByKeyOccurred : 1;
-
-  // Ensure that a call to ResumeTimeouts() after FreeInnerObjects() does nothing.
-  // This member is only used by inner windows.
-  bool                   mInnerObjectsFreed : 1;
 
   // Inner windows only.
   // Indicates whether this window wants gamepad input events
@@ -1807,6 +1839,7 @@ protected:
   uint32_t                      mTimeoutFiringDepth;
   RefPtr<nsLocation>          mLocation;
   RefPtr<nsHistory>           mHistory;
+  RefPtr<mozilla::dom::CustomElementsRegistry> mCustomElements;
 
   // These member variables are used on both inner and the outer windows.
   nsCOMPtr<nsIPrincipal> mDocumentPrincipal;
@@ -1974,6 +2007,10 @@ public:
   nsCOMPtr<nsIBrowserDOMWindow> mBrowserDOMWindow;
   nsCOMPtr<nsIMessageBroadcaster> mMessageManager;
   nsInterfaceHashtable<nsStringHashKey, nsIMessageBroadcaster> mGroupMessageManagers;
+  // A weak pointer to the nsPresShell that we are doing fullscreen for.
+  // The pointer being set indicates we've set the IsInFullscreenChange
+  // flag on this pres shell.
+  nsWeakPtr mFullscreenPresShell;
 };
 
 /*

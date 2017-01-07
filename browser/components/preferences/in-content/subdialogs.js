@@ -290,8 +290,8 @@ var gSubDialog = {
     let docEl = frame.contentDocument.documentElement;
     let persistedAttributes = docEl.getAttribute("persist");
     if (!persistedAttributes ||
-        (!persistedAttributes.contains("width") &&
-         !persistedAttributes.contains("height"))) {
+        (!persistedAttributes.includes("width") &&
+         !persistedAttributes.includes("height"))) {
       return;
     }
 
@@ -336,7 +336,7 @@ var gSubDialog = {
         (isLastFocusableElement(aEvent.originalTarget) && forward)) {
       aEvent.preventDefault();
       aEvent.stopImmediatePropagation();
-      let parentWin = this._getBrowser().ownerDocument.defaultView;
+      let parentWin = this._getBrowser().ownerGlobal;
       if (forward) {
         fm.moveFocus(parentWin, null, fm.MOVEFOCUS_FIRST, fm.FLAG_BYKEY);
       } else {

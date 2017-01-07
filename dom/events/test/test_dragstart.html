@@ -313,9 +313,9 @@ function test_DataTransfer(dt)
   checkOneDataItem(dt, ["text/plain", "text/html"],
                    ["Changed Second Item", "<em>Second Item</em>"], 1, "changed with setData item at index 1");
 
-  dt.mozSetDataAt("application/-moz-node", draggable, 2);
+  dt.mozSetDataAt("application/-moz-node", "draggable", 2);
   is(dt.mozItemCount, 3, "setDataAt node itemCount");
-  checkOneDataItem(dt, ["application/-moz-node"], [draggable], 2, "setDataAt node item at index 2");
+  checkOneDataItem(dt, ["application/-moz-node"], ["draggable"], 2, "setDataAt node item at index 2");
 
   dt.mozClearDataAt("text/html", 1);
   is(dt.mozItemCount, 3, "clearDataAt itemCount");
@@ -327,7 +327,7 @@ function test_DataTransfer(dt)
   is(dt.mozItemCount, 2, "clearDataAt last type itemCount");
   checkOneDataItem(dt, ["text/plain", "text/html"],
                    ["First Item", "Changed with setData"], 0, "clearDataAt last type at index 0");
-  checkOneDataItem(dt, ["application/-moz-node"], [draggable], 1, "clearDataAt last type item at index 2");
+  checkOneDataItem(dt, ["application/-moz-node"], ["draggable"], 1, "clearDataAt last type item at index 2");
   expectError(() => dt.mozGetDataAt("text/plain", 2),
               "IndexSizeError", "getDataAt after item removed index too high");
 
@@ -335,7 +335,7 @@ function test_DataTransfer(dt)
   dt.mozSetDataAt("text/unknown", "Unknown type", 1);
   is(dt.mozItemCount, 3, "add unknown type");
   checkOneDataItem(dt, ["application/-moz-node", "text/unknown"],
-                   [draggable, "Unknown type"], 1, "add unknown type item at index 1");
+                   ["draggable", "Unknown type"], 1, "add unknown type item at index 1");
   checkOneDataItem(dt, ["text/unknown"], ["Unknown type"], 2, "add unknown type item at index 2");
 
   dt.mozClearDataAt("", 1);
@@ -358,14 +358,19 @@ function test_DataTransfer(dt)
   expectError(() => dt.mozClearDataAt("text/plain", 3),
               "IndexSizeError", "clearData index too high with two items");
 
-  // ensure that clearData() removes all data associated with the first item
+  // ensure that clearData() removes all data associated with the first item, but doesn't
+  // shift the second item down into the first item's slot.
   dt.clearData();
-  is(dt.mozItemCount, 1, "clearData no argument with multiple items itemCount");
+  is(dt.mozItemCount, 2, "clearData no argument with multiple items itemCount");
+  checkOneDataItem(dt, [], [], 0,
+                   "clearData no argument with multiple items item at index 0");
   checkOneDataItem(dt, ["text/unknown"],
-                   ["Unknown type"], 0, "clearData no argument with multiple items item at index 1");
+                   ["Unknown type"], 1, "clearData no argument with multiple items item at index 1");
 
-  // remove tha remaining data
-  dt.mozClearDataAt("", 0);
+  // remove tha remaining data in index 1. As index 0 is empty at this point, this will actually
+  // drop mozItemCount to 0. (XXX: This is because of spec-compliance reasons related
+  // to the more-recent dt.item API. It's an unfortunate, but hopefully rare edge case)
+  dt.mozClearDataAt("", 1);
   is(dt.mozItemCount, 0, "all data cleared");
 
   // now check the effectAllowed and dropEffect properties

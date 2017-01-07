@@ -18,6 +18,7 @@ var PKT_SIGNUP_OVERLAY = function (options)
     this.autocloseTimer = null;
     this.variant = "";
     this.inoverflowmenu = false;
+    this.controlvariant;
     this.pockethost = "getpocket.com";
     this.fxasignedin = false;
     this.dictJSON = {};
@@ -59,6 +60,7 @@ var PKT_SIGNUP_OVERLAY = function (options)
     {
         this.dictJSON = window.pocketStrings;
     };
+
 };
 
 PKT_SIGNUP_OVERLAY.prototype = {
@@ -66,6 +68,11 @@ PKT_SIGNUP_OVERLAY.prototype = {
     {
         var myself = this;
 
+        var controlvariant = window.location.href.match(/controlvariant=([\w|\.]*)&?/);
+        if (controlvariant && controlvariant.length > 1)
+        {
+            this.controlvariant = controlvariant[1];
+        }
         var variant = window.location.href.match(/variant=([\w|\.]*)&?/);
         if (variant && variant.length > 1)
         {
@@ -101,10 +108,11 @@ PKT_SIGNUP_OVERLAY.prototype = {
         // set translations
         this.getTranslations();
         this.dictJSON.fxasignedin = this.fxasignedin ? 1 : 0;
+        this.dictJSON.controlvariant = this.controlvariant == 'true' ? 1 : 0;
         this.dictJSON.variant = (this.variant ? this.variant : 'undefined');
         this.dictJSON.variant += this.fxasignedin ? '_fxa' : '_nonfxa';
         this.dictJSON.pockethost = this.pockethost;
-        this.dictJSON.showlearnmore = (this.variant.indexOf('_lm') > -1 || this.variant == 'storyboard' || this.variant == 'hero') ? 1 : 0;
+        this.dictJSON.showlearnmore = true;
 
         // extra modifier class for collapsed state
         if (this.inoverflowmenu)
@@ -119,13 +127,13 @@ PKT_SIGNUP_OVERLAY.prototype = {
         }
 
         // Create actual content
-        if (this.variant == 'storyboard' || this.variant == 'storyboard_lm' || this.variant == 'storyboard_nlm')
+        if (this.variant == 'overflow')
         {
-            $('body').append(Handlebars.templates.signupstoryboard_shell(this.dictJSON));
+            $('body').append(Handlebars.templates.signup_shell(this.dictJSON));
         }
         else
         {
-            $('body').append(Handlebars.templates.signup_shell(this.dictJSON));
+            $('body').append(Handlebars.templates.signupstoryboard_shell(this.dictJSON));
         }
 
 
@@ -176,8 +184,14 @@ $(function()
         thePKT_SIGNUP.init();
     }
 
+    var pocketHost = thePKT_SIGNUP.overlay.pockethost;
     // send an async message to get string data
-    thePKT_SIGNUP.sendMessage("initL10N", {}, function(resp) {
+    thePKT_SIGNUP.sendMessage("initL10N", {
+            tos: [
+                'https://'+ pocketHost +'/tos?s=ffi&t=tos&tv=panel_tryit',
+                'https://'+ pocketHost +'/privacy?s=ffi&t=privacypolicy&tv=panel_tryit'
+            ]
+        }, function(resp) {
         window.pocketStrings = resp.strings;
         window.thePKT_SIGNUP.create();
     });

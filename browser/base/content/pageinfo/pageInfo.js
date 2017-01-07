@@ -58,11 +58,8 @@ pageInfoTreeView.prototype = {
 
   addRows: function(rows)
   {
-    this.data = this.data.concat(rows);
-    this.rowCountChanged(this.rows, rows.length);
-    this.rows = this.data.length;
-    if (this.selection.count == 0 && this.rowCount && !gImageElement) {
-      this.selection.select(0);
+    for (let row of rows) {
+      this.addRow(row);
     }
   },
 
@@ -268,6 +265,7 @@ function getClipboardHelper() {
         return Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
     } catch(e) {
         // do nothing, later code will handle the error
+        return null;
     }
 }
 const gClipboardHelper = getClipboardHelper();
@@ -349,9 +347,10 @@ function onLoadPageInfo()
             .notifyObservers(window, "page-info-dialog-loaded", null);
 }
 
-function loadPageInfo(frameOuterWindowID, imageElement)
+function loadPageInfo(frameOuterWindowID, imageElement, browser)
 {
-  let mm = window.opener.gBrowser.selectedBrowser.messageManager;
+  browser = browser || window.opener.gBrowser.selectedBrowser;
+  let mm = browser.messageManager;
 
   gStrings["application/rss+xml"]  = gBundle.getString("feedRss");
   gStrings["application/atom+xml"] = gBundle.getString("feedAtom");
@@ -374,6 +373,7 @@ function loadPageInfo(frameOuterWindowID, imageElement)
     let windowInfo = pageInfoData.windowInfo;
     let uri = makeURI(docInfo.documentURIObject.spec,
                       docInfo.documentURIObject.originCharset);
+    let principal = docInfo.principal;
     gDocInfo = docInfo;
 
     gImageElement = pageInfoData.imageInfo;
@@ -386,7 +386,7 @@ function loadPageInfo(frameOuterWindowID, imageElement)
 
     makeGeneralTab(pageInfoData.metaViewRows, docInfo);
     initFeedTab(pageInfoData.feeds);
-    onLoadPermission(uri);
+    onLoadPermission(uri, principal);
     securityOnLoad(uri, windowInfo);
   });
 
@@ -484,11 +484,11 @@ function loadTab(args)
   // If the "View Image Info" context menu item was used, the related image
   // element is provided as an argument. This can't be a background image.
   let imageElement = args && args.imageElement;
-
   let frameOuterWindowID = args && args.frameOuterWindowID;
+  let browser = args && args.browser;
 
   /* Load the page info */
-  loadPageInfo(frameOuterWindowID, imageElement);
+  loadPageInfo(frameOuterWindowID, imageElement, browser);
 
   var initialTab = (args && args.initialTab) || "generalTab";
   var radioGroup = document.getElementById("viewGroup");

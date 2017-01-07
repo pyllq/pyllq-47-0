@@ -30,9 +30,9 @@
 struct jsid
 {
     size_t asBits;
-    bool operator==(jsid rhs) const { return asBits == rhs.asBits; }
-    bool operator!=(jsid rhs) const { return asBits != rhs.asBits; }
-};
+    bool operator==(const jsid& rhs) const { return asBits == rhs.asBits; }
+    bool operator!=(const jsid& rhs) const { return asBits != rhs.asBits; }
+} JS_HAZ_GC_POINTER;
 #define JSID_BITS(id) (id.asBits)
 
 #define JSID_TYPE_STRING                 0x0
@@ -166,7 +166,7 @@ extern JS_PUBLIC_DATA(const jsid) JSID_EMPTY;
 extern JS_PUBLIC_DATA(const JS::HandleId) JSID_VOIDHANDLE;
 extern JS_PUBLIC_DATA(const JS::HandleId) JSID_EMPTYHANDLE;
 
-namespace js {
+namespace JS {
 
 template <>
 struct GCPolicy<jsid>
@@ -176,6 +176,10 @@ struct GCPolicy<jsid>
         js::UnsafeTraceManuallyBarrieredEdge(trc, idp, name);
     }
 };
+
+} // namespace JS
+
+namespace js {
 
 template <>
 struct BarrierMethods<jsid>

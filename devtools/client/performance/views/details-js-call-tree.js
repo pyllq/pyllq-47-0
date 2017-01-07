@@ -3,6 +3,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 /* import-globals-from ../performance-controller.js */
 /* import-globals-from ../performance-view.js */
+/* globals DetailsSubview */
 "use strict";
 
 /**
@@ -17,7 +18,8 @@ var JsCallTreeView = Heritage.extend(DetailsSubview, {
     "show-jit-optimizations",
   ],
 
-  rangeChangeDebounceTime: 75, // ms
+  // Units are in milliseconds.
+  rangeChangeDebounceTime: 75,
 
   /**
    * Sets up the view with event binding.
@@ -50,7 +52,7 @@ var JsCallTreeView = Heritage.extend(DetailsSubview, {
    * @param object interval [optional]
    *        The { startTime, endTime }, in milliseconds.
    */
-  render: function (interval={}) {
+  render: function (interval = {}) {
     let recording = PerformanceController.getCurrentRecording();
     let profile = recording.getProfile();
     let showOptimizations = PerformanceController.getOption("show-jit-optimizations");
@@ -81,7 +83,6 @@ var JsCallTreeView = Heritage.extend(DetailsSubview, {
 
   _onFocus: function (_, treeItem) {
     let showOptimizations = PerformanceController.getOption("show-jit-optimizations");
-    let recording = PerformanceController.getCurrentRecording();
     let frameNode = treeItem.frame;
     let optimizationSites = frameNode && frameNode.hasOptimizations()
                             ? frameNode.getOptimizations().optimizationSites
@@ -136,7 +137,8 @@ var JsCallTreeView = Heritage.extend(DetailsSubview, {
   _prepareCallTree: function (profile, { startTime, endTime }, options) {
     let thread = profile.threads[0];
     let { contentOnly, invertTree, flattenRecursion } = options;
-    let threadNode = new ThreadNode(thread, { startTime, endTime, contentOnly, invertTree, flattenRecursion });
+    let threadNode = new ThreadNode(thread, { startTime, endTime, contentOnly, invertTree,
+                                              flattenRecursion });
 
     // Real profiles from nsProfiler (i.e. not synthesized from allocation
     // logs) always have a (root) node. Go down one level in the uninverted
@@ -152,7 +154,7 @@ var JsCallTreeView = Heritage.extend(DetailsSubview, {
   /**
    * Renders the call tree.
    */
-  _populateCallTree: function (frameNode, options={}) {
+  _populateCallTree: function (frameNode, options = {}) {
     // If we have an empty profile (no samples), then don't invert the tree, as
     // it would hide the root node and a completely blank call tree space can be
     // mis-interpreted as an error.
