@@ -45,10 +45,9 @@ function init() {
 
     let links = [
       {id: "releaseNotesURL", pref: "app.releaseNotesURL"},
-      {id: "supportURL",      pref: "app.support.baseURL"},
-      {id: "faqURL",          pref: "app.faqURL"},
+      {id: "supportURL",      pref: "app.supportURL"},
       {id: "privacyURL",      pref: "app.privacyURL"},
-      {id: "creditsURL",      pref: "app.creditsURL"},
+      {id: "securityURL",     pref: "app.securityURL"},
     ];
 
     links.forEach(function(link) {

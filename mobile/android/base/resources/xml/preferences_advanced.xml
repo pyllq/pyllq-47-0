@@ -8,6 +8,7 @@
                   android:title="@string/pref_category_advanced"
                   android:enabled="false">
 
+<!--
     <org.mozilla.gecko.preferences.AndroidImportPreference
             android:key="android.not_a_preference.import_android"
             gecko:entries="@array/pref_import_android_entries"
@@ -18,12 +19,17 @@
             android:positiveButtonText="@string/bookmarkhistory_button_import"
             android:negativeButtonText="@string/button_cancel"
             android:persistent="false" />
-
+-->
     <ListPreference android:key="app.update.autodownload"
                     android:title="@string/pref_update_autodownload"
                     android:entries="@array/pref_update_autodownload_entries"
                     android:entryValues="@array/pref_update_autodownload_values"
                     android:persistent="false" />
+
+    <SwitchPreference android:key="browser.display.fullscreen"
+                      android:title="@string/pref_display_fullscreen"
+                      android:summary="@string/pref_display_fullscreen_summary"
+                      android:defaultValue="false" />
 
     <ListPreference android:key="android.not_a_preference.restoreSession3"
                     android:title="@string/pref_restore"

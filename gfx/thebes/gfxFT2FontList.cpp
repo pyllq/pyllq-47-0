@@ -967,6 +967,7 @@ gfxFT2FontList::FindFontsInOmnijar(FontNameCache *aCache)
     static const char* sJarSearchPaths[] = {
         "res/fonts/*.ttf$",
         "res/fonts/*.ttc$",
+        "res/fonts/*.otf$",
     };
     RefPtr<nsZipArchive> reader = Omnijar::GetReader(Omnijar::Type::GRE);
     for (unsigned i = 0; i < ArrayLength(sJarSearchPaths); i++) {

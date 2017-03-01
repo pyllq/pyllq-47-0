@@ -185,10 +185,11 @@ char (&ArrayLengthHelper(T (&array)[N]))[N];
  * that can't use C++ template functions and for static_assert() calls that
  * can't call ArrayLength() when it is not a C++11 constexpr function.
  */
-#ifdef __cplusplus
-#  define MOZ_ARRAY_LENGTH(array)   sizeof(mozilla::detail::ArrayLengthHelper(array))
-#else
+//#ifdef __cplusplus
+//#  define MOZ_ARRAY_LENGTH(array)   sizeof(mozilla::detail::ArrayLengthHelper(array))
+//#else
+//#  define MOZ_ARRAY_LENGTH(array)   (sizeof(array)/sizeof((array)[0]))
+//#endif
 #  define MOZ_ARRAY_LENGTH(array)   (sizeof(array)/sizeof((array)[0]))
-#endif
 
 #endif /* mozilla_ArrayUtils_h */

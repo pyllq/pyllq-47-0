@@ -260,10 +260,15 @@
 <!ENTITY pref_show_web_fonts "Show web fonts">
 <!ENTITY pref_show_web_fonts_summary2 "Download remote fonts when loading a page">
 
+<!ENTITY pref_display_fullscreen "Use full screen">
+<!ENTITY pref_display_fullscreen_summary "Full screen mode (requires restart)">
+
 <!ENTITY pref_tracking_protection_title2 "Tracking Protection">
 <!ENTITY pref_tracking_protection_summary3 "Enabled in Private Browsing">
 <!ENTITY pref_donottrack_title "Do not track">
 <!ENTITY pref_donottrack_summary "&brandShortName; will tell sites that you do not want to be tracked">
+<!ENTITY pref_geoenabled_title "Location Aware Browsing">
+<!ENTITY pref_geoenabled_summary "&brandShortName; will prompt for your permission to provide websites that request for your location">
 
 <!ENTITY pref_tracking_protection_enabled "Enabled">
 <!ENTITY pref_tracking_protection_enabled_pb "Enabled in Private Browsing">
@@ -838,3 +843,8 @@ just addresses the organization to follow, e.g. "This site is run by " -->
 <!ENTITY helper_triple_readerview_open_message "Bookmark Reader View items to read them offline.">
 <!ENTITY helper_triple_readerview_open_button "Add to Bookmarks">
 
+<!ENTITY activity_stream_topsites "Top Sites">
+<!ENTITY activity_stream_highlights "Highlights">
+<!-- LOCALIZATION NOTE (activity_stream_more): Link that opens the detailed bookmark/history lists
+     when pressed. -->
+<!ENTITY activity_stream_more "More">

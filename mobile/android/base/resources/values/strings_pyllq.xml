@@ -3,10 +3,10 @@
     <string name="pyllq_preferences_desc">settings for pinyin engine</string>
 
     <string name="firstrun_firstpage">Welcome</string>
-    <string name="firstrun_firstpage_desc">Thank you for installing Monarch Chinesebrowser 47.0\r\n\r\nPlease select your pinyin preferences in the next few pages.</string>
+    <string name="firstrun_firstpage_desc">Thank you for installing Chinesebrowser.0\r\n\r\nPlease select your pinyin preferences in the next few pages.</string>
 
     <string name="firstrun_lastpage">Let\'s Go</string>
-    <string name="firstrun_lastpage_desc">Monarch Chinesebrowser 47.0\r\n\r\nSupport can be found at facebook.com/chinesebrowser</string>
+    <string name="firstrun_lastpage_desc">Chinesebrowser\r\n\r\nSupport can be found at facebook.com/chinesebrowser</string>
 
     <string name="firstrun_whatsnew">What\'s new.</string>
 
@@ -43,6 +43,7 @@
     <string name="grade10">10 S5.1 NA / S3-4.2 EXP / S3-4 HCL</string>
     <string name="grade11">11 S3-4.1 HCL</string>
     <string name="grade12">12 Power Reader</string>
+    
     <string name="gradeA">Beginner</string>
     <string name="gradeADesc">All chinese characters are shown with pinyin</string>    
     <string name="gradeB">Junior</string>

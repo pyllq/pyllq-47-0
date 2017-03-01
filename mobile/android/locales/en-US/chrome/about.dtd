@@ -12,8 +12,9 @@
 <!ENTITY aboutPage.checkForUpdates.available2   "Download update">
 <!ENTITY aboutPage.checkForUpdates.downloading  "Downloading update…">
 <!ENTITY aboutPage.checkForUpdates.downloaded2  "Install update">
+<!ENTITY aboutPage.security.label               "Security">
 <!ENTITY aboutPage.faq.label                    "FAQ">
-<!ENTITY aboutPage.support.label                "Support">
+<!ENTITY aboutPage.support.label                "Help">
 <!ENTITY aboutPage.privacyPolicy.label          "Privacy Policy">
 <!ENTITY aboutPage.rights.label                 "Know Your Rights">
 <!ENTITY aboutPage.relNotes.label               "Release Notes">

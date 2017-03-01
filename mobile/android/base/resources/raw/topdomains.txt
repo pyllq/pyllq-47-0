@@ -29,7 +29,6 @@ nytimes.com
 msn.com
 imdb.com
 apple.com
-bankofamerica.com
 diply.com
 huffingtonpost.com
 yelp.com
