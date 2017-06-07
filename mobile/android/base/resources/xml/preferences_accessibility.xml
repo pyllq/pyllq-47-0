@@ -18,13 +18,13 @@
                       android:title="@string/pref_zoom_force_enabled"
                       android:summary="@string/pref_zoom_force_enabled_summary" />
 
-    <CheckBoxPreference android:key="browser.zoom.pyllq-clamp-images"
-                        android:title="@string/pref_zoom_pyllq_clamp_images"
-                        android:summary="@string/pref_zoom_pyllq_clamp_images_summary" />
+    <CheckBoxPreference android:key="browser.zoom.pyllq-fit-images"
+                        android:title="@string/pref_zoom_pyllq_fit_images"
+                        android:summary="@string/pref_zoom_pyllq_fit_images_summary" />
 
-    <CheckBoxPreference android:key="browser.zoom.pyllq-hide-floaties"
-                        android:title="@string/pref_zoom_pyllq_hide_floaties"
-                        android:summary="@string/pref_zoom_pyllq_hide_floaties_summary" />
+    <CheckBoxPreference android:key="browser.zoom.pyllq-hide-overlays"
+                        android:title="@string/pref_zoom_pyllq_hide_overlays"
+                        android:summary="@string/pref_zoom_pyllq_hide_overlays_summary" />
 <!--
     <SwitchPreference android:key="ui.zoomedview.enabled"
                       android:title="@string/pref_magnifying_glass_enabled"

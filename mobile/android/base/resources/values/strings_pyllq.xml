@@ -51,6 +51,11 @@
     <string name="gradeC">Senior</string>
     <string name="gradeCDesc">This grade is targetted for someone who has a strong background in Chinese</string>
 
+    <string name="pinyinHangul">Hangul</string>
+    <string name="pinyinHangulDesc">add romanized ruby text of Hangul script</string>
+    <string name="hangulNone">None</string>
+    <string name="hangulRomanize">Revised Romanization of Korean (beta)</string>
+
     <string name="firstrun_whatsnew_title">What\'s new</string>
     <string name="firstrun_whatsnew_close">Close</string>
 

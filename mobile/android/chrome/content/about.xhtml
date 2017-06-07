@@ -22,7 +22,7 @@
 </head>
 
 <body dir="&locale.dir;">
-  <div id="header">
+  <div id="header" dir="ltr">
     <div id="wordmark"></div>
 #expand <p id="version">__MOZ_APP_VERSION_DISPLAY__</p>
   </div>
@@ -55,11 +55,6 @@
 
     <ul id="aboutLinks">
       <div class="top-border"></div>
-<!--
-      <li><a id="faqURL">&aboutPage.faq.label;</a></li>
-      <li><a href="about:rights">&aboutPage.rights.label;</a></li>
-      <li><a id="creditsURL">&aboutPage.credits.label;</a></li>
--->
       <li><a id="supportURL">&aboutPage.support.label;</a></li>
       <li><a id="securityURL">&aboutPage.security.label;</a></li>
       <li><a id="privacyURL">&aboutPage.privacyPolicy.label;</a></li>
@@ -67,7 +62,6 @@
       <li><a href="about:license">&aboutPage.license.label;</a></li>
       <div class="bottom-border"></div>
     </ul>
-
 
 <center> <!-- footer -->
 <p>
@@ -87,13 +81,12 @@ https://www.mozilla.org/en-US/about/powered-by/</a>
 <span style="white-space:nowrap;">
 <div style="font-size:0.7em;float:none;display:inline-block;margin-top:16px;">
 <img src="chrome://branding/content/co-tiny.png" style="height:14px;vertical-align:middle;border-right:3px" />
-Copyright &copy;2015-2016 Brainiii.<br/>All rights reserved.
+Copyright &copy;2015-2017 Brainiii.<br/>All rights reserved.
 </div>
 </span>
 </center>
 
-
-#ifdef RELEASE_BUILD
+#ifdef RELEASE_OR_BETA
     <div id="aboutDetails">
       <p>&aboutPage.logoTrademark;</p>
     </div>

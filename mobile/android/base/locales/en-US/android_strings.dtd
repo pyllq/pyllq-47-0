@@ -156,6 +156,7 @@
 <!ENTITY overlay_share_bookmark_btn_label_already "Already bookmarked">
 <!ENTITY overlay_share_send_other "Send to other devices">
 
+<!ENTITY overlay_share_open_browser_btn_label "Open in &brandShortName;">
 <!-- Localization note (overlay_share_send_tab_btn_label) : Used on the
      share overlay menu to represent the "Send Tab" action when the user
      either has not set up Sync, or has no other devices to send a tab
@@ -260,9 +261,6 @@
 <!ENTITY pref_show_web_fonts "Show web fonts">
 <!ENTITY pref_show_web_fonts_summary2 "Download remote fonts when loading a page">
 
-<!ENTITY pref_display_fullscreen "Use full screen">
-<!ENTITY pref_display_fullscreen_summary "Full screen mode (requires restart)">
-
 <!ENTITY pref_tracking_protection_title2 "Tracking Protection">
 <!ENTITY pref_tracking_protection_summary3 "Enabled in Private Browsing">
 <!ENTITY pref_donottrack_title "Do not track">
@@ -285,7 +283,7 @@
      Instead of switching to the browser it appears as if the user stays in the third-party app.
      For more see: https://developer.chrome.com/multidevice/android/customtabs -->
 <!ENTITY pref_custom_tabs "Custom Tabs">
-<!ENTITY pref_custom_tabs_summary "Allow third-party apps to open URLs with a customized look and feel.">
+<!ENTITY pref_custom_tabs_summary3 "Allow apps to open websites using a customized version of &brandShortName;">
 
 <!-- Localization note (pref_activity_stream): Experimental feature, see https://testpilot.firefox.com/experiments/activity-stream  -->
 <!ENTITY pref_activity_stream "Activity Stream">
@@ -379,10 +377,10 @@ size. -->
 <!ENTITY pref_media_autoplay_enabled_summary "Control if websites can autoplay videos and other media content">
 <!ENTITY pref_zoom_force_enabled "Always enable zoom">
 <!ENTITY pref_zoom_force_enabled_summary "Force override so you can zoom any page">
-<!ENTITY pref_zoom_pyllq_clamp_images "Shrink images to fit">
-<!ENTITY pref_zoom_pyllq_clamp_images_summary "Make images fit to screen width on zoom">
-<!ENTITY pref_zoom_pyllq_hide_floaties "Hide floaties">
-<!ENTITY pref_zoom_pyllq_hide_floaties_summary "Hide navigational elements that may block the view on zoom. Zoom out to redisplay floaties.">
+<!ENTITY pref_zoom_pyllq_fit_images "Shrink images to fit">
+<!ENTITY pref_zoom_pyllq_fit_images_summary "Make images fit to screen width on zoom">
+<!ENTITY pref_zoom_pyllq_hide_overlays "Hide overlays">
+<!ENTITY pref_zoom_pyllq_hide_overlays_summary "Hide navigational elements that may block the view on zoom. Zoom out to redisplay overlays.">
 <!ENTITY pref_voice_input "Voice input">
 <!ENTITY pref_voice_input_summary2 "Allow voice dictation in the URL bar">
 <!ENTITY pref_qrcode_enabled "QR code reader">
@@ -396,6 +394,7 @@ size. -->
 <!ENTITY pref_import_options "Import options">
 <!ENTITY pref_import_export_bookmarks "Import/Export bookmarks">
 <!ENTITY pref_import_android_summary "Import bookmarks and history from the native browser">
+<!ENTITY pref_private_data_openTabs "Open tabs">
 <!ENTITY pref_private_data_history2 "Browsing history">
 <!ENTITY pref_private_data_searchHistory "Search history">
 <!ENTITY pref_private_data_formdata2 "Form history">
@@ -476,6 +475,7 @@ size. -->
 <!ENTITY print "Print">
 <!ENTITY find_in_page "Find in page">
 <!ENTITY desktop_mode "Request desktop site">
+<!ENTITY fullscreen_mode "Fullscreen mode">
 <!ENTITY page "Page">
 <!ENTITY about_home "Home">
 <!ENTITY tools "Tools">
@@ -546,6 +546,11 @@ size. -->
 
 <!ENTITY pref_tab_queue_title3 "Tab queue">
 <!ENTITY pref_tab_queue_summary4 "Save links until the next time you open &brandShortName;">
+
+<!-- Localization note (pref_compact_tabs): Label for setting that controls whether 1 wide column or
+     2 narrower (compact) columns are used for tabs in the tabs tray in portrait mode on phones. -->
+<!ENTITY pref_compact_tabs "Compact tabs">
+<!ENTITY pref_compact_tabs_summary2 "Arrange tabs in two columns in portrait mode">
 
 <!-- Localization note (page_removed): This string appears in a toast message when
      any page is removed frome about:home. This includes pages that are in history,
@@ -713,8 +718,8 @@ just addresses the organization to follow, e.g. "This site is run by " -->
 <!ENTITY updater_downloading_select2 "Touch to apply update once downloaded">
 <!ENTITY updater_downloading_retry2 "Touch to retry">
 
-<!ENTITY updater_apply_title2 "Update available for &brandShortName;">
-<!ENTITY updater_apply_select2 "Touch to update">
+<!ENTITY updater_apply_title3 "Update downloaded for &brandShortName;">
+<!ENTITY updater_apply_select3 "Touch to install">
 
 <!-- Localization note (updater_permission_text): This text is shown in a notification and as a snackbar
      if the app requires a runtime permission to download updates. Currently, the updater only sees
@@ -845,6 +850,19 @@ just addresses the organization to follow, e.g. "This site is run by " -->
 
 <!ENTITY activity_stream_topsites "Top Sites">
 <!ENTITY activity_stream_highlights "Highlights">
-<!-- LOCALIZATION NOTE (activity_stream_more): Link that opens the detailed bookmark/history lists
-     when pressed. -->
-<!ENTITY activity_stream_more "More">
+
+<!-- LOCALIZATION NOTE (activity_stream_highlight_label_bookmarked): This label is shown in the Activity
+Stream list for highlights sourced from th user's bookmarks. -->
+<!ENTITY activity_stream_highlight_label_bookmarked "Bookmarked">
+<!-- LOCALIZATION NOTE (activity_stream_highlight_label_visited): This label is shown in the Activity
+Stream list for highlights sourced from th user's bookmarks. -->
+<!ENTITY activity_stream_highlight_label_visited "Visited">
+
+<!-- LOCALIZATION NOTE (activity_stream_dismiss): This label is shown in the Activity Stream context menu,
+and allows hiding a URL/page from highlights or topsites. The page remains in history/bookmarks, but
+is simply hidden from the Activity Stream panel. -->
+<!ENTITY activity_stream_dismiss "Dismiss">
+<!ENTITY activity_stream_delete_history "Delete from History">
+
+<!ENTITY activity_stream_welcome_title "Welcome to your Highlights">
+<!ENTITY activity_stream_welcome_content1 "&brandShortName; now creates highlights of things you\'ve discovered on the web so you can find your way back to great articles, videos, bookmarks, and other pages.">

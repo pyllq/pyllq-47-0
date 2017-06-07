@@ -44,6 +44,8 @@
 
 #include <algorithm>
 
+#include "../../intl/pye/libpye.h"
+
 // 2^23
 #define CAIRO_COORD_MAX (Float(0x7fffff))
 
@@ -931,16 +933,18 @@ DrawTargetCairo::DrawSurfaceWithShadow(SourceSurface *aSurface,
   if (cairo_surface_get_type(sourcesurf) == CAIRO_SURFACE_TYPE_TEE) {
     blursurf = cairo_tee_surface_index(sourcesurf, 0);
     surf = cairo_tee_surface_index(sourcesurf, 1);
+  } else {
+    blursurf = sourcesurf;
+    surf = sourcesurf;
+  }
 
+  if (aSigma != 0.0f) {
     MOZ_ASSERT(cairo_surface_get_type(blursurf) == CAIRO_SURFACE_TYPE_IMAGE);
     Rect extents(0, 0, width, height);
     AlphaBoxBlur blur(extents,
                       cairo_image_surface_get_stride(blursurf),
                       aSigma, aSigma);
     blur.Blur(cairo_image_surface_get_data(blursurf));
-  } else {
-    blursurf = sourcesurf;
-    surf = sourcesurf;
   }
 
   WillChange();
@@ -951,25 +955,24 @@ DrawTargetCairo::DrawSurfaceWithShadow(SourceSurface *aSurface,
   cairo_identity_matrix(mContext);
   cairo_translate(mContext, aDest.x, aDest.y);
 
-  if (IsOperatorBoundByMask(aOperator)){
-    cairo_set_source_rgba(mContext, aColor.r, aColor.g, aColor.b, aColor.a);
-    cairo_mask_surface(mContext, blursurf, aOffset.x, aOffset.y);
+  bool needsGroup = !IsOperatorBoundByMask(aOperator);
+  if (needsGroup) {
+    cairo_push_group(mContext);
+  }
 
+  cairo_set_source_rgba(mContext, aColor.r, aColor.g, aColor.b, aColor.a);
+  cairo_mask_surface(mContext, blursurf, aOffset.x, aOffset.y);
+
+  if (blursurf != surf ||
+      aSurface->GetFormat() != SurfaceFormat::A8) {
     // Now that the shadow has been drawn, we can draw the surface on top.
     cairo_set_source_surface(mContext, surf, 0, 0);
     cairo_new_path(mContext);
     cairo_rectangle(mContext, 0, 0, width, height);
     cairo_fill(mContext);
-  } else {
-    cairo_push_group(mContext);
-      cairo_set_source_rgba(mContext, aColor.r, aColor.g, aColor.b, aColor.a);
-      cairo_mask_surface(mContext, blursurf, aOffset.x, aOffset.y);
+  }
 
-      // Now that the shadow has been drawn, we can draw the surface on top.
-      cairo_set_source_surface(mContext, surf, 0, 0);
-      cairo_new_path(mContext);
-      cairo_rectangle(mContext, 0, 0, width, height);
-      cairo_fill(mContext);
+  if (needsGroup) {
     cairo_pop_group_to_source(mContext);
     cairo_paint(mContext);
   }
@@ -1393,6 +1396,7 @@ DrawTargetCairo::FillGlyphs(ScaledFont *aFont,
     gfxDevCrash(LogReason::GlyphAllocFailedCairo) << "glyphs allocation failed";
     return;
   }
+#ifndef FT_VECTOR_SCALING
   for (uint32_t i = 0; i < aBuffer.mNumGlyphs; ++i) {
     glyphs[i].index = aBuffer.mGlyphs[i].mIndex;
     glyphs[i].x = aBuffer.mGlyphs[i].mPosition.x;
@@ -1400,6 +1404,43 @@ DrawTargetCairo::FillGlyphs(ScaledFont *aFont,
   }
 
   cairo_show_glyphs(mContext, &glyphs[0], aBuffer.mNumGlyphs);
+#else
+  cairo_matrix_t mat;
+  cairo_get_matrix(mContext, &mat);
+
+  uint32_t j = 0;
+  double lf = 1.0;
+  for (uint32_t i = 0; i < aBuffer.mNumGlyphs; ++i) {
+
+    uint32_t glyphIndex = aBuffer.mGlyphs[i].mIndex;
+    double fac = FT_FAC(glyphIndex);
+    if (j && fac != lf) {
+      cairo_matrix_t m; m = mat;
+      cairo_matrix_scale(&m,lf,lf);
+      cairo_set_matrix(mContext, &m);
+
+      cairo_show_glyphs(mContext, &glyphs[0], j);
+      j = 0;
+    }
+    lf = fac;
+
+    glyphs[j].index = glyphIndex;
+    glyphs[j].x = aBuffer.mGlyphs[i].mPosition.x/lf;
+    glyphs[j].y = aBuffer.mGlyphs[i].mPosition.y/lf;
+
+    j++;
+  }
+
+  if (j) {
+    cairo_matrix_t m; m = mat;
+    cairo_matrix_scale(&m,lf,lf);
+    cairo_set_matrix(mContext, &m);
+
+    cairo_show_glyphs(mContext, &glyphs[0], j);
+  }
+
+  cairo_set_matrix(mContext, &mat);  
+#endif
 
   if (cairo_surface_status(cairo_get_group_target(mContext))) {
     gfxDebug() << "Ending FillGlyphs with a bad surface " << cairo_surface_status(cairo_get_group_target(mContext));
@@ -1924,7 +1965,7 @@ DrawTargetCairo::CreateShadowDrawTarget(const IntSize &aSize, SurfaceFormat aFor
 
   // If we don't have a blur then we can use the RGBA mask and keep all the
   // operations in graphics memory.
-  if (aSigma == 0.0F) {
+  if (aSigma == 0.0f || aFormat == SurfaceFormat::A8) {
     RefPtr<DrawTargetCairo> target = new DrawTargetCairo();
     if (target->InitAlreadyReferenced(similar, aSize)) {
       return target.forget();

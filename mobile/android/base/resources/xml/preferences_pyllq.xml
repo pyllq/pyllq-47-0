@@ -38,4 +38,12 @@
         android:entries="@array/grades"
         android:entryValues="@array/gradesValues" />
 
+    <ListPreference
+        android:key="pyllq.hangul"
+        android:title="@string/pinyinHangul"
+        android:defaultValue="0"
+        android:summary="@string/pinyinHangulDesc"
+        android:entries="@array/pinyinHangul"
+        android:entryValues="@array/pinyinHangulValues" />
+        
 </PreferenceScreen>

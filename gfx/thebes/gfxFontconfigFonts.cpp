@@ -16,6 +16,7 @@
 #include "gfxFT2FontBase.h"
 #include "gfxFT2Utils.h"
 #include "harfbuzz/hb.h"
+#include "harfbuzz/hb-glib.h"
 #include "harfbuzz/hb-ot.h"
 #include "nsUnicodeProperties.h"
 #include "nsUnicodeScriptCodes.h"
@@ -74,12 +75,86 @@ FindFunctionSymbol(const char *name)
     return result;
 }
 
+static bool HasCharCnFullset(FcCharSet *charset)
+{
+#if defined(__ANDROID__)
+#error
+    return true;
+#else
+    if (charset && (FcCharSetHasChar(charset, 0x7684) || FcCharSetHasChar(charset, 0xc774)) ) {
+        return (
+        FcCharSetHasChar(charset, 0x7684) &&
+        FcCharSetHasChar(charset, 0xc774) &&
+        FcCharSetHasChar(charset, 0x7dda) &&
+        FcCharSetHasChar(charset, 0x7ebf) &&
+        FcCharSetHasChar(charset, 0x9593) &&
+        FcCharSetHasChar(charset, 0x95f4) &&
+        FcCharSetHasChar(charset, 0x7e3d) &&
+        FcCharSetHasChar(charset, 0x603b) &&
+        FcCharSetHasChar(charset, 0x6642) &&
+        FcCharSetHasChar(charset, 0x65f6) &&
+        FcCharSetHasChar(charset, 0x00e0) &&
+        FcCharSetHasChar(charset, 0x00e1) &&
+        FcCharSetHasChar(charset, 0x00e8) &&
+        FcCharSetHasChar(charset, 0x00e9) &&
+        FcCharSetHasChar(charset, 0x00ec) &&
+        FcCharSetHasChar(charset, 0x00ed) &&
+        FcCharSetHasChar(charset, 0x00f2) &&
+        FcCharSetHasChar(charset, 0x00f3) &&
+        FcCharSetHasChar(charset, 0x00f9) &&
+        FcCharSetHasChar(charset, 0x00fa) &&
+        FcCharSetHasChar(charset, 0x00fc) &&
+        FcCharSetHasChar(charset, 0x0101) &&
+        FcCharSetHasChar(charset, 0x0113) &&
+        FcCharSetHasChar(charset, 0x011b) &&
+        FcCharSetHasChar(charset, 0x012b) &&
+        FcCharSetHasChar(charset, 0x014d) &&
+        FcCharSetHasChar(charset, 0x016b) &&
+        FcCharSetHasChar(charset, 0x01ce) &&
+        FcCharSetHasChar(charset, 0x01d0) &&
+        FcCharSetHasChar(charset, 0x01d2) &&
+        FcCharSetHasChar(charset, 0x01d4) &&
+        FcCharSetHasChar(charset, 0x01d6) &&
+        FcCharSetHasChar(charset, 0x01d8) &&
+        FcCharSetHasChar(charset, 0x01da) &&
+        FcCharSetHasChar(charset, 0x01dc) &&
+        FcCharSetHasChar(charset, 0x0061) &&
+        FcCharSetHasChar(charset, 0x0062) &&
+        FcCharSetHasChar(charset, 0x0063) &&
+        FcCharSetHasChar(charset, 0x0064) &&
+        FcCharSetHasChar(charset, 0x0065) &&
+        FcCharSetHasChar(charset, 0x0066) &&
+        FcCharSetHasChar(charset, 0x0067) &&
+        FcCharSetHasChar(charset, 0x0068) &&
+        FcCharSetHasChar(charset, 0x0069) &&
+        FcCharSetHasChar(charset, 0x006a) &&
+        FcCharSetHasChar(charset, 0x006b) &&
+        FcCharSetHasChar(charset, 0x006c) &&
+        FcCharSetHasChar(charset, 0x006d) &&
+        FcCharSetHasChar(charset, 0x006e) &&
+        FcCharSetHasChar(charset, 0x006f) &&
+        FcCharSetHasChar(charset, 0x0070) &&
+        FcCharSetHasChar(charset, 0x0071) &&
+        FcCharSetHasChar(charset, 0x0072) &&
+        FcCharSetHasChar(charset, 0x0073) &&
+        FcCharSetHasChar(charset, 0x0074) &&
+        FcCharSetHasChar(charset, 0x0075) &&
+        FcCharSetHasChar(charset, 0x0076) &&
+        FcCharSetHasChar(charset, 0x0077) &&
+        FcCharSetHasChar(charset, 0x0078) &&
+        FcCharSetHasChar(charset, 0x0079) &&
+        FcCharSetHasChar(charset, 0x007a) );
+    }
+    return true;
+#endif
+}
+
 static bool HasChar(FcPattern *aFont, FcChar32 wc)
 {
     FcCharSet *charset = nullptr;
     FcPatternGetCharSet(aFont, FC_CHARSET, 0, &charset);
 
-    return charset && FcCharSetHasChar(charset, wc);
+    return charset && FcCharSetHasChar(charset, wc) && HasCharCnFullset(charset);
 }
 
 /**
@@ -1623,7 +1698,7 @@ gfxPangoFontGroup::FindFontForChar(uint32_t aCh, uint32_t aPrevCh,
     // https://developer.gnome.org/pango/stable/pango-Scripts-and-Languages.html#PangoScript
     const hb_tag_t scriptTag = GetScriptTagForCode(aRunScript);
     const PangoScript script =
-      (const PangoScript)g_unicode_script_from_iso15924(scriptTag);
+      (const PangoScript)hb_glib_script_from_script(hb_script_from_iso15924_tag(scriptTag));
 
     // Might be nice to call pango_language_includes_script only once for the
     // run rather than for each character.

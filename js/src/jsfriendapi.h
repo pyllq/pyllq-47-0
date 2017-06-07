@@ -121,8 +121,10 @@ enum {
     JS_TELEMETRY_GC_SLOW_PHASE,
     JS_TELEMETRY_GC_MMU_50,
     JS_TELEMETRY_GC_RESET,
+    JS_TELEMETRY_GC_RESET_REASON,
     JS_TELEMETRY_GC_INCREMENTAL_DISABLED,
     JS_TELEMETRY_GC_NON_INCREMENTAL,
+    JS_TELEMETRY_GC_NON_INCREMENTAL_REASON,
     JS_TELEMETRY_GC_SCC_SWEEP_TOTAL_MS,
     JS_TELEMETRY_GC_SCC_SWEEP_MAX_PAUSE_MS,
     JS_TELEMETRY_GC_MINOR_REASON,
@@ -273,6 +275,14 @@ FormatStackDump(JSContext* cx, char* buf, bool showArgs, bool showLocals, bool s
 extern JS_FRIEND_API(bool)
 ForceLexicalInitialization(JSContext *cx, HandleObject obj);
 
+/**
+ * Whether we are poisoning unused/released data for error detection. Governed
+ * by the JS_GC_POISONING #ifdef as well as the $JSGC_DISABLE_POISONING
+ * environment variable.
+ */
+extern JS_FRIEND_API(int)
+IsGCPoisoning();
+
 } // namespace JS
 
 /**
@@ -362,61 +372,8 @@ extern JS_FRIEND_DATA(const js::ObjectOps) ProxyObjectOps;
 #define PROXY_CLASS_DEF(name, flags) \
   PROXY_CLASS_WITH_EXT(name, flags, &js::ProxyClassExtension)
 
-/*
- * Proxy stubs, similar to JS_*Stub, for embedder proxy class definitions.
- *
- * NB: Should not be called directly.
- */
-
-extern JS_FRIEND_API(bool)
-proxy_LookupProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::MutableHandleObject objp,
-                    JS::MutableHandle<Shape*> propp);
-extern JS_FRIEND_API(bool)
-proxy_DefineProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id,
-                     JS::Handle<JS::PropertyDescriptor> desc,
-                     JS::ObjectOpResult& result);
-extern JS_FRIEND_API(bool)
-proxy_HasProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool* foundp);
-extern JS_FRIEND_API(bool)
-proxy_GetProperty(JSContext* cx, JS::HandleObject obj, JS::HandleValue receiver, JS::HandleId id,
-                  JS::MutableHandleValue vp);
-extern JS_FRIEND_API(bool)
-proxy_SetProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::HandleValue bp,
-                  JS::HandleValue receiver, JS::ObjectOpResult& result);
-extern JS_FRIEND_API(bool)
-proxy_GetOwnPropertyDescriptor(JSContext* cx, JS::HandleObject obj, JS::HandleId id,
-                               JS::MutableHandle<JS::PropertyDescriptor> desc);
-extern JS_FRIEND_API(bool)
-proxy_DeleteProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id,
-                     JS::ObjectOpResult& result);
-
-extern JS_FRIEND_API(void)
-proxy_Trace(JSTracer* trc, JSObject* obj);
 extern JS_FRIEND_API(JSObject*)
 proxy_WeakmapKeyDelegate(JSObject* obj);
-extern JS_FRIEND_API(bool)
-proxy_Convert(JSContext* cx, JS::HandleObject proxy, JSType hint, JS::MutableHandleValue vp);
-extern JS_FRIEND_API(void)
-proxy_Finalize(FreeOp* fop, JSObject* obj);
-extern JS_FRIEND_API(void)
-proxy_ObjectMoved(JSObject* obj, const JSObject* old);
-extern JS_FRIEND_API(bool)
-proxy_HasInstance(JSContext* cx, JS::HandleObject proxy, JS::MutableHandleValue v, bool* bp);
-extern JS_FRIEND_API(bool)
-proxy_Call(JSContext* cx, unsigned argc, JS::Value* vp);
-extern JS_FRIEND_API(bool)
-proxy_Construct(JSContext* cx, unsigned argc, JS::Value* vp);
-extern JS_FRIEND_API(JSObject*)
-proxy_innerObject(JSObject* obj);
-extern JS_FRIEND_API(bool)
-proxy_Watch(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::HandleObject callable);
-extern JS_FRIEND_API(bool)
-proxy_Unwatch(JSContext* cx, JS::HandleObject obj, JS::HandleId id);
-extern JS_FRIEND_API(bool)
-proxy_GetElements(JSContext* cx, JS::HandleObject proxy, uint32_t begin, uint32_t end,
-                  ElementAdder* adder);
-extern JS_FRIEND_API(JSString*)
-proxy_FunToString(JSContext* cx, JS::HandleObject proxy, unsigned indent);
 
 /**
  * A class of objects that return source code on demand.
@@ -523,10 +480,17 @@ extern JS_FRIEND_API(JSObject*)
 GetWeakmapKeyDelegate(JSObject* key);
 
 /**
- * Invoke cellCallback on every gray JS_OBJECT in the given zone.
+ * Invoke cellCallback on every gray JSObject in the given zone.
  */
 extern JS_FRIEND_API(void)
 IterateGrayObjects(JS::Zone* zone, GCThingCallback cellCallback, void* data);
+
+/**
+ * Invoke cellCallback on every gray JSObject in the given zone while cycle
+ * collection is in progress.
+ */
+extern JS_FRIEND_API(void)
+IterateGrayObjectsUnderCC(JS::Zone* zone, GCThingCallback cellCallback, void* data);
 
 #ifdef JS_HAS_CTYPES
 extern JS_FRIEND_API(size_t)
@@ -635,17 +599,6 @@ GetObjectJSClass(JSObject* obj)
 JS_FRIEND_API(const Class*)
 ProtoKeyToClass(JSProtoKey key);
 
-// Returns true if the standard class identified by |key| inherits from
-// another standard class (in addition to Object) along its proto chain.
-//
-// In practice, this only returns true for Error subtypes.
-inline bool
-StandardClassIsDependent(JSProtoKey key)
-{
-    const Class* clasp = ProtoKeyToClass(key);
-    return clasp && clasp->specDefined() && clasp->specDependent();
-}
-
 // Returns the key for the class inherited by a given standard class (that
 // is to say, the prototype of this standard class's prototype).
 //
@@ -654,15 +607,15 @@ StandardClassIsDependent(JSProtoKey key)
 // cached proto key, except in cases where multiple JSProtoKeys share a
 // JSClass.
 inline JSProtoKey
-ParentKeyForStandardClass(JSProtoKey key)
+InheritanceProtoKeyForStandardClass(JSProtoKey key)
 {
     // [Object] has nothing to inherit from.
     if (key == JSProto_Object)
         return JSProto_Null;
 
-    // If we're dependent, return the key of the class we depend on.
-    if (StandardClassIsDependent(key))
-        return ProtoKeyToClass(key)->specParentKey();
+    // If we're ClassSpec defined return the proto key from that
+    if (ProtoKeyToClass(key)->specDefined())
+        return ProtoKeyToClass(key)->specInheritanceProtoKey();
 
     // Otherwise, we inherit [Object].
     return JSProto_Object;
@@ -763,7 +716,7 @@ SetReservedSlot(JSObject* obj, size_t slot, const JS::Value& value)
 {
     MOZ_ASSERT(slot < JSCLASS_RESERVED_SLOTS(GetObjectClass(obj)));
     shadow::Object* sobj = reinterpret_cast<shadow::Object*>(obj);
-    if (sobj->slotRef(slot).isMarkable() || value.isMarkable())
+    if (sobj->slotRef(slot).isGCThing() || value.isGCThing())
         SetReservedOrProxyPrivateSlotWithBarrier(obj, slot, value);
     else
         sobj->slotRef(slot) = value;
@@ -1160,11 +1113,16 @@ class RegExpGuard;
 extern JS_FRIEND_API(bool)
 RegExpToSharedNonInline(JSContext* cx, JS::HandleObject regexp, RegExpGuard* shared);
 
-/* Implemented in jswrapper.cpp. */
+/* Implemented in CrossCompartmentWrapper.cpp. */
 typedef enum NukeReferencesToWindow {
     NukeWindowReferences,
     DontNukeWindowReferences
 } NukeReferencesToWindow;
+
+typedef enum NukeReferencesFromTarget {
+    NukeAllReferences,
+    NukeIncomingReferences,
+} NukeReferencesFromTarget;
 
 /*
  * These filters are designed to be ephemeral stack classes, and thus don't
@@ -1208,7 +1166,8 @@ extern JS_FRIEND_API(bool)
 NukeCrossCompartmentWrappers(JSContext* cx,
                              const CompartmentFilter& sourceFilter,
                              const CompartmentFilter& targetFilter,
-                             NukeReferencesToWindow nukeReferencesToWindow);
+                             NukeReferencesToWindow nukeReferencesToWindow,
+                             NukeReferencesFromTarget nukeReferencesFromTarget);
 
 /* Specify information about DOMProxy proxies in the DOM, for use by ICs. */
 
@@ -1443,9 +1402,9 @@ struct MOZ_STACK_CLASS JS_FRIEND_API(ErrorReport)
         return reportp;
     }
 
-    const char* message()
+    const JS::ConstUTF8CharsZ toStringResult()
     {
-        return message_;
+        return toStringResult_;
     }
 
   private:
@@ -1455,8 +1414,8 @@ struct MOZ_STACK_CLASS JS_FRIEND_API(ErrorReport)
     //
     // Returns false if we fail to actually populate the ErrorReport
     // for some reason (probably out of memory).
-    bool populateUncaughtExceptionReport(JSContext* cx, ...);
-    bool populateUncaughtExceptionReportVA(JSContext* cx, va_list ap);
+    bool populateUncaughtExceptionReportUTF8(JSContext* cx, ...);
+    bool populateUncaughtExceptionReportUTF8VA(JSContext* cx, va_list ap);
 
     // Reports exceptions from add-on scopes to telementry.
     void ReportAddonExceptionToTelementry(JSContext* cx);
@@ -1464,15 +1423,8 @@ struct MOZ_STACK_CLASS JS_FRIEND_API(ErrorReport)
     // We may have a provided JSErrorReport, so need a way to represent that.
     JSErrorReport* reportp;
 
-    // And we may have a message.
-    const char* message_;
-
     // Or we may need to synthesize a JSErrorReport one of our own.
     JSErrorReport ownedReport;
-
-    // Or a message of our own.  If this is non-null, we need to clean up both
-    // it and ownedReport.
-    char* ownedMessage;
 
     // And we have a string to maybe keep alive that has pointers into
     // it from ownedReport.
@@ -1484,14 +1436,14 @@ struct MOZ_STACK_CLASS JS_FRIEND_API(ErrorReport)
     // And we need to root our exception value.
     JS::RootedObject exnObject;
 
-    // And possibly some byte storage for our message_.
-    JSAutoByteString bytesStorage;
-
     // And for our filename.
     JSAutoByteString filename;
 
-    // True if we need to free message_ and the stuff in ownedReport
-    bool ownsMessageAndReport;
+    // We may have a result of error.toString().
+    // FIXME: We should not call error.toString(), since it could have side
+    //        effect (see bug 633623).
+    JS::ConstUTF8CharsZ toStringResult_;
+    JSAutoByteString toStringResultBytesStorage;
 };
 
 /* Implemented in vm/StructuredClone.cpp. */
@@ -1987,7 +1939,7 @@ JS_ArrayBufferHasData(JSObject* obj);
  * that it would pass such a test: it is an ArrayBuffer or a wrapper of an
  * ArrayBuffer, and the unwrapping will succeed.
  *
- * *isSharedMemory will be set to false, the argument is present to simplify
+ * |*isSharedMemory| will be set to false, the argument is present to simplify
  * its use from code that also interacts with SharedArrayBuffer.
  */
 extern JS_FRIEND_API(uint8_t*)
@@ -2057,7 +2009,7 @@ JS_GetArrayBufferViewByteLength(JSObject* obj);
  * pass such a test: it is a typed array or a wrapper of a typed array, and the
  * unwrapping will succeed.
  *
- * *isSharedMemory will be set to true if the typed array maps a
+ * |*isSharedMemory| will be set to true if the typed array maps a
  * SharedArrayBuffer, otherwise to false.
  */
 
@@ -2119,14 +2071,14 @@ JS_FRIEND_API(bool)
 JS_IsDataViewObject(JSObject* obj);
 
 /**
- * Create a new DataView using the given ArrayBuffer for storage. The given
- * buffer must be an ArrayBuffer (or a cross-compartment wrapper of an
- * ArrayBuffer), and the offset and length must fit within the bounds of the
- * arrayBuffer. Currently, nullptr will be returned and an exception will be
- * thrown if these conditions do not hold, but do not depend on that behavior.
+ * Create a new DataView using the given buffer for storage. The given buffer
+ * must be an ArrayBuffer or SharedArrayBuffer (or a cross-compartment wrapper
+ * of either type), and the offset and length must fit within the bounds of the
+ * buffer. Currently, nullptr will be returned and an exception will be thrown
+ * if these conditions do not hold, but do not depend on that behavior.
  */
 JS_FRIEND_API(JSObject*)
-JS_NewDataView(JSContext* cx, JS::HandleObject arrayBuffer, uint32_t byteOffset, int32_t byteLength);
+JS_NewDataView(JSContext* cx, JS::HandleObject buffer, uint32_t byteOffset, int32_t byteLength);
 
 /**
  * Return the byte offset of a data view into its array buffer. |obj| must be a
@@ -2157,9 +2109,12 @@ JS_GetDataViewByteLength(JSObject* obj);
  * it would pass such a test: it is a data view or a wrapper of a data view,
  * and the unwrapping will succeed. If cx is nullptr, then DEBUG builds may be
  * unable to assert when unwrapping should be disallowed.
+ *
+ * |*isSharedMemory| will be set to true if the DataView maps a SharedArrayBuffer,
+ * otherwise to false.
  */
 JS_FRIEND_API(void*)
-JS_GetDataViewData(JSObject* obj, const JS::AutoCheckCannotGC&);
+JS_GetDataViewData(JSObject* obj, bool* isSharedMemory, const JS::AutoCheckCannotGC&);
 
 namespace js {
 
@@ -2779,9 +2734,6 @@ SetPropertyIgnoringNamedGetter(JSContext* cx, JS::HandleObject obj, JS::HandleId
                                JS::Handle<JS::PropertyDescriptor> ownDesc,
                                JS::ObjectOpResult& result);
 
-JS_FRIEND_API(void)
-ReportErrorWithId(JSContext* cx, const char* msg, JS::HandleId id);
-
 // This function is for one specific use case, please don't use this for anything else!
 extern JS_FRIEND_API(bool)
 ExecuteInGlobalAndReturnScope(JSContext* cx, JS::HandleObject obj, JS::HandleScript script,
@@ -2912,6 +2864,23 @@ ToWindowProxyIfWindow(JSObject* obj);
  */
 extern JS_FRIEND_API(JSObject*)
 ToWindowIfWindowProxy(JSObject* obj);
+
+// Create and add the Intl.PluralRules constructor function to the provided
+// object.  This function throws if called more than once per realm/global
+// object.
+extern bool
+AddPluralRulesConstructor(JSContext* cx, JS::Handle<JSObject*> intl);
+
+class MOZ_STACK_CLASS JS_FRIEND_API(AutoAssertNoContentJS)
+{
+  public:
+    explicit AutoAssertNoContentJS(JSContext* cx);
+    ~AutoAssertNoContentJS();
+
+  private:
+    JSContext* context_;
+    bool prevAllowContentJS_;
+};
 
 } /* namespace js */
 

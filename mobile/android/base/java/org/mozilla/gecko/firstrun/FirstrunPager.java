@@ -65,17 +65,11 @@ public class FirstrunPager extends ViewPager {
     public void load(Context appContext, FragmentManager fm, final FirstrunAnimationContainer.OnFinishListener onFinishListener) {
         final List<FirstrunPagerConfig.FirstrunPanelConfig> panels;
 
-        panels = FirstrunPagerConfig.getDefault(appContext);
-//        if (Restrictions.isUserRestricted(context)) {
-//            panels = FirstrunPagerConfig.getRestricted();
-//        } else {
-//            panels = FirstrunPagerConfig.getDefault(appContext);
-
-//            if (panels.size() == 1) {
-//                mTabStrip.setVisibility(GONE);
-//            }
-//        }
-
+        //if (Restrictions.isRestrictedProfile(context)) {
+        //    panels = FirstrunPagerConfig.getRestricted();
+        //} else {
+            panels = FirstrunPagerConfig.getDefault(appContext);
+        //}
 
         setAdapter(new ViewPagerAdapter(fm, panels));
         this.pagerNavigation = new FirstrunPanel.PagerNavigation() {

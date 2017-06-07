@@ -45,3 +45,4 @@ testing, may be buggy. Firefox nightlies, for example, can be found at:
     https://archive.mozilla.org/pub/firefox/nightly/latest-mozilla-central/
             - or -
     http://nightly.mozilla.org/
+

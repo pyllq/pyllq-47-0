@@ -38,8 +38,6 @@
 #endif
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
-
-
 #ifdef MOZ_ANDROID_DOWNLOADS_INTEGRATION
     <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
 #endif

@@ -45,5 +45,13 @@
     <item>12</item>
     </string-array>
 
+    <string-array name="pinyinHangul">
+        <item>@string/hangulNone</item>
+        <item>@string/hangulRomanize</item>
+    </string-array>
+    <string-array name="pinyinHangulValues">
+        <item>0</item>
+        <item>32</item>
+    </string-array>
 
 </resources>

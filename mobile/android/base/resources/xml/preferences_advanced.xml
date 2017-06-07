@@ -26,11 +26,6 @@
                     android:entryValues="@array/pref_update_autodownload_values"
                     android:persistent="false" />
 
-    <SwitchPreference android:key="browser.display.fullscreen"
-                      android:title="@string/pref_display_fullscreen"
-                      android:summary="@string/pref_display_fullscreen_summary"
-                      android:defaultValue="false" />
-
     <ListPreference android:key="android.not_a_preference.restoreSession3"
                     android:title="@string/pref_restore"
                     android:defaultValue="quit"

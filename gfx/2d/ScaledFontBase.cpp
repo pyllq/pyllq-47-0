@@ -80,11 +80,11 @@ ScaledFontBase::GetSkiaPathForGlyphs(const GlyphBuffer &aBuffer)
   MOZ_ASSERT(typeFace);
 
   SkPaint paint;
-  paint.setTypeface(typeFace);
+  paint.setTypeface(sk_ref_sp(typeFace));
   paint.setTextEncoding(SkPaint::kGlyphID_TextEncoding);
   paint.setTextSize(SkFloatToScalar(mSize));
 
-  std::vector<uint16_t> indices;
+  std::vector<uint32_t> indices;
   std::vector<SkPoint> offsets;
   indices.resize(aBuffer.mNumGlyphs);
   offsets.resize(aBuffer.mNumGlyphs);

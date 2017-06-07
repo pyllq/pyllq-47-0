@@ -57,6 +57,10 @@
           android:title="@string/desktop_mode"
           android:checkable="true" />
 
+    <item android:id="@+id/fullscreen_mode"
+          android:title="@string/fullscreen_mode"
+          android:checkable="true" />
+
     <item android:id="@+id/page"
           android:title="@string/page">
 

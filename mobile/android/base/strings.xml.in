@@ -119,6 +119,7 @@
   <string name="print">&print;</string>
   <string name="find_in_page">&find_in_page;</string>
   <string name="desktop_mode">&desktop_mode;</string>
+  <string name="fullscreen_mode">&fullscreen_mode;</string>
   <string name="page">&page;</string>
   <string name="tools">&tools;</string>
 
@@ -132,6 +133,7 @@
   <string name="media_pause">&media_pause;</string>
   <string name="media_stop">&media_stop;</string>
 
+  <string name="overlay_share_open_browser_btn_label">&overlay_share_open_browser_btn_label;</string>
   <string name="overlay_share_send_other">&overlay_share_send_other;</string>
   <string name="overlay_share_label">&overlay_share_label;</string>
   <string name="overlay_share_bookmark_btn_label">&overlay_share_bookmark_btn_label;</string>
@@ -223,9 +225,6 @@
   <string name="pref_show_web_fonts">&pref_show_web_fonts;</string>
   <string name="pref_show_web_fonts_summary">&pref_show_web_fonts_summary2;</string>
 
-  <string name="pref_display_fullscreen">&pref_display_fullscreen;</string>
-  <string name="pref_display_fullscreen_summary">&pref_display_fullscreen_summary;</string>
-
   <string name="pref_tracking_protection_title">&pref_tracking_protection_title2;</string>
   <string name="pref_tracking_protection_summary">&pref_tracking_protection_summary3;</string>
   <string name="pref_donottrack_title">&pref_donottrack_title;</string>
@@ -243,7 +242,7 @@
   <string name="pref_category_experimental">&pref_category_experimental;</string>
 
   <string name="pref_custom_tabs">&pref_custom_tabs;</string>
-  <string name="pref_custom_tabs_summary">&pref_custom_tabs_summary;</string>
+  <string name="pref_custom_tabs_summary">&pref_custom_tabs_summary3;</string>
 
   <string name="pref_activity_stream">&pref_activity_stream;</string>
   <string name="pref_activity_stream_summary">&pref_activity_stream_summary;</string>
@@ -273,10 +272,10 @@
   <string name="pref_media_autoplay_enabled_summary">&pref_media_autoplay_enabled_summary;</string>
   <string name="pref_zoom_force_enabled">&pref_zoom_force_enabled;</string>
   <string name="pref_zoom_force_enabled_summary">&pref_zoom_force_enabled_summary;</string>
-  <string name="pref_zoom_pyllq_clamp_images">&pref_zoom_pyllq_clamp_images;</string>
-  <string name="pref_zoom_pyllq_clamp_images_summary">&pref_zoom_pyllq_clamp_images_summary;</string>
-  <string name="pref_zoom_pyllq_hide_floaties">&pref_zoom_pyllq_hide_floaties;</string>
-  <string name="pref_zoom_pyllq_hide_floaties_summary">&pref_zoom_pyllq_hide_floaties_summary;</string>
+  <string name="pref_zoom_pyllq_fit_images">&pref_zoom_pyllq_fit_images;</string>
+  <string name="pref_zoom_pyllq_fit_images_summary">&pref_zoom_pyllq_fit_images_summary;</string>
+  <string name="pref_zoom_pyllq_hide_overlays">&pref_zoom_pyllq_hide_overlays;</string>
+  <string name="pref_zoom_pyllq_hide_overlays_summary">&pref_zoom_pyllq_hide_overlays_summary;</string>
   <string name="pref_voice_input">&pref_voice_input;</string>
   <string name="pref_voice_input_summary">&pref_voice_input_summary2;</string>
   <string name="pref_qrcode_enabled">&pref_qrcode_enabled;</string>
@@ -288,6 +287,7 @@
   <string name="pref_sync_summary">&pref_sync_summary2;</string>
   <string name="pref_search_suggestions">&pref_search_suggestions;</string>
   <string name="pref_history_search_suggestions">&pref_history_search_suggestions;</string>
+  <string name="pref_private_data_openTabs">&pref_private_data_openTabs;</string>
   <string name="pref_private_data_history2">&pref_private_data_history2;</string>
   <string name="pref_private_data_searchHistory">&pref_private_data_searchHistory;</string>
   <string name="pref_private_data_formdata2">&pref_private_data_formdata2;</string>
@@ -439,6 +439,9 @@
   <string name="pref_scroll_title_bar2">&pref_scroll_title_bar2;</string>
   <string name="pref_scroll_title_bar_summary">&pref_scroll_title_bar_summary2;</string>
 
+  <string name="pref_compact_tabs">&pref_compact_tabs;</string>
+  <string name="pref_compact_tabs_summary">&pref_compact_tabs_summary2;</string>
+
   <string name="page_removed">&page_removed;</string>
 
   <string name="bookmark_edit_title">&bookmark_edit_title;</string>
@@ -554,8 +557,8 @@
   <string name="updater_downloading_select">&updater_downloading_select2;</string>
   <string name="updater_downloading_retry">&updater_downloading_retry2;</string>
 
-  <string name="updater_apply_title">&updater_apply_title2;</string>
-  <string name="updater_apply_select">&updater_apply_select2;</string>
+  <string name="updater_apply_title">&updater_apply_title3;</string>
+  <string name="updater_apply_select">&updater_apply_select3;</string>
 
   <string name="updater_permission_title">&brandShortName;</string>
   <string name="updater_permission_text">&updater_permission_text;</string>
@@ -642,5 +645,11 @@
 
   <string name="activity_stream_topsites">&activity_stream_topsites;</string>
   <string name="activity_stream_highlights">&activity_stream_highlights;</string>
-  <string name="activity_stream_more">&activity_stream_more;</string>
+  <string name="activity_stream_highlight_label_bookmarked">&activity_stream_highlight_label_bookmarked;</string>
+  <string name="activity_stream_highlight_label_visited">&activity_stream_highlight_label_visited;</string>
+  <string name="activity_stream_dismiss">&activity_stream_dismiss;</string>
+  <string name="activity_stream_delete_history">&activity_stream_delete_history;</string>
+
+  <string name="activity_stream_welcome_title">&activity_stream_welcome_title;</string>
+  <string name="activity_stream_welcome_content">&activity_stream_welcome_content1;</string>
 </resources>
