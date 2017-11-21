@@ -12,8 +12,8 @@
 
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
-#include "mozilla/dom/Dispatcher.h"
 #include "mozilla/dom/EventTarget.h"
+#include "mozilla/TaskCategory.h"
 #include "js/TypeDecls.h"
 #include "nsRefPtrHashtable.h"
 
@@ -32,6 +32,7 @@ class nsIDocument;
 class nsIIdleObserver;
 class nsIPrincipal;
 class nsIScriptTimeoutHandler;
+class nsISerialEventTarget;
 class nsIURI;
 class nsPIDOMWindowInner;
 class nsPIDOMWindowOuter;
@@ -90,6 +91,9 @@ enum class FullscreenReason
 
 namespace mozilla {
 namespace dom {
+
+class Location;
+
 // The states in this enum represent the different possible outcomes which the
 // window could be experiencing of loading a document with the
 // Large-Allocation header. The NONE case represents the case where no
@@ -175,11 +179,7 @@ public:
     mIsActive = aActive;
   }
 
-  virtual void SetIsBackground(bool aIsBackground)
-  {
-    MOZ_ASSERT(IsOuterWindow());
-    mIsBackground = aIsBackground;
-  }
+  virtual void SetIsBackground(bool aIsBackground) = 0;
 
   mozilla::dom::EventTarget* GetChromeEventHandler() const
   {
@@ -312,7 +312,12 @@ public:
   virtual void SetOpenerWindow(nsPIDOMWindowOuter* aOpener,
                                bool aOriginalOpener) = 0;
 
-  virtual void EnsureSizeUpToDate() = 0;
+  /**
+   * Ensure the size and position of this window are up-to-date by doing
+   * a layout flush in the parent (which will in turn, do a layout flush
+   * in its parent, etc.).
+   */
+  virtual void EnsureSizeAndPositionUpToDate() = 0;
 
   /**
    * Callback for notifying a window about a modal dialog being
@@ -358,6 +363,24 @@ public:
       mMayHaveTouchEventListener = true;
       MaybeUpdateTouchState();
     }
+  }
+
+  /**
+   * Call this to indicate that some node (this window, its document,
+   * or content in that document) has a selectionchange event listener.
+   */
+  void SetHasSelectionChangeEventListeners()
+  {
+    mMayHaveSelectionChangeEventListener = true;
+  }
+
+  /**
+   * Call this to check whether some node (this window, its document,
+   * or content in that document) has a selectionchange event listener.
+   */
+  bool HasSelectionChangeEventListeners()
+  {
+    return mMayHaveSelectionChangeEventListener;
   }
 
   /**
@@ -466,7 +489,7 @@ public:
    */
   virtual void DisableDeviceSensor(uint32_t aType) = 0;
 
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
   virtual void EnableOrientationChangeListener() = 0;
   virtual void DisableOrientationChangeListener() = 0;
 #endif
@@ -564,7 +587,7 @@ public:
 
   virtual nsIDOMScreen* GetScreen() = 0;
   virtual nsIDOMNavigator* GetNavigator() = 0;
-  virtual nsIDOMLocation* GetLocation() = 0;
+  virtual mozilla::dom::Location* GetLocation() = 0;
   virtual nsresult GetPrompter(nsIPrompt** aPrompt) = 0;
   virtual nsresult GetControllers(nsIControllers** aControllers) = 0;
   virtual already_AddRefed<nsISelection> GetSelection() = 0;
@@ -604,8 +627,8 @@ public:
 
   mozilla::dom::DocGroup* GetDocGroup() const;
 
-  virtual nsIEventTarget*
-  EventTargetFor(mozilla::dom::TaskCategory aCategory) const = 0;
+  virtual nsISerialEventTarget*
+  EventTargetFor(mozilla::TaskCategory aCategory) const = 0;
 
 protected:
   // The nsPIDOMWindow constructor. The aOuterWindow argument should
@@ -662,6 +685,7 @@ protected:
   bool                   mIsInnerWindow;
   bool                   mMayHavePaintEventListener;
   bool                   mMayHaveTouchEventListener;
+  bool                   mMayHaveSelectionChangeEventListener;
   bool                   mMayHaveMouseEnterLeaveEventListener;
   bool                   mMayHavePointerEnterLeaveEventListener;
 
@@ -736,6 +760,18 @@ protected:
   bool mServiceWorkersTestingEnabled;
 
   mozilla::dom::LargeAllocStatus mLargeAllocStatus; // Outer window only
+
+  // mTopInnerWindow is only used on inner windows for tab-wise check by timeout
+  // throttling. It could be null.
+  nsCOMPtr<nsPIDOMWindowInner> mTopInnerWindow;
+
+  // The evidence that we have tried to cache mTopInnerWindow only once from
+  // SetNewDocument(). Note: We need this extra flag because mTopInnerWindow
+  // could be null and we don't want it to be set multiple times.
+  bool mHasTriedToCacheTopInnerWindow;
+
+  // The number of active IndexedDB databases. Inner window only.
+  uint32_t mNumOfIndexedDBDatabases;
 };
 
 #define NS_PIDOMWINDOWINNER_IID \
@@ -880,9 +916,24 @@ public:
 
   bool IsPlayingAudio();
 
+  bool IsDocumentLoaded() const;
+
   mozilla::dom::TimeoutManager& TimeoutManager();
 
   bool IsRunningTimeout();
+
+  // To cache top inner-window if available after constructed for tab-wised
+  // indexedDB counters.
+  void TryToCacheTopInnerWindow();
+
+  // Increase/Decrease the number of active IndexedDB transactions/databases for
+  // the decision making of TabGroup scheduling and timeout-throttling.
+  void UpdateActiveIndexedDBTransactionCount(int32_t aDelta);
+  void UpdateActiveIndexedDBDatabaseCount(int32_t aDelta);
+
+  // Return true if there is any active IndexedDB databases which could block
+  // timeout-throttling.
+  bool HasActiveIndexedDBDatabases();
 
 protected:
   void CreatePerformanceObjectIfNeeded();
@@ -898,6 +949,7 @@ protected:
   void RefreshMediaElementsVolume();
   void RefreshMediaElementsSuspend(SuspendTypes aSuspend);
   bool IsDisposableSuspend(SuspendTypes aSuspend) const;
+  void MaybeNotifyMediaResumedFromBlock(SuspendTypes aSuspend);
 
 public:
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_PIDOMWINDOWOUTER_IID)
@@ -963,12 +1015,17 @@ public:
   float GetAudioVolume() const;
   nsresult SetAudioVolume(float aVolume);
 
+  void MaybeActiveMediaComponents();
+
   void SetServiceWorkersTestingEnabled(bool aEnabled);
   bool GetServiceWorkersTestingEnabled();
 
   float GetDevicePixelRatio(mozilla::dom::CallerType aCallerType);
 
   void SetLargeAllocStatus(mozilla::dom::LargeAllocStatus aStatus);
+
+  bool IsTopLevelWindow();
+  bool HadOriginalOpener() const;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowOuter, NS_PIDOMWINDOWOUTER_IID)

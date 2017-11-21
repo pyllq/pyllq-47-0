@@ -12,10 +12,7 @@ const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 const myScope = this;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
-Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
-Cu.import("resource://gre/modules/Preferences.jsm");
-Cu.import("resource://gre/modules/PromiseUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/TelemetryUtils.jsm", this);
 Cu.import("resource://gre/modules/ObjectUtils.jsm");
@@ -24,15 +21,14 @@ Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const Utils = TelemetryUtils;
 
+const { AddonManager, AddonManagerPrivate } = Cu.import("resource://gre/modules/AddonManager.jsm", {});
+
 XPCOMUtils.defineLazyModuleGetter(this, "AttributionCode",
                                   "resource:///modules/AttributionCode.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ctypes",
                                   "resource://gre/modules/ctypes.jsm");
-if (AppConstants.platform !== "gonk") {
-  Cu.import("resource://gre/modules/AddonManager.jsm");
-  XPCOMUtils.defineLazyModuleGetter(this, "LightweightThemeManager",
-                                    "resource://gre/modules/LightweightThemeManager.jsm");
-}
+XPCOMUtils.defineLazyModuleGetter(this, "LightweightThemeManager",
+                                  "resource://gre/modules/LightweightThemeManager.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ProfileAge",
                                   "resource://gre/modules/ProfileAge.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UpdateUtils",
@@ -47,6 +43,7 @@ const MAX_ATTRIBUTION_STRING_LENGTH = 100;
 // The maximum lengths for the experiment id and branch in the experiments section.
 const MAX_EXPERIMENT_ID_LENGTH = 100;
 const MAX_EXPERIMENT_BRANCH_LENGTH = 100;
+const MAX_EXPERIMENT_TYPE_LENGTH = 20;
 
 /**
  * This is a policy object used to override behavior for testing.
@@ -54,6 +51,11 @@ const MAX_EXPERIMENT_BRANCH_LENGTH = 100;
 var Policy = {
   now: () => new Date(),
 };
+
+// This is used to buffer calls to setExperimentActive and friends, so that we
+// don't prematurely initialize our environment if it is called early during
+// startup.
+var gActiveExperimentStartupBuffer = new Map();
 
 var gGlobalEnvironment;
 function getGlobal() {
@@ -91,9 +93,15 @@ this.TelemetryEnvironment = {
    *
    * @param {String} id The id of the active experiment.
    * @param {String} branch The experiment branch.
+   * @param {Object} [options] Optional object with options.
+   * @param {String} [options.type=false] The specific experiment type.
    */
-  setExperimentActive(id, branch) {
-    return getGlobal().setExperimentActive(id, branch);
+  setExperimentActive(id, branch, options = {}) {
+    if (gGlobalEnvironment) {
+      gGlobalEnvironment.setExperimentActive(id, branch, options);
+    } else {
+      gActiveExperimentStartupBuffer.set(id, {branch, options});
+    }
   },
 
   /**
@@ -103,7 +111,11 @@ this.TelemetryEnvironment = {
    * @param {String} id The id of the active experiment.
    */
   setExperimentInactive(id) {
-    return getGlobal().setExperimentInactive(id);
+    if (gGlobalEnvironment) {
+      gGlobalEnvironment.setExperimentInactive(id);
+    } else {
+      gActiveExperimentStartupBuffer.delete(id);
+    }
   },
 
   /**
@@ -117,7 +129,15 @@ this.TelemetryEnvironment = {
    * }
    */
   getActiveExperiments() {
-    return getGlobal().getActiveExperiments();
+    if (gGlobalEnvironment) {
+      return gGlobalEnvironment.getActiveExperiments();
+    }
+
+    const result = {};
+    for (const [id, {branch}] of gActiveExperimentStartupBuffer.entries()) {
+      result[id] = branch;
+    }
+    return result;
   },
 
   shutdown() {
@@ -127,6 +147,7 @@ this.TelemetryEnvironment = {
   // Policy to use when saving preferences. Exported for using them in tests.
   RECORD_PREF_STATE: 1, // Don't record the preference value
   RECORD_PREF_VALUE: 2, // We only record user-set prefs.
+  RECORD_DEFAULTPREF_VALUE: 3, // We only record default pref if set
 
   // Testing method
   testWatchPreferences(prefMap) {
@@ -151,12 +172,14 @@ this.TelemetryEnvironment = {
   testCleanRestart() {
     getGlobal().shutdown();
     gGlobalEnvironment = null;
+    gActiveExperimentStartupBuffer = new Map();
     return getGlobal();
   },
 };
 
 const RECORD_PREF_STATE = TelemetryEnvironment.RECORD_PREF_STATE;
 const RECORD_PREF_VALUE = TelemetryEnvironment.RECORD_PREF_VALUE;
+const RECORD_DEFAULTPREF_VALUE = TelemetryEnvironment.RECORD_DEFAULTPREF_VALUE;
 const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["app.feedback.baseURL", {what: RECORD_PREF_VALUE}],
   ["app.support.baseURL", {what: RECORD_PREF_VALUE}],
@@ -176,28 +199,33 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.newtabpage.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.newtabpage.enhanced", {what: RECORD_PREF_VALUE}],
   ["browser.shell.checkDefaultBrowser", {what: RECORD_PREF_VALUE}],
+  ["browser.search.ignoredJAREngines", {what: RECORD_DEFAULTPREF_VALUE}],
   ["browser.search.suggest.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.startup.homepage", {what: RECORD_PREF_STATE}],
   ["browser.startup.page", {what: RECORD_PREF_VALUE}],
-  ["browser.tabs.animate", {what: RECORD_PREF_VALUE}],
+  ["toolkit.cosmeticAnimations.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.suggest.searches", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.userMadeSearchSuggestionsChoice", {what: RECORD_PREF_VALUE}],
   ["devtools.chrome.enabled", {what: RECORD_PREF_VALUE}],
   ["devtools.debugger.enabled", {what: RECORD_PREF_VALUE}],
   ["devtools.debugger.remote-enabled", {what: RECORD_PREF_VALUE}],
-  ["dom.ipc.plugins.asyncInit.enabled", {what: RECORD_PREF_VALUE}],
   ["dom.ipc.plugins.enabled", {what: RECORD_PREF_VALUE}],
-  ["dom.ipc.processCount", {what: RECORD_PREF_VALUE, requiresRestart: true}],
+  ["dom.ipc.processCount", {what: RECORD_PREF_VALUE}],
   ["dom.max_script_run_time", {what: RECORD_PREF_VALUE}],
   ["experiments.manifest.uri", {what: RECORD_PREF_VALUE}],
+  ["extensions.allow-non-mpc-extensions", {what: RECORD_PREF_VALUE}],
   ["extensions.autoDisableScopes", {what: RECORD_PREF_VALUE}],
   ["extensions.enabledScopes", {what: RECORD_PREF_VALUE}],
   ["extensions.blocklist.enabled", {what: RECORD_PREF_VALUE}],
   ["extensions.blocklist.url", {what: RECORD_PREF_VALUE}],
+  ["extensions.formautofill.addresses.enabled", {what: RECORD_PREF_VALUE}],
+  ["extensions.formautofill.creditCards.enabled", {what: RECORD_PREF_VALUE}],
   ["extensions.strictCompatibility", {what: RECORD_PREF_VALUE}],
   ["extensions.update.enabled", {what: RECORD_PREF_VALUE}],
   ["extensions.update.url", {what: RECORD_PREF_VALUE}],
   ["extensions.update.background.url", {what: RECORD_PREF_VALUE}],
+  ["extensions.screenshots.disabled", {what: RECORD_PREF_VALUE}],
+  ["extensions.screenshots.system-disabled", {what: RECORD_PREF_VALUE}],
   ["general.smoothScroll", {what: RECORD_PREF_VALUE}],
   ["gfx.direct2d.disabled", {what: RECORD_PREF_VALUE}],
   ["gfx.direct2d.force-enabled", {what: RECORD_PREF_VALUE}],
@@ -214,17 +242,18 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["layers.prefer-d3d9", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-opengl", {what: RECORD_PREF_VALUE}],
   ["layout.css.devPixelsPerPx", {what: RECORD_PREF_VALUE}],
+  ["layout.css.servo.enabled", {what: RECORD_PREF_VALUE}],
   ["network.proxy.autoconfig_url", {what: RECORD_PREF_STATE}],
   ["network.proxy.http", {what: RECORD_PREF_STATE}],
   ["network.proxy.ssl", {what: RECORD_PREF_STATE}],
   ["pdfjs.disabled", {what: RECORD_PREF_VALUE}],
   ["places.history.enabled", {what: RECORD_PREF_VALUE}],
+  ["plugins.remember_infobar_dismissal", {what: RECORD_PREF_VALUE}],
+  ["plugins.show_infobar", {what: RECORD_PREF_VALUE}],
   ["privacy.trackingprotection.enabled", {what: RECORD_PREF_VALUE}],
   ["privacy.donottrackheader.enabled", {what: RECORD_PREF_VALUE}],
-  ["services.sync.serverURL", {what: RECORD_PREF_STATE}],
   ["security.mixed_content.block_active_content", {what: RECORD_PREF_VALUE}],
   ["security.mixed_content.block_display_content", {what: RECORD_PREF_VALUE}],
-  ["security.sandbox.content.level", {what: RECORD_PREF_VALUE}],
   ["xpinstall.signatures.required", {what: RECORD_PREF_VALUE}],
 ]);
 
@@ -250,6 +279,8 @@ const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
 const GFX_FEATURES_READY_TOPIC = "gfx-features-ready";
 const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
 const SEARCH_SERVICE_TOPIC = "browser-search-service";
+const SESSIONSTORE_WINDOWS_RESTORED_TOPIC = "sessionstore-windows-restored";
+const PREF_CHANGED_TOPIC = "nsPref:changed";
 
 /**
  * Enforces the parameter to a boolean value.
@@ -265,14 +296,12 @@ function enforceBoolean(aValue) {
 }
 
 /**
- * Get the current browser.
+ * Get the current browser locale.
  * @return a string with the locale or null on failure.
  */
 function getBrowserLocale() {
   try {
-    return Cc["@mozilla.org/chrome/chrome-registry;1"].
-             getService(Ci.nsIXULChromeRegistry).
-             getSelectedLocale("global");
+    return Services.locale.getAppLocaleAsLangTag();
   } catch (e) {
     return null;
   }
@@ -284,7 +313,9 @@ function getBrowserLocale() {
  */
 function getSystemLocale() {
   try {
-    return Services.locale.getLocaleComponentForUserAgent();
+    return Cc["@mozilla.org/intl/ospreferences;1"].
+             getService(Ci.mozIOSPreferences).
+             systemLocale;
   } catch (e) {
     return null;
   }
@@ -423,7 +454,7 @@ function getWindowsVersionInfo() {
   let kernel32 = ctypes.open("kernel32");
   try {
     let GetVersionEx = kernel32.declare("GetVersionExW",
-                                        ctypes.default_abi,
+                                        ctypes.winapi_abi,
                                         BOOL,
                                         OSVERSIONINFOEXW.ptr);
     let winVer = OSVERSIONINFOEXW();
@@ -474,13 +505,34 @@ EnvironmentAddonBuilder.prototype = {
       return Promise.reject(err);
     }
 
-    this._pendingTask = this._updateAddons().then(
-      () => { this._pendingTask = null; },
-      (err) => {
+    this._pendingTask = (async () => {
+      try {
+        // Gather initial addons details
+        await this._updateAddons();
+
+        if (!AddonManagerPrivate.isDBLoaded()) {
+          // The addon database has not been loaded, so listen for the event
+          // triggered by the AddonManager when it is loaded so we can
+          // immediately gather full data at that time.
+          await new Promise(resolve => {
+            const ADDON_LOAD_NOTIFICATION = "xpi-database-loaded";
+            Services.obs.addObserver({
+              observe(subject, topic, data) {
+                Services.obs.removeObserver(this, ADDON_LOAD_NOTIFICATION);
+                resolve();
+              },
+            }, ADDON_LOAD_NOTIFICATION);
+          });
+
+          // Now gather complete addons details.
+          await this._updateAddons();
+        }
+      } catch (err) {
         this._environment._log.error("init - Exception in _updateAddons", err);
+      } finally {
         this._pendingTask = null;
       }
-    );
+    })();
 
     return this._pendingTask;
   },
@@ -491,7 +543,7 @@ EnvironmentAddonBuilder.prototype = {
   watchForChanges() {
     this._loaded = true;
     AddonManager.addAddonListener(this);
-    Services.obs.addObserver(this, EXPERIMENTS_CHANGED_TOPIC, false);
+    Services.obs.addObserver(this, EXPERIMENTS_CHANGED_TOPIC);
   },
 
   // AddonListener
@@ -543,6 +595,12 @@ EnvironmentAddonBuilder.prototype = {
       AddonManager.removeAddonListener(this);
       Services.obs.removeObserver(this, EXPERIMENTS_CHANGED_TOPIC);
     }
+
+    // At startup, _pendingTask is set to a Promise that does not resolve
+    // until the addons database has been read so complete details about
+    // addons are available.  Returning it here will cause it to block
+    // profileBeforeChange, guranteeing that full information will be
+    // available by the time profileBeforeChangeTelemetry is fired.
     return this._pendingTask;
   },
 
@@ -556,21 +614,19 @@ EnvironmentAddonBuilder.prototype = {
    *   changed - Whether the environment changed.
    *   oldEnvironment - Only set if a change occured, contains the environment data before the change.
    */
-  _updateAddons: Task.async(function* () {
+  async _updateAddons() {
     this._environment._log.trace("_updateAddons");
     let personaId = null;
-    if (AppConstants.platform !== "gonk") {
-      let theme = LightweightThemeManager.currentTheme;
-      if (theme) {
-        personaId = theme.id;
-      }
+    let theme = LightweightThemeManager.currentTheme;
+    if (theme) {
+      personaId = theme.id;
     }
 
     let addons = {
-      activeAddons: yield this._getActiveAddons(),
-      theme: yield this._getActiveTheme(),
+      activeAddons: await this._getActiveAddons(),
+      theme: await this._getActiveTheme(),
       activePlugins: this._getActivePlugins(),
-      activeGMPlugins: yield this._getActiveGMPlugins(),
+      activeGMPlugins: await this._getActiveGMPlugins(),
       activeExperiment: this._getActiveExperiment(),
       persona: personaId,
     };
@@ -587,50 +643,51 @@ EnvironmentAddonBuilder.prototype = {
     }
 
     return result;
-  }),
+  },
 
   /**
    * Get the addon data in object form.
    * @return Promise<object> containing the addon data.
    */
-  _getActiveAddons: Task.async(function* () {
+  async _getActiveAddons() {
     // Request addons, asynchronously.
-    let allAddons = yield AddonManager.getAddonsByTypes(["extension", "service"]);
+    let allAddons = await AddonManager.getActiveAddons(["extension", "service"]);
 
+    let isDBLoaded = AddonManagerPrivate.isDBLoaded();
     let activeAddons = {};
     for (let addon of allAddons) {
-      // Skip addons which are not active.
-      if (!addon.isActive) {
-        continue;
-      }
-
       // Weird addon data in the wild can lead to exceptions while collecting
       // the data.
       try {
         // Make sure to have valid dates.
-        let installDate = new Date(Math.max(0, addon.installDate));
         let updateDate = new Date(Math.max(0, addon.updateDate));
 
         activeAddons[addon.id] = {
-          blocklisted: (addon.blocklistState !== Ci.nsIBlocklistService.STATE_NOT_BLOCKED),
-          description: limitStringToLength(addon.description, MAX_ADDON_STRING_LENGTH),
-          name: limitStringToLength(addon.name, MAX_ADDON_STRING_LENGTH),
-          userDisabled: enforceBoolean(addon.userDisabled),
-          appDisabled: addon.appDisabled,
           version: limitStringToLength(addon.version, MAX_ADDON_STRING_LENGTH),
           scope: addon.scope,
           type: addon.type,
-          foreignInstall: enforceBoolean(addon.foreignInstall),
-          hasBinaryComponents: addon.hasBinaryComponents,
-          installDay: Utils.millisecondsToDays(installDate.getTime()),
           updateDay: Utils.millisecondsToDays(updateDate.getTime()),
-          signedState: addon.signedState,
           isSystem: addon.isSystem,
+          isWebExtension: addon.isWebExtension,
+          multiprocessCompatible: Boolean(addon.multiprocessCompatible),
         };
 
-        if (addon.signedState !== undefined)
-          activeAddons[addon.id].signedState = addon.signedState;
-
+        // getActiveAddons() gives limited data during startup and full
+        // data after the addons database is loaded.
+        if (isDBLoaded) {
+          let installDate = new Date(Math.max(0, addon.installDate));
+          Object.assign(activeAddons[addon.id], {
+            blocklisted: (addon.blocklistState !== Ci.nsIBlocklistService.STATE_NOT_BLOCKED),
+            description: limitStringToLength(addon.description, MAX_ADDON_STRING_LENGTH),
+            name: limitStringToLength(addon.name, MAX_ADDON_STRING_LENGTH),
+            userDisabled: enforceBoolean(addon.userDisabled),
+            appDisabled: addon.appDisabled,
+            foreignInstall: enforceBoolean(addon.foreignInstall),
+            hasBinaryComponents: addon.hasBinaryComponents,
+            installDay: Utils.millisecondsToDays(installDate.getTime()),
+            signedState: addon.signedState,
+          });
+        }
       } catch (ex) {
         this._environment._log.error("_getActiveAddons - An addon was discarded due to an error", ex);
         continue;
@@ -638,15 +695,15 @@ EnvironmentAddonBuilder.prototype = {
     }
 
     return activeAddons;
-  }),
+  },
 
   /**
    * Get the currently active theme data in object form.
    * @return Promise<object> containing the active theme data.
    */
-  _getActiveTheme: Task.async(function* () {
+  async _getActiveTheme() {
     // Request themes, asynchronously.
-    let themes = yield AddonManager.getAddonsByTypes(["theme"]);
+    let themes = await AddonManager.getActiveAddons(["theme"]);
 
     let activeTheme = {};
     // We only store information about the active theme.
@@ -673,7 +730,7 @@ EnvironmentAddonBuilder.prototype = {
     }
 
     return activeTheme;
-  }),
+  },
 
   /**
    * Get the plugins data in object form.
@@ -720,9 +777,9 @@ EnvironmentAddonBuilder.prototype = {
    * This should only be called from _pendingTask; otherwise we risk
    * running this during addon manager shutdown.
    */
-  _getActiveGMPlugins: Task.async(function* () {
+  async _getActiveGMPlugins() {
     // Request plugins, asynchronously.
-    let allPlugins = yield AddonManager.getAddonsByTypes(["plugin"]);
+    let allPlugins = await AddonManager.getAddonsByTypes(["plugin"]);
 
     let activeGMPlugins = {};
     for (let plugin of allPlugins) {
@@ -744,7 +801,7 @@ EnvironmentAddonBuilder.prototype = {
     }
 
     return activeGMPlugins;
-  }),
+  },
 
   /**
    * Get the active experiment data in object form.
@@ -776,6 +833,12 @@ function EnvironmentCache() {
 
   this._shutdown = false;
   this._delayedInitFinished = false;
+  // Don't allow querying the search service too early to prevent
+  // impacting the startup performance.
+  this._canQuerySearch = false;
+  // To guard against slowing down startup, defer gathering heavy environment
+  // entries until the session is restored.
+  this._sessionWasRestored = false;
 
   // A map of listeners that will be called on environment changes.
   this._changeListeners = new Map();
@@ -791,28 +854,25 @@ function EnvironmentCache() {
   };
 
   this._updateSettings();
-  // Fill in the default search engine, if the search provider is already initialized.
-  this._updateSearchEngine();
   this._addObservers();
 
   // Build the remaining asynchronous parts of the environment. Don't register change listeners
   // until the initial environment has been built.
 
   let p = [];
-  if (AppConstants.platform === "gonk") {
-    this._addonBuilder = {
-      watchForChanges() {}
-    };
-  } else {
-    this._addonBuilder = new EnvironmentAddonBuilder(this);
-    p = [ this._addonBuilder.init() ];
-  }
+  this._addonBuilder = new EnvironmentAddonBuilder(this);
+  p = [ this._addonBuilder.init() ];
 
   this._currentEnvironment.profile = {};
   p.push(this._updateProfile());
   if (AppConstants.MOZ_BUILD_APP == "browser") {
     p.push(this._updateAttribution());
   }
+
+  for (const [id, {branch, options}] of gActiveExperimentStartupBuffer.entries()) {
+    this.setExperimentActive(id, branch, options);
+  }
+  gActiveExperimentStartupBuffer = null;
 
   let setup = () => {
     this._initTask = null;
@@ -889,7 +949,7 @@ EnvironmentCache.prototype = {
     this._changeListeners.delete(name);
   },
 
-  setExperimentActive(id, branch) {
+  setExperimentActive(id, branch, options) {
     this._log.trace("setExperimentActive");
     // Make sure both the id and the branch have sane lengths.
     const saneId = limitStringToLength(id, MAX_EXPERIMENT_ID_LENGTH);
@@ -904,10 +964,22 @@ EnvironmentCache.prototype = {
       this._log.warn("setExperimentActive - the experiment id or branch were truncated.");
     }
 
+    // Truncate the experiment type if present.
+    if (options.hasOwnProperty("type")) {
+      let type = limitStringToLength(options.type, MAX_EXPERIMENT_TYPE_LENGTH);
+      if (type.length != options.type.length) {
+        options.type = type;
+        this._log.warn("setExperimentActive - the experiment type was truncated.");
+      }
+    }
+
     let oldEnvironment = Cu.cloneInto(this._currentEnvironment, myScope);
     // Add the experiment annotation.
     let experiments = this._currentEnvironment.experiments || {};
     experiments[saneId] = { "branch": saneBranch };
+    if (options.hasOwnProperty("type")) {
+      experiments[saneId].type = options.type;
+    }
     this._currentEnvironment.experiments = experiments;
     // Notify of the change.
     this._onEnvironmentChange("experiment-annotation-changed", oldEnvironment);
@@ -955,23 +1027,40 @@ EnvironmentCache.prototype = {
   _getPrefData() {
     let prefData = {};
     for (let [pref, policy] of this._watchedPrefs.entries()) {
-      // Only record preferences if they are non-default
-      if (!Preferences.isSet(pref)) {
+      let prefType = Services.prefs.getPrefType(pref);
+
+      if (policy.what == TelemetryEnvironment.RECORD_DEFAULTPREF_VALUE) {
+        // For default prefs, make sure they exist
+        if (prefType == Ci.nsIPrefBranch.PREF_INVALID) {
+          continue;
+        }
+      } else if (!Services.prefs.prefHasUserValue(pref)) {
+        // For user prefs, make sure they are set
         continue;
       }
 
       // Check the policy for the preference and decide if we need to store its value
       // or whether it changed from the default value.
-      let prefValue = undefined;
+      let prefValue;
       if (policy.what == TelemetryEnvironment.RECORD_PREF_STATE) {
         prefValue = "<user-set>";
+      } else if (prefType == Ci.nsIPrefBranch.PREF_STRING) {
+        prefValue = Services.prefs.getStringPref(pref);
+      } else if (prefType == Ci.nsIPrefBranch.PREF_BOOL) {
+        prefValue = Services.prefs.getBoolPref(pref);
+      } else if (prefType == Ci.nsIPrefBranch.PREF_INT) {
+        prefValue = Services.prefs.getIntPref(pref);
+      } else if (prefType == Ci.nsIPrefBranch.PREF_INVALID) {
+        prefValue = null;
       } else {
-        prefValue = Preferences.get(pref, null);
+        throw new Error(`Unexpected preference type ("${prefType}") for "${pref}".`);
       }
       prefData[pref] = prefValue;
     }
     return prefData;
   },
+
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupportsWeakReference]),
 
   /**
    * Start watching the preferences.
@@ -981,7 +1070,7 @@ EnvironmentCache.prototype = {
 
     for (let [pref, options] of this._watchedPrefs) {
       if (!("requiresRestart" in options) || !options.requiresRestart) {
-        Preferences.observe(pref, this._onPrefChanged, this);
+        Services.prefs.addObserver(pref, this, true);
       }
     }
   },
@@ -1001,22 +1090,24 @@ EnvironmentCache.prototype = {
 
     for (let [pref, options] of this._watchedPrefs) {
       if (!("requiresRestart" in options) || !options.requiresRestart) {
-        Preferences.ignore(pref, this._onPrefChanged, this);
+        Services.prefs.removeObserver(pref, this);
       }
     }
   },
 
   _addObservers() {
     // Watch the search engine change and service topics.
-    Services.obs.addObserver(this, COMPOSITOR_CREATED_TOPIC, false);
-    Services.obs.addObserver(this, COMPOSITOR_PROCESS_ABORTED_TOPIC, false);
-    Services.obs.addObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC, false);
-    Services.obs.addObserver(this, GFX_FEATURES_READY_TOPIC, false);
-    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
-    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
+    Services.obs.addObserver(this, SESSIONSTORE_WINDOWS_RESTORED_TOPIC);
+    Services.obs.addObserver(this, COMPOSITOR_CREATED_TOPIC);
+    Services.obs.addObserver(this, COMPOSITOR_PROCESS_ABORTED_TOPIC);
+    Services.obs.addObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC);
+    Services.obs.addObserver(this, GFX_FEATURES_READY_TOPIC);
+    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
+    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC);
   },
 
   _removeObservers() {
+    Services.obs.removeObserver(this, SESSIONSTORE_WINDOWS_RESTORED_TOPIC);
     Services.obs.removeObserver(this, COMPOSITOR_CREATED_TOPIC);
     Services.obs.removeObserver(this, COMPOSITOR_PROCESS_ABORTED_TOPIC);
     try {
@@ -1042,6 +1133,7 @@ EnvironmentCache.prototype = {
           return;
         }
         // Now that the search engine init is complete, record the default search choice.
+        this._canQuerySearch = true;
         this._updateSearchEngine();
         break;
       case GFX_FEATURES_READY_TOPIC:
@@ -1061,6 +1153,20 @@ EnvironmentCache.prototype = {
         // partner prefs again when they are ready.
         this._updatePartner();
         Services.obs.removeObserver(this, aTopic);
+        break;
+      case SESSIONSTORE_WINDOWS_RESTORED_TOPIC:
+        this._sessionWasRestored = true;
+        // Make sure to initialize the search service once we've done restoring
+        // the windows, so that we don't risk loosing search data.
+        Services.search.init();
+        // The default browser check could take some time, so just call it after
+        // the session was restored.
+        this._updateDefaultBrowser();
+        break;
+      case PREF_CHANGED_TOPIC:
+        if (this._watchedPrefs.has(aData)) {
+          this._onPrefChanged();
+        }
         break;
     }
   },
@@ -1094,6 +1200,11 @@ EnvironmentCache.prototype = {
    * Update the default search engine value.
    */
   _updateSearchEngine() {
+    if (!this._canQuerySearch) {
+      this._log.trace("_updateSearchEngine - ignoring early call");
+      return;
+    }
+
     if (!Services.search) {
       // Just ignore cases where the search service is not implemented.
       return;
@@ -1112,8 +1223,11 @@ EnvironmentCache.prototype = {
       Services.search.getDefaultEngineInfo();
 
     // Record the cohort identifier used for search defaults A/B testing.
-    if (Services.prefs.prefHasUserValue(PREF_SEARCH_COHORT))
-      this._currentEnvironment.settings.searchCohort = Services.prefs.getCharPref(PREF_SEARCH_COHORT);
+    if (Services.prefs.prefHasUserValue(PREF_SEARCH_COHORT)) {
+      const searchCohort = Services.prefs.getCharPref(PREF_SEARCH_COHORT);
+      this._currentEnvironment.settings.searchCohort = searchCohort;
+      TelemetryEnvironment.setExperimentActive("searchCohort", searchCohort);
+    }
   },
 
   /**
@@ -1176,7 +1290,7 @@ EnvironmentCache.prototype = {
       vendor: Services.appinfo.vendor || null,
       platformVersion: Services.appinfo.platformVersion || null,
       xpcomAbi: Services.appinfo.XPCOMABI,
-      hotfixVersion: Preferences.get(PREF_HOTFIX_LASTVERSION, null),
+      hotfixVersion: Services.prefs.getStringPref(PREF_HOTFIX_LASTVERSION, null),
     };
 
     // Add |architecturesInBinary| only for Mac Universal builds.
@@ -1195,10 +1309,6 @@ EnvironmentCache.prototype = {
    * @returns null on error, true if we are the default browser, or false otherwise.
    */
   _isDefaultBrowser() {
-    if (AppConstants.platform === "gonk") {
-      return true;
-    }
-
     if (!("@mozilla.org/browser/shell-service;1" in Cc)) {
       this._log.info("_isDefaultBrowser - Could not obtain browser shell service");
       return null;
@@ -1225,11 +1335,21 @@ EnvironmentCache.prototype = {
 
     try {
       // This uses the same set of flags used by the pref pane.
-      return shellService.isDefaultBrowser(false, true) ? true : false;
+      return !!shellService.isDefaultBrowser(false, true);
     } catch (ex) {
       this._log.error("_isDefaultBrowser - Could not determine if default browser", ex);
       return null;
     }
+  },
+
+  _updateDefaultBrowser() {
+    if (AppConstants.platform === "android") {
+      return;
+    }
+    // Make sure to have a settings section.
+    this._currentEnvironment.settings = this._currentEnvironment.settings || {};
+    this._currentEnvironment.settings.isDefaultBrowser =
+      this._sessionWasRestored ? this._isDefaultBrowser() : null;
   },
 
   /**
@@ -1242,42 +1362,51 @@ EnvironmentCache.prototype = {
     } catch (e) {}
 
     this._currentEnvironment.settings = {
-      blocklistEnabled: Preferences.get(PREF_BLOCKLIST_ENABLED, true),
+      blocklistEnabled: Services.prefs.getBoolPref(PREF_BLOCKLIST_ENABLED, true),
       e10sEnabled: Services.appinfo.browserTabsRemoteAutostart,
-      e10sCohort: Preferences.get(PREF_E10S_COHORT, "unknown"),
+      e10sMultiProcesses: Services.appinfo.maxWebProcessCount,
+      e10sCohort: Services.prefs.getStringPref(PREF_E10S_COHORT, "unknown"),
       telemetryEnabled: Utils.isTelemetryEnabled,
       locale: getBrowserLocale(),
       update: {
         channel: updateChannel,
-        enabled: Preferences.get(PREF_UPDATE_ENABLED, true),
-        autoDownload: Preferences.get(PREF_UPDATE_AUTODOWNLOAD, true),
+        enabled: Services.prefs.getBoolPref(PREF_UPDATE_ENABLED, true),
+        autoDownload: Services.prefs.getBoolPref(PREF_UPDATE_AUTODOWNLOAD, true),
       },
       userPrefs: this._getPrefData(),
+      sandbox: this._getSandboxData(),
     };
 
-    if (AppConstants.platform !== "gonk") {
-      this._currentEnvironment.settings.addonCompatibilityCheckEnabled =
-        AddonManager.checkCompatibility;
-    }
+    this._currentEnvironment.settings.addonCompatibilityCheckEnabled =
+      AddonManager.checkCompatibility;
 
-    if (AppConstants.platform !== "android") {
-      this._currentEnvironment.settings.isDefaultBrowser =
-        this._isDefaultBrowser();
-    }
-
+    this._updateDefaultBrowser();
     this._updateSearchEngine();
+  },
+
+  _getSandboxData() {
+    let effectiveContentProcessLevel = null;
+    try {
+      let sandboxSettings = Cc["@mozilla.org/sandbox/sandbox-settings;1"].
+                            getService(Ci.mozISandboxSettings);
+      effectiveContentProcessLevel =
+        sandboxSettings.effectiveContentSandboxLevel;
+    } catch (e) {}
+    return {
+      effectiveContentProcessLevel,
+    };
   },
 
   /**
    * Update the cached profile data.
    * @returns Promise<> resolved when the I/O is complete.
    */
-  _updateProfile: Task.async(function* () {
+  async _updateProfile() {
     const logger = Log.repository.getLoggerWithMessagePrefix(LOGGER_NAME, "ProfileAge - ");
     let profileAccessor = new ProfileAge(null, logger);
 
-    let creationDate = yield profileAccessor.created;
-    let resetDate = yield profileAccessor.reset;
+    let creationDate = await profileAccessor.created;
+    let resetDate = await profileAccessor.reset;
 
     this._currentEnvironment.profile.creationDate =
       Utils.millisecondsToDays(creationDate);
@@ -1285,14 +1414,14 @@ EnvironmentCache.prototype = {
       this._currentEnvironment.profile.resetDate =
         Utils.millisecondsToDays(resetDate);
     }
-  }),
+  },
 
   /**
    * Update the cached attribution data object.
    * @returns Promise<> resolved when the I/O is complete.
    */
-  _updateAttribution: Task.async(function* () {
-    let data = yield AttributionCode.getAttrDataAsync();
+  async _updateAttribution() {
+    let data = await AttributionCode.getAttrDataAsync();
     if (Object.keys(data).length > 0) {
       this._currentEnvironment.settings.attribution = {};
       for (let key in data) {
@@ -1300,7 +1429,7 @@ EnvironmentCache.prototype = {
           limitStringToLength(data[key], MAX_ATTRIBUTION_STRING_LENGTH);
       }
     }
-  }),
+  },
 
   /**
    * Get the partner data in object form.
@@ -1308,11 +1437,11 @@ EnvironmentCache.prototype = {
    */
   _getPartner() {
     let partnerData = {
-      distributionId: Preferences.get(PREF_DISTRIBUTION_ID, null),
-      distributionVersion: Preferences.get(PREF_DISTRIBUTION_VERSION, null),
-      partnerId: Preferences.get(PREF_PARTNER_ID, null),
-      distributor: Preferences.get(PREF_DISTRIBUTOR, null),
-      distributorChannel: Preferences.get(PREF_DISTRIBUTOR_CHANNEL, null),
+      distributionId: Services.prefs.getStringPref(PREF_DISTRIBUTION_ID, null),
+      distributionVersion: Services.prefs.getStringPref(PREF_DISTRIBUTION_VERSION, null),
+      partnerId: Services.prefs.getStringPref(PREF_PARTNER_ID, null),
+      distributor: Services.prefs.getStringPref(PREF_DISTRIBUTOR, null),
+      distributorChannel: Services.prefs.getStringPref(PREF_DISTRIBUTOR_CHANNEL, null),
     };
 
     // Get the PREF_APP_PARTNER_BRANCH branch and append its children to partner data.
@@ -1341,7 +1470,7 @@ EnvironmentCache.prototype = {
 
     const CPU_EXTENSIONS = ["hasMMX", "hasSSE", "hasSSE2", "hasSSE3", "hasSSSE3",
                             "hasSSE4A", "hasSSE4_1", "hasSSE4_2", "hasAVX", "hasAVX2",
-                            "hasEDSP", "hasARMv6", "hasARMv7", "hasNEON"];
+                            "hasAES", "hasEDSP", "hasARMv6", "hasARMv7", "hasNEON"];
 
     // Enumerate the available CPU extensions.
     let availableExts = [];
@@ -1362,7 +1491,7 @@ EnvironmentCache.prototype = {
    * not a portable device.
    */
   _getDeviceData() {
-    if (!["gonk", "android"].includes(AppConstants.platform)) {
+    if (AppConstants.platform !== "android") {
       return null;
     }
 
@@ -1385,7 +1514,7 @@ EnvironmentCache.prototype = {
       locale: forceToStringOrNull(getSystemLocale()),
     };
 
-    if (["gonk", "android"].includes(AppConstants.platform)) {
+    if (AppConstants.platform == "android") {
       data.kernelVersion = forceToStringOrNull(getSysinfoProperty("kernel_version", null));
     } else if (AppConstants.platform === "win") {
       // The path to the "UBR" key, queried to get additional version details on Windows.
@@ -1394,10 +1523,10 @@ EnvironmentCache.prototype = {
       let versionInfo = getWindowsVersionInfo();
       data.servicePackMajor = versionInfo.servicePackMajor;
       data.servicePackMinor = versionInfo.servicePackMinor;
-      // We only need the build number and UBR if we're at or above Windows 10.
+      data.windowsBuildNumber = versionInfo.buildNumber;
+      // We only need the UBR if we're at or above Windows 10.
       if (typeof(data.version) === "string" &&
           Services.vc.compare(data.version, "10") >= 0) {
-        data.windowsBuildNumber = versionInfo.buildNumber;
         // Query the UBR key and only add it to the environment if it's available.
         // |readRegKey| doesn't throw, but rather returns 'undefined' on error.
         let ubr = WindowsRegistry.readRegKey(Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
@@ -1449,7 +1578,7 @@ EnvironmentCache.prototype = {
       features: {},
     };
 
-    if (!["gonk", "android", "linux"].includes(AppConstants.platform)) {
+    if (!["android", "linux"].includes(AppConstants.platform)) {
       let gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
       try {
         gfxData.monitors = gfxInfo.getMonitors();
@@ -1514,7 +1643,7 @@ EnvironmentCache.prototype = {
 
     if (AppConstants.platform === "win") {
       data.isWow64 = getSysinfoProperty("isWow64", null);
-    } else if (["gonk", "android"].includes(AppConstants.platform)) {
+    } else if (AppConstants.platform == "android") {
       data.device = this._getDeviceData();
     }
 

@@ -8,10 +8,12 @@
 #define WebSocket_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/WebSocketBinding.h" // for BinaryType
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/Mutex.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
@@ -46,11 +48,14 @@ public:
 
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_SKIPPABLE_SCRIPT_HOLDER_CLASS_INHERITED(
-    WebSocket, DOMEventTargetHelper)
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(WebSocket, DOMEventTargetHelper)
+  virtual bool IsCertainlyAliveForCC() const override;
 
   // EventTarget
+  using EventTarget::EventListenerAdded;
   virtual void EventListenerAdded(nsIAtom* aType) override;
+
+  using EventTarget::EventListenerRemoved;
   virtual void EventListenerRemoved(nsIAtom* aType) override;
 
   virtual void DisconnectFromOwner() override;
@@ -185,7 +190,7 @@ private:
   bool mKeepingAlive;
   bool mCheckMustKeepAlive;
 
-  uint32_t mOutgoingBufferedAmount;
+  CheckedUint32 mOutgoingBufferedAmount;
 
   // related to the WebSocket constructor steps
   nsString mURI;

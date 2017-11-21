@@ -6,7 +6,11 @@ Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
-add_identity_test(this, async function test_missing_crypto_collection() {
+initTestLogging("Trace");
+
+add_task(async function test_missing_crypto_collection() {
+  enableValidationPrefs();
+
   let johnHelper = track_collections_helper();
   let johnU      = johnHelper.with_updated_collection;
   let johnColls  = johnHelper.collections;
@@ -44,9 +48,9 @@ add_identity_test(this, async function test_missing_crypto_collection() {
   try {
     let fresh = 0;
     let orig  = Service._freshStart;
-    Service._freshStart = function() {
+    Service._freshStart = async function() {
       _("Called _freshStart.");
-      orig.call(Service);
+      await orig.call(Service);
       fresh++;
     };
 
@@ -56,7 +60,7 @@ add_identity_test(this, async function test_missing_crypto_collection() {
     fresh = 0;
 
     _("Regular sync: no need to freshStart.");
-    Service.sync();
+    await Service.sync();
     do_check_eq(fresh, 0);
 
     _("Simulate a bad info/collections.");
@@ -74,8 +78,3 @@ add_identity_test(this, async function test_missing_crypto_collection() {
     await promiseStopServer(server);
   }
 });
-
-function run_test() {
-  initTestLogging("Trace");
-  run_next_test();
-}

@@ -36,13 +36,12 @@ function whenDelayedStartupFinished(aWindow, aCallback) {
       Services.obs.removeObserver(observer, aTopic);
       setTimeout(aCallback, 0);
     }
-  }, "browser-delayed-startup-finished", false);
+  }, "browser-delayed-startup-finished");
 }
 
 function testOnWindow(aCallback) {
   var win = mainWindow.OpenBrowserWindow();
-  win.addEventListener("load", function onLoad() {
-    win.removeEventListener("load", onLoad);
+  win.addEventListener("load", function() {
     whenDelayedStartupFinished(win, function() {
       win.addEventListener("DOMContentLoaded", function onInnerLoad() {
         if (win.content.location.href != contentPage) {
@@ -58,7 +57,7 @@ function testOnWindow(aCallback) {
       }, true);
       SimpleTest.executeSoon(function() { win.gBrowser.loadURI(contentPage); });
     });
-  }, true);
+  }, {capture: true, once: true});
 }
 
 var badids = [

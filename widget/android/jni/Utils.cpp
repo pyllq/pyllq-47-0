@@ -7,6 +7,7 @@
 #include "mozilla/Assertions.h"
 
 #include "GeneratedJNIWrappers.h"
+#include "AndroidBuild.h"
 #include "nsAppShell.h"
 
 #ifdef MOZ_CRASHREPORTER
@@ -123,6 +124,12 @@ void SetGeckoThreadEnv(JNIEnv* aEnv)
             Class::LocalRef::Adopt(aEnv->GetObjectClass(sClassLoader)).Get(),
             "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     MOZ_ASSERT(sClassLoader && sClassLoaderLoadClass);
+
+    if (java::GeckoThread::IsChildProcess()) {
+        // Disallow Fennec-only classes from being used in child processes.
+        sIsFennec = false;
+        return;
+    }
 
     auto geckoAppClass = Class::LocalRef::Adopt(
             aEnv->FindClass("org/mozilla/gecko/GeckoApp"));
@@ -281,29 +288,30 @@ jclass GetClassRef(JNIEnv* aEnv, const char* aClassName)
     return nullptr;
 }
 
-void DispatchToGeckoThread(UniquePtr<AbstractCall>&& aCall)
+void DispatchToGeckoPriorityQueue(already_AddRefed<nsIRunnable> aCall)
 {
-    class AbstractCallEvent : public nsAppShell::Event
+    class RunnableEvent : public nsAppShell::Event
     {
-        UniquePtr<AbstractCall> mCall;
-
+        nsCOMPtr<nsIRunnable> mCall;
     public:
-        AbstractCallEvent(UniquePtr<AbstractCall>&& aCall)
-            : mCall(Move(aCall))
-        {}
-
-        void Run() override
-        {
-            (*mCall)();
-        }
+        RunnableEvent(already_AddRefed<nsIRunnable> aCall) : mCall(aCall) {}
+        void Run() override { NS_ENSURE_SUCCESS_VOID(mCall->Run()); }
     };
 
-    nsAppShell::PostEvent(MakeUnique<AbstractCallEvent>(Move(aCall)));
+    nsAppShell::PostEvent(MakeUnique<RunnableEvent>(Move(aCall)));
 }
 
 bool IsFennec()
 {
     return sIsFennec;
+}
+
+int GetAPIVersion() {
+    static int32_t apiVersion = 0;
+    if (!apiVersion && IsAvailable()) {
+        apiVersion = java::sdk::VERSION::SDK_INT();
+    }
+    return apiVersion;
 }
 
 } // jni

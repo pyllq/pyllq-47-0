@@ -12,6 +12,7 @@
 #include "nsGkAtoms.h"
 
 #include "mozilla/dom/HTMLVideoElement.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
 #include "nsIDOMHTMLImageElement.h"
 #include "nsDisplayList.h"
 #include "nsGenericHTMLElement.h"
@@ -75,7 +76,7 @@ SwapScaleWidthHeightForRotation(IntSize& aSize, VideoInfo::Rotation aDegrees)
 }
 
 nsVideoFrame::nsVideoFrame(nsStyleContext* aContext)
-  : nsContainerFrame(aContext)
+  : nsContainerFrame(aContext, kClassID)
 {
   EnableVisibilityTracking();
 }
@@ -138,6 +139,7 @@ nsVideoFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 
     if (!aElements.AppendElement(mCaptionDiv))
       return NS_ERROR_OUT_OF_MEMORY;
+    UpdateTextTrack();
   }
 
   // Set up "videocontrols" XUL element which will be XBL-bound to the
@@ -179,12 +181,6 @@ nsVideoFrame::DestroyFrom(nsIFrame* aDestructRoot)
   nsContentUtils::DestroyAnonymousContent(&mVideoControls);
   nsContentUtils::DestroyAnonymousContent(&mPosterImage);
   nsContainerFrame::DestroyFrom(aDestructRoot);
-}
-
-bool
-nsVideoFrame::IsLeaf() const
-{
-  return true;
 }
 
 already_AddRefed<Layer>
@@ -270,7 +266,10 @@ class DispatchResizeToControls : public Runnable
 {
 public:
   explicit DispatchResizeToControls(nsIContent* aContent)
-    : mContent(aContent) {}
+    : mozilla::Runnable("DispatchResizeToControls")
+    , mContent(aContent)
+  {
+  }
   NS_IMETHOD Run() override {
     nsContentUtils::DispatchTrustedEvent(mContent->OwnerDoc(), mContent,
                                          NS_LITERAL_STRING("resizevideocontrols"),
@@ -296,7 +295,7 @@ nsVideoFrame::Reflow(nsPresContext* aPresContext,
 
   NS_PRECONDITION(mState & NS_FRAME_IN_REFLOW, "frame is not in reflow");
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   const WritingMode myWM = aReflowInput.GetWritingMode();
   nscoord contentBoxBSize = aReflowInput.ComputedBSize();
@@ -434,6 +433,64 @@ public:
 
   NS_DISPLAY_DECL_NAME("Video", TYPE_VIDEO)
 
+  virtual bool CreateWebRenderCommands(mozilla::wr::DisplayListBuilder& aBuilder,
+                                       const mozilla::layers::StackingContextHelper& aSc,
+                                       nsTArray<mozilla::layers::WebRenderParentCommand>& aParentCommands,
+                                       mozilla::layers::WebRenderLayerManager* aManager,
+                                       nsDisplayListBuilder* aDisplayListBuilder) override
+  {
+    nsRect area = Frame()->GetContentRectRelativeToSelf() + ToReferenceFrame();
+    HTMLVideoElement* element = static_cast<HTMLVideoElement*>(Frame()->GetContent());
+
+    nsIntSize videoSizeInPx;
+    if (NS_FAILED(element->GetVideoSize(&videoSizeInPx)) || area.IsEmpty()) {
+      return false;
+    }
+
+    RefPtr<ImageContainer> container = element->GetImageContainer();
+    if (!container) {
+      return false;
+    }
+
+    // Retrieve the size of the decoded video frame, before being scaled
+    // by pixel aspect ratio.
+    mozilla::gfx::IntSize frameSize = container->GetCurrentSize();
+    if (frameSize.width == 0 || frameSize.height == 0) {
+      // No image, or zero-sized image. Don't render.
+      return true;
+    }
+
+    // Convert video size from pixel units into app units, to get an aspect-ratio
+    // (which has to be represented as a nsSize) and an IntrinsicSize that we
+    // can pass to ComputeObjectRenderRect.
+    nsSize aspectRatio(nsPresContext::CSSPixelsToAppUnits(videoSizeInPx.width),
+                       nsPresContext::CSSPixelsToAppUnits(videoSizeInPx.height));
+    IntrinsicSize intrinsicSize;
+    intrinsicSize.width.SetCoordValue(aspectRatio.width);
+    intrinsicSize.height.SetCoordValue(aspectRatio.height);
+
+    nsRect dest = nsLayoutUtils::ComputeObjectDestRect(area,
+                                                       intrinsicSize,
+                                                       aspectRatio,
+                                                       Frame()->StylePosition());
+
+    gfxRect destGFXRect = Frame()->PresContext()->AppUnitsToGfxUnits(dest);
+    destGFXRect.Round();
+    if (destGFXRect.IsEmpty()) {
+      return false;
+    }
+
+    VideoInfo::Rotation rotationDeg = element->RotationDegrees();
+    IntSize scaleHint(static_cast<int32_t>(destGFXRect.Width()),
+                      static_cast<int32_t>(destGFXRect.Height()));
+    // scaleHint is set regardless of rotation, so swap w/h if needed.
+    SwapScaleWidthHeightForRotation(scaleHint, rotationDeg);
+    container->SetScaleHint(scaleHint);
+
+    LayerRect rect(destGFXRect.x, destGFXRect.y, destGFXRect.width, destGFXRect.height);
+    return aManager->PushImage(this, container, aBuilder, aSc, rect);
+  }
+
   // It would be great if we could override GetOpaqueRegion to return nonempty here,
   // but it's probably not safe to do so in general. Video frames are
   // updated asynchronously from decoder threads, and it's possible that
@@ -517,18 +574,12 @@ nsVideoFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
       child->BuildDisplayListForStackingContext(aBuilder,
                                                 aDirtyRect - child->GetOffsetTo(this),
                                                 aLists.Content());
-    } else if (child->GetType() == nsGkAtoms::boxFrame) {
+    } else if (child->IsBoxFrame()) {
       child->BuildDisplayListForStackingContext(aBuilder,
                                                 aDirtyRect - child->GetOffsetTo(this),
                                                 aLists.Content());
     }
   }
-}
-
-nsIAtom*
-nsVideoFrame::GetType() const
-{
-  return nsGkAtoms::HTMLVideoFrame;
 }
 
 #ifdef ACCESSIBILITY
@@ -548,7 +599,7 @@ nsVideoFrame::GetFrameName(nsAString& aResult) const
 #endif
 
 LogicalSize
-nsVideoFrame::ComputeSize(nsRenderingContext *aRenderingContext,
+nsVideoFrame::ComputeSize(gfxContext *aRenderingContext,
                           WritingMode aWM,
                           const LogicalSize& aCBSize,
                           nscoord aAvailableISize,
@@ -588,7 +639,7 @@ nsVideoFrame::ComputeSize(nsRenderingContext *aRenderingContext,
                                             aFlags);
 }
 
-nscoord nsVideoFrame::GetMinISize(nsRenderingContext *aRenderingContext)
+nscoord nsVideoFrame::GetMinISize(gfxContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_MIN_WIDTH(this, result);
@@ -612,7 +663,7 @@ nscoord nsVideoFrame::GetMinISize(nsRenderingContext *aRenderingContext)
   return result;
 }
 
-nscoord nsVideoFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
+nscoord nsVideoFrame::GetPrefISize(gfxContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_PREF_WIDTH(this, result);
@@ -674,7 +725,7 @@ bool nsVideoFrame::ShouldDisplayPoster()
 }
 
 nsSize
-nsVideoFrame::GetVideoIntrinsicSize(nsRenderingContext *aRenderingContext)
+nsVideoFrame::GetVideoIntrinsicSize(gfxContext *aRenderingContext)
 {
   // Defaulting size to 300x150 if no size given.
   nsIntSize size(300, 150);
@@ -746,7 +797,7 @@ nsVideoFrame::AttributeChanged(int32_t aNameSpaceID,
 
 void
 nsVideoFrame::OnVisibilityChange(Visibility aNewVisibility,
-                                 Maybe<OnNonvisible> aNonvisibleAction)
+                                 const Maybe<OnNonvisible>& aNonvisibleAction)
 {
   if (HasVideoElement()) {
     nsCOMPtr<nsIDOMHTMLMediaElement> mediaDomElement = do_QueryInterface(mContent);
@@ -775,4 +826,12 @@ bool nsVideoFrame::HasVideoData()
   nsIntSize size(0, 0);
   element->GetVideoSize(&size);
   return size != nsIntSize(0,0);
+}
+
+void nsVideoFrame::UpdateTextTrack()
+{
+  HTMLMediaElement* element = static_cast<HTMLMediaElement*>(GetContent());
+  if (element) {
+    element->NotifyCueDisplayStatesChanged();
+  }
 }

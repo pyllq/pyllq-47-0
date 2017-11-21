@@ -34,8 +34,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Response)
 NS_INTERFACE_MAP_END
 
 Response::Response(nsIGlobalObject* aGlobal, InternalResponse* aInternalResponse)
-  : FetchBody<Response>()
-  , mOwner(aGlobal)
+  : FetchBody<Response>(aGlobal)
   , mInternalResponse(aInternalResponse)
 {
   MOZ_ASSERT(aInternalResponse->Headers()->Guard() == HeadersGuardEnum::Immutable ||
@@ -104,7 +103,7 @@ Response::Redirect(const GlobalObject& aGlobal, const nsAString& aUrl,
     return nullptr;
   }
 
-  Optional<ArrayBufferOrArrayBufferViewOrBlobOrFormDataOrUSVStringOrURLSearchParams> body;
+  Optional<fetch::BodyInit> body;
   ResponseInit init;
   init.mStatus = aStatus;
   RefPtr<Response> r = Response::Constructor(aGlobal, body, init, aRv);
@@ -125,7 +124,7 @@ Response::Redirect(const GlobalObject& aGlobal, const nsAString& aUrl,
 
 /*static*/ already_AddRefed<Response>
 Response::Constructor(const GlobalObject& aGlobal,
-                      const Optional<ArrayBufferOrArrayBufferViewOrBlobOrFormDataOrUSVStringOrURLSearchParams>& aBody,
+                      const Optional<fetch::BodyInit>& aBody,
                       const ResponseInit& aInit, ErrorResult& aRv)
 {
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
@@ -198,22 +197,24 @@ Response::Constructor(const GlobalObject& aGlobal,
     }
 
     nsCOMPtr<nsIInputStream> bodyStream;
-    nsCString contentType;
+    nsCString contentTypeWithCharset;
     uint64_t bodySize = 0;
     aRv = ExtractByteStreamFromBody(aBody.Value(),
                                     getter_AddRefs(bodyStream),
-                                    contentType,
+                                    contentTypeWithCharset,
                                     bodySize);
     if (NS_WARN_IF(aRv.Failed())) {
       return nullptr;
     }
     internalResponse->SetBody(bodyStream, bodySize);
 
-    if (!contentType.IsVoid() &&
-        !internalResponse->Headers()->Has(NS_LITERAL_CSTRING("Content-Type"), aRv)) {
+    if (!contentTypeWithCharset.IsVoid() &&
+        !internalResponse->Headers()->Has(NS_LITERAL_CSTRING("Content-Type"),
+                                          aRv)) {
       // Ignore Append() failing here.
       ErrorResult error;
-      internalResponse->Headers()->Append(NS_LITERAL_CSTRING("Content-Type"), contentType, error);
+      internalResponse->Headers()->Append(NS_LITERAL_CSTRING("Content-Type"),
+                                          contentTypeWithCharset, error);
       error.SuppressException();
     }
 

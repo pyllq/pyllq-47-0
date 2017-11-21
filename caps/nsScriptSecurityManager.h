@@ -24,7 +24,7 @@
 class nsCString;
 class nsIIOService;
 class nsIStringBundle;
-class nsSystemPrincipal;
+class SystemPrincipal;
 
 namespace mozilla {
 class OriginAttributes;
@@ -55,7 +55,7 @@ public:
     // Invoked exactly once, by XPConnect.
     static void InitStatics();
 
-    static nsSystemPrincipal*
+    static SystemPrincipal*
     SystemPrincipalSingletonConstructor();
 
     /**
@@ -68,7 +68,7 @@ public:
     static uint32_t SecurityHashURI(nsIURI* aURI);
 
     static nsresult
-    ReportError(JSContext* cx, const nsAString& messageTag,
+    ReportError(JSContext* cx, const char* aMessageTag,
                 nsIURI* aSource, nsIURI* aTarget);
 
     static uint32_t
@@ -110,9 +110,6 @@ private:
 
     inline void
     AddSitesToFileURIWhitelist(const nsCString& aSiteList);
-
-    // If aURI is a moz-extension:// URI, set mAddonId to the associated addon.
-    nsresult MaybeSetAddonIdFromURI(mozilla::OriginAttributes& aAttrs, nsIURI* aURI);
 
     nsresult GetChannelResultPrincipal(nsIChannel* aChannel,
                                        nsIPrincipal** aPrincipal,

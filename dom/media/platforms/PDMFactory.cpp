@@ -8,6 +8,7 @@
 
 #ifdef XP_WIN
 #include "WMFDecoderModule.h"
+#include "mozilla/WindowsVersion.h"
 #endif
 #ifdef MOZ_FFVPX
 #include "FFVPXRuntimeLinker.h"
@@ -35,7 +36,6 @@
 
 #include "MediaInfo.h"
 #include "MediaPrefs.h"
-#include "FuzzingWrapper.h"
 #include "H264Converter.h"
 
 #include "AgnosticDecoderModule.h"
@@ -46,10 +46,6 @@
 #include "MP4Decoder.h"
 #include "mozilla/dom/RemoteVideoDecoder.h"
 
-#ifdef XP_WIN
-#include "mozilla/WindowsVersion.h"
-#endif
-
 #include "mp4_demuxer/H264.h"
 
 #include <functional>
@@ -58,6 +54,7 @@ namespace mozilla {
 
 extern already_AddRefed<PlatformDecoderModule> CreateAgnosticDecoderModule();
 extern already_AddRefed<PlatformDecoderModule> CreateBlankDecoderModule();
+extern already_AddRefed<PlatformDecoderModule> CreateNullDecoderModule();
 
 class PDMFactoryImpl final
 {
@@ -168,7 +165,7 @@ PDMFactory::PDMFactory()
 {
   EnsureInit();
   CreatePDMs();
-  CreateBlankPDM();
+  CreateNullPDM();
 }
 
 PDMFactory::~PDMFactory()
@@ -193,24 +190,24 @@ PDMFactory::EnsureInit() const
   }
 
   // Not on the main thread -> Sync-dispatch creation to main thread.
-  nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
+  nsCOMPtr<nsIEventTarget> mainTarget = GetMainThreadEventTarget();
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableFunction([]() {
+    NS_NewRunnableFunction("PDMFactory::EnsureInit", []() {
       StaticMutexAutoLock mon(sMonitor);
       if (!sInstance) {
         sInstance = new PDMFactoryImpl();
         ClearOnShutdown(&sInstance);
       }
     });
-  SyncRunnable::DispatchToThread(mainThread, runnable);
+  SyncRunnable::DispatchToThread(mainTarget, runnable);
 }
 
 already_AddRefed<MediaDataDecoder>
 PDMFactory::CreateDecoder(const CreateDecoderParams& aParams)
 {
-  if (aParams.mUseBlankDecoder) {
-    MOZ_ASSERT(mBlankPDM);
-    return CreateDecoderWithPDM(mBlankPDM, aParams);
+  if (aParams.mUseNullDecoder) {
+    MOZ_ASSERT(mNullPDM);
+    return CreateDecoderWithPDM(mNullPDM, aParams);
   }
 
   const TrackInfo& config = aParams.mConfig;
@@ -295,21 +292,8 @@ PDMFactory::CreateDecoderWithPDM(PlatformDecoderModule* aPDM,
     return nullptr;
   }
 
-  MediaDataDecoderCallback* callback = aParams.mCallback;
-  RefPtr<DecoderCallbackFuzzingWrapper> callbackWrapper;
-  if (MediaPrefs::PDMFuzzingEnabled()) {
-    callbackWrapper = new DecoderCallbackFuzzingWrapper(callback);
-    callbackWrapper->SetVideoOutputMinimumInterval(
-      TimeDuration::FromMilliseconds(MediaPrefs::PDMFuzzingInterval()));
-    callbackWrapper->SetDontDelayInputExhausted(!MediaPrefs::PDMFuzzingDelayInputExhausted());
-    callback = callbackWrapper.get();
-  }
-
-  CreateDecoderParams params = aParams;
-  params.mCallback = callback;
-
-  if (MP4Decoder::IsH264(config.mMimeType) && !aParams.mUseBlankDecoder) {
-    RefPtr<H264Converter> h = new H264Converter(aPDM, params);
+  if (MP4Decoder::IsH264(config.mMimeType) && !aParams.mUseNullDecoder) {
+    RefPtr<H264Converter> h = new H264Converter(aPDM, aParams);
     const nsresult rv = h->GetLastError();
     if (NS_SUCCEEDED(rv) || rv == NS_ERROR_NOT_INITIALIZED) {
       // The H264Converter either successfully created the wrapped decoder,
@@ -318,11 +302,7 @@ PDMFactory::CreateDecoderWithPDM(PlatformDecoderModule* aPDM,
       m = h.forget();
     }
   } else {
-    m = aPDM->CreateVideoDecoder(params);
-  }
-
-  if (callbackWrapper && m) {
-    m = new DecoderFuzzingWrapper(m.forget(), callbackWrapper.forget());
+    m = aPDM->CreateVideoDecoder(aParams);
   }
 
   return m.forget();
@@ -364,22 +344,8 @@ PDMFactory::CreatePDMs()
     return;
   }
 
-#ifdef MOZ_WIDGET_ANDROID
-  if(MediaPrefs::PDMAndroidMediaCodecPreferred() &&
-     MediaPrefs::PDMAndroidMediaCodecEnabled()) {
-    m = new AndroidDecoderModule();
-    StartupPDM(m);
-  }
-#endif
 #ifdef XP_WIN
-  if (MediaPrefs::PDMWMFEnabled() && IsVistaOrLater()) {
-    // *Only* use WMF on Vista and later, as if Firefox is run in Windows 95
-    // compatibility mode on Windows 7 (it does happen!) we may crash trying
-    // to startup WMF. So we need to detect the OS version here, as in
-    // compatibility mode IsVistaOrLater() and friends behave as if we're on
-    // the emulated version of Windows. See bug 1279171.
-    // Additionally, we don't want to start the RemoteDecoderModule if we
-    // expect it's not going to work (i.e. on Windows older than Vista).
+  if (MediaPrefs::PDMWMFEnabled() && !IsWin7AndPre2000Compatible()) {
     m = new WMFDecoderModule();
     RefPtr<PlatformDecoderModule> remote = new dom::RemoteDecoderModule(m);
     StartupPDM(remote);
@@ -415,7 +381,7 @@ PDMFactory::CreatePDMs()
 #ifdef MOZ_WIDGET_ANDROID
   if(MediaPrefs::PDMAndroidMediaCodecEnabled()){
     m = new AndroidDecoderModule();
-    StartupPDM(m);
+    StartupPDM(m, MediaPrefs::PDMAndroidMediaCodecPreferred());
   }
 #endif
 
@@ -431,17 +397,21 @@ PDMFactory::CreatePDMs()
 }
 
 void
-PDMFactory::CreateBlankPDM()
+PDMFactory::CreateNullPDM()
 {
-  mBlankPDM = CreateBlankDecoderModule();
-  MOZ_ASSERT(mBlankPDM && NS_SUCCEEDED(mBlankPDM->Startup()));
+  mNullPDM = CreateNullDecoderModule();
+  MOZ_ASSERT(mNullPDM && NS_SUCCEEDED(mNullPDM->Startup()));
 }
 
 bool
-PDMFactory::StartupPDM(PlatformDecoderModule* aPDM)
+PDMFactory::StartupPDM(PlatformDecoderModule* aPDM, bool aInsertAtBeginning)
 {
   if (aPDM && NS_SUCCEEDED(aPDM->Startup())) {
-    mCurrentPDMs.AppendElement(aPDM);
+    if (aInsertAtBeginning) {
+      mCurrentPDMs.InsertElementAt(0, aPDM);
+    } else {
+      mCurrentPDMs.AppendElement(aPDM);
+    }
     return true;
   }
   return false;

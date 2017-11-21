@@ -30,7 +30,7 @@ struct ComputedTiming
   // indefinitely.
   StickyTimeDuration  mActiveDuration;
   // The time within the active interval.
-  StickyTimeDuration mActiveTime;
+  StickyTimeDuration  mActiveTime;
   // The effect end time in local time (i.e. an offset from the effect's
   // start time). Will equal StickyTimeDuration::Forever() if the animation
   // plays indefinitely.
@@ -64,16 +64,15 @@ struct ComputedTiming
   }
 
   enum class AnimationPhase {
-    Null,   // Not sampled (null sample time)
+    Idle,   // Not sampled (null sample time)
     Before, // Sampled prior to the start of the active interval
     Active, // Sampled within the active interval
     After   // Sampled after (or at) the end of the active interval
   };
-  AnimationPhase      mPhase = AnimationPhase::Null;
+  AnimationPhase      mPhase = AnimationPhase::Idle;
 
   ComputedTimingFunction::BeforeFlag mBeforeFlag =
     ComputedTimingFunction::BeforeFlag::Unset;
-
 };
 
 } // namespace mozilla

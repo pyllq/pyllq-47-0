@@ -53,7 +53,7 @@ CanvasRenderingContextHelper::ToBlob(JSContext* aCx,
 
       RefPtr<Blob> newBlob = Blob::Create(mGlobal, blob->Impl());
 
-      mBlobCallback->Call(*newBlob, rv);
+      mBlobCallback->Call(newBlob, rv);
 
       mGlobal = nullptr;
       mBlobCallback = nullptr;
@@ -237,13 +237,9 @@ CanvasRenderingContextHelper::UpdateContext(JSContext* aCx,
 
   nsCOMPtr<nsICanvasRenderingContextInternal> currentContext = mCurrentContext;
 
-  nsresult rv = currentContext->SetIsOpaque(GetOpaqueAttr());
-  if (NS_FAILED(rv)) {
-    mCurrentContext = nullptr;
-    return rv;
-  }
+  currentContext->SetIsOpaque(GetOpaqueAttr());
 
-  rv = currentContext->SetContextOptions(aCx, aNewContextOptions,
+  nsresult rv = currentContext->SetContextOptions(aCx, aNewContextOptions,
                                          aRvForDictionaryInit);
   if (NS_FAILED(rv)) {
     mCurrentContext = nullptr;

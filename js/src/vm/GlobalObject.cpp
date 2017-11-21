@@ -16,6 +16,7 @@
 #include "jsweakmap.h"
 
 #include "builtin/AtomicsObject.h"
+#include "builtin/DataViewObject.h"
 #include "builtin/Eval.h"
 #if EXPOSE_INTL_API
 # include "builtin/Intl.h"
@@ -26,6 +27,7 @@
 #include "builtin/Promise.h"
 #include "builtin/RegExp.h"
 #include "builtin/SelfHostingDefines.h"
+#include "builtin/Stream.h"
 #include "builtin/SymbolObject.h"
 #include "builtin/TypedObject.h"
 #include "builtin/WeakMapObject.h"
@@ -96,21 +98,27 @@ js::GlobalObject::getTypedObjectModule() const {
 /* static */ bool
 GlobalObject::skipDeselectedConstructor(JSContext* cx, JSProtoKey key)
 {
-    if (key == JSProto_WebAssembly)
+    switch (key) {
+      case JSProto_WebAssembly:
         return !wasm::HasSupport(cx);
 
-#ifdef ENABLE_SHARED_ARRAY_BUFFER
-    // Return true if the given constructor has been disabled at run-time.
-    switch (key) {
+      case JSProto_ReadableStream:
+      case JSProto_ReadableStreamDefaultReader:
+      case JSProto_ReadableStreamBYOBReader:
+      case JSProto_ReadableStreamDefaultController:
+      case JSProto_ReadableByteStreamController:
+      case JSProto_ReadableStreamBYOBRequest:
+      case JSProto_ByteLengthQueuingStrategy:
+      case JSProto_CountQueuingStrategy:
+        return !cx->options().streams();
+
+      // Return true if the given constructor has been disabled at run-time.
       case JSProto_Atomics:
       case JSProto_SharedArrayBuffer:
         return !cx->compartment()->creationOptions().getSharedMemoryAndAtomicsEnabled();
       default:
         return false;
     }
-#else
-    return false;
-#endif
 }
 
 /* static */ bool
@@ -345,30 +353,13 @@ GlobalObject::new_(JSContext* cx, const Class* clasp, JSPrincipals* principals,
     MOZ_ASSERT(!cx->isExceptionPending());
     MOZ_ASSERT(!cx->runtime()->isAtomsCompartment(cx->compartment()));
 
-    JSRuntime* rt = cx->runtime();
-
-    auto zoneSpecifier = options.creationOptions().zoneSpecifier();
-    Zone* zone;
-    if (zoneSpecifier == JS::SystemZone)
-        zone = rt->gc.systemZone;
-    else if (zoneSpecifier == JS::FreshZone)
-        zone = nullptr;
-    else
-        zone = static_cast<Zone*>(options.creationOptions().zonePointer());
-
-    JSCompartment* compartment = NewCompartment(cx, zone, principals, options);
+    JSCompartment* compartment = NewCompartment(cx, principals, options);
     if (!compartment)
         return nullptr;
 
-    // Lazily create the system zone.
-    if (!rt->gc.systemZone && zoneSpecifier == JS::SystemZone) {
-        rt->gc.systemZone = compartment->zone();
-        rt->gc.systemZone->isSystem = true;
-    }
-
     Rooted<GlobalObject*> global(cx);
     {
-        AutoCompartment ac(cx, compartment);
+        AutoCompartmentUnchecked ac(cx, compartment);
         global = GlobalObject::createInternal(cx, clasp);
         if (!global)
             return nullptr;
@@ -530,6 +521,7 @@ GlobalObject::initSelfHostingBuiltins(JSContext* cx, Handle<GlobalObject*> globa
            InitBareBuiltinCtor(cx, global, JSProto_TypedArray) &&
            InitBareBuiltinCtor(cx, global, JSProto_Uint8Array) &&
            InitBareBuiltinCtor(cx, global, JSProto_Int32Array) &&
+           InitBareSymbolCtor(cx, global) &&
            InitBareWeakMapCtor(cx, global) &&
            InitStopIterationClass(cx, global) &&
            DefineFunctions(cx, global, builtins, AsIntrinsic);
@@ -645,7 +637,7 @@ js::DefinePropertiesAndFunctions(JSContext* cx, HandleObject obj,
 }
 
 bool
-js::DefineToStringTag(JSContext *cx, HandleObject obj, JSAtom* tag)
+js::DefineToStringTag(JSContext* cx, HandleObject obj, JSAtom* tag)
 {
     RootedId toStringTagId(cx, SYMBOL_TO_JSID(cx->wellKnownSymbols().toStringTag));
     RootedValue tagString(cx, StringValue(tag));
@@ -655,12 +647,13 @@ js::DefineToStringTag(JSContext *cx, HandleObject obj, JSAtom* tag)
 static void
 GlobalDebuggees_finalize(FreeOp* fop, JSObject* obj)
 {
-    MOZ_ASSERT(fop->maybeOffMainThread());
+    MOZ_ASSERT(fop->maybeOnHelperThread());
     fop->delete_((GlobalObject::DebuggerVector*) obj->as<NativeObject>().getPrivate());
 }
 
 static const ClassOps
 GlobalDebuggees_classOps = {
+    nullptr,
     nullptr,
     nullptr,
     nullptr,
@@ -730,7 +723,7 @@ GlobalObject::hasRegExpStatics() const
 }
 
 /* static */ RegExpStatics*
-GlobalObject::getRegExpStatics(ExclusiveContext* cx, Handle<GlobalObject*> global)
+GlobalObject::getRegExpStatics(JSContext* cx, Handle<GlobalObject*> global)
 {
     MOZ_ASSERT(cx);
     RegExpStaticsObject* resObj = nullptr;
@@ -850,7 +843,7 @@ GlobalObject::addIntrinsicValue(JSContext* cx, Handle<GlobalObject*> global,
 
     RootedId id(cx, NameToId(name));
     Rooted<StackShape> child(cx, StackShape(base, id, slot, 0, 0));
-    Shape* shape = cx->zone()->propertyTree.getChild(cx, last, child);
+    Shape* shape = cx->zone()->propertyTree().getChild(cx, last, child);
     if (!shape)
         return false;
 

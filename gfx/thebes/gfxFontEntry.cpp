@@ -8,9 +8,6 @@
 
 #include "mozilla/Logging.h"
 
-#include "nsServiceManagerUtils.h"
-#include "nsILanguageAtomService.h"
-
 #include "gfxFontEntry.h"
 #include "gfxTextRun.h"
 #include "gfxPlatform.h"
@@ -141,6 +138,8 @@ gfxFontEntry::gfxFontEntry(const nsAString& aName, bool aIsStandardFace) :
 
 gfxFontEntry::~gfxFontEntry()
 {
+    // Should not be dropped by stylo
+    MOZ_ASSERT(NS_IsMainThread());
     if (mCOLR) {
         hb_blob_destroy(mCOLR);
     }
@@ -271,19 +270,20 @@ gfxFontEntry::RealFaceName()
     return Name();
 }
 
-already_AddRefed<gfxFont>
+gfxFont*
 gfxFontEntry::FindOrMakeFont(const gfxFontStyle *aStyle,
                              bool aNeedsBold,
                              gfxCharacterMap* aUnicodeRangeMap)
 {
     // the font entry name is the psname, not the family name
-    RefPtr<gfxFont> font =
+    gfxFont* font =
         gfxFontCache::GetCache()->Lookup(this, aStyle, aUnicodeRangeMap);
 
     if (!font) {
         gfxFont *newFont = CreateFontInstance(aStyle, aNeedsBold);
-        if (!newFont)
+        if (!newFont) {
             return nullptr;
+        }
         if (!newFont->Valid()) {
             delete newFont;
             return nullptr;
@@ -292,7 +292,7 @@ gfxFontEntry::FindOrMakeFont(const gfxFontStyle *aStyle,
         font->SetUnicodeRangeMap(aUnicodeRangeMap);
         gfxFontCache::GetCache()->AddNew(font);
     }
-    return font.forget();
+    return font;
 }
 
 uint16_t
@@ -341,17 +341,17 @@ gfxFontEntry::GetSVGGlyphExtents(DrawTarget* aDrawTarget, uint32_t aGlyphId,
     gfxMatrix svgToAppSpace(fontMatrix.xx, fontMatrix.yx,
                             fontMatrix.xy, fontMatrix.yy,
                             fontMatrix.x0, fontMatrix.y0);
-    svgToAppSpace.Scale(1.0f / mUnitsPerEm, 1.0f / mUnitsPerEm);
+    svgToAppSpace.PreScale(1.0f / mUnitsPerEm, 1.0f / mUnitsPerEm);
 
     return mSVGGlyphs->GetGlyphExtents(aGlyphId, svgToAppSpace, aResult);
 }
 
-bool
+void
 gfxFontEntry::RenderSVGGlyph(gfxContext *aContext, uint32_t aGlyphId,
                              SVGContextPaint* aContextPaint)
 {
     NS_ASSERTION(mSVGInitialized, "SVG data has not yet been loaded. TryGetSVGData() first.");
-    return mSVGGlyphs->RenderGlyph(aContext, aGlyphId, aContextPaint);
+    mSVGGlyphs->RenderGlyph(aContext, aGlyphId, aContextPaint);
 }
 
 bool
@@ -698,10 +698,9 @@ gfxFontEntry::GrReleaseTable(const void *aAppFaceHandle,
 {
     gfxFontEntry *fontEntry =
         static_cast<gfxFontEntry*>(const_cast<void*>(aAppFaceHandle));
-    void *data;
-    if (fontEntry->mGrTableMap->Get(aTableBuffer, &data)) {
-        fontEntry->mGrTableMap->Remove(aTableBuffer);
-        hb_blob_destroy(static_cast<hb_blob_t*>(data));
+    void* value;
+    if (fontEntry->mGrTableMap->Remove(aTableBuffer, &value)) {
+        hb_blob_destroy(static_cast<hb_blob_t*>(value));
     }
 }
 
@@ -1534,6 +1533,13 @@ gfxFontFamily::SearchAllFontsForChar(GlobalFontMatch *aMatchData)
             }
         }
     }
+}
+
+/*virtual*/
+gfxFontFamily::~gfxFontFamily()
+{
+    // Should not be dropped by stylo
+    MOZ_ASSERT(NS_IsMainThread());
 }
 
 /*static*/ void

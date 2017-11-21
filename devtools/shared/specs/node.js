@@ -43,6 +43,12 @@ const nodeSpec = generateActorSpec({
         value: RetVal("string")
       }
     },
+    getXPath: {
+      request: {},
+      response: {
+        value: RetVal("string")
+      }
+    },
     scrollIntoView: {
       request: {},
       response: {}
@@ -66,7 +72,13 @@ const nodeSpec = generateActorSpec({
     getFontFamilyDataURL: {
       request: {font: Arg(0, "string"), fillStyle: Arg(1, "nullable:string")},
       response: RetVal("imageData")
-    }
+    },
+    getClosestBackgroundColor: {
+      request: {},
+      response: {
+        value: RetVal("string")
+      }
+    },
   }
 });
 

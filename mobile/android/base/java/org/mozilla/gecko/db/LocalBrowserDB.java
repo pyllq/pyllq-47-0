@@ -36,7 +36,6 @@ import org.mozilla.gecko.db.BrowserContract.History;
 import org.mozilla.gecko.db.BrowserContract.SyncColumns;
 import org.mozilla.gecko.db.BrowserContract.Thumbnails;
 import org.mozilla.gecko.db.BrowserContract.TopSites;
-import org.mozilla.gecko.db.BrowserContract.Highlights;
 import org.mozilla.gecko.db.BrowserContract.PageMetadata;
 import org.mozilla.gecko.distribution.Distribution;
 import org.mozilla.gecko.icons.decoders.FaviconDecoder;
@@ -111,7 +110,6 @@ public class LocalBrowserDB extends BrowserDB {
     public static final String HISTORY_VISITS_URL = "url";
 
     private static final String TELEMETRY_HISTOGRAM_ACTIVITY_STREAM_TOPSITES = "FENNEC_ACTIVITY_STREAM_TOPSITES_LOADER_TIME_MS";
-    private static final String TELEMETRY_HISTOGRAM_ACTIVITY_STREAM_HIGHLIGHTS = "FENNEC_ACTIVITY_STREAM_HIGHLIGHTS_LOADER_TIME_MS";
 
     private final Uri mBookmarksUriWithProfile;
     private final Uri mParentsUriWithProfile;
@@ -122,7 +120,7 @@ public class LocalBrowserDB extends BrowserDB {
     private final Uri mFaviconsUriWithProfile;
     private final Uri mThumbnailsUriWithProfile;
     private final Uri mTopSitesUriWithProfile;
-    private final Uri mHighlightsUriWithProfile;
+    private final Uri mHighlightCandidatesUriWithProfile;
     private final Uri mSearchHistoryUri;
     private final Uri mActivityStreamBlockedUriWithProfile;
     private final Uri mPageMetadataWithProfile;
@@ -151,7 +149,7 @@ public class LocalBrowserDB extends BrowserDB {
         mCombinedUriWithProfile = DBUtils.appendProfile(profile, Combined.CONTENT_URI);
         mFaviconsUriWithProfile = DBUtils.appendProfile(profile, Favicons.CONTENT_URI);
         mTopSitesUriWithProfile = DBUtils.appendProfile(profile, TopSites.CONTENT_URI);
-        mHighlightsUriWithProfile = DBUtils.appendProfile(profile, Highlights.CONTENT_URI);
+        mHighlightCandidatesUriWithProfile = DBUtils.appendProfile(profile, BrowserContract.HighlightCandidates.CONTENT_URI);
         mThumbnailsUriWithProfile = DBUtils.appendProfile(profile, Thumbnails.CONTENT_URI);
         mActivityStreamBlockedUriWithProfile = DBUtils.appendProfile(profile, ActivityStreamBlocklist.CONTENT_URI);
 
@@ -797,21 +795,7 @@ public class LocalBrowserDB extends BrowserDB {
                         History.DATE_LAST_VISITED + " DESC");
     }
 
-    @Override
-    public Cursor getRecentHistoryBetweenTime(ContentResolver cr, int limit, long start, long end) {
-        return cr.query(combinedUriWithLimit(limit),
-                new String[] { Combined._ID,
-                        Combined.BOOKMARK_ID,
-                        Combined.HISTORY_ID,
-                        Combined.URL,
-                        Combined.TITLE,
-                        Combined.DATE_LAST_VISITED,
-                        Combined.VISITS },
-                History.DATE_LAST_VISITED + " >= " + start + " AND " + History.DATE_LAST_VISITED + " < " + end,
-                null,
-                History.DATE_LAST_VISITED + " DESC");
-    }
-
+    @Nullable
     public Cursor getHistoryForURL(ContentResolver cr, String uri) {
         return cr.query(mHistoryUriWithProfile,
                 new String[] {
@@ -1123,20 +1107,6 @@ public class LocalBrowserDB extends BrowserDB {
         }
     }
 
-    /**
-     * Find parents of records that match the provided criteria, and bump their
-     * modified timestamp.
-     */
-    protected void bumpParents(ContentResolver cr, String param, String value) {
-        ContentValues values = new ContentValues();
-        values.put(Bookmarks.DATE_MODIFIED, System.currentTimeMillis());
-
-        String where  = param + " = ?";
-        String[] args = new String[] { value };
-        int updated  = cr.update(mParentsUriWithProfile, values, where, args);
-        debug("Updated " + updated + " rows to new modified time.");
-    }
-
     private void addBookmarkItem(ContentResolver cr, String title, String uri, long folderId) {
         final long now = System.currentTimeMillis();
         ContentValues values = new ContentValues();
@@ -1177,16 +1147,7 @@ public class LocalBrowserDB extends BrowserDB {
                   Bookmarks.PARENT + " = " + folderId,
                   new String[] { uri });
 
-        // Bump parent modified time using its ID.
-        debug("Bumping parent modified time for addition to: " + folderId);
-        final String where  = Bookmarks._ID + " = ?";
-        final String[] args = new String[] { String.valueOf(folderId) };
-
-        ContentValues bumped = new ContentValues();
-        bumped.put(Bookmarks.DATE_MODIFIED, now);
-
-        final int updated = cr.update(mBookmarksUriWithProfile, bumped, where, args);
-        debug("Updated " + updated + " rows to new modified time.");
+        // BrowserProvider will handle updating parent's lastModified timestamp, nothing else to do.
     }
 
     @Override
@@ -1202,7 +1163,6 @@ public class LocalBrowserDB extends BrowserDB {
         addBookmarkItem(cr, title, uri, folderId);
         return true;
     }
-
     private boolean isBookmarkForUrlInFolder(ContentResolver cr, String uri, long folderId) {
         final Cursor c = cr.query(bookmarksUriWithLimit(1),
                                   new String[] { Bookmarks._ID },
@@ -1222,17 +1182,35 @@ public class LocalBrowserDB extends BrowserDB {
     }
 
     @Override
+    public Uri addBookmarkFolder(ContentResolver cr, String title, long parentId) {
+        final ContentValues values = new ContentValues();
+        final long now = System.currentTimeMillis();
+        values.put(Bookmarks.DATE_CREATED, now);
+        values.put(Bookmarks.DATE_MODIFIED, now);
+        values.put(Bookmarks.GUID, Utils.generateGuid());
+        values.put(Bookmarks.PARENT, parentId);
+        values.put(Bookmarks.TITLE, title);
+        values.put(Bookmarks.TYPE, Bookmarks.TYPE_FOLDER);
+
+        // BrowserProvider will bump parent's lastModified timestamp after successful insertion.
+        return cr.insert(mBookmarksUriWithProfile, values);
+    }
+
+    @Override
     @RobocopTarget
     public void removeBookmarksWithURL(ContentResolver cr, String uri) {
-        Uri contentUri = mBookmarksUriWithProfile;
+        // BrowserProvider will bump parent's lastModified timestamp after successful deletion.
+        cr.delete(mBookmarksUriWithProfile,
+                  Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " != ? ",
+                  new String[] { uri, String.valueOf(Bookmarks.FIXED_PINNED_LIST_ID) });
+    }
 
-        // Do this now so that the items still exist!
-        bumpParents(cr, Bookmarks.URL, uri);
-
-        final String[] urlArgs = new String[] { uri, String.valueOf(Bookmarks.FIXED_PINNED_LIST_ID) };
-        final String urlEquals = Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " != ? ";
-
-        cr.delete(contentUri, urlEquals, urlArgs);
+    @Override
+    public void removeBookmarkWithId(ContentResolver cr, long id) {
+        // BrowserProvider will bump parent's lastModified timestamp after successful deletion.
+        cr.delete(mBookmarksUriWithProfile,
+                  Bookmarks._ID + " = ? AND " + Bookmarks.PARENT + " != ? ",
+                  new String[] { String.valueOf(id), String.valueOf(Bookmarks.FIXED_PINNED_LIST_ID) });
     }
 
     @Override
@@ -1242,7 +1220,7 @@ public class LocalBrowserDB extends BrowserDB {
 
     @Override
     @RobocopTarget
-    public void updateBookmark(ContentResolver cr, int id, String uri, String title, String keyword) {
+    public void updateBookmark(ContentResolver cr, long id, String uri, String title, String keyword) {
         ContentValues values = new ContentValues();
         values.put(Bookmarks.TITLE, title);
         values.put(Bookmarks.URL, uri);
@@ -1250,6 +1228,26 @@ public class LocalBrowserDB extends BrowserDB {
         values.put(Bookmarks.DATE_MODIFIED, System.currentTimeMillis());
 
         cr.update(mBookmarksUriWithProfile,
+                  values,
+                  Bookmarks._ID + " = ?",
+                  new String[] { String.valueOf(id) });
+    }
+
+    @Override
+    public void updateBookmark(ContentResolver cr, long id, String uri, String title, String keyword,
+                               long newParentId, long oldParentId) {
+        final ContentValues values = new ContentValues();
+        values.put(Bookmarks.TITLE, title);
+        values.put(Bookmarks.URL, uri);
+        values.put(Bookmarks.KEYWORD, keyword);
+        values.put(Bookmarks.PARENT, newParentId);
+        values.put(Bookmarks.DATE_MODIFIED, System.currentTimeMillis());
+
+        final Uri contentUri = mBookmarksUriWithProfile.buildUpon()
+                                .appendQueryParameter(BrowserContract.PARAM_OLD_BOOKMARK_PARENT,
+                                                      String.valueOf(oldParentId))
+                                .build();
+        cr.update(contentUri,
                   values,
                   Bookmarks._ID + " = ?",
                   new String[] { String.valueOf(id) });
@@ -1439,6 +1437,7 @@ public class LocalBrowserDB extends BrowserDB {
      * Returns null if the provided list of URLs is empty or null.
      */
     @Override
+    @Nullable
     public Cursor getThumbnailsForUrls(ContentResolver cr, List<String> urls) {
         final int urlCount = urls.size();
         if (urlCount == 0) {
@@ -1698,8 +1697,6 @@ public class LocalBrowserDB extends BrowserDB {
 
     @Override
     public void pinSite(ContentResolver cr, String url, String title, int position) {
-        Log.d(LOGTAG,"pinSite position:"+position);
-        
         ContentValues values = new ContentValues();
         final long now = System.currentTimeMillis();
         values.put(Bookmarks.TITLE, title);
@@ -1751,11 +1748,9 @@ public class LocalBrowserDB extends BrowserDB {
     public void unpinSiteForAS(ContentResolver cr, String url) {
         cr.delete(mBookmarksUriWithProfile,
                 Bookmarks.PARENT + " == ? AND " +
-                Bookmarks.POSITION + " == ? AND " +
                 Bookmarks.URL + " = ?",
                 new String[] {
                         String.valueOf(Bookmarks.FIXED_PINNED_LIST_ID),
-                        String.valueOf(Bookmarks.FIXED_AS_PIN_POSITION),
                         url
                 });
     }
@@ -1764,11 +1759,10 @@ public class LocalBrowserDB extends BrowserDB {
     public boolean isPinnedForAS(ContentResolver cr, String url) {
         final Cursor c = cr.query(bookmarksUriWithLimit(1),
                 new String[] { Bookmarks._ID },
-                Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " = ? AND " + Bookmarks.POSITION + " = ?",
+                Bookmarks.URL + " = ? AND " + Bookmarks.PARENT + " = ?",
                 new String[] {
                         url,
                         String.valueOf(Bookmarks.FIXED_PINNED_LIST_ID),
-                        String.valueOf(Bookmarks.FIXED_AS_PIN_POSITION)
                 }, null);
 
         if (c == null) {
@@ -1784,11 +1778,15 @@ public class LocalBrowserDB extends BrowserDB {
 
     @Override
     @RobocopTarget
+    @Nullable
     public Cursor getBookmarkForUrl(ContentResolver cr, String url) {
         Cursor c = cr.query(bookmarksUriWithLimit(1),
                             new String[] { Bookmarks._ID,
                                            Bookmarks.URL,
                                            Bookmarks.TITLE,
+                                           Bookmarks.TYPE,
+                                           Bookmarks.PARENT,
+                                           Bookmarks.GUID,
                                            Bookmarks.KEYWORD },
                             Bookmarks.URL + " = ?",
                             new String[] { url },
@@ -1803,6 +1801,70 @@ public class LocalBrowserDB extends BrowserDB {
     }
 
     @Override
+    @Nullable
+    public Cursor getBookmarkById(ContentResolver cr, long id) {
+        final Cursor c = cr.query(mBookmarksUriWithProfile,
+                                  new String[] { Bookmarks._ID,
+                                                 Bookmarks.URL,
+                                                 Bookmarks.TITLE,
+                                                 Bookmarks.TYPE,
+                                                 Bookmarks.PARENT,
+                                                 Bookmarks.GUID,
+                                                 Bookmarks.KEYWORD },
+                                  Bookmarks._ID + " = ?",
+                                  new String[] { String.valueOf(id) },
+                                  null);
+
+        if (c != null && c.getCount() == 0) {
+            c.close();
+            return null;
+        }
+
+        return c;
+    }
+
+    @Override
+    @Nullable
+    public Cursor getBookmarkByGuid(ContentResolver cr, String guid) {
+        final Cursor c = cr.query(mBookmarksUriWithProfile,
+                                  DEFAULT_BOOKMARK_COLUMNS,
+                                  Bookmarks.GUID + " = ?",
+                                  new String[] { guid },
+                                  null);
+
+        if (c != null && c.getCount() == 0) {
+            c.close();
+            return null;
+        }
+
+        return c;
+    }
+
+    @Override
+    @Nullable
+    public Cursor getAllBookmarkFolders(ContentResolver cr) {
+        final Cursor cursor = cr.query(mBookmarksUriWithProfile,
+                                       DEFAULT_BOOKMARK_COLUMNS,
+                                       Bookmarks.TYPE + " = ? AND " +
+                                       Bookmarks.GUID + " NOT IN (?, ?, ?, ?, ?) AND " +
+                                       Bookmarks.IS_DELETED + " = 0",
+                                       new String[] { String.valueOf(Bookmarks.TYPE_FOLDER),
+                                                      Bookmarks.SCREENSHOT_FOLDER_GUID,
+                                                      Bookmarks.FAKE_READINGLIST_SMARTFOLDER_GUID,
+                                                      Bookmarks.TAGS_FOLDER_GUID,
+                                                      Bookmarks.PLACES_FOLDER_GUID,
+                                                      Bookmarks.PINNED_FOLDER_GUID },
+                                       null);
+        if (desktopBookmarksExist(cr)) {
+            final Cursor desktopCursor = getSpecialFolderCursor(Bookmarks.FAKE_DESKTOP_FOLDER_ID,
+                                                                Bookmarks.FAKE_DESKTOP_FOLDER_GUID);
+            return new MergeCursor(new Cursor[] { cursor, desktopCursor });
+        }
+        return cursor;
+    }
+
+    @Override
+    @Nullable
     public Cursor getBookmarksForPartialUrl(ContentResolver cr, String partialUrl) {
         Cursor c = cr.query(mBookmarksUriWithProfile,
                 new String[] { Bookmarks.GUID, Bookmarks._ID, Bookmarks.URL },
@@ -1929,56 +1991,8 @@ public class LocalBrowserDB extends BrowserDB {
                 TELEMETRY_HISTOGRAM_ACTIVITY_STREAM_TOPSITES);
     }
 
-    public Cursor getTopSitesOrig(ContentResolver cr, int suggestedRangeLimit, int limit) {
-        final Uri uri = mTopSitesUriWithProfile.buildUpon()
-                .appendQueryParameter(BrowserContract.PARAM_LIMIT,
-                        String.valueOf(limit))
-                .appendQueryParameter(BrowserContract.PARAM_SUGGESTEDSITES_LIMIT,
-                        String.valueOf(suggestedRangeLimit))
-                .build();
-
-        Cursor topSitesCursor = cr.query(uri,
-                                         new String[] { Combined._ID,
-                                                 Combined.URL,
-                                                 Combined.TITLE,
-                                                 Combined.BOOKMARK_ID,
-                                                 Combined.HISTORY_ID },
-                                         null,
-                                         null,
-                                         null);
-
-        // It's possible that we will retrieve fewer sites than are required to fill the top-sites panel - in this case
-        // we need to add "blank" tiles. It's much easier to add these here (as opposed to SQL), since we don't care
-        // about their ordering (they go after all the other sites), but we do care about their number (and calculating
-        // that inside out topsites SQL query would be difficult given the other processing we're already doing there).
-        final int blanksRequired = suggestedRangeLimit - topSitesCursor.getCount();
-
-        if (blanksRequired <= 0) {
-            return topSitesCursor;
-        }
-
-        MatrixCursor blanksCursor = new MatrixCursor(new String[] {
-                TopSites._ID,
-                TopSites.BOOKMARK_ID,
-                TopSites.HISTORY_ID,
-                TopSites.URL,
-                TopSites.TITLE,
-                TopSites.TYPE});
-
-        final MatrixCursor.RowBuilder rb = blanksCursor.newRow();
-        rb.add(-1);
-        rb.add(-1);
-        rb.add(-1);
-        rb.add("");
-        rb.add("");
-        rb.add(TopSites.TYPE_BLANK);
-
-        return new MergeCursor(new Cursor[] {topSitesCursor, blanksCursor});
-    }
-
     @Override
     public Cursor getTopSites(ContentResolver cr, int suggestedRangeLimit, int limit) {
-        Log.v(LOGTAG,"getTopSites topsites");
         final Uri uri = mTopSitesUriWithProfile.buildUpon()
                 .appendQueryParameter(BrowserContract.PARAM_LIMIT,
                         String.valueOf(limit))
@@ -1999,13 +2013,13 @@ public class LocalBrowserDB extends BrowserDB {
     }
 
     @Override
-    public CursorLoader getHighlights(Context context, int limit) {
-        final Uri uri = mHighlightsUriWithProfile.buildUpon()
+    @Nullable
+    public Cursor getHighlightCandidates(ContentResolver contentResolver, int limit) {
+        final Uri uri = mHighlightCandidatesUriWithProfile.buildUpon()
                 .appendQueryParameter(BrowserContract.PARAM_LIMIT, String.valueOf(limit))
                 .build();
 
-        return new TelemetrisedCursorLoader(context, uri, null, null, null, null,
-                TELEMETRY_HISTOGRAM_ACTIVITY_STREAM_HIGHLIGHTS);
+        return contentResolver.query(uri, null, null, null, null);
     }
 
     @Override

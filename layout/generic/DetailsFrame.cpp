@@ -31,18 +31,12 @@ NS_NewDetailsFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 namespace mozilla {
 
 DetailsFrame::DetailsFrame(nsStyleContext* aContext)
-  : nsBlockFrame(aContext)
+  : nsBlockFrame(aContext, kClassID)
 {
 }
 
 DetailsFrame::~DetailsFrame()
 {
-}
-
-nsIAtom*
-DetailsFrame::GetType() const
-{
-  return nsGkAtoms::detailsFrame;
 }
 
 void
@@ -130,6 +124,15 @@ DetailsFrame::AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
   if (mDefaultSummary) {
     aElements.AppendElement(mDefaultSummary);
   }
+}
+
+bool
+DetailsFrame::HasMainSummaryFrame(nsIFrame* aSummaryFrame)
+{
+  nsIFrame* firstChild =
+    nsPlaceholderFrame::GetRealFrameFor(mFrames.FirstChild());
+
+  return aSummaryFrame == firstChild;
 }
 
 } // namespace mozilla

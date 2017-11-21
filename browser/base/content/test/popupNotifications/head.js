@@ -1,9 +1,5 @@
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "Promise",
-  "resource://gre/modules/Promise.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "Task",
-  "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
   "resource://gre/modules/PlacesUtils.jsm");
 
@@ -18,27 +14,27 @@ XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
  * @rejects Never.
  */
 function promiseTopicObserved(topic) {
-  let deferred = Promise.defer();
-  info("Waiting for observer topic " + topic);
-  Services.obs.addObserver(function PTO_observe(obsSubject, obsTopic, obsData) {
-    Services.obs.removeObserver(PTO_observe, obsTopic);
-    deferred.resolve([obsSubject, obsData]);
-  }, topic, false);
-  return deferred.promise;
+  return new Promise(resolve => {
+    info("Waiting for observer topic " + topic);
+    Services.obs.addObserver(function PTO_observe(obsSubject, obsTopic, obsData) {
+      Services.obs.removeObserver(PTO_observe, obsTopic);
+      resolve([obsSubject, obsData]);
+    }, topic);
+  });
 }
 
 /**
  * Called after opening a new window or switching windows, this will wait until
  * we are sure that an attempt to display a notification will not fail.
  */
-function* waitForWindowReadyForPopupNotifications(win) {
+async function waitForWindowReadyForPopupNotifications(win) {
   // These are the same checks that PopupNotifications.jsm makes before it
   // allows a notification to open.
-  yield BrowserTestUtils.waitForCondition(
+  await BrowserTestUtils.waitForCondition(
     () => win.gBrowser.selectedBrowser.docShellIsActive,
     "The browser should be active"
   );
-  yield BrowserTestUtils.waitForCondition(
+  await BrowserTestUtils.waitForCondition(
     () => Services.focus.activeWindow == win,
     "The window should be active"
   );
@@ -68,6 +64,9 @@ function promiseTabLoadEvent(tab, url) {
 
 const PREF_SECURITY_DELAY_INITIAL = Services.prefs.getIntPref("security.notification_enable_delay");
 
+// Tests that call setup() should have a `tests` array defined for the actual
+// tests to be run.
+/* global tests */
 function setup() {
   BrowserTestUtils.openNewForegroundTab(gBrowser, "http://example.com/")
                   .then(goNext);
@@ -78,10 +77,10 @@ function setup() {
 }
 
 function goNext() {
-  executeSoon(() => executeSoon(Task.async(runNextTest)));
+  executeSoon(() => executeSoon(runNextTest));
 }
 
-function* runNextTest() {
+async function runNextTest() {
   if (tests.length == 0) {
     executeSoon(finish);
     return;
@@ -96,19 +95,19 @@ function* runNextTest() {
     onPopupEvent("popupshown", function() {
       shownState = true;
       info("[" + nextTest.id + "] popup shown");
-      Task.spawn(() => nextTest.onShown(this))
+      (nextTest.onShown(this) || Promise.resolve())
           .then(undefined, ex => Assert.ok(false, "onShown failed: " + ex));
     });
     onPopupEvent("popuphidden", function() {
       info("[" + nextTest.id + "] popup hidden");
-      Task.spawn(() => nextTest.onHidden(this))
+      (nextTest.onHidden(this) || Promise.resolve())
           .then(() => goNext(), ex => Assert.ok(false, "onHidden failed: " + ex));
     }, () => shownState);
     info("[" + nextTest.id + "] added listeners; panel is open: " + PopupNotifications.isPanelOpen);
   }
 
   info("[" + nextTest.id + "] running test");
-  yield nextTest.run();
+  await nextTest.run();
 }
 
 function showNotification(notifyObj) {
@@ -211,6 +210,9 @@ function checkPopup(popup, notifyObj) {
        "main action label matches");
     is(notification.getAttribute("buttonaccesskey"),
        notifyObj.mainAction.accessKey, "main action accesskey matches");
+    is(notification.getAttribute("buttonhighlight"),
+       (!notifyObj.mainAction.disableHighlight).toString(),
+       "main action highlight matches");
   }
   if (notifyObj.secondaryActions && notifyObj.secondaryActions.length > 0) {
     let secondaryAction = notifyObj.secondaryActions[0];
@@ -294,8 +296,7 @@ function triggerSecondaryCommand(popup, index) {
   // Extra secondary actions appear in a menu.
   notification.secondaryButton.nextSibling.nextSibling.focus();
 
-  popup.addEventListener("popupshown", function handle() {
-    popup.removeEventListener("popupshown", handle);
+  popup.addEventListener("popupshown", function() {
     info("Command popup open for notification " + notification.id);
     // Press down until the desired command is selected. Decrease index by one
     // since the secondary action was handled above.
@@ -304,7 +305,7 @@ function triggerSecondaryCommand(popup, index) {
     }
     // Activate
     EventUtils.synthesizeKey("VK_RETURN", {});
-  });
+  }, {once: true});
 
   // One down event to open the popup
   info("Open the popup to trigger secondary command for notification " + notification.id);

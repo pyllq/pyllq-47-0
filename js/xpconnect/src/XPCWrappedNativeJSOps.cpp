@@ -44,11 +44,11 @@ static bool Throw(nsresult errNum, JSContext* cx)
 static bool
 ToStringGuts(XPCCallContext& ccx)
 {
-    char* sz;
+    UniqueChars sz;
     XPCWrappedNative* wrapper = ccx.GetWrapper();
 
     if (wrapper)
-        sz = wrapper->ToString(ccx.GetTearOff());
+        sz.reset(wrapper->ToString(ccx.GetTearOff()));
     else
         sz = JS_smprintf("[xpconnect wrapped native prototype]");
 
@@ -57,8 +57,7 @@ ToStringGuts(XPCCallContext& ccx)
         return false;
     }
 
-    JSString* str = JS_NewStringCopyZ(ccx, sz);
-    JS_smprintf_free(sz);
+    JSString* str = JS_NewStringCopyZ(ccx, sz.get());
     if (!str)
         return false;
 
@@ -118,7 +117,7 @@ XPC_WN_Shared_toPrimitive(JSContext* cx, unsigned argc, Value* vp)
         return true;
     }
 
-    MOZ_ASSERT(hint == JSTYPE_STRING || hint == JSTYPE_VOID);
+    MOZ_ASSERT(hint == JSTYPE_STRING || hint == JSTYPE_UNDEFINED);
     ccx.SetName(ccx.GetContext()->GetStringID(XPCJSContext::IDX_TO_STRING));
     ccx.SetArgsAndResultPtr(0, nullptr, args.rval().address());
 
@@ -200,7 +199,7 @@ XPC_WN_DoubleWrappedGetter(JSContext* cx, unsigned argc, Value* vp)
 
     // It is a double wrapped object. This should really never appear in
     // content these days, but addons still do it - see bug 965921.
-    if (MOZ_UNLIKELY(!nsContentUtils::IsCallerChrome())) {
+    if (MOZ_UNLIKELY(!nsContentUtils::IsSystemCaller(cx))) {
         JS_ReportErrorASCII(cx, "Attempt to use .wrappedJSObject in untrusted code");
         return false;
     }
@@ -313,7 +312,7 @@ DefinePropertyIfFound(XPCCallContext& ccx,
 
             if (JSID_IS_STRING(id) &&
                 name.encodeLatin1(ccx, JSID_TO_STRING(id)) &&
-                (iface2 = XPCNativeInterface::GetNewOrUsed(name.ptr()), iface2) &&
+                (iface2 = XPCNativeInterface::GetNewOrUsed(name.ptr())) &&
                 nullptr != (to = wrapperToReflectInterfaceNames->
                            FindTearOff(iface2, true, &rv)) &&
                 nullptr != (jso = to->GetJSObject()))
@@ -627,6 +626,7 @@ static const js::ClassOps XPC_WN_NoHelper_JSClassOps = {
     nullptr,                           // getProperty
     nullptr,                           // setProperty
     XPC_WN_Shared_Enumerate,           // enumerate
+    nullptr,                           // newEnumerate
     XPC_WN_NoHelper_Resolve,           // resolve
     nullptr,                           // mayResolve
     XPC_WN_NoHelper_Finalize,          // finalize
@@ -692,7 +692,8 @@ XPC_WN_MaybeResolvingDeletePropertyStub(JSContext* cx, HandleObject obj, HandleI
 
 // macro fun!
 #define PRE_HELPER_STUB                                                       \
-    JSObject* unwrapped = js::CheckedUnwrap(obj, false);                      \
+    /* It's very important for "unwrapped" to be rooted here.  */             \
+    RootedObject unwrapped(cx, js::CheckedUnwrap(obj, false));                \
     if (!unwrapped) {                                                         \
         JS_ReportErrorASCII(cx, "Permission denied to operate on object.");   \
         return false;                                                         \
@@ -875,9 +876,9 @@ XPC_WN_Helper_Enumerate(JSContext* cx, HandleObject obj)
 
 /***************************************************************************/
 
-static bool
-XPC_WN_JSOp_Enumerate(JSContext* cx, HandleObject obj, AutoIdVector& properties,
-                      bool enumerableOnly)
+bool
+XPC_WN_NewEnumerate(JSContext* cx, HandleObject obj, AutoIdVector& properties,
+                    bool enumerableOnly)
 {
     XPCCallContext ccx(cx, obj);
     XPCWrappedNative* wrapper = ccx.GetWrapper();
@@ -896,23 +897,6 @@ XPC_WN_JSOp_Enumerate(JSContext* cx, HandleObject obj, AutoIdVector& properties,
         return Throw(rv, cx);
     return retval;
 }
-
-/***************************************************************************/
-
-const js::ObjectOps XPC_WN_ObjectOpsWithEnumerate = {
-    nullptr,  // lookupProperty
-    nullptr,  // defineProperty
-    nullptr,  // hasProperty
-    nullptr,  // getProperty
-    nullptr,  // setProperty
-    nullptr,  // getOwnPropertyDescriptor
-    nullptr,  // deleteProperty
-    nullptr,  // watch
-    nullptr,  // unwatch
-    nullptr,  // getElements
-    XPC_WN_JSOp_Enumerate,
-    nullptr,  // funToString
-};
 
 /***************************************************************************/
 /***************************************************************************/
@@ -1114,6 +1098,7 @@ static const js::ClassOps XPC_WN_ModsAllowed_Proto_JSClassOps = {
     nullptr,                            // getProperty
     nullptr,                            // setProperty
     XPC_WN_Shared_Proto_Enumerate,      // enumerate
+    nullptr,                            // newEnumerate
     XPC_WN_ModsAllowed_Proto_Resolve,   // resolve
     nullptr,                            // mayResolve
     XPC_WN_Shared_Proto_Finalize,       // finalize
@@ -1194,6 +1179,7 @@ static const js::ClassOps XPC_WN_NoMods_Proto_JSClassOps = {
     nullptr,                                   // getProperty
     nullptr,                                   // setProperty
     XPC_WN_Shared_Proto_Enumerate,             // enumerate
+    nullptr,                                   // newEnumerate
     XPC_WN_NoMods_Proto_Resolve,               // resolve
     nullptr,                                   // mayResolve
     XPC_WN_Shared_Proto_Finalize,              // finalize
@@ -1290,6 +1276,7 @@ static const js::ClassOps XPC_WN_Tearoff_JSClassOps = {
     nullptr,                            // getProperty
     nullptr,                            // setProperty
     XPC_WN_TearOff_Enumerate,           // enumerate
+    nullptr,                            // newEnumerate
     XPC_WN_TearOff_Resolve,             // resolve
     nullptr,                            // mayResolve
     XPC_WN_TearOff_Finalize,            // finalize

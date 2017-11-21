@@ -9,7 +9,6 @@ import os
 import stat
 import platform
 import errno
-import subprocess
 
 from mach.decorators import (
     CommandArgument,
@@ -78,59 +77,6 @@ class UUIDProvider(object):
             print('{ 0x%s, 0x%s, 0x%s, \\' % (u[0:8], u[8:12], u[12:16]))
             pairs = tuple(map(lambda n: u[n:n+2], range(16, 32, 2)))
             print(('  { ' + '0x%s, ' * 7 + '0x%s } }') % pairs)
-
-
-@CommandProvider
-class RageProvider(MachCommandBase):
-    @Command('rage', category='misc',
-             description='Express your frustration')
-    def rage(self):
-        """Have a bad experience developing Firefox? Run this command to
-        express your frustration.
-
-        This command will open your default configured web browser to a short
-        form where you can submit feedback. Just close the tab when done.
-        """
-        import getpass
-        import urllib
-        import webbrowser
-
-        # Try to resolve the current user.
-        user = None
-        with open(os.devnull, 'wb') as null:
-            if os.path.exists(os.path.join(self.topsrcdir, '.hg')):
-                try:
-                    user = subprocess.check_output(['hg', 'config',
-                                                    'ui.username'],
-                                                   cwd=self.topsrcdir,
-                                                   stderr=null)
-
-                    i = user.find('<')
-                    if i >= 0:
-                        user = user[i + 1:-2]
-                except subprocess.CalledProcessError:
-                    pass
-            elif os.path.exists(os.path.join(self.topsrcdir, '.git')):
-                try:
-                    user = subprocess.check_output(['git', 'config', '--get',
-                                                    'user.email'],
-                                                   cwd=self.topsrcdir,
-                                                   stderr=null)
-                except subprocess.CalledProcessError:
-                    pass
-
-        if not user:
-            try:
-                user = getpass.getuser()
-            except Exception:
-                pass
-
-        url = 'https://docs.google.com/a/mozilla.com/forms/d/e/1FAIpQLSeDVC3IXJu5d33Hp_ZTCOw06xEUiYH1pBjAqJ1g_y63sO2vvA/viewform'  # noqa: E501
-        if user:
-            url += '?entry.1281044204=%s' % urllib.quote(user)
-
-        print('Please leave your feedback in the opened web form')
-        webbrowser.open_new_tab(url)
 
 
 @CommandProvider
@@ -223,17 +169,21 @@ class PastebinProvider(object):
 class FormatProvider(MachCommandBase):
     @Command('clang-format', category='misc',
              description='Run clang-format on current changes')
-    @CommandArgument('--show', '-s', action='store_true',
+    @CommandArgument('--show', '-s', action='store_true', default=False,
                      help='Show diff output on instead of applying changes')
-    def clang_format(self, show=False):
+    @CommandArgument('--path', '-p', nargs='+', default=None,
+                     help='Specify the path(s) to reformat')
+    def clang_format(self, show, path):
+        # Run clang-format or clang-format-diff on the local changes
+        # or files/directories
         import urllib2
 
         plat = platform.system()
-        fmt = plat.lower() + "/clang-format-4.0"
-        fmt_diff = "clang-format-diff-4.0"
+        fmt = plat.lower() + "/clang-format-5.0~svn297730"
+        fmt_diff = "clang-format-diff-5.0~svn297730"
 
         # We are currently using an unmodified snapshot of upstream clang-format.
-        # This is a temporary work around until clang 4.0 has been released with our changes.
+        # This is a temporary work around until clang 5.0 has been released with our changes.
         if plat == "Windows":
             fmt += ".exe"
         else:
@@ -247,7 +197,8 @@ class FormatProvider(MachCommandBase):
         self.prompt = True
 
         try:
-            if not self.locate_or_fetch(fmt):
+            clang_format = self.locate_or_fetch(fmt)
+            if not clang_format:
                 return 1
             clang_format_diff = self.locate_or_fetch(fmt_diff, python_script=True)
             if not clang_format_diff:
@@ -257,40 +208,21 @@ class FormatProvider(MachCommandBase):
             print("HTTP error {0}: {1}".format(e.code, e.reason))
             return 1
 
-        from subprocess import Popen, PIPE
-
-        if os.path.exists(".hg"):
-            diff_process = Popen(["hg", "diff", "-U0", "-r", "tip^",
-                                  "--include", "glob:**.c", "--include", "glob:**.cpp",
-                                  "--include", "glob:**.h",
-                                  "--exclude", "listfile:.clang-format-ignore"], stdout=PIPE)
+        if path is None:
+            return self.run_clang_format_diff(clang_format_diff, show)
         else:
-            git_process = Popen(["git", "diff", "--no-color", "-U0", "HEAD^"], stdout=PIPE)
-            try:
-                diff_process = Popen(["filterdiff", "--include=*.h", "--include=*.cpp",
-                                      "--exclude-from-file=.clang-format-ignore"],
-                                     stdin=git_process.stdout, stdout=PIPE)
-            except OSError as e:
-                if e.errno == errno.ENOENT:
-                    print("Can't find filterdiff. Please install patchutils.")
-                else:
-                    print("OSError {0}: {1}".format(e.code, e.reason))
-                return 1
-
-        args = [sys.executable, clang_format_diff, "-p1"]
-        if not show:
-            args.append("-i")
-        cf_process = Popen(args, stdin=diff_process.stdout)
-        return cf_process.communicate()[0]
+            return self.run_clang_format_path(clang_format, show, path)
 
     def locate_or_fetch(self, root, python_script=False):
+        # Download the clang-format binary & python clang-format-diff if doesn't
+        # exists
         import urllib2
         import hashlib
         bin_sha = {
-            "Windows": "51ad909026e7adcc9342a199861ab4882d5ecbbd24ec76aee1d620ed5ee93c94079485214a7e4656180fb889ced11fc137aff9b1e08b474af5c21a2506407b7d",  # noqa: E501
-            "Linux": "3f85905248f103c7c6761e622a2a374fa26fe0b90cb78e65496596f39788621871fcf2619092975d362c2001c544fa662ebdca227042ef40369a16f564fe51a8",  # noqa: E501
-            "Darwin": "b07ed6bbb08bf71d8e9985b68e60fc8e9abda05d4b16f2123a188eb35fabb3f0b0123b9224aea7e51cae4cc59ddc25ffce55007fc841a8c30b195961841f850c",  # noqa: E501
-            "python_script": "00d6d6628c9e1af4a250bae09bef27bcb9ba9e325c7ae11de9413d247fa327c512e4a17dd82ba871532038dfd48985a01c4c21f0cb868c531b852d04160cd757",  # noqa: E501
+            "Windows": "0cbfc306df48f01bfe804e5e89cef73b3abe8f884fb7a5208f8895897f19ec45c13760787298192bd37de057d0ded091640c7d504438e06ec880f071a38db89c",  # noqa: E501
+            "Linux": "e6da4f6df074bfb15caefcf7767eb5670c02bb4768ba86ae4ab6b35235b53db012900a4f9e9a950ee140158a19532a71f21b986f511826bebc16f2ef83984e57",  # noqa: E501
+            "Darwin": "18000940a11e5ab0c1fe950d4360292216c8e963dd708679c4c5fb8cc845f5919cef3f58a7e092555b8ea6b8d8a809d66153ea6d1e7c226a2c4f2b0b7ad1b2f3",  # noqa: E501
+            "python_script": "34b6934a48a263ea3f88d48c2981d61ae6698823cfa689b9b0c8a607c224437ca0b9fdd434d260bd790d52a98455e2c2e2c745490d327ba84b4e22b7bb55b757",  # noqa: E501
         }
 
         target = os.path.join(self._mach_context.state_dir, os.path.basename(root))
@@ -299,7 +231,7 @@ class FormatProvider(MachCommandBase):
             tooltool_url = "https://api.pub.build.mozilla.org/tooltool/sha512/"
             if self.prompt and raw_input("Download clang-format executables from {0} (yN)? ".format(tooltool_url)).lower() != 'y':  # noqa: E501,F821
                 print("Download aborted.")
-                return 1
+                return None
             self.prompt = False
             plat = platform.system()
             if python_script:
@@ -323,6 +255,91 @@ class FormatProvider(MachCommandBase):
             os.chmod(temp, os.stat(temp).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             os.rename(temp, target)
         return target
+
+    def run_clang_format_diff(self, clang_format_diff, show):
+        # Run clang-format on the diff
+        # Note that this will potentially miss a lot things
+        from subprocess import Popen, PIPE
+
+        if os.path.exists(".hg"):
+            diff_process = Popen(["hg", "diff", "-U0", "-r", ".^",
+                                  "--include", "glob:**.c", "--include", "glob:**.cpp",
+                                  "--include", "glob:**.h",
+                                  "--exclude", "listfile:.clang-format-ignore"], stdout=PIPE)
+        else:
+            git_process = Popen(["git", "diff", "--no-color", "-U0", "HEAD^"], stdout=PIPE)
+            try:
+                diff_process = Popen(["filterdiff", "--include=*.h",
+                                      "--include=*.cpp", "--include=*.c",
+                                      "--exclude-from-file=.clang-format-ignore"],
+                                     stdin=git_process.stdout, stdout=PIPE)
+            except OSError as e:
+                if e.errno == errno.ENOENT:
+                    print("Can't find filterdiff. Please install patchutils.")
+                else:
+                    print("OSError {0}: {1}".format(e.code, e.reason))
+                return 1
+
+        args = [sys.executable, clang_format_diff, "-p1"]
+        if not show:
+            args.append("-i")
+        cf_process = Popen(args, stdin=diff_process.stdout)
+        return cf_process.communicate()[0]
+
+    def generate_path_list(self, paths):
+        pathToThirdparty = os.path.join(self.topsrcdir,
+                                        "tools",
+                                        "rewriting",
+                                        "ThirdPartyPaths.txt")
+        with open(pathToThirdparty) as f:
+            # Normalize the path (no trailing /)
+            ignored_dir = tuple(d.rstrip('/') for d in f.read().splitlines())
+
+        extensions = ('.cpp', '.c', '.h')
+
+        path_list = []
+        for f in paths:
+            if f.startswith(ignored_dir):
+                print("clang-format: Ignored third party code '{0}'".format(f))
+                continue
+
+            if os.path.isdir(f):
+                # Processing a directory, generate the file list
+                for folder, subs, files in os.walk(f):
+                    subs.sort()
+                    for filename in sorted(files):
+                        f_in_dir = os.path.join(folder, filename)
+                        if f_in_dir.endswith(extensions):
+                            # Supported extension
+                            path_list.append(f_in_dir)
+            else:
+                if f.endswith(extensions):
+                    path_list.append(f)
+
+        return path_list
+
+    def run_clang_format_path(self, clang_format, show, paths):
+        # Run clang-format on files or directories directly
+        from subprocess import Popen
+
+        args = [clang_format, "-i"]
+
+        path_list = self.generate_path_list(paths)
+
+        if path_list == []:
+            return
+
+        args += path_list
+
+        # Run clang-format
+        cf_process = Popen(args)
+        if show:
+            # show the diff
+            if os.path.exists(".hg"):
+                cf_process = Popen(["hg", "diff"] + path_list)
+            else:
+                cf_process = Popen(["git", "diff"] + path_list)
+        return cf_process.communicate()[0]
 
 
 def mozregression_import():

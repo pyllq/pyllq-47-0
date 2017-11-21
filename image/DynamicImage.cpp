@@ -7,6 +7,7 @@
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/RefPtr.h"
 #include "ImageRegion.h"
 #include "Orientation.h"
@@ -31,7 +32,7 @@ DynamicImage::GetProgressTracker()
 }
 
 size_t
-DynamicImage::SizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf) const
+DynamicImage::SizeOfSourceWithComputedFallback(SizeOfState& aState) const
 {
   return 0;
 }
@@ -80,7 +81,7 @@ DynamicImage::OnImageDataComplete(nsIRequest* aRequest,
 }
 
 void
-DynamicImage::OnSurfaceDiscarded()
+DynamicImage::OnSurfaceDiscarded(const SurfaceKey& aSurfaceKey)
 { }
 
 void
@@ -125,6 +126,12 @@ DynamicImage::GetHeight(int32_t* aHeight)
 {
   *aHeight = mDrawable->Size().height;
   return NS_OK;
+}
+
+nsresult
+DynamicImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) const
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -228,7 +235,7 @@ DynamicImage::Draw(gfxContext* aContext,
   IntSize drawableSize(mDrawable->Size());
 
   if (aSize == drawableSize) {
-    gfxUtils::DrawPixelSnapped(aContext, mDrawable, drawableSize, aRegion,
+    gfxUtils::DrawPixelSnapped(aContext, mDrawable, SizeDouble(drawableSize), aRegion,
                                SurfaceFormat::B8G8R8A8, aSamplingFilter,
                                aOpacity);
     return DrawResult::SUCCESS;
@@ -243,7 +250,7 @@ DynamicImage::Draw(gfxContext* aContext,
   gfxContextMatrixAutoSaveRestore saveMatrix(aContext);
   aContext->Multiply(gfxMatrix::Scaling(scale.width, scale.height));
 
-  gfxUtils::DrawPixelSnapped(aContext, mDrawable, drawableSize, region,
+  gfxUtils::DrawPixelSnapped(aContext, mDrawable, SizeDouble(drawableSize), region,
                              SurfaceFormat::B8G8R8A8, aSamplingFilter,
                              aOpacity);
   return DrawResult::SUCCESS;

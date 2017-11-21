@@ -396,7 +396,7 @@ nsOfflineCacheUpdateService::UpdateFinished(nsOfflineCacheUpdate *aUpdate)
 nsresult
 nsOfflineCacheUpdateService::ProcessNextUpdate()
 {
-    LOG(("nsOfflineCacheUpdateService::ProcessNextUpdate [%p, num=%d]",
+    LOG(("nsOfflineCacheUpdateService::ProcessNextUpdate [%p, num=%zu]",
          this, mUpdates.Length()));
 
     if (mDisabled)

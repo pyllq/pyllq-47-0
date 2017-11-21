@@ -31,7 +31,7 @@ var {interfaces: Ci, utils: Cu} = Components;
 Cu.import("resource://services-crypto/utils.js");
 Cu.import("resource://services-common/hawkrequest.js");
 Cu.import("resource://services-common/observers.js");
-Cu.import("resource://gre/modules/Promise.jsm");
+Cu.import("resource://gre/modules/PromiseUtils.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -207,7 +207,7 @@ this.HawkClient.prototype = {
                     retryOK = true) {
     method = method.toLowerCase();
 
-    let deferred = Promise.defer();
+    let deferred = PromiseUtils.defer();
     let uri = this.host + path;
     let self = this;
 
@@ -240,7 +240,8 @@ this.HawkClient.prototype = {
       if (error) {
         // When things really blow up, reconstruct an error object that follows
         // the general format of the server on error responses.
-        return deferred.reject(self._constructError(restResponse, error));
+        deferred.reject(self._constructError(restResponse, error));
+        return;
       }
 
       self._updateClockOffset(restResponse.headers["date"]);
@@ -249,8 +250,8 @@ this.HawkClient.prototype = {
         // Retry once if we were rejected due to a bad timestamp.
         // Clock offset is adjusted already in the top of this function.
         log.debug("Received 401 for " + path + ": retrying");
-        return deferred.resolve(
-            self.request(path, method, credentials, payloadObj, extraHeaders, false));
+        deferred.resolve(self.request(path, method, credentials, payloadObj, extraHeaders, false));
+        return;
       }
 
       // If the server returned a json error message, use it in the rejection
@@ -268,9 +269,11 @@ this.HawkClient.prototype = {
       let okResponse = (200 <= status && status < 300);
       if (!okResponse || jsonResponse.error) {
         if (jsonResponse.error) {
-          return deferred.reject(jsonResponse);
+          deferred.reject(jsonResponse);
+        } else {
+          deferred.reject(self._constructError(restResponse, "Request failed"));
         }
-        return deferred.reject(self._constructError(restResponse, "Request failed"));
+        return;
       }
       // It's up to the caller to know how to decode the response.
       // We just return the whole response.

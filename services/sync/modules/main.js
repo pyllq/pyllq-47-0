@@ -4,10 +4,13 @@
 
 this.EXPORTED_SYMBOLS = ["Weave"];
 
+const {classes: Cc, interfaces: Ci, results: Cr, utils: Cu} = Components;
+
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+
 this.Weave = {};
-Components.utils.import("resource://services-sync/constants.js", Weave);
+Cu.import("resource://services-sync/constants.js", Weave);
 var lazies = {
-  "jpakeclient.js":       ["JPAKEClient", "SendCredentialsController"],
   "service.js":           ["Service"],
   "status.js":            ["Status"],
   "util.js":              ["Utils", "Svc"]
@@ -17,7 +20,7 @@ function lazyImport(module, dest, props) {
   function getter(prop) {
     return function() {
       let ns = {};
-      Components.utils.import(module, ns);
+      Cu.import(module, ns);
       delete dest[prop];
       return dest[prop] = ns[prop];
     };
@@ -28,3 +31,8 @@ function lazyImport(module, dest, props) {
 for (let mod in lazies) {
   lazyImport("resource://services-sync/" + mod, Weave, lazies[mod]);
 }
+
+XPCOMUtils.defineLazyGetter(Weave, "Crypto", function() {
+  let { WeaveCrypto } = Cu.import("resource://services-crypto/WeaveCrypto.js", {});
+  return new WeaveCrypto();
+});

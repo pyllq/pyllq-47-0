@@ -15,10 +15,7 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AsyncPrefs", "resource://gre/modules/AsyncPrefs.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NarrateControls", "resource://gre/modules/narrate/NarrateControls.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Rect", "resource://gre/modules/Geometry.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "Task", "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry", "resource://gre/modules/UITelemetry.jsm");
-XPCOMUtils.defineLazyServiceGetter(this, "gChromeRegistry",
-                                   "@mozilla.org/chrome/chrome-registry;1", Ci.nsIXULChromeRegistry);
 XPCOMUtils.defineLazyModuleGetter(this, "PluralForm", "resource://gre/modules/PluralForm.jsm");
 
 var gStrings = Services.strings.createBundle("chrome://global/locale/aboutReader.properties");
@@ -75,7 +72,7 @@ var AboutReader = function(mm, win, articlePromise) {
   win.addEventListener("scroll", this);
   win.addEventListener("resize", this);
 
-  Services.obs.addObserver(this, "inner-window-destroyed", false);
+  Services.obs.addObserver(this, "inner-window-destroyed");
 
   doc.addEventListener("visibilitychange", this);
 
@@ -249,8 +246,11 @@ AboutReader.prototype = {
         break;
       case "scroll":
         this._closeDropdowns(true);
-        let isScrollingUp = this._scrollOffset > aEvent.pageY;
-        this._setSystemUIVisibility(isScrollingUp);
+        if (!gIsFirefoxDesktop && this._scrollOffset != aEvent.pageY) {
+          let isScrollingUp = this._scrollOffset > aEvent.pageY;
+          this._setSystemUIVisibility(isScrollingUp);
+          this._setToolbarVisibility(isScrollingUp);
+        }
         this._scrollOffset = aEvent.pageY;
         break;
       case "resize":
@@ -620,16 +620,34 @@ AboutReader.prototype = {
     this._mm.sendAsyncMessage("Reader:SystemUIVisibility", { visible });
   },
 
-  _loadArticle: Task.async(function* () {
+  _setToolbarVisibility(visible) {
+    let tb = this._toolbarElement;
+
+    if (visible) {
+      if (tb.style.opacity != "1") {
+        tb.removeAttribute("hidden");
+        tb.style.opacity = "1";
+      }
+    } else if (tb.style.opacity != "0") {
+      tb.addEventListener("transitionend", evt => {
+        if (tb.style.opacity == "0") {
+          tb.setAttribute("hidden", "");
+        }
+      }, { once: true });
+      tb.style.opacity = "0";
+    }
+  },
+
+  async _loadArticle() {
     let url = this._getOriginalUrl();
     this._showProgressDelayed();
 
     let article;
     if (this._articlePromise) {
-      article = yield this._articlePromise;
+      article = await this._articlePromise;
     } else {
       try {
-        article = yield this._getArticle(url);
+        article = await this._getArticle(url);
       } catch (e) {
         if (e && e.newURL) {
           let readerURL = "about:reader?url=" + encodeURIComponent(e.newURL);
@@ -652,7 +670,7 @@ AboutReader.prototype = {
     }
 
     this._showContent(article);
-  }),
+  },
 
   _getArticle(url) {
     return new Promise((resolve, reject) => {
@@ -733,24 +751,9 @@ AboutReader.prototype = {
       this._headerElement.setAttribute("dir", article.dir);
 
       // The native locale could be set differently than the article's text direction.
-      var localeDirection = gChromeRegistry.isLocaleRTL("global") ? "rtl" : "ltr";
+      var localeDirection = Services.locale.isAppLocaleRTL ? "rtl" : "ltr";
       this._readTimeElement.setAttribute("dir", localeDirection);
       this._readTimeElement.style.textAlign = article.dir == "rtl" ? "right" : "left";
-    }
-  },
-
-  _fixLocalLinks() {
-    // We need to do this because preprocessing the content through nsIParserUtils
-    // gives back a DOM with a <base> element. That influences how these URLs get
-    // resolved, making them no longer match the document URI (which is
-    // about:reader?url=...). To fix this, make all the hash URIs absolute. This
-    // is hacky, but the alternative of removing the base element has potential
-    // security implications if Readability has not successfully made all the URLs
-    // absolute, so we pick just fixing these in-document links explicitly.
-    let localLinks = this._contentElement.querySelectorAll("a[href^='#']");
-    for (let localLink of localLinks) {
-      // Have to get the attribute because .href provides an absolute URI.
-      localLink.href = this._doc.documentURI + localLink.getAttribute("href");
     }
   },
 
@@ -824,7 +827,6 @@ AboutReader.prototype = {
       false, articleUri, this._contentElement);
     this._contentElement.innerHTML = "";
     this._contentElement.appendChild(contentFragment);
-    this._fixLocalLinks();
     this._maybeSetTextDirection(article);
     this._foundLanguage(article.language);
 
@@ -836,7 +838,7 @@ AboutReader.prototype = {
 
     this._goToReference(articleUri.ref);
 
-    Services.obs.notifyObservers(this._win, "AboutReader:Ready", "");
+    Services.obs.notifyObservers(this._win, "AboutReader:Ready");
 
     this._doc.dispatchEvent(
       new this._win.CustomEvent("AboutReaderContentReady", { bubbles: true, cancelable: false }));
@@ -848,7 +850,7 @@ AboutReader.prototype = {
   },
 
   _showProgressDelayed() {
-    this._win.setTimeout(function() {
+    this._win.setTimeout(() => {
       // No need to show progress if the article has been loaded,
       // if the window has been unloaded, or if there was an error
       // trying to load the article.
@@ -861,7 +863,7 @@ AboutReader.prototype = {
 
       this._messageElement.textContent = gStrings.GetStringFromName("aboutReader.loading2");
       this._messageElement.style.display = "block";
-    }.bind(this), 300);
+    }, 300);
   },
 
   /**

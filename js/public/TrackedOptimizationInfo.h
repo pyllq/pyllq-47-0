@@ -42,7 +42,8 @@ namespace JS {
     _(GetElem_TypedArray)                               \
     _(GetElem_String)                                   \
     _(GetElem_Arguments)                                \
-    _(GetElem_ArgumentsInlined)                         \
+    _(GetElem_ArgumentsInlinedConstant)                 \
+    _(GetElem_ArgumentsInlinedSwitch)                   \
     _(GetElem_InlineCache)                              \
                                                         \
     _(SetElem_TypedObject)                              \
@@ -146,6 +147,7 @@ namespace JS {
     _(LoosyInt32BooleanCompare)                                         \
     _(CallsValueOf)                                                     \
     _(StrictCompare)                                                    \
+    _(InitHole)                                                         \
                                                                         \
     _(ICOptStub_GenericSuccess)                                         \
                                                                         \
@@ -196,7 +198,6 @@ namespace JS {
     _(CantInlineTooManyArgs)                                            \
     _(CantInlineNeedsArgsObj)                                           \
     _(CantInlineDebuggee)                                               \
-    _(CantInlineUnknownProps)                                           \
     _(CantInlineExceededDepth)                                          \
     _(CantInlineExceededTotalBytecodeLength)                            \
     _(CantInlineBigCaller)                                              \
@@ -301,7 +302,7 @@ struct ForEachTrackedOptimizationTypeInfoOp
     // The location parameter is the only one that may need escaping if being
     // quoted.
     virtual void readType(const char* keyedBy, const char* name,
-                          const char* location, mozilla::Maybe<unsigned> lineno) = 0;
+                          const char* location, const mozilla::Maybe<unsigned>& lineno) = 0;
 
     // Called once per entry.
     virtual void operator()(TrackedTypeSite site, const char* mirType) = 0;

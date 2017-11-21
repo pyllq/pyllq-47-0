@@ -82,7 +82,8 @@ public:
   static already_AddRefed<ContentClient> CreateContentClient(CompositableForwarder* aFwd);
 
   explicit ContentClient(CompositableForwarder* aForwarder)
-  : CompositableClient(aForwarder)
+  : CompositableClient(aForwarder),
+    mInAsyncPaint(false)
   {}
   virtual ~ContentClient()
   {}
@@ -103,7 +104,11 @@ public:
 
   // call before and after painting into this content client
   virtual void BeginPaint() {}
+  virtual void BeginAsyncPaint();
   virtual void EndPaint(nsTArray<ReadbackProcessor::Update>* aReadbackUpdates = nullptr);
+
+protected:
+  bool mInAsyncPaint;
 };
 
 /**
@@ -243,6 +248,7 @@ public:
    * are affected by mapping/unmapping.
    */
   virtual void BeginPaint() override;
+  virtual void BeginAsyncPaint() override;
   virtual void EndPaint(nsTArray<ReadbackProcessor::Update>* aReadbackUpdates = nullptr) override;
 
   virtual void Updated(const nsIntRegion& aRegionToDraw,
@@ -266,7 +272,7 @@ public:
 
   virtual TextureFlags ExtraTextureFlags() const
   {
-    return TextureFlags::NO_FLAGS;
+    return TextureFlags::IMMEDIATE_UPLOAD;
   }
 
 protected:
@@ -296,6 +302,9 @@ protected:
     mTextureClientOnWhite = nullptr;
     mIsNewBuffer = false;
   }
+
+  virtual bool LockBuffers() override;
+  virtual void UnlockBuffers() override;
 
   RefPtr<TextureClient> mTextureClient;
   RefPtr<TextureClient> mTextureClientOnWhite;
@@ -344,6 +353,7 @@ public:
   virtual void SwapBuffers(const nsIntRegion& aFrontUpdatedRegion) override;
 
   virtual void BeginPaint() override;
+  virtual void BeginAsyncPaint() override;
 
   virtual void FinalizeFrame(const nsIntRegion& aRegionToDraw) override;
 
@@ -397,16 +407,9 @@ public:
   }
   virtual ~ContentClientSingleBuffered() {}
 
-  virtual void FinalizeFrame(const nsIntRegion& aRegionToDraw) override;
-
   virtual TextureInfo GetTextureInfo() const override
   {
     return TextureInfo(CompositableType::CONTENT_SINGLE, mTextureFlags | ExtraTextureFlags());
-  }
-
-  virtual TextureFlags ExtraTextureFlags() const override
-  {
-    return TextureFlags::IMMEDIATE_UPLOAD;
   }
 };
 

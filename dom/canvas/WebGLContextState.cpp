@@ -61,18 +61,6 @@ WebGLContext::Enable(GLenum cap)
     gl->fEnable(cap);
 }
 
-static JS::Value
-StringValue(JSContext* cx, const nsAString& str, ErrorResult& rv)
-{
-    JSString* jsStr = JS_NewUCStringCopyN(cx, str.BeginReading(), str.Length());
-    if (!jsStr) {
-        rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-        return JS::NullValue();
-    }
-
-    return JS::StringValue(jsStr);
-}
-
 bool
 WebGLContext::GetStencilBits(GLint* const out_stencilBits)
 {
@@ -319,7 +307,7 @@ WebGLContext::GetParameter(JSContext* cx, GLenum pname, ErrorResult& rv)
 
                 nsAutoString ret;
                 if (overridePref) {
-                    nsresult res = Preferences::GetString(overridePref, &ret);
+                    nsresult res = Preferences::GetString(overridePref, ret);
                     if (NS_SUCCEEDED(res) && ret.Length() > 0)
                         hasRetVal = true;
                 }
@@ -520,6 +508,8 @@ WebGLContext::GetParameter(JSContext* cx, GLenum pname, ErrorResult& rv)
         case LOCAL_GL_POLYGON_OFFSET_FILL:
         case LOCAL_GL_SCISSOR_TEST:
         case LOCAL_GL_SAMPLE_COVERAGE_INVERT:
+        case LOCAL_GL_SAMPLE_ALPHA_TO_COVERAGE:
+        case LOCAL_GL_SAMPLE_COVERAGE:
         case LOCAL_GL_DEPTH_WRITEMASK: {
             realGLboolean b = 0;
             gl->fGetBooleanv(pname, &b);
@@ -659,7 +649,7 @@ WebGLContext::GetParameterIndexed(JSContext* cx, GLenum pname, GLuint index,
         case LOCAL_GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
         {
             if (index >= mGLMaxTransformFeedbackSeparateAttribs) {
-                ErrorInvalidValue("getParameterIndexed: index should be less than MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS", index);
+                ErrorInvalidValue("getParameterIndexed: index should be less than MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS");
                 retval.setNull();
                 return;
             }

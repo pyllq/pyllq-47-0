@@ -3,6 +3,8 @@
 
 #include <jni.h>
 
+#include "nsIRunnable.h"
+
 #include "mozilla/UniquePtr.h"
 
 #if defined(DEBUG) || !defined(RELEASE_OR_BETA)
@@ -50,9 +52,14 @@ enum class DispatchTarget
     // wrapped in a function object and is passed thru UsesNativeCallProxy.
     // Method must return void.
     PROXY,
-    // Call is dispatched asynchronously on the Gecko thread. Method must
-    // return void.
+    // Call is dispatched asynchronously on the Gecko thread to the XPCOM
+    // (nsThread) event queue. Method must return void.
     GECKO,
+    // Call is dispatched asynchronously on the Gecko thread to the widget
+    // (nsAppShell) event queue. In most cases, events in the widget event
+    // queue (aka native event queue) are favored over events in the XPCOM
+    // event queue. Method must return void.
+    GECKO_PRIORITY,
 };
 
 
@@ -127,19 +134,15 @@ void SetNativeHandle(JNIEnv* env, jobject instance, uintptr_t handle);
 
 jclass GetClassRef(JNIEnv* aEnv, const char* aClassName);
 
-struct AbstractCall
-{
-    virtual ~AbstractCall() {}
-    virtual void operator()() = 0;
-};
-
-void DispatchToGeckoThread(UniquePtr<AbstractCall>&& aCall);
+void DispatchToGeckoPriorityQueue(already_AddRefed<nsIRunnable> aCall);
 
 /**
  * Returns whether Gecko is running in a Fennec environment, as determined by
  * the presence of the GeckoApp class.
  */
 bool IsFennec();
+
+int GetAPIVersion();
 
 } // jni
 } // mozilla

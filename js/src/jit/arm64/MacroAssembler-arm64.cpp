@@ -218,6 +218,15 @@ MacroAssemblerCompat::handleFailureWithHandlerTail(void* handler)
 }
 
 void
+MacroAssemblerCompat::profilerEnterFrame(Register framePtr, Register scratch)
+{
+    asMasm().loadJSContext(scratch);
+    loadPtr(Address(scratch, offsetof(JSContext, profilingActivation_)), scratch);
+    storePtr(framePtr, Address(scratch, JitActivation::offsetOfLastProfilingFrame()));
+    storePtr(ImmPtr(nullptr), Address(scratch, JitActivation::offsetOfLastProfilingCallSite()));
+}
+
+void
 MacroAssemblerCompat::breakpoint()
 {
     static int code = 0xA77;
@@ -485,6 +494,12 @@ MacroAssembler::Pop(const ValueOperand& val)
     adjustFrame(-1 * int64_t(sizeof(int64_t)));
 }
 
+void
+MacroAssembler::PopStackPtr()
+{
+    MOZ_CRASH("NYI");
+}
+
 // ===============================================================
 // Simple call functions.
 
@@ -673,7 +688,9 @@ MacroAssembler::callWithABIPre(uint32_t* stackAdjust, bool callFromWasm)
     *stackAdjust = stackForCall;
     reserveStack(*stackAdjust);
     {
-        moveResolver_.resolve();
+        enoughMemory_ &= moveResolver_.resolve();
+        if (!enoughMemory_)
+            return;
         MoveEmitter emitter(*this);
         emitter.emit(moveResolver_);
         emitter.finish();
@@ -684,7 +701,7 @@ MacroAssembler::callWithABIPre(uint32_t* stackAdjust, bool callFromWasm)
 }
 
 void
-MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result)
+MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result, bool callFromWasm)
 {
     // Call boundaries communicate stack via sp.
     if (!GetStackPointer64().Is(sp))
@@ -754,6 +771,54 @@ MacroAssembler::pushFakeReturnAddress(Register scratch)
 
     leaveNoPool();
     return pseudoReturnOffset;
+}
+
+// ===============================================================
+// Move instructions
+
+void
+MacroAssembler::moveValue(const TypedOrValueRegister& src, const ValueOperand& dest)
+{
+    if (src.hasValue()) {
+        moveValue(src.valueReg(), dest);
+        return;
+    }
+
+    MIRType type = src.type();
+    AnyRegister reg = src.typedReg();
+
+    if (!IsFloatingPointType(type)) {
+        boxNonDouble(ValueTypeFromMIRType(type), reg.gpr(), dest);
+        return;
+    }
+
+    FloatRegister scratch = ScratchDoubleReg;
+    FloatRegister freg = reg.fpu();
+    if (type == MIRType::Float32) {
+        convertFloat32ToDouble(freg, scratch);
+        freg = scratch;
+    }
+    boxDouble(freg, dest, scratch);
+}
+
+void
+MacroAssembler::moveValue(const ValueOperand& src, const ValueOperand& dest)
+{
+    if (src == dest)
+        return;
+    movePtr(src.valueReg(), dest.valueReg());
+}
+
+void
+MacroAssembler::moveValue(const Value& src, const ValueOperand& dest)
+{
+    if (!src.isGCThing()) {
+        movePtr(ImmWord(src.asRawBits()), dest.valueReg());
+        return;
+    }
+
+    BufferOffset load = movePatchablePtr(ImmPtr(src.bitsAsPunboxPointer()), dest.valueReg());
+    writeDataRelocation(src, load);
 }
 
 // ===============================================================

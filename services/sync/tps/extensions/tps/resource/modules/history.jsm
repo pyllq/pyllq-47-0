@@ -175,8 +175,7 @@ var HistoryEntry = {
    */
   Delete(item, usSinceEpoch) {
     if ("uri" in item) {
-      let uri = Services.io.newURI(item.uri);
-      PlacesUtils.history.removePage(uri);
+      Async.promiseSpinningly(PlacesUtils.history.remove(item.uri));
     } else if ("host" in item) {
       PlacesUtils.history.removePagesFromHost(item.host, false);
     } else if ("begin" in item && "end" in item) {
@@ -187,7 +186,7 @@ var HistoryEntry = {
         endDate: new Date(msSinceEpoch + (item.end * 60 * 60 * 1000))
       };
       PlacesUtils.history.removeVisitsByFilter(filter)
-      .catch(ex => Logger.AssertTrue(false, "An error occurred while deleting history: " + ex))
+      .catch(ex => Logger.AssertTrue(false, "An error occurred while deleting history: " + ex.message))
       .then(result => { cb(null, result) }, err => { cb(err) });
       Async.waitForSyncCallback(cb);
     } else {

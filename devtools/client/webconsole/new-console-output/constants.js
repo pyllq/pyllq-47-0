@@ -11,7 +11,11 @@ const actionTypes = {
   MESSAGES_CLEAR: "MESSAGES_CLEAR",
   MESSAGE_OPEN: "MESSAGE_OPEN",
   MESSAGE_CLOSE: "MESSAGE_CLOSE",
+  NETWORK_MESSAGE_UPDATE: "NETWORK_MESSAGE_UPDATE",
   MESSAGE_TABLE_RECEIVE: "MESSAGE_TABLE_RECEIVE",
+  MESSAGE_OBJECT_PROPERTIES_RECEIVE: "MESSAGE_OBJECT_PROPERTIES_RECEIVE",
+  MESSAGE_OBJECT_ENTRIES_RECEIVE: "MESSAGE_OBJECT_ENTRIES_RECEIVE",
+  REMOVED_ACTORS_CLEAR: "REMOVED_ACTORS_CLEAR",
   TIMESTAMPS_TOGGLE: "TIMESTAMPS_TOGGLE",
   FILTER_TOGGLE: "FILTER_TOGGLE",
   FILTER_TEXT_SET: "FILTER_TEXT_SET",
@@ -80,5 +84,16 @@ const chromeRDPEnums = {
   }
 };
 
+const jstermCommands = {
+  JSTERM_COMMANDS: {
+    INSPECT: "inspectObject"
+  }
+};
+
 // Combine into a single constants object
-module.exports = Object.assign({}, actionTypes, prefs, chromeRDPEnums);
+module.exports = Object.assign({},
+  actionTypes,
+  chromeRDPEnums,
+  jstermCommands,
+  prefs,
+);

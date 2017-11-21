@@ -98,7 +98,7 @@ public:
   // Buffer Append Algorithm
   // 3.5.5 Buffer Append Algorithm.
   // http://w3c.github.io/media-source/index.html#sourcebuffer-buffer-append
-  RefPtr<AppendPromise> AppendData(MediaByteBuffer* aData,
+  RefPtr<AppendPromise> AppendData(already_AddRefed<MediaByteBuffer> aData,
                                    const SourceBufferAttributes& aAttributes);
 
   // Queue a task to abort any pending AppendData.
@@ -174,7 +174,7 @@ private:
   friend class MediaSourceDemuxer;
   ~TrackBuffersManager();
   // All following functions run on the taskqueue.
-  RefPtr<AppendPromise> DoAppendData(MediaByteBuffer* aData,
+  RefPtr<AppendPromise> DoAppendData(already_AddRefed<MediaByteBuffer> aData,
                                      const SourceBufferAttributes& aAttributes);
   void ScheduleSegmentParserLoop();
   void SegmentParserLoop();
@@ -237,9 +237,9 @@ private:
   uint64_t mProcessedInput;
   Maybe<media::TimeUnit> mLastParsedEndTime;
 
-  void OnDemuxerInitDone(nsresult);
+  void OnDemuxerInitDone(const MediaResult& aResult);
   void OnDemuxerInitFailed(const MediaResult& aFailure);
-  void OnDemuxerResetDone(nsresult);
+  void OnDemuxerResetDone(const MediaResult& aResult);
   MozPromiseRequestHolder<MediaDataDemuxer::InitPromise> mDemuxerInitRequest;
 
   void OnDemuxFailed(TrackType aTrack, const MediaResult& aError);
@@ -257,6 +257,11 @@ private:
     mAudioTracks.mDemuxRequest.Complete();
     OnDemuxFailed(TrackType::kAudioTrack, aError);
   }
+
+  // Dispatches an "encrypted" event is any sample in array has initData
+  // present.
+  void MaybeDispatchEncryptedEvent(
+    const nsTArray<RefPtr<MediaRawData>>& aSamples);
 
   void DoEvictData(const media::TimeUnit& aPlaybackTime, int64_t aSizeToEvict);
 
@@ -334,9 +339,9 @@ private:
     // Byte size of all samples contained in this track buffer.
     uint32_t mSizeBuffer;
     // TrackInfo of the first metadata received.
-    RefPtr<SharedTrackInfo> mInfo;
+    RefPtr<TrackInfoSharedPtr> mInfo;
     // TrackInfo of the last metadata parsed (updated with each init segment.
-    RefPtr<SharedTrackInfo> mLastInfo;
+    RefPtr<TrackInfoSharedPtr> mLastInfo;
 
     // If set, position of the next sample to be retrieved by GetSample().
     // If the position is equal to the TrackBuffer's length, it indicates that

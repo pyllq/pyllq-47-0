@@ -135,6 +135,22 @@ public:
   {
     return mOldInfo->GetDataSize(aDataSize);
   }
+  NS_IMETHOD GetOnStartTime(uint64_t *aTime) override
+  {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+  NS_IMETHOD GetOnStopTime(uint64_t *aTime) override
+  {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+  NS_IMETHOD SetNetworkTimes(uint64_t aOnStartTime, uint64_t aOnStopTime) override
+  {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+  NS_IMETHOD GetLoadContextInfo(nsILoadContextInfo** aInfo) override
+  {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
 
   NS_IMETHOD AsyncDoom(nsICacheEntryDoomCallback* listener) override;
   NS_IMETHOD GetPersistent(bool *aPersistToDisk) override;
@@ -171,8 +187,8 @@ public:
   NS_DECL_NSIRUNNABLE
   NS_DECL_NSICACHELISTENER
 
-  _OldCacheLoad(nsCSubstring const& aScheme,
-                nsCSubstring const& aCacheKey,
+  _OldCacheLoad(const nsACString& aScheme,
+                const nsACString& aCacheKey,
                 nsICacheEntryOpenCallback* aCallback,
                 nsIApplicationCache* aAppCache,
                 nsILoadContextInfo* aLoadInfo,
@@ -225,7 +241,7 @@ private:
   virtual ~_OldStorage();
   nsresult AssembleCacheKey(nsIURI *aURI, nsACString const & aIdExtension,
                             nsACString & aCacheKey, nsACString & aScheme);
-  nsresult ChooseApplicationCache(nsCSubstring const &cacheKey, nsIApplicationCache** aCache);
+  nsresult ChooseApplicationCache(const nsACString& cacheKey, nsIApplicationCache** aCache);
 
   nsCOMPtr<nsILoadContextInfo> mLoadInfo;
   nsCOMPtr<nsIApplicationCache> mAppCache;

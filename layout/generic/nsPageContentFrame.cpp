@@ -28,7 +28,7 @@ nsPageContentFrame::Reflow(nsPresContext*           aPresContext,
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsPageContentFrame");
   DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
-  aStatus = NS_FRAME_COMPLETE;  // initialize out parameter
+  aStatus.Reset();  // initialize out parameter
 
   if (GetPrevInFlow() && (GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
     nsresult rv = aPresContext->PresShell()->FrameConstructor()
@@ -44,7 +44,7 @@ nsPageContentFrame::Reflow(nsPresContext*           aPresContext,
   nsSize  maxSize(aReflowInput.ComputedWidth(),
                   aReflowInput.ComputedHeight());
   SetSize(maxSize);
- 
+
   // A PageContentFrame must always have one child: the canvas frame.
   // Resize our frame allowing it only to be as big as we are
   // XXX Pay attention to the page's border and padding...
@@ -88,14 +88,14 @@ nsPageContentFrame::Reflow(nsPresContext*           aPresContext,
     // Place and size the child
     FinishReflowChild(frame, aPresContext, aDesiredSize, &kidReflowInput, 0, 0, 0);
 
-    NS_ASSERTION(aPresContext->IsDynamic() || !NS_FRAME_IS_FULLY_COMPLETE(aStatus) ||
+    NS_ASSERTION(aPresContext->IsDynamic() || !aStatus.IsFullyComplete() ||
                   !frame->GetNextInFlow(), "bad child flow list");
   }
 
   // Reflow our fixed frames
-  nsReflowStatus fixedStatus = NS_FRAME_COMPLETE;
+  nsReflowStatus fixedStatus;
   ReflowAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput, fixedStatus);
-  NS_ASSERTION(NS_FRAME_IS_COMPLETE(fixedStatus), "fixed frames can be truncated, but not incomplete");
+  NS_ASSERTION(fixedStatus.IsComplete(), "fixed frames can be truncated, but not incomplete");
 
   // Return our desired size
   WritingMode wm = aReflowInput.GetWritingMode();
@@ -108,10 +108,13 @@ nsPageContentFrame::Reflow(nsPresContext*           aPresContext,
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
-nsIAtom*
-nsPageContentFrame::GetType() const
+void
+nsPageContentFrame::AppendDirectlyOwnedAnonBoxes(
+  nsTArray<OwnedAnonBox>& aResult)
 {
-  return nsGkAtoms::pageContentFrame; 
+  MOZ_ASSERT(mFrames.FirstChild(),
+             "pageContentFrame must have a canvasFrame child");
+  aResult.AppendElement(mFrames.FirstChild());
 }
 
 #ifdef DEBUG_FRAME_DUMP

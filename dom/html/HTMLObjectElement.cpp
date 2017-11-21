@@ -30,7 +30,7 @@ namespace dom {
 
 HTMLObjectElement::HTMLObjectElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                                      FromParser aFromParser)
-  : nsGenericHTMLFormElement(aNodeInfo),
+  : nsGenericHTMLFormElement(aNodeInfo, NS_FORM_OBJECT),
     mIsDoneAddingChildren(!aFromParser)
 {
   RegisterActivityObserver();
@@ -79,7 +79,7 @@ HTMLObjectElement::DoneAddingChildren(bool aHaveNotified)
   // If we're already in a document, we need to trigger the load
   // Otherwise, BindToTree takes care of that.
   if (IsInComposedDoc()) {
-    StartObjectLoad(aHaveNotified);
+    StartObjectLoad(aHaveNotified, false);
   }
 }
 
@@ -115,9 +115,6 @@ NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLFormElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLObjectElement)
 
-// nsIConstraintValidation
-NS_IMPL_NSICONSTRAINTVALIDATION(HTMLObjectElement)
-
 #ifdef XP_MACOSX
 
 static nsIWidget* GetWidget(Element* aElement)
@@ -131,7 +128,9 @@ class PluginFocusSetter : public Runnable
 {
 public:
   PluginFocusSetter(nsIWidget* aWidget, Element* aElement)
-  : mWidget(aWidget), mElement(aElement)
+    : Runnable("PluginFocusSetter")
+    , mWidget(aWidget)
+    , mElement(aElement)
   {
   }
 
@@ -269,7 +268,8 @@ HTMLObjectElement::BindToTree(nsIDocument *aDocument,
   // If we already have all the children, start the load.
   if (mIsDoneAddingChildren && !pluginDoc) {
     void (HTMLObjectElement::*start)() = &HTMLObjectElement::StartObjectLoad;
-    nsContentUtils::AddScriptRunner(NewRunnableMethod(this, start));
+    nsContentUtils::AddScriptRunner(
+      NewRunnableMethod("dom::HTMLObjectElement::BindToTree", this, start));
   }
 
   return NS_OK;
@@ -291,44 +291,46 @@ HTMLObjectElement::UnbindFromTree(bool aDeep,
   nsGenericHTMLFormElement::UnbindFromTree(aDeep, aNullParent);
 }
 
-
-
 nsresult
-HTMLObjectElement::SetAttr(int32_t aNameSpaceID, nsIAtom *aName,
-                           nsIAtom *aPrefix, const nsAString &aValue,
-                           bool aNotify)
+HTMLObjectElement::AfterSetAttr(int32_t aNamespaceID, nsIAtom* aName,
+                                const nsAttrValue* aValue,
+                                const nsAttrValue* aOldValue, bool aNotify)
 {
-  nsresult rv = nsGenericHTMLFormElement::SetAttr(aNameSpaceID, aName, aPrefix,
-                                                  aValue, aNotify);
+  nsresult rv = AfterMaybeChangeAttr(aNamespaceID, aName, aNotify);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // if aNotify is false, we are coming from the parser or some such place;
-  // we'll get bound after all the attributes have been set, so we'll do the
-  // object load from BindToTree/DoneAddingChildren.
-  // Skip the LoadObject call in that case.
-  // We also don't want to start loading the object when we're not yet in
-  // a document, just in case that the caller wants to set additional
-  // attributes before inserting the node into the document.
-  if (aNotify && IsInComposedDoc() && mIsDoneAddingChildren &&
-      aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::data) {
-    return LoadObject(aNotify, true);
-  }
-
-  return NS_OK;
+  return nsGenericHTMLFormElement::AfterSetAttr(aNamespaceID, aName, aValue,
+                                                aOldValue, aNotify);
 }
 
 nsresult
-HTMLObjectElement::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttribute,
-                             bool aNotify)
+HTMLObjectElement::OnAttrSetButNotChanged(int32_t aNamespaceID, nsIAtom* aName,
+                                          const nsAttrValueOrString& aValue,
+                                          bool aNotify)
 {
-  nsresult rv = nsGenericHTMLFormElement::UnsetAttr(aNameSpaceID,
-                                                    aAttribute, aNotify);
+  nsresult rv = AfterMaybeChangeAttr(aNamespaceID, aName, aNotify);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // See comment in SetAttr
-  if (aNotify && IsInComposedDoc() && mIsDoneAddingChildren &&
-      aNameSpaceID == kNameSpaceID_None && aAttribute == nsGkAtoms::data) {
-    return LoadObject(aNotify, true);
+  return nsGenericHTMLFormElement::OnAttrSetButNotChanged(aNamespaceID, aName,
+                                                          aValue, aNotify);
+}
+
+nsresult
+HTMLObjectElement::AfterMaybeChangeAttr(int32_t aNamespaceID, nsIAtom* aName,
+                                        bool aNotify)
+{
+  if (aNamespaceID == kNameSpaceID_None) {
+    // if aNotify is false, we are coming from the parser or some such place;
+    // we'll get bound after all the attributes have been set, so we'll do the
+    // object load from BindToTree/DoneAddingChildren.
+    // Skip the LoadObject call in that case.
+    // We also don't want to start loading the object when we're not yet in
+    // a document, just in case that the caller wants to set additional
+    // attributes before inserting the node into the document.
+    if (aNotify && IsInComposedDoc() && mIsDoneAddingChildren &&
+        aName == nsGkAtoms::data && !BlockEmbedOrObjectContentLoading()) {
+      return LoadObject(aNotify, true);
+    }
   }
 
   return NS_OK;
@@ -343,7 +345,7 @@ HTMLObjectElement::IsFocusableForTabIndex()
   }
 
   return IsEditableRoot() ||
-         (Type() == eType_Document &&
+         ((Type() == eType_Document || Type() == eType_FakePlugin) &&
           nsContentUtils::IsSubDocumentTabbable(this));
 }
 
@@ -356,7 +358,7 @@ HTMLObjectElement::IsHTMLFocusable(bool aWithMouse,
   nsIDocument *doc = GetComposedDoc();
   if (!doc || doc->HasFlag(NODE_IS_EDITABLE)) {
     if (aTabIndex) {
-      GetTabIndex(aTabIndex);
+      *aTabIndex = TabIndex();
     }
 
     *aIsFocusable = false;
@@ -367,11 +369,12 @@ HTMLObjectElement::IsHTMLFocusable(bool aWithMouse,
   // This method doesn't call nsGenericHTMLFormElement intentionally.
   // TODO: It should probably be changed when bug 597242 will be fixed.
   if (Type() == eType_Plugin || IsEditableRoot() ||
-      (Type() == eType_Document && nsContentUtils::IsSubDocumentTabbable(this))) {
+      ((Type() == eType_Document || Type() == eType_FakePlugin) &&
+       nsContentUtils::IsSubDocumentTabbable(this))) {
     // Has plugin content: let the plugin decide what to do in terms of
     // internal focus from mouse clicks
     if (aTabIndex) {
-      GetTabIndex(aTabIndex);
+      *aTabIndex = TabIndex();
     }
 
     *aIsFocusable = true;
@@ -398,7 +401,7 @@ HTMLObjectElement::GetDesiredIMEState()
   if (Type() == eType_Plugin) {
     return IMEState(IMEState::PLUGIN);
   }
-   
+
   return nsGenericHTMLFormElement::GetDesiredIMEState();
 }
 
@@ -505,7 +508,7 @@ HTMLObjectElement::ParseAttribute(int32_t aNamespaceID,
 
 void
 HTMLObjectElement::MapAttributesIntoRule(const nsMappedAttributes *aAttributes,
-                                         nsRuleData *aData)
+                                         GenericSpecifiedValues *aData)
 {
   nsGenericHTMLFormElement::MapImageAlignAttributeInto(aAttributes, aData);
   nsGenericHTMLFormElement::MapImageBorderAttributeInto(aAttributes, aData);
@@ -535,15 +538,16 @@ HTMLObjectElement::GetAttributeMappingFunction() const
 }
 
 void
-HTMLObjectElement::StartObjectLoad(bool aNotify)
+HTMLObjectElement::StartObjectLoad(bool aNotify, bool aForce)
 {
   // BindToTree can call us asynchronously, and we may be removed from the tree
   // in the interim
-  if (!IsInComposedDoc() || !OwnerDoc()->IsActive()) {
+  if (!IsInComposedDoc() || !OwnerDoc()->IsActive() ||
+      BlockEmbedOrObjectContentLoading()) {
     return;
   }
 
-  LoadObject(aNotify);
+  LoadObject(aNotify, aForce);
   SetIsNetworkCreated(false);
 }
 
@@ -556,7 +560,7 @@ HTMLObjectElement::IntrinsicState() const
 uint32_t
 HTMLObjectElement::GetCapabilities() const
 {
-  return nsObjectLoadingContent::GetCapabilities() | eSupportClassID;
+  return nsObjectLoadingContent::GetCapabilities();
 }
 
 void
@@ -567,9 +571,10 @@ HTMLObjectElement::DestroyContent()
 }
 
 nsresult
-HTMLObjectElement::CopyInnerTo(Element* aDest)
+HTMLObjectElement::CopyInnerTo(Element* aDest, bool aPreallocateChildren)
 {
-  nsresult rv = nsGenericHTMLFormElement::CopyInnerTo(aDest);
+  nsresult rv = nsGenericHTMLFormElement::CopyInnerTo(aDest,
+                                                      aPreallocateChildren);
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (aDest->OwnerDoc()->IsStaticDocument()) {

@@ -118,7 +118,7 @@ JitRuntime::generateEnterJIT(JSContext* cx, EnterJitType type)
 
         // sp -= 8
         // Since we're using PostIndex Str below, this is necessary to avoid overwriting
-        // the SPS mark pushed above.
+        // the Gecko Profiler mark pushed above.
         masm.subFromStackPtr(Imm32(8));
 
         // sp -= 8 * argc
@@ -189,7 +189,8 @@ JitRuntime::generateEnterJIT(JSContext* cx, EnterJitType type)
         masm.makeFrameDescriptor(r19, JitFrame_BaselineJS, ExitFrameLayout::Size());
         masm.asVIXL().Push(x19, xzr); // Push xzr for a fake return address.
         // No GC things to mark: push a bare token.
-        masm.enterFakeExitFrame(ExitFrameLayoutBareToken);
+        masm.loadJSContext(r19);
+        masm.enterFakeExitFrame(r19, r19, ExitFrameLayoutBareToken);
 
         masm.push(BaselineFrameReg, reg_code);
 
@@ -372,7 +373,7 @@ JitRuntime::generateArgumentsRectifier(JSContext* cx, void** returnAddrOut)
     masm.Sub(w2, w6, w8);
 
     // Put an undefined in a register so it can be pushed.
-    masm.moveValue(UndefinedValue(), r4);
+    masm.moveValue(UndefinedValue(), ValueOperand(r4));
 
     // Push undefined N times.
     {
@@ -566,8 +567,8 @@ JitRuntime::generateVMWrapper(JSContext* cx, const VMFunction& f)
     // the function call.
     AllocatableGeneralRegisterSet regs(Register::Codes::WrapperMask);
 
-    // Wrapper register set is a superset of the Volatile register set.
-    JS_STATIC_ASSERT((Register::Codes::VolatileMask & ~Register::Codes::WrapperMask) == 0);
+    static_assert((Register::Codes::VolatileMask & ~Register::Codes::WrapperMask) == 0,
+                  "Wrapper register set must be a superset of the Volatile register set.");
 
     // Unlike on other platforms, it is the responsibility of the VM *callee* to
     // push the return address, while the caller must ensure that the address
@@ -586,8 +587,8 @@ JitRuntime::generateVMWrapper(JSContext* cx, const VMFunction& f)
     //  +0  returnAddress (pushed by this function, caller sets as lr)
     //
     //  We're aligned to an exit frame, so link it up.
-    masm.enterExitFrame(&f);
     masm.loadJSContext(reg_cx);
+    masm.enterExitFrame(reg_cx, regs.getAny(), &f);
 
     // Save the current stack pointer as the base for copying arguments.
     Register argsBase = InvalidReg;
@@ -692,6 +693,8 @@ JitRuntime::generateVMWrapper(JSContext* cx, const VMFunction& f)
         break;
       case Type_Bool:
         masm.branchIfFalseBool(r0, masm.failureLabel());
+        break;
+      case Type_Void:
         break;
       default:
         MOZ_CRASH("unknown failure kind");
@@ -943,8 +946,8 @@ JitRuntime::generateProfilerExitFrameTailStub(JSContext* cx)
     // ^--- Entry Frame (From C++)
     //
     Register actReg = scratch4;
-    AbsoluteAddress activationAddr(GetJitContext()->runtime->addressOfProfilingActivation());
-    masm.loadPtr(activationAddr, actReg);
+    masm.loadJSContext(actReg);
+    masm.loadPtr(Address(actReg, offsetof(JSContext, profilingActivation_)), actReg);
 
     Address lastProfilingFrame(actReg, JitActivation::offsetOfLastProfilingFrame());
     Address lastProfilingCallSite(actReg, JitActivation::offsetOfLastProfilingCallSite());

@@ -15,6 +15,7 @@
 #include "CompositorBridgeParent.h"
 #include "gfxPrefs.h"
 #include "mozilla/gfx/BasePoint3D.h"    // for BasePoint3D
+#include "mozilla/layers/AnimationHelper.h" // for GetAnimatedPropValue
 #include "mozilla/layers/CanvasLayerComposite.h"
 #include "mozilla/layers/ColorLayerComposite.h"
 #include "mozilla/layers/Compositor.h"  // for Compositor
@@ -30,7 +31,6 @@
 #include "mozilla/Unused.h"
 #include "nsCoord.h"                    // for NSAppUnitsToFloatPixels
 #include "nsDebug.h"                    // for NS_RUNTIMEABORT
-#include "nsDeviceContext.h"            // for AppUnitsPerCSSPixel
 #include "nsISupportsImpl.h"            // for Layer::Release, etc
 #include "nsLayoutUtils.h"              // for nsLayoutUtils
 #include "nsMathUtils.h"                // for NS_round
@@ -41,8 +41,6 @@
 #include "mozilla/layers/TextureHost.h"
 #include "mozilla/layers/AsyncCompositionManager.h"
 
-typedef std::vector<mozilla::layers::EditReply> EditReplyVector;
-
 using mozilla::layout::RenderFrameParent;
 
 namespace mozilla {
@@ -52,14 +50,15 @@ namespace layers {
 // LayerTransactionParent
 LayerTransactionParent::LayerTransactionParent(HostLayerManager* aManager,
                                                CompositorBridgeParentBase* aBridge,
+                                               CompositorAnimationStorage* aAnimStorage,
                                                uint64_t aId)
   : mLayerManager(aManager)
   , mCompositorBridge(aBridge)
+  , mAnimStorage(aAnimStorage)
   , mId(aId)
   , mChildEpoch(0)
   , mParentEpoch(0)
   , mPendingTransaction(0)
-  , mPendingCompositorUpdates(0)
   , mDestroyed(false)
   , mIPCOpen(false)
 {
@@ -70,13 +69,21 @@ LayerTransactionParent::~LayerTransactionParent()
 }
 
 void
-LayerTransactionParent::SetLayerManager(HostLayerManager* aLayerManager)
+LayerTransactionParent::SetLayerManager(HostLayerManager* aLayerManager, CompositorAnimationStorage* aAnimStorage)
 {
+  if (mDestroyed) {
+    return;
+  }
   mLayerManager = aLayerManager;
   for (auto iter = mLayerMap.Iter(); !iter.Done(); iter.Next()) {
     auto layer = iter.Data();
+    if (mAnimStorage &&
+        layer->GetCompositorAnimationsId()) {
+      mAnimStorage->ClearById(layer->GetCompositorAnimationsId());
+    }
     layer->AsHostLayer()->SetLayerManager(aLayerManager);
   }
+  mAnimStorage = aAnimStorage;
 }
 
 mozilla::ipc::IPCResult
@@ -90,17 +97,30 @@ LayerTransactionParent::RecvShutdown()
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult
+LayerTransactionParent::RecvShutdownSync()
+{
+  return RecvShutdown();
+}
+
 void
 LayerTransactionParent::Destroy()
 {
+  if (mDestroyed) {
+    return;
+  }
   mDestroyed = true;
+  if (mAnimStorage) {
+    for (auto iter = mLayerMap.Iter(); !iter.Done(); iter.Next()) {
+      auto layer = iter.Data();
+      if (layer->GetCompositorAnimationsId()) {
+        mAnimStorage->ClearById(layer->GetCompositorAnimationsId());
+      }
+      layer->Disconnect();
+    }
+  }
   mCompositables.clear();
-}
-
-mozilla::ipc::IPCResult
-LayerTransactionParent::RecvUpdateNoSwap(const TransactionInfo& txn)
-{
-  return RecvUpdate(txn, nullptr);
+  mAnimStorage = nullptr;
 }
 
 class MOZ_STACK_CLASS AutoLayerTransactionParentAsyncMessageSender
@@ -112,13 +132,11 @@ public:
     , mActorsToDestroy(aDestroyActors)
   {
     mLayerTransaction->SetAboutToSendAsyncMessages();
-    ImageBridgeParent::SetAboutToSendAsyncMessages(mLayerTransaction->GetChildProcessId());
   }
 
   ~AutoLayerTransactionParentAsyncMessageSender()
   {
     mLayerTransaction->SendPendingAsyncMessages();
-    ImageBridgeParent::SendPendingAsyncMessages(mLayerTransaction->GetChildProcessId());
     if (mActorsToDestroy) {
       // Destroy the actors after sending the async messages because the latter may contain
       // references to some actors.
@@ -141,20 +159,26 @@ LayerTransactionParent::RecvPaintTime(const uint64_t& aTransactionId,
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
-                                   InfallibleTArray<EditReply>* reply)
+LayerTransactionParent::RecvInitReadLocks(ReadLockArray&& aReadLocks)
 {
-  GeckoProfilerTracingRAII tracer("Paint", "LayerTransaction");
-  PROFILER_LABEL("LayerTransactionParent", "RecvUpdate",
-    js::ProfileEntry::Category::GRAPHICS);
+  if (!AddReadLocks(Move(aReadLocks))) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+  return IPC_OK();
+}
 
-#ifdef COMPOSITOR_PERFORMANCE_WARNING
+mozilla::ipc::IPCResult
+LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo)
+{
+  AutoProfilerTracing tracing("Paint", "LayerTransaction");
+  AUTO_PROFILER_LABEL("LayerTransactionParent::RecvUpdate", GRAPHICS);
+
   TimeStamp updateStart = TimeStamp::Now();
-#endif
 
-  MOZ_LAYERS_LOG(("[ParentSide] received txn with %d edits", aInfo.cset().Length()));
+  MOZ_LAYERS_LOG(("[ParentSide] received txn with %zu edits", aInfo.cset().Length()));
 
   UpdateFwdTransactionId(aInfo.fwdTransactionId());
+  AutoClearReadLocks clearLocks(mReadLocks);
 
   if (mDestroyed || !layer_manager() || layer_manager()->IsDestroyed()) {
     for (const auto& op : aInfo.toDestroy()) {
@@ -166,15 +190,14 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
   // This ensures that destroy operations are always processed. It is not safe
   // to early-return from RecvUpdate without doing so.
   AutoLayerTransactionParentAsyncMessageSender autoAsyncMessageSender(this, &aInfo.toDestroy());
-  EditReplyVector replyv;
 
   {
     AutoResolveRefLayers resolve(mCompositorBridge->GetCompositionManager(this));
     layer_manager()->BeginTransaction();
   }
 
-  // not all edits require an update to the hit testing tree
-  bool updateHitTestingTree = false;
+  // Not all edits require an update to the hit testing tree.
+  mUpdateHitTestingTree = false;
 
   for (EditArray::index_type i = 0; i < aInfo.cset().Length(); ++i) {
     const Edit& edit = const_cast<Edit&>(aInfo.cset()[i]);
@@ -189,7 +212,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreatePaintedLayer");
       break;
     }
     case Edit::TOpCreateContainerLayer: {
@@ -200,7 +223,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateContainerLayer");
       break;
     }
     case Edit::TOpCreateImageLayer: {
@@ -211,7 +234,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateImageLayer");
       break;
     }
     case Edit::TOpCreateColorLayer: {
@@ -222,7 +245,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateColorLayer");
       break;
     }
     case Edit::TOpCreateTextLayer: {
@@ -233,18 +256,18 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateTextLayer");
       break;
     }
     case Edit::TOpCreateBorderLayer: {
-      MOZ_LAYERS_LOG(("[ParentSide] CreateTextLayer"));
+      MOZ_LAYERS_LOG(("[ParentSide] CreateBorderLayer"));
 
       RefPtr<BorderLayer> layer = layer_manager()->CreateBorderLayer();
       if (!BindLayer(layer, edit.get_OpCreateBorderLayer())) {
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateBorderLayer");
       break;
     }
     case Edit::TOpCreateCanvasLayer: {
@@ -255,7 +278,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateCanvasLayer");
       break;
     }
     case Edit::TOpCreateRefLayer: {
@@ -266,192 +289,11 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
-      break;
-    }
-
-    // Attributes
-    case Edit::TOpSetLayerAttributes: {
-      MOZ_LAYERS_LOG(("[ParentSide] SetLayerAttributes"));
-
-      const OpSetLayerAttributes& osla = edit.get_OpSetLayerAttributes();
-      Layer* layer = AsLayer(osla.layer());
-      if (!layer) {
-        return IPC_FAIL_NO_REASON(this);
-      }
-      const LayerAttributes& attrs = osla.attrs();
-
-      const CommonLayerAttributes& common = attrs.common();
-      layer->SetLayerBounds(common.layerBounds());
-      layer->SetVisibleRegion(common.visibleRegion());
-      layer->SetEventRegions(common.eventRegions());
-      layer->SetContentFlags(common.contentFlags());
-      layer->SetOpacity(common.opacity());
-      layer->SetClipRect(common.useClipRect() ? Some(common.clipRect()) : Nothing());
-      layer->SetScrolledClip(common.scrolledClip());
-      layer->SetBaseTransform(common.transform().value());
-      layer->SetTransformIsPerspective(common.transformIsPerspective());
-      layer->SetPostScale(common.postXScale(), common.postYScale());
-      layer->SetIsFixedPosition(common.isFixedPosition());
-      if (common.isFixedPosition()) {
-        layer->SetFixedPositionData(common.fixedPositionScrollContainerId(),
-                                    common.fixedPositionAnchor(),
-                                    common.fixedPositionSides());
-      }
-      if (common.isStickyPosition()) {
-        layer->SetStickyPositionData(common.stickyScrollContainerId(),
-                                     common.stickyScrollRangeOuter(),
-                                     common.stickyScrollRangeInner());
-      }
-      layer->SetScrollbarData(common.scrollbarTargetContainerId(),
-        static_cast<Layer::ScrollDirection>(common.scrollbarDirection()),
-        common.scrollbarThumbRatio());
-      if (common.isScrollbarContainer()) {
-        layer->SetIsScrollbarContainer();
-      }
-      layer->SetMixBlendMode((gfx::CompositionOp)common.mixBlendMode());
-      layer->SetForceIsolatedGroup(common.forceIsolatedGroup());
-      if (LayerHandle maskLayer = common.maskLayer()) {
-        layer->SetMaskLayer(AsLayer(maskLayer));
-      } else {
-        layer->SetMaskLayer(nullptr);
-      }
-      layer->SetAnimations(common.animations());
-      layer->SetScrollMetadata(common.scrollMetadata());
-      layer->SetDisplayListLog(common.displayListLog().get());
-
-      // The updated invalid region is added to the existing one, since we can
-      // update multiple times before the next composite.
-      layer->AddInvalidRegion(common.invalidRegion());
-
-      nsTArray<RefPtr<Layer>> maskLayers;
-      for (size_t i = 0; i < common.ancestorMaskLayers().Length(); i++) {
-        Layer* maskLayer = AsLayer(common.ancestorMaskLayers().ElementAt(i));
-        if (!maskLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        maskLayers.AppendElement(maskLayer);
-      }
-      layer->SetAncestorMaskLayers(maskLayers);
-
-      typedef SpecificLayerAttributes Specific;
-      const SpecificLayerAttributes& specific = attrs.specific();
-      switch (specific.type()) {
-      case Specific::Tnull_t:
-        break;
-
-      case Specific::TPaintedLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   painted layer"));
-
-        PaintedLayer* paintedLayer = layer->AsPaintedLayer();
-        if (!paintedLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        const PaintedLayerAttributes& attrs =
-          specific.get_PaintedLayerAttributes();
-
-        paintedLayer->SetValidRegion(attrs.validRegion());
-
-        break;
-      }
-      case Specific::TContainerLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   container layer"));
-
-        ContainerLayer* containerLayer = layer->AsContainerLayer();
-        if (!containerLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        const ContainerLayerAttributes& attrs =
-          specific.get_ContainerLayerAttributes();
-        containerLayer->SetPreScale(attrs.preXScale(), attrs.preYScale());
-        containerLayer->SetInheritedScale(attrs.inheritedXScale(), attrs.inheritedYScale());
-        containerLayer->SetScaleToResolution(attrs.scaleToResolution(),
-                                             attrs.presShellResolution());
-        containerLayer->SetEventRegionsOverride(attrs.eventRegionsOverride());
-
-        break;
-      }
-      case Specific::TColorLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   color layer"));
-
-        ColorLayer* colorLayer = layer->AsColorLayer();
-        if (!colorLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        colorLayer->SetColor(specific.get_ColorLayerAttributes().color().value());
-        colorLayer->SetBounds(specific.get_ColorLayerAttributes().bounds());
-        break;
-      }
-      case Specific::TTextLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   text layer"));
-
-        TextLayer* textLayer = layer->AsTextLayer();
-        if (!textLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        const auto& tla = specific.get_TextLayerAttributes();
-        textLayer->SetBounds(tla.bounds());
-        textLayer->SetGlyphs(Move(const_cast<nsTArray<GlyphArray>&>(tla.glyphs())));
-        textLayer->SetScaledFont(reinterpret_cast<gfx::ScaledFont*>(tla.scaledFont()));
-        break;
-      }
-      case Specific::TBorderLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   border layer"));
-
-        BorderLayer* borderLayer = layer->AsBorderLayer();
-        if (!borderLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        borderLayer->SetRect(specific.get_BorderLayerAttributes().rect());
-        borderLayer->SetColors(specific.get_BorderLayerAttributes().colors());
-        borderLayer->SetCornerRadii(specific.get_BorderLayerAttributes().corners());
-        borderLayer->SetWidths(specific.get_BorderLayerAttributes().widths());
-        break;
-      }
-      case Specific::TCanvasLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   canvas layer"));
-
-        CanvasLayer* canvasLayer = layer->AsCanvasLayer();
-        if (!canvasLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        canvasLayer->SetSamplingFilter(specific.get_CanvasLayerAttributes().samplingFilter());
-        canvasLayer->SetBounds(specific.get_CanvasLayerAttributes().bounds());
-        break;
-      }
-      case Specific::TRefLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   ref layer"));
-
-        RefLayer* refLayer = layer->AsRefLayer();
-        if (!refLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        refLayer->SetReferentId(specific.get_RefLayerAttributes().id());
-        refLayer->SetEventRegionsOverride(specific.get_RefLayerAttributes().eventRegionsOverride());
-        break;
-      }
-      case Specific::TImageLayerAttributes: {
-        MOZ_LAYERS_LOG(("[ParentSide]   image layer"));
-
-        ImageLayer* imageLayer = layer->AsImageLayer();
-        if (!imageLayer) {
-          return IPC_FAIL_NO_REASON(this);
-        }
-        const ImageLayerAttributes& attrs = specific.get_ImageLayerAttributes();
-        imageLayer->SetSamplingFilter(attrs.samplingFilter());
-        imageLayer->SetScaleToSize(attrs.scaleToSize(), attrs.scaleMode());
-        break;
-      }
-      default:
-        MOZ_CRASH("not reached");
-      }
-
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "CreateRefLayer");
       break;
     }
     case Edit::TOpSetDiagnosticTypes: {
-      mLayerManager->GetCompositor()->SetDiagnosticTypes(
-        edit.get_OpSetDiagnosticTypes().diagnostics());
+      mLayerManager->SetDiagnosticTypes(edit.get_OpSetDiagnosticTypes().diagnostics());
       break;
     }
     case Edit::TOpWindowOverlayChanged: {
@@ -472,7 +314,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
       }
       mRoot = newRoot;
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(mRoot, "SetRoot");
       break;
     }
     case Edit::TOpInsertAfter: {
@@ -490,7 +332,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "InsertAfter");
       break;
     }
     case Edit::TOpPrependChild: {
@@ -507,7 +349,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "PrependChild");
       break;
     }
     case Edit::TOpRemoveChild: {
@@ -524,7 +366,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "RemoveChild");
       break;
     }
     case Edit::TOpRepositionChild: {
@@ -542,7 +384,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "RepositionChild");
       break;
     }
     case Edit::TOpRaiseToTopChild: {
@@ -562,12 +404,11 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         return IPC_FAIL_NO_REASON(this);
       }
 
-      updateHitTestingTree = true;
+      UpdateHitTestingTree(layer, "RaiseToTopChild");
       break;
     }
     case Edit::TCompositableOperation: {
-      if (!ReceiveCompositableUpdate(edit.get_CompositableOperation(),
-                                replyv)) {
+      if (!ReceiveCompositableUpdate(edit.get_CompositableOperation())) {
         return IPC_FAIL_NO_REASON(this);
       }
       break;
@@ -575,27 +416,15 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
     case Edit::TOpAttachCompositable: {
       const OpAttachCompositable& op = edit.get_OpAttachCompositable();
       RefPtr<CompositableHost> host = FindCompositable(op.compositable());
-      if (mPendingCompositorUpdates) {
-        // Do not attach compositables from old layer trees. Return true since
-        // content cannot handle errors.
-        return IPC_OK();
-      }
       if (!Attach(AsLayer(op.layer()), host, false)) {
         return IPC_FAIL_NO_REASON(this);
       }
-      if (mLayerManager->GetCompositor()) {
-        host->SetCompositorID(mLayerManager->GetCompositor()->GetCompositorID());
-      }
+      host->SetCompositorBridgeID(mLayerManager->GetCompositorBridgeID());
       break;
     }
     case Edit::TOpAttachAsyncCompositable: {
       const OpAttachAsyncCompositable& op = edit.get_OpAttachAsyncCompositable();
-      if (mPendingCompositorUpdates) {
-        // Do not attach compositables from old layer trees. Return true since
-        // content cannot handle errors.
-        return IPC_OK();
-      }
-      ImageBridgeParent* imageBridge = ImageBridgeParent::GetInstance(OtherPid());
+      RefPtr<ImageBridgeParent> imageBridge = ImageBridgeParent::GetInstance(OtherPid());
       if (!imageBridge) {
         return IPC_FAIL_NO_REASON(this);
       }
@@ -611,9 +440,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
       if (!Attach(AsLayer(op.layer()), host, true)) {
         return IPC_FAIL_NO_REASON(this);
       }
-      if (mLayerManager->GetCompositor()) {
-        host->SetCompositorID(mLayerManager->GetCompositor()->GetCompositorID());
-      }
+      host->SetCompositorBridgeID(mLayerManager->GetCompositorBridgeID());
       break;
     }
     default:
@@ -621,18 +448,41 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
     }
   }
 
-  mCompositorBridge->ShadowLayersUpdated(this, aInfo, updateHitTestingTree);
+  // Process simple attribute updates.
+  for (const auto& op : aInfo.setSimpleAttrs()) {
+    MOZ_LAYERS_LOG(("[ParentSide] SetSimpleLayerAttributes"));
+    Layer* layer = AsLayer(op.layer());
+    if (!layer) {
+      return IPC_FAIL_NO_REASON(this);
+    }
+    const SimpleLayerAttributes& attrs = op.attrs();
+    const SimpleLayerAttributes& orig = layer->GetSimpleAttributes();
+    if (!attrs.HitTestingInfoIsEqual(orig)) {
+      UpdateHitTestingTree(layer, "scrolling info changed");
+    }
+    layer->SetSimpleAttributes(op.attrs());
+  }
+
+  // Process attribute updates.
+  for (const auto& op : aInfo.setAttrs()) {
+    MOZ_LAYERS_LOG(("[ParentSide] SetLayerAttributes"));
+    if (!SetLayerAttributes(op)) {
+      return IPC_FAIL_NO_REASON(this);
+    }
+  }
+
+  // Process paints separately, after all normal edits.
+  for (const auto& op : aInfo.paints()) {
+    if (!ReceiveCompositableUpdate(op)) {
+      return IPC_FAIL_NO_REASON(this);
+    }
+  }
+
+  mCompositorBridge->ShadowLayersUpdated(this, aInfo, mUpdateHitTestingTree);
 
   {
     AutoResolveRefLayers resolve(mCompositorBridge->GetCompositionManager(this));
     layer_manager()->EndTransaction(TimeStamp(), LayerManager::END_NO_IMMEDIATE_REDRAW);
-  }
-
-  if (reply) {
-    reply->SetCapacity(replyv.size());
-    if (replyv.size() > 0) {
-      reply->AppendElements(&replyv.front(), replyv.size());
-    }
   }
 
   if (!IsSameProcess()) {
@@ -662,13 +512,188 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
         severity = 1.f;
       }
       mLayerManager->VisualFrameWarning(severity);
-      PR_LogPrint("LayerTransactionParent::RecvUpdate transaction from process %d took %f ms",
-                  OtherPid(),
-                  latency.ToMilliseconds());
+      printf_stderr("LayerTransactionParent::RecvUpdate transaction from process %d took %f ms",
+                    OtherPid(),
+                    latency.ToMilliseconds());
     }
+
+    mLayerManager->RecordUpdateTime((TimeStamp::Now() - updateStart).ToMilliseconds());
   }
 
   return IPC_OK();
+}
+
+bool
+LayerTransactionParent::SetLayerAttributes(const OpSetLayerAttributes& aOp)
+{
+  Layer* layer = AsLayer(aOp.layer());
+  if (!layer) {
+    return false;
+  }
+
+  const LayerAttributes& attrs = aOp.attrs();
+  const CommonLayerAttributes& common = attrs.common();
+  if (common.visibleRegion() != layer->GetVisibleRegion()) {
+    UpdateHitTestingTree(layer, "visible region changed");
+    layer->SetVisibleRegion(common.visibleRegion());
+  }
+  if (common.eventRegions() != layer->GetEventRegions()) {
+    UpdateHitTestingTree(layer, "event regions changed");
+    layer->SetEventRegions(common.eventRegions());
+  }
+  Maybe<ParentLayerIntRect> clipRect = common.useClipRect() ? Some(common.clipRect()) : Nothing();
+  if (clipRect != layer->GetClipRect()) {
+    UpdateHitTestingTree(layer, "clip rect changed");
+    layer->SetClipRect(clipRect);
+  }
+  if (LayerHandle maskLayer = common.maskLayer()) {
+    layer->SetMaskLayer(AsLayer(maskLayer));
+  } else {
+    layer->SetMaskLayer(nullptr);
+  }
+  layer->SetCompositorAnimations(common.compositorAnimations());
+  // Clean up the Animations by id in the CompositorAnimationStorage
+  // if there are no active animations on the layer
+  if (mAnimStorage &&
+      layer->GetCompositorAnimationsId() &&
+      layer->GetAnimations().IsEmpty()) {
+    mAnimStorage->ClearById(layer->GetCompositorAnimationsId());
+  }
+  if (common.scrollMetadata() != layer->GetAllScrollMetadata()) {
+    UpdateHitTestingTree(layer, "scroll metadata changed");
+    layer->SetScrollMetadata(common.scrollMetadata());
+  }
+  layer->SetDisplayListLog(common.displayListLog().get());
+
+  // The updated invalid region is added to the existing one, since we can
+  // update multiple times before the next composite.
+  layer->AddInvalidRegion(common.invalidRegion());
+
+  nsTArray<RefPtr<Layer>> maskLayers;
+  for (size_t i = 0; i < common.ancestorMaskLayers().Length(); i++) {
+    Layer* maskLayer = AsLayer(common.ancestorMaskLayers().ElementAt(i));
+    if (!maskLayer) {
+      return false;
+    }
+    maskLayers.AppendElement(maskLayer);
+  }
+  layer->SetAncestorMaskLayers(maskLayers);
+
+  typedef SpecificLayerAttributes Specific;
+  const SpecificLayerAttributes& specific = attrs.specific();
+  switch (specific.type()) {
+  case Specific::Tnull_t:
+    break;
+
+  case Specific::TPaintedLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   painted layer"));
+
+    PaintedLayer* paintedLayer = layer->AsPaintedLayer();
+    if (!paintedLayer) {
+      return false;
+    }
+    const PaintedLayerAttributes& attrs =
+      specific.get_PaintedLayerAttributes();
+
+    paintedLayer->SetValidRegion(attrs.validRegion());
+    break;
+  }
+  case Specific::TContainerLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   container layer"));
+
+    ContainerLayer* containerLayer = layer->AsContainerLayer();
+    if (!containerLayer) {
+      return false;
+    }
+    const ContainerLayerAttributes& attrs =
+      specific.get_ContainerLayerAttributes();
+    containerLayer->SetPreScale(attrs.preXScale(), attrs.preYScale());
+    containerLayer->SetInheritedScale(attrs.inheritedXScale(), attrs.inheritedYScale());
+    containerLayer->SetScaleToResolution(attrs.scaleToResolution(),
+                                         attrs.presShellResolution());
+    if (attrs.eventRegionsOverride() != containerLayer->GetEventRegionsOverride()) {
+      UpdateHitTestingTree(layer, "event regions override changed");
+      containerLayer->SetEventRegionsOverride(attrs.eventRegionsOverride());
+    }
+    break;
+  }
+  case Specific::TColorLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   color layer"));
+
+    ColorLayer* colorLayer = layer->AsColorLayer();
+    if (!colorLayer) {
+      return false;
+    }
+    colorLayer->SetColor(specific.get_ColorLayerAttributes().color().value());
+    colorLayer->SetBounds(specific.get_ColorLayerAttributes().bounds());
+    break;
+  }
+  case Specific::TTextLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   text layer"));
+
+    TextLayer* textLayer = layer->AsTextLayer();
+    if (!textLayer) {
+      return false;
+    }
+    const auto& tla = specific.get_TextLayerAttributes();
+    textLayer->SetBounds(tla.bounds());
+    textLayer->SetGlyphs(Move(const_cast<nsTArray<GlyphArray>&>(tla.glyphs())));
+    textLayer->SetScaledFont(reinterpret_cast<gfx::ScaledFont*>(tla.scaledFont()));
+    break;
+  }
+  case Specific::TBorderLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   border layer"));
+
+    BorderLayer* borderLayer = layer->AsBorderLayer();
+    if (!borderLayer) {
+      return false;
+    }
+    borderLayer->SetRect(specific.get_BorderLayerAttributes().rect());
+    borderLayer->SetColors(specific.get_BorderLayerAttributes().colors());
+    borderLayer->SetCornerRadii(specific.get_BorderLayerAttributes().corners());
+    borderLayer->SetWidths(specific.get_BorderLayerAttributes().widths());
+    break;
+  }
+  case Specific::TCanvasLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   canvas layer"));
+
+    CanvasLayer* canvasLayer = layer->AsCanvasLayer();
+    if (!canvasLayer) {
+      return false;
+    }
+    canvasLayer->SetSamplingFilter(specific.get_CanvasLayerAttributes().samplingFilter());
+    canvasLayer->SetBounds(specific.get_CanvasLayerAttributes().bounds());
+    break;
+  }
+  case Specific::TRefLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   ref layer"));
+
+    RefLayer* refLayer = layer->AsRefLayer();
+    if (!refLayer) {
+      return false;
+    }
+    refLayer->SetReferentId(specific.get_RefLayerAttributes().id());
+    refLayer->SetEventRegionsOverride(specific.get_RefLayerAttributes().eventRegionsOverride());
+    UpdateHitTestingTree(layer, "event regions override changed");
+    break;
+  }
+  case Specific::TImageLayerAttributes: {
+    MOZ_LAYERS_LOG(("[ParentSide]   image layer"));
+
+    ImageLayer* imageLayer = layer->AsImageLayer();
+    if (!imageLayer) {
+      return false;
+    }
+    const ImageLayerAttributes& attrs = specific.get_ImageLayerAttributes();
+    imageLayer->SetSamplingFilter(attrs.samplingFilter());
+    imageLayer->SetScaleToSize(attrs.scaleToSize(), attrs.scaleMode());
+    break;
+  }
+  default:
+    MOZ_CRASH("not reached");
+  }
+
+  return true;
 }
 
 mozilla::ipc::IPCResult
@@ -692,7 +717,7 @@ LayerTransactionParent::ShouldParentObserveEpoch()
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvSetTestSampleTime(const TimeStamp& aTime)
 {
-  if (!mCompositorBridge->SetTestSampleTime(this, aTime)) {
+  if (!mCompositorBridge->SetTestSampleTime(GetId(), aTime)) {
     return IPC_FAIL_NO_REASON(this);
   }
   return IPC_OK();
@@ -701,12 +726,12 @@ LayerTransactionParent::RecvSetTestSampleTime(const TimeStamp& aTime)
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvLeaveTestMode()
 {
-  mCompositorBridge->LeaveTestMode(this);
+  mCompositorBridge->LeaveTestMode(GetId());
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvGetAnimationOpacity(const LayerHandle& aParent,
+LayerTransactionParent::RecvGetAnimationOpacity(const uint64_t& aCompositorAnimationsId,
                                                 float* aOpacity,
                                                 bool* aHasAnimationOpacity)
 {
@@ -715,32 +740,25 @@ LayerTransactionParent::RecvGetAnimationOpacity(const LayerHandle& aParent,
     return IPC_FAIL_NO_REASON(this);
   }
 
-  RefPtr<Layer> layer = AsLayer(aParent);
-  if (!layer) {
+  mCompositorBridge->ApplyAsyncProperties(this);
+
+  if (!mAnimStorage) {
     return IPC_FAIL_NO_REASON(this);
   }
 
-  mCompositorBridge->ApplyAsyncProperties(this);
-
-  if (!layer->AsHostLayer()->GetShadowOpacitySetByAnimation()) {
-    return IPC_OK();
+  Maybe<float> opacity = mAnimStorage->GetAnimationOpacity(aCompositorAnimationsId);
+  if (opacity) {
+    *aOpacity = *opacity;
+    *aHasAnimationOpacity = true;
   }
-
-  *aOpacity = layer->GetLocalOpacity();
-  *aHasAnimationOpacity = true;
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvGetAnimationTransform(const LayerHandle& aLayerHandle,
+LayerTransactionParent::RecvGetAnimationTransform(const uint64_t& aCompositorAnimationsId,
                                                   MaybeTransform* aTransform)
 {
   if (mDestroyed || !layer_manager() || layer_manager()->IsDestroyed()) {
-    return IPC_FAIL_NO_REASON(this);
-  }
-
-  Layer* layer = AsLayer(aLayerHandle);
-  if (!layer) {
     return IPC_FAIL_NO_REASON(this);
   }
 
@@ -750,65 +768,16 @@ LayerTransactionParent::RecvGetAnimationTransform(const LayerHandle& aLayerHandl
   // the value.
   mCompositorBridge->ApplyAsyncProperties(this);
 
-  // This method is specific to transforms applied by animation.
-  // This is because this method uses the information stored with an animation
-  // such as the origin of the reference frame corresponding to the layer, to
-  // recover the untranslated transform from the shadow transform. For
-  // transforms that are not set by animation we don't have this information
-  // available.
-  if (!layer->AsHostLayer()->GetShadowTransformSetByAnimation()) {
+  if (!mAnimStorage) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  Maybe<Matrix4x4> transform = mAnimStorage->GetAnimationTransform(aCompositorAnimationsId);
+  if (transform) {
+    *aTransform = *transform;
+  } else {
     *aTransform = mozilla::void_t();
-    return IPC_OK();
   }
-
-  // The following code recovers the untranslated transform
-  // from the shadow transform by undoing the translations in
-  // AsyncCompositionManager::SampleValue.
-
-  Matrix4x4 transform = layer->AsHostLayer()->GetShadowBaseTransform();
-  if (ContainerLayer* c = layer->AsContainerLayer()) {
-    // Undo the scale transform applied by AsyncCompositionManager::SampleValue
-    transform.PostScale(1.0f/c->GetInheritedXScale(),
-                        1.0f/c->GetInheritedYScale(),
-                        1.0f);
-  }
-  float scale = 1;
-  Point3D scaledOrigin;
-  Point3D transformOrigin;
-  for (uint32_t i=0; i < layer->GetAnimations().Length(); i++) {
-    if (layer->GetAnimations()[i].data().type() == AnimationData::TTransformData) {
-      const TransformData& data = layer->GetAnimations()[i].data().get_TransformData();
-      scale = data.appUnitsPerDevPixel();
-      scaledOrigin =
-        Point3D(NS_round(NSAppUnitsToFloatPixels(data.origin().x, scale)),
-                NS_round(NSAppUnitsToFloatPixels(data.origin().y, scale)),
-                0.0f);
-      transformOrigin = data.transformOrigin();
-      break;
-    }
-  }
-
-  // If our parent isn't a perspective layer, then the offset into reference
-  // frame coordinates will have been applied to us. Add an inverse translation
-  // to cancel it out.
-  if (!layer->GetParent() || !layer->GetParent()->GetTransformIsPerspective()) {
-    transform.PostTranslate(-scaledOrigin.x, -scaledOrigin.y, -scaledOrigin.z);
-  }
-
-  // Undo the rebasing applied by
-  // nsDisplayTransform::GetResultingTransformMatrixInternal
-  transform.ChangeBasis(-transformOrigin);
-
-  // Convert to CSS pixels (this undoes the operations performed by
-  // nsStyleTransformMatrix::ProcessTranslatePart which is called from
-  // nsDisplayTransform::GetResultingTransformMatrix)
-  double devPerCss =
-    double(scale) / double(nsDeviceContext::AppUnitsPerCSSPixel());
-  transform._41 *= devPerCss;
-  transform._42 *= devPerCss;
-  transform._43 *= devPerCss;
-
-  *aTransform = transform;
   return IPC_OK();
 }
 
@@ -866,25 +835,21 @@ LayerTransactionParent::RecvSetAsyncZoom(const FrameMetrics::ViewID& aScrollID,
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvFlushApzRepaints()
 {
-  mCompositorBridge->FlushApzRepaints(this);
+  mCompositorBridge->FlushApzRepaints(GetId());
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvGetAPZTestData(APZTestData* aOutData)
 {
-  mCompositorBridge->GetAPZTestData(this, aOutData);
+  mCompositorBridge->GetAPZTestData(GetId(), aOutData);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvRequestProperty(const nsString& aProperty, float* aValue)
 {
-  if (aProperty.Equals(NS_LITERAL_STRING("overdraw"))) {
-    *aValue = layer_manager()->GetCompositor()->GetFillRatio();
-  } else {
-    *aValue = -1;
-  }
+  *aValue = -1;
   return IPC_OK();
 }
 
@@ -892,7 +857,7 @@ mozilla::ipc::IPCResult
 LayerTransactionParent::RecvSetConfirmedTargetAPZC(const uint64_t& aBlockId,
                                                    nsTArray<ScrollableLayerGuid>&& aTargets)
 {
-  mCompositorBridge->SetConfirmedTargetAPZC(this, aBlockId, aTargets);
+  mCompositorBridge->SetConfirmedTargetAPZC(GetId(), aBlockId, aTargets);
   return IPC_OK();
 }
 
@@ -910,15 +875,15 @@ LayerTransactionParent::Attach(Layer* aLayer,
     return false;
   }
 
-  Compositor* compositor
-    = static_cast<HostLayerManager*>(aLayer->Manager())->GetCompositor();
+  TextureSourceProvider* provider =
+    static_cast<HostLayerManager*>(aLayer->Manager())->GetTextureSourceProvider();
 
   if (!layer->SetCompositableHost(aCompositable)) {
     // not all layer types accept a compositable, see bug 967824
     return false;
   }
   aCompositable->Attach(aLayer,
-                        compositor,
+                        provider,
                         aIsAsync
                           ? CompositableHost::ALLOW_REATTACH
                             | CompositableHost::KEEP_ATTACHED
@@ -949,6 +914,7 @@ LayerTransactionParent::RecvForceComposite()
 void
 LayerTransactionParent::ActorDestroy(ActorDestroyReason why)
 {
+  Destroy();
 }
 
 bool
@@ -1015,11 +981,14 @@ LayerTransactionParent::NotifyNotUsed(PTextureParent* aTexture, uint64_t aTransa
 bool
 LayerTransactionParent::BindLayerToHandle(RefPtr<Layer> aLayer, const LayerHandle& aHandle)
 {
-  if (!aHandle || !aLayer || mLayerMap.Contains(aHandle.Value())) {
+  if (!aHandle || !aLayer) {
     return false;
   }
-
-  mLayerMap.Put(aHandle.Value(), aLayer);
+  if (auto entry = mLayerMap.LookupForAdd(aHandle.Value())) {
+    return false;
+  } else {
+    entry.OrInsert([&aLayer] () { return aLayer; });
+  }
   return true;
 }
 
@@ -1029,7 +998,7 @@ LayerTransactionParent::AsLayer(const LayerHandle& aHandle)
   if (!aHandle) {
     return nullptr;
   }
-  return mLayerMap.Get(aHandle.Value()).get();
+  return mLayerMap.GetWeak(aHandle.Value());
 }
 
 mozilla::ipc::IPCResult
@@ -1044,15 +1013,15 @@ LayerTransactionParent::RecvNewCompositable(const CompositableHandle& aHandle, c
 mozilla::ipc::IPCResult
 LayerTransactionParent::RecvReleaseLayer(const LayerHandle& aHandle)
 {
-  if (!aHandle || !mLayerMap.Contains(aHandle.Value())) {
+  RefPtr<Layer> layer;
+  if (!aHandle || !mLayerMap.Remove(aHandle.Value(), getter_AddRefs(layer))) {
     return IPC_FAIL_NO_REASON(this);
   }
-
-  Maybe<RefPtr<Layer>> maybeLayer = mLayerMap.GetAndRemove(aHandle.Value());
-  if (maybeLayer) {
-    (*maybeLayer)->Disconnect();
+  if (mAnimStorage &&
+      layer->GetCompositorAnimationsId()) {
+    mAnimStorage->ClearById(layer->GetCompositorAnimationsId());
   }
-
+  layer->Disconnect();
   return IPC_OK();
 }
 
@@ -1060,6 +1029,30 @@ mozilla::ipc::IPCResult
 LayerTransactionParent::RecvReleaseCompositable(const CompositableHandle& aHandle)
 {
   ReleaseCompositable(aHandle);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+LayerTransactionParent::RecvRecordPaintTimes(const PaintTiming& aTiming)
+{
+  // Currently we only add paint timings for remote layers. In the future
+  // we could be smarter and use paint timings from the UI process, either
+  // as a separate overlay or if no remote layers are attached.
+  if (mLayerManager && mCompositorBridge->IsRemote()) {
+    mLayerManager->RecordPaintTimes(aTiming);
+  }
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+LayerTransactionParent::RecvGetTextureFactoryIdentifier(TextureFactoryIdentifier* aIdentifier)
+{
+  if (!mLayerManager) {
+    // Default constructor sets mParentBackend to LAYERS_NONE.
+    return IPC_OK();
+  }
+
+  *aIdentifier = mLayerManager->GetTextureFactoryIdentifier();
   return IPC_OK();
 }
 

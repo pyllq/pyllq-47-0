@@ -18,7 +18,6 @@ Cu.import("resource://gre/modules/Preferences.jsm");
 Cu.import("resource://gre/modules/osfile.jsm");
 /* globals OS*/
 Cu.import("resource://gre/modules/Log.jsm");
-Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://gre/modules/GMPUtils.jsm");
 /* globals GMP_PLUGIN_IDS, GMPPrefs, GMPUtils, OPEN_H264_ID, WIDEVINE_ID */
 Cu.import("resource://gre/modules/AppConstants.jsm");
@@ -84,9 +83,9 @@ function configureLogging() {
     gLogger = Log.repository.getLogger("Toolkit.GMP");
     gLogger.addAppender(new Log.ConsoleAppender(new Log.BasicFormatter()));
   }
-  gLogger.level = GMPPrefs.get(GMPPrefs.KEY_LOGGING_LEVEL, Log.Level.Warn);
+  gLogger.level = GMPPrefs.getInt(GMPPrefs.KEY_LOGGING_LEVEL, Log.Level.Warn);
 
-  let logDumping = GMPPrefs.get(GMPPrefs.KEY_LOGGING_DUMP, false);
+  let logDumping = GMPPrefs.getBool(GMPPrefs.KEY_LOGGING_DUMP, false);
   if (logDumping != !!gLogAppenderDump) {
     if (logDumping) {
       gLogAppenderDump = new Log.DumpAppender(new Log.BasicFormatter());
@@ -137,8 +136,8 @@ GMPWrapper.prototype = {
     if (!this._gmpPath && this.isInstalled) {
       this._gmpPath = OS.Path.join(OS.Constants.Path.profileDir,
                                    this._plugin.id,
-                                   GMPPrefs.get(GMPPrefs.KEY_PLUGIN_VERSION,
-                                                null, this._plugin.id));
+                                   GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_VERSION,
+                                                      null, this._plugin.id));
     }
     return this._gmpPath;
   },
@@ -154,9 +153,8 @@ GMPWrapper.prototype = {
   get fullDescription() { return this._plugin.fullDescription; },
 
   get version() {
- return GMPPrefs.get(GMPPrefs.KEY_PLUGIN_VERSION, null,
-                                      this._plugin.id);
-},
+    return GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_VERSION, null, this._plugin.id);
+  },
 
   get isActive() {
     return !this.appDisabled &&
@@ -164,7 +162,7 @@ GMPWrapper.prototype = {
            !GMPUtils.isPluginHidden(this._plugin);
   },
   get appDisabled() {
-    if (this._plugin.isEME && !GMPPrefs.get(GMPPrefs.KEY_EME_ENABLED, true)) {
+    if (this._plugin.isEME && !GMPPrefs.getBool(GMPPrefs.KEY_EME_ENABLED, true)) {
       // If "media.eme.enabled" is false, all EME plugins are disabled.
       return true;
     }
@@ -172,13 +170,11 @@ GMPWrapper.prototype = {
   },
 
   get userDisabled() {
-    return !GMPPrefs.get(GMPPrefs.KEY_PLUGIN_ENABLED, true, this._plugin.id);
+    return !GMPPrefs.getBool(GMPPrefs.KEY_PLUGIN_ENABLED, true, this._plugin.id);
   },
   set userDisabled(aVal) {
- GMPPrefs.set(GMPPrefs.KEY_PLUGIN_ENABLED,
-                                        aVal === false,
-                                        this._plugin.id);
-},
+    GMPPrefs.setBool(GMPPrefs.KEY_PLUGIN_ENABLED, aVal === false, this._plugin.id);
+  },
 
   get blocklistState() { return Ci.nsIBlocklistService.STATE_NOT_BLOCKED; },
   get size() { return 0; },
@@ -198,9 +194,9 @@ GMPWrapper.prototype = {
   },
 
   get updateDate() {
-    let time = Number(GMPPrefs.get(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, null,
-                                   this._plugin.id));
-    if (!isNaN(time) && this.isInstalled) {
+    let time = Number(GMPPrefs.getInt(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, 0,
+                                      this._plugin.id));
+    if (this.isInstalled) {
       return new Date(time * 1000)
     }
     return null;
@@ -231,7 +227,7 @@ GMPWrapper.prototype = {
       return AddonManager.AUTOUPDATE_DEFAULT;
     }
 
-    return GMPPrefs.get(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, true, this._plugin.id) ?
+    return GMPPrefs.getBool(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, true, this._plugin.id) ?
       AddonManager.AUTOUPDATE_ENABLE : AddonManager.AUTOUPDATE_DISABLE;
   },
 
@@ -239,9 +235,9 @@ GMPWrapper.prototype = {
     if (aVal == AddonManager.AUTOUPDATE_DEFAULT) {
       GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, this._plugin.id);
     } else if (aVal == AddonManager.AUTOUPDATE_ENABLE) {
-      GMPPrefs.set(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, true, this._plugin.id);
+      GMPPrefs.setBool(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, true, this._plugin.id);
     } else if (aVal == AddonManager.AUTOUPDATE_DISABLE) {
-      GMPPrefs.set(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, false, this._plugin.id);
+      GMPPrefs.setBool(GMPPrefs.KEY_PLUGIN_AUTOUPDATE, false, this._plugin.id);
     }
   },
 
@@ -277,16 +273,16 @@ GMPWrapper.prototype = {
       return this._updateTask;
     }
 
-    this._updateTask = Task.spawn(function*() {
+    this._updateTask = (async () => {
       this._log.trace("findUpdates() - updateTask");
       try {
         let installManager = new GMPInstallManager();
-        let res = yield installManager.checkForAddons();
+        let res = await installManager.checkForAddons();
         let update = res.gmpAddons.find(addon => addon.id === this._plugin.id);
         if (update && update.isValid && !update.isInstalled) {
           this._log.trace("findUpdates() - found update for " +
                           this._plugin.id + ", installing");
-          yield installManager.installAddon(update);
+          await installManager.installAddon(update);
         } else {
           this._log.trace("findUpdates() - no updates for " + this._plugin.id);
         }
@@ -300,7 +296,7 @@ GMPWrapper.prototype = {
         this._updateTask = null;
       }
       return true;
-    }.bind(this));
+    })();
 
     return this._updateTask;
   },
@@ -386,7 +382,7 @@ GMPWrapper.prototype = {
         let gmpInstallManager = new GMPInstallManager();
         // We don't really care about the results, if someone is interested
         // they can check the log.
-        gmpInstallManager.simpleCheckAndInstall().then(null, () => {});
+        gmpInstallManager.simpleCheckAndInstall().catch(() => {});
       }
       this._isUpdateCheckPending = false;
     }, delay);
@@ -429,8 +425,8 @@ GMPWrapper.prototype = {
     if (this.isInstalled) {
       this._gmpPath = OS.Path.join(OS.Constants.Path.profileDir,
                                    this._plugin.id,
-                                   GMPPrefs.get(GMPPrefs.KEY_PLUGIN_VERSION,
-                                                null, this._plugin.id));
+                                   GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_VERSION,
+                                                      null, this._plugin.id));
     }
     if (this._gmpPath && this.isActive) {
       this._log.info("onPrefVersionChanged() - registering gmp directory " +
@@ -498,7 +494,8 @@ GMPWrapper.prototype = {
       };
     }
 
-    let abi = GMPPrefs.get(GMPPrefs.KEY_PLUGIN_ABI, UpdateUtils.ABI, this._plugin.id);
+    let abi = GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_ABI, UpdateUtils.ABI,
+                                 this._plugin.id);
     if (abi != UpdateUtils.ABI) {
       // ABI doesn't match. Possibly this is a profile migrated across platforms
       // or from 32 -> 64 bit.
@@ -530,7 +527,7 @@ var GMPProvider = {
     this.buildPluginList();
     this.ensureProperCDMInstallState();
 
-    Preferences.observe(GMPPrefs.KEY_LOG_BASE, configureLogging);
+    Services.prefs.addObserver(GMPPrefs.KEY_LOG_BASE, configureLogging);
 
     for (let plugin of this._plugins.values()) {
       let wrapper = plugin.wrapper;
@@ -581,15 +578,15 @@ var GMPProvider = {
 
   shutdown() {
     this._log.trace("shutdown");
-    Preferences.ignore(GMPPrefs.KEY_LOG_BASE, configureLogging);
+    Services.prefs.removeObserver(GMPPrefs.KEY_LOG_BASE, configureLogging);
 
-    let shutdownTask = Task.spawn(function*() {
+    let shutdownTask = (async () => {
       this._log.trace("shutdown - shutdownTask");
       let shutdownSucceeded = true;
 
       for (let plugin of this._plugins.values()) {
         try {
-          yield plugin.wrapper.shutdown();
+          await plugin.wrapper.shutdown();
         } catch (e) {
           shutdownSucceeded = false;
         }
@@ -600,7 +597,7 @@ var GMPProvider = {
       if (!shutdownSucceeded) {
         throw new Error("Shutdown failed");
       }
-    }.bind(this));
+    })();
 
     return shutdownTask;
   },
@@ -634,7 +631,7 @@ var GMPProvider = {
   },
 
   get isEnabled() {
-    return GMPPrefs.get(GMPPrefs.KEY_PROVIDER_ENABLED, false);
+    return GMPPrefs.getBool(GMPPrefs.KEY_PROVIDER_ENABLED, false);
   },
 
   generateFullDescription(aPlugin) {
@@ -669,7 +666,7 @@ var GMPProvider = {
   },
 
   ensureProperCDMInstallState() {
-    if (!GMPPrefs.get(GMPPrefs.KEY_EME_ENABLED, true)) {
+    if (!GMPPrefs.getBool(GMPPrefs.KEY_EME_ENABLED, true)) {
       for (let plugin of this._plugins.values()) {
         if (plugin.isEME && plugin.wrapper.isInstalled) {
           gmpService.addPluginDirectory(plugin.wrapper.gmpPath);

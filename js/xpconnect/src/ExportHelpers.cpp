@@ -13,6 +13,7 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/File.h"
+#include "mozilla/dom/FileListBinding.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "nsGlobalWindow.h"
 #include "nsJSUtils.h"
@@ -52,13 +53,7 @@ enum StackScopedCloneTags {
 // per scope.
 bool IsFileList(JSObject* obj)
 {
-    nsISupports* supports = UnwrapReflectorToISupports(obj);
-    if (!supports)
-        return false;
-    nsCOMPtr<nsIDOMFileList> fileList = do_QueryInterface(supports);
-    if (fileList)
-        return true;
-    return false;
+    return IS_INSTANCE_OF(FileList, obj);
 }
 
 class MOZ_STACK_CLASS StackScopedCloneData
@@ -150,8 +145,9 @@ public:
                             JS::Handle<JSObject*> aObj)
     {
         {
+            JS::Rooted<JSObject*> obj(aCx, aObj);
             Blob* blob = nullptr;
-            if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, aObj, blob))) {
+            if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, &obj, blob))) {
                 BlobImpl* blobImpl = blob->Impl();
                 MOZ_ASSERT(blobImpl);
 
@@ -408,9 +404,12 @@ ExportFunction(JSContext* cx, HandleValue vfunction, HandleValue vscope, HandleV
             RootedString funName(cx, JS_GetFunctionId(fun));
             if (!funName)
                 funName = JS_AtomizeAndPinString(cx, "");
+            JS_MarkCrossZoneIdValue(cx, StringValue(funName));
 
             if (!JS_StringToId(cx, funName, &id))
                 return false;
+        } else {
+            JS_MarkCrossZoneId(cx, id);
         }
         MOZ_ASSERT(JSID_IS_STRING(id));
 
@@ -473,6 +472,8 @@ CreateObjectIn(JSContext* cx, HandleValue vobj, CreateObjectInOptions& options,
     RootedObject obj(cx);
     {
         JSAutoCompartment ac(cx, scope);
+        JS_MarkCrossZoneId(cx, options.defineAs);
+
         obj = JS_NewPlainObject(cx);
         if (!obj)
             return false;

@@ -13,21 +13,23 @@
 
 namespace mozilla {
 
-MediaDecoder*
-ADTSDecoder::Clone(MediaDecoderOwner* aOwner)
+ChannelMediaDecoder*
+ADTSDecoder::Clone(MediaDecoderInit& aInit)
 {
   if (!IsEnabled())
     return nullptr;
 
-  return new ADTSDecoder(aOwner);
+  return new ADTSDecoder(aInit);
 }
 
 MediaDecoderStateMachine*
 ADTSDecoder::CreateStateMachine()
 {
-  RefPtr<MediaDecoderReader> reader =
-      new MediaFormatReader(this, new ADTSDemuxer(GetResource()));
-  return new MediaDecoderStateMachine(this, reader);
+  MediaFormatReaderInit init;
+  init.mCrashHelper = GetOwner()->CreateGMPCrashHelper();
+  init.mFrameStats = mFrameStats;
+  mReader = new MediaFormatReader(init, new ADTSDemuxer(mResource));
+  return new MediaDecoderStateMachine(this, mReader);
 }
 
 /* static */ bool
@@ -47,7 +49,7 @@ ADTSDecoder::IsSupportedType(const MediaContainerType& aContainerType)
     return
       IsEnabled()
       && (aContainerType.ExtendedType().Codecs().IsEmpty()
-          || aContainerType.ExtendedType().Codecs().AsString().EqualsASCII("aac"));
+          || aContainerType.ExtendedType().Codecs() == "aac");
   }
 
   return false;

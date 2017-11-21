@@ -28,9 +28,21 @@ public:
 
   void DispatchTask(int aDelayTimeMs = 0);
 
-  void SetTLSTraceInfo();
-  void GetTLSTraceInfo();
+  void SetTLSTraceInfo() {
+    if (mIsTraceInfoInit) {
+      DoSetTLSTraceInfo();
+    }
+  }
+  void GetTLSTraceInfo() {
+    if (IsStartLogging()) {
+      DoGetTLSTraceInfo();
+    }
+  }
   void ClearTLSTraceInfo();
+
+private:
+  void DoSetTLSTraceInfo();
+  void DoGetTLSTraceInfo();
 
 protected:
   void Init();
@@ -46,9 +58,10 @@ protected:
 };
 
 class TracedRunnable : public TracedTaskCommon
-                     , public Runnable
+                     , public nsIRunnable
 {
 public:
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
 
   explicit TracedRunnable(already_AddRefed<nsIRunnable>&& aOriginalObj);
@@ -94,9 +107,21 @@ public:
    */
   class AutoRunTask : public AutoSaveCurTraceInfo {
     VirtualTask* mTask;
+    void StartScope(VirtualTask *aTask);
+    void StopScope();
   public:
-    explicit AutoRunTask(VirtualTask *aTask);
-    ~AutoRunTask();
+    explicit AutoRunTask(VirtualTask *aTask)
+      : AutoSaveCurTraceInfo()
+      , mTask(aTask) {
+      if (HasSavedTraceInfo()) {
+        StartScope(aTask);
+      }
+    }
+    ~AutoRunTask() {
+      if (HasSavedTraceInfo()) {
+        StopScope();
+      }
+    }
   };
 };
 

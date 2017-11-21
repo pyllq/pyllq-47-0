@@ -10,13 +10,12 @@
 #include "jsapi.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/Preferences.h"
-#include "nsIDOMDataContainerEvent.h"
+#include "mozilla/Sprintf.h"
 #include "nsIDOMEvent.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIVariant.h"
 #include "nsPrintfCString.h"
 #include "nsServiceManagerUtils.h"
-#include "prprf.h"
 #include <stdarg.h>
 #include "WebGLBuffer.h"
 #include "WebGLExtensions.h"
@@ -76,7 +75,7 @@ WebGLContext::GenerateWarning(const char* fmt, va_list ap)
     mAlreadyGeneratedWarnings++;
 
     char buf[1024];
-    PR_vsnprintf(buf, 1024, fmt, ap);
+    VsprintfLiteral(buf, fmt, ap);
 
     // no need to print to stderr, as JS_ReportWarning takes care of this for us.
 
@@ -129,7 +128,7 @@ WebGLContext::GeneratePerfWarning(const char* fmt, ...) const
     va_start(ap, fmt);
 
     char buf[1024];
-    PR_vsnprintf(buf, 1024, fmt, ap);
+    VsprintfLiteral(buf, fmt, ap);
 
     va_end(ap);
 
@@ -641,6 +640,10 @@ IsCompressedTextureFormat(GLenum format)
     case LOCAL_GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
     case LOCAL_GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
     case LOCAL_GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+    case LOCAL_GL_COMPRESSED_SRGB_S3TC_DXT1_EXT:
+    case LOCAL_GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:
+    case LOCAL_GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:
+    case LOCAL_GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:
     case LOCAL_GL_ATC_RGB:
     case LOCAL_GL_ATC_RGBA_EXPLICIT_ALPHA:
     case LOCAL_GL_ATC_RGBA_INTERPOLATED_ALPHA:
@@ -842,14 +845,14 @@ WebGLContext::AssertCachedGlobalState()
     gl->fGetFloatv(LOCAL_GL_DEPTH_CLEAR_VALUE, &depthClearValue);
     MOZ_ASSERT(IsCacheCorrect(mDepthClearValue, depthClearValue));
 
-    AssertUintParamCorrect(gl, LOCAL_GL_STENCIL_CLEAR_VALUE, mStencilClearValue);
+    const int maxStencilBits = 8;
+    const GLuint maxStencilBitsMask = (1 << maxStencilBits) - 1;
+    AssertMaskedUintParamCorrect(gl, LOCAL_GL_STENCIL_CLEAR_VALUE, maxStencilBitsMask, mStencilClearValue);
 
     // GLES 3.0.4, $4.1.4, p177:
     //   [...] the front and back stencil mask are both set to the value `2^s - 1`, where
     //   `s` is greater than or equal to the number of bits in the deepest stencil buffer
     //   supported by the GL implementation.
-    const int maxStencilBits = 8;
-    const GLuint maxStencilBitsMask = (1 << maxStencilBits) - 1;
     AssertMaskedUintParamCorrect(gl, LOCAL_GL_STENCIL_VALUE_MASK,      maxStencilBitsMask, mStencilValueMaskFront);
     AssertMaskedUintParamCorrect(gl, LOCAL_GL_STENCIL_BACK_VALUE_MASK, maxStencilBitsMask, mStencilValueMaskBack);
 
@@ -909,6 +912,20 @@ InfoFrom(WebGLTexImageFunc func, WebGLTexDimensions dims)
     default:
         MOZ_CRASH("GFX: invalid TexDimensions");
     }
+}
+
+////
+
+JS::Value
+StringValue(JSContext* cx, const nsAString& str, ErrorResult& er)
+{
+    JSString* jsStr = JS_NewUCStringCopyN(cx, str.BeginReading(), str.Length());
+    if (!jsStr) {
+        er.Throw(NS_ERROR_OUT_OF_MEMORY);
+        return JS::NullValue();
+    }
+
+    return JS::StringValue(jsStr);
 }
 
 } // namespace mozilla

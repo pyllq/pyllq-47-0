@@ -37,7 +37,8 @@ class FinalizationEvent final: public Runnable
 public:
   FinalizationEvent(const char* aTopic,
                   const char16_t* aValue)
-    : mTopic(aTopic)
+    : Runnable("FinalizationEvent")
+    , mTopic(aTopic)
     , mValue(aValue)
   { }
 
@@ -122,6 +123,7 @@ static const JSClassOps sWitnessClassOps = {
   nullptr /* getProperty */,
   nullptr /* setProperty */,
   nullptr /* enumerate */,
+  nullptr /* newEnumerate */,
   nullptr /* resolve */,
   nullptr /* mayResolve */,
   Finalize /* finalize */

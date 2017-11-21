@@ -9,6 +9,7 @@
 #include "mozilla/UniquePtr.h"
 #include "nsRect.h"
 #include "mozilla/RefPtr.h"
+#include "nsDataHashtable.h"
 #include "nsSize.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -23,23 +24,29 @@ class AudioInfo;
 class VideoInfo;
 class TextInfo;
 
-class MetadataTag {
+class MetadataTag
+{
 public:
   MetadataTag(const nsACString& aKey,
               const nsACString& aValue)
     : mKey(aKey)
     , mValue(aValue)
-  {}
+  {
+  }
   nsCString mKey;
   nsCString mValue;
 };
 
+typedef nsDataHashtable<nsCStringHashKey, nsCString> MetadataTags;
+
   // Maximum channel number we can currently handle (7.1)
 #define MAX_AUDIO_CHANNELS 8
 
-class TrackInfo {
+class TrackInfo
+{
 public:
-  enum TrackType {
+  enum TrackType
+  {
     kUndefinedTrack,
     kAudioTrack,
     kVideoTrack,
@@ -58,8 +65,6 @@ public:
     , mLanguage(aLanguage)
     , mEnabled(aEnabled)
     , mTrackId(aTrackId)
-    , mDuration(0)
-    , mMediaTime(0)
     , mIsRenderedExternally(false)
     , mType(aType)
   {
@@ -90,8 +95,8 @@ public:
   TrackID mTrackId;
 
   nsCString mMimeType;
-  int64_t mDuration;
-  int64_t mMediaTime;
+  media::TimeUnit mDuration;
+  media::TimeUnit mMediaTime;
   CryptoTrack mCrypto;
 
   nsTArray<MetadataTag> mTags;
@@ -174,10 +179,15 @@ private:
   TrackType mType;
 };
 
+// String version of track type.
+const char* TrackTypeToStr(TrackInfo::TrackType aTrack);
+
 // Stores info relevant to presenting media frames.
-class VideoInfo : public TrackInfo {
+class VideoInfo : public TrackInfo
+{
 public:
-  enum Rotation {
+  enum Rotation
+  {
     kDegree_0 = 0,
     kDegree_90 = 90,
     kDegree_180 = 180,
@@ -272,8 +282,9 @@ public:
   // container.
   nsIntRect ScaledImageRect(int64_t aWidth, int64_t aHeight) const
   {
-    if ((aWidth == mImage.width && aHeight == mImage.height) ||
-        !mImage.width || !mImage.height) {
+    if ((aWidth == mImage.width && aHeight == mImage.height)
+        || !mImage.width
+        || !mImage.height) {
       return ImageRect();
     }
     nsIntRect imageRect = ImageRect();
@@ -325,7 +336,8 @@ private:
   bool mAlphaPresent = false;
 };
 
-class AudioInfo : public TrackInfo {
+class AudioInfo : public TrackInfo
+{
 public:
   AudioInfo()
     : TrackInfo(kAudioTrack, NS_LITERAL_STRING("1"), NS_LITERAL_STRING("main"),
@@ -392,17 +404,18 @@ public:
 
   RefPtr<MediaByteBuffer> mCodecSpecificConfig;
   RefPtr<MediaByteBuffer> mExtraData;
-
 };
 
-class EncryptionInfo {
+class EncryptionInfo
+{
 public:
   EncryptionInfo()
     : mEncrypted(false)
   {
   }
 
-  struct InitData {
+  struct InitData
+  {
     template<typename AInitDatas>
     InitData(const nsAString& aType, AInitDatas&& aInitData)
       : mType(aType)
@@ -449,7 +462,8 @@ private:
   bool mEncrypted;
 };
 
-class MediaInfo {
+class MediaInfo
+{
 public:
   bool HasVideo() const
   {
@@ -484,8 +498,8 @@ public:
 
   bool IsEncrypted() const
   {
-    return (HasAudio() && mAudio.mCrypto.mValid) ||
-           (HasVideo() && mVideo.mCrypto.mValid);
+    return (HasAudio() && mAudio.mCrypto.mValid)
+           || (HasVideo() && mVideo.mCrypto.mValid);
   }
 
   bool HasValidMedia() const
@@ -499,8 +513,9 @@ public:
                  "Audio track ID must be valid");
     NS_ASSERTION(!HasVideo() || mVideo.mTrackId != TRACK_INVALID,
                  "Audio track ID must be valid");
-    NS_ASSERTION(!HasAudio() || !HasVideo() ||
-                 mAudio.mTrackId != mVideo.mTrackId,
+    NS_ASSERTION(!HasAudio()
+                 || !HasVideo()
+                 || mAudio.mTrackId != mVideo.mTrackId,
                  "Duplicate track IDs");
   }
 
@@ -529,10 +544,11 @@ public:
   media::TimeUnit mStartTime;
 };
 
-class SharedTrackInfo {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SharedTrackInfo)
+class TrackInfoSharedPtr
+{
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(TrackInfoSharedPtr)
 public:
-  SharedTrackInfo(const TrackInfo& aOriginal, uint32_t aStreamID)
+  TrackInfoSharedPtr(const TrackInfo& aOriginal, uint32_t aStreamID)
     : mInfo(aOriginal.Clone())
     , mStreamSourceID(aStreamID)
     , mMimeType(mInfo->mMimeType)
@@ -542,6 +558,11 @@ public:
   uint32_t GetID() const
   {
     return mStreamSourceID;
+  }
+
+  operator const TrackInfo*() const
+  {
+    return mInfo.get();
   }
 
   const TrackInfo* operator*() const
@@ -571,7 +592,7 @@ public:
   }
 
 private:
-  ~SharedTrackInfo() {};
+  ~TrackInfoSharedPtr() { }
   UniquePtr<TrackInfo> mInfo;
   // A unique ID, guaranteed to change when changing streams.
   uint32_t mStreamSourceID;
@@ -580,9 +601,11 @@ public:
   const nsCString& mMimeType;
 };
 
-class AudioConfig {
+class AudioConfig
+{
 public:
-  enum Channel {
+  enum Channel
+  {
     CHANNEL_INVALID = -1,
     CHANNEL_MONO = 0,
     CHANNEL_LEFT,
@@ -596,15 +619,14 @@ public:
     CHANNEL_LFE,
   };
 
-  class ChannelLayout {
+  class ChannelLayout
+  {
   public:
-    ChannelLayout()
-      : mChannelMap(0)
-      , mValid(false)
-    {}
+    ChannelLayout() : mChannelMap(0), mValid(false) { }
     explicit ChannelLayout(uint32_t aChannels)
       : ChannelLayout(aChannels, SMPTEDefault(aChannels))
-    {}
+    {
+    }
     ChannelLayout(uint32_t aChannels, const Channel* aConfig)
       : ChannelLayout()
     {
@@ -645,9 +667,7 @@ public:
     // the current layout can be easily reordered to aOther.
     // aMap must be an array of size MAX_AUDIO_CHANNELS.
     bool MappingTable(const ChannelLayout& aOther, uint8_t* aMap = nullptr) const;
-    bool IsValid() const {
-      return mValid;
-    }
+    bool IsValid() const { return mValid; }
     bool HasChannel(Channel aChannel) const
     {
       return mChannelMap & (1 << aChannel);
@@ -660,7 +680,8 @@ public:
     bool mValid;
   };
 
-  enum SampleFormat {
+  enum SampleFormat
+  {
     FORMAT_NONE = 0,
     FORMAT_U8,
     FORMAT_S16,
@@ -710,9 +731,10 @@ public:
   }
   bool operator==(const AudioConfig& aOther) const
   {
-    return mChannelLayout == aOther.mChannelLayout &&
-      mRate == aOther.mRate && mFormat == aOther.mFormat &&
-      mInterleaved == aOther.mInterleaved;
+    return mChannelLayout == aOther.mChannelLayout
+      && mRate == aOther.mRate
+      && mFormat == aOther.mFormat
+      && mInterleaved == aOther.mInterleaved;
   }
   bool operator!=(const AudioConfig& aOther) const
   {

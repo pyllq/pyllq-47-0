@@ -19,6 +19,7 @@ export TZ=UTC
 
 # Also ensure SVN-INFO is consistently English.
 export LANG=en_US.UTF-8
+export LANGUAGE=en_US
 export LC_ALL=en_US.UTF-8
 
 icu_dir=`dirname $0`/icu
@@ -47,6 +48,15 @@ rm ${icu_dir}/source/data/region/*.txt
 rm ${icu_dir}/source/data/translit/*
 rm ${icu_dir}/source/data/unit/*.mk
 rm ${icu_dir}/source/data/unit/*.txt
+# bug 1225401 and bug1345336 to remove unused zone name
+find ${icu_dir}/source/data/zone \
+    -name root.txt -prune -or \
+    -name tzdbNames.txt -prune -or \
+    -name '*.txt' -print | xargs sed -i '/^\s\{8\}\"[A-Z]/, /^\s\{8\}}/ { d }'
+find ${icu_dir}/source/data/zone \
+    -name root.txt -prune -or \
+    -name tzdbNames.txt -prune -or \
+    -name '*.txt' -print | xargs sed -i '/^\s\{4\}zoneStrings{/{N; s/^\s\{4\}zoneStrings{\n\s\{4\}}// }; /^$/d'
 
 # Record `svn info`, eliding the line that changes every time the entire ICU
 # repository (not just the path within it we care about) receives a commit.
@@ -60,10 +70,9 @@ for patch in \
  suppress-warnings.diff \
  bug-1172609-timezone-recreateDefault.diff \
  bug-1198952-workaround-make-3.82-bug.diff \
- bug-1228227-bug-1263325-libc++-gcc_hidden.diff \
- bug-1325858-close-key.diff \
- ucol_getKeywordValuesForLocale-ulist_resetList.diff \
- unum_formatDoubleForFields.diff \
+ u_setMemoryFunctions-callconvention-anachronism-msvc.diff \
+ bug-1373763-convertToPosix-stack-value-out-of-scope.diff \
+ bug-1380083 \
 ; do
   echo "Applying local patch $patch"
   patch -d ${icu_dir}/../../ -p1 --no-backup-if-mismatch < ${icu_dir}/../icu-patches/$patch

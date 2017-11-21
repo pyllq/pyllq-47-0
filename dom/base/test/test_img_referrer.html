@@ -16,7 +16,7 @@ Testing that img referrer attribute is honoured correctly
 https://bugzilla.mozilla.org/show_bug.cgi?id=1166910
 -->
 
-<script type="application/javascript;version=1.7">
+<script type="application/javascript">
 
 SimpleTest.waitForExplicitFinish();
 var advance = function() { tests.next(); };
@@ -83,9 +83,6 @@ function resetState() {
  * testing if img referrer attribute is honoured (1165501)
  */
 var tests = (function*() {
-
-  // enable referrer attribute
-  yield SpecialPowers.pushPrefEnv({"set": [['network.http.enablePerElementReferrer', true]]}, advance);
 
   var iframe = document.getElementById("testframe");
   var sjs = "/tests/dom/base/test/img_referrer_testserver.sjs?action=generate-img-policy-test";

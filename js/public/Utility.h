@@ -55,11 +55,11 @@ namespace oom {
  * To make testing OOM in certain helper threads more effective,
  * allow restricting the OOM testing to a certain helper thread
  * type. This allows us to fail e.g. in off-thread script parsing
- * without causing an OOM in the main thread first.
+ * without causing an OOM in the active thread first.
  */
 enum ThreadType {
     THREAD_TYPE_NONE = 0,       // 0
-    THREAD_TYPE_MAIN,           // 1
+    THREAD_TYPE_COOPERATING,    // 1
     THREAD_TYPE_WASM,           // 2
     THREAD_TYPE_ION,            // 3
     THREAD_TYPE_PARSE,          // 4
@@ -67,6 +67,7 @@ enum ThreadType {
     THREAD_TYPE_GCHELPER,       // 6
     THREAD_TYPE_GCPARALLEL,     // 7
     THREAD_TYPE_PROMISE_TASK,   // 8
+    THREAD_TYPE_ION_FREE,       // 9
     THREAD_TYPE_MAX             // Used to check shell function arguments
 };
 
@@ -77,7 +78,7 @@ enum ThreadType {
 # if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
 extern bool InitThreadType(void);
 extern void SetThreadType(ThreadType);
-extern uint32_t GetThreadType(void);
+extern JS_FRIEND_API(uint32_t) GetThreadType(void);
 # else
 inline bool InitThreadType(void) { return true; }
 inline void SetThreadType(ThreadType t) {};
@@ -178,7 +179,7 @@ static inline bool ShouldFailWithOOM() { return false; }
 namespace js {
 
 /* Disable OOM testing in sections which are not OOM safe. */
-struct MOZ_RAII AutoEnterOOMUnsafeRegion
+struct MOZ_RAII JS_PUBLIC_DATA(AutoEnterOOMUnsafeRegion)
 {
     MOZ_NORETURN MOZ_COLD void crash(const char* reason);
     MOZ_NORETURN MOZ_COLD void crash(size_t size, const char* reason);

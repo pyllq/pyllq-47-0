@@ -102,7 +102,7 @@ function test() {
     }
   }
 
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
+  let tab = gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
 
   let listener = {
     onStateChange: function onStateChange(webProgress, req, flags, status) {
@@ -136,9 +136,8 @@ function test() {
       gMutationObserver.disconnect();
   });
 
-  tab.linkedBrowser.addEventListener("load", function load() {
-    tab.linkedBrowser.removeEventListener("load", load, true);
+  tab.linkedBrowser.addEventListener("load", function() {
     gBrowser.addProgressListener(listener);
     nextTest();
-  }, true);
+  }, {capture: true, once: true});
 }

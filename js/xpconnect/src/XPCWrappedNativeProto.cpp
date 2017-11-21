@@ -103,12 +103,13 @@ XPCWrappedNativeProto::JSProtoObjectFinalized(js::FreeOp* fop, JSObject* obj)
 {
     MOZ_ASSERT(obj == mJSProtoObject, "huh?");
 
-    // Only remove this proto from the map if it is the one in the map.
+#ifdef DEBUG
+    // Check that this object has already been swept from the map.
     ClassInfo2WrappedNativeProtoMap* map = GetScope()->GetWrappedNativeProtoMap();
-    if (map->Find(mClassInfo) == this)
-        map->Remove(mClassInfo);
+    MOZ_ASSERT(map->Find(mClassInfo) != this);
+#endif
 
-    GetContext()->GetDyingWrappedNativeProtoMap()->Add(this);
+    GetRuntime()->GetDyingWrappedNativeProtoMap()->Add(this);
 
     mJSProtoObject.finalize(js::CastToJSFreeOp(fop)->runtime());
 }
@@ -173,17 +174,17 @@ XPCWrappedNativeProto::DebugDump(int16_t depth)
 {
 #ifdef DEBUG
     depth-- ;
-    XPC_LOG_ALWAYS(("XPCWrappedNativeProto @ %x", this));
+    XPC_LOG_ALWAYS(("XPCWrappedNativeProto @ %p", this));
     XPC_LOG_INDENT();
         XPC_LOG_ALWAYS(("gDEBUG_LiveProtoCount is %d", gDEBUG_LiveProtoCount));
-        XPC_LOG_ALWAYS(("mScope @ %x", mScope));
-        XPC_LOG_ALWAYS(("mJSProtoObject @ %x", mJSProtoObject.get()));
-        XPC_LOG_ALWAYS(("mSet @ %x", mSet.get()));
-        XPC_LOG_ALWAYS(("mScriptable @ %x", mScriptable.get()));
+        XPC_LOG_ALWAYS(("mScope @ %p", mScope));
+        XPC_LOG_ALWAYS(("mJSProtoObject @ %p", mJSProtoObject.get()));
+        XPC_LOG_ALWAYS(("mSet @ %p", mSet.get()));
+        XPC_LOG_ALWAYS(("mScriptable @ %p", mScriptable.get()));
         if (depth && mScriptable) {
             XPC_LOG_INDENT();
             XPC_LOG_ALWAYS(("mFlags of %x", mScriptable->GetScriptableFlags()));
-            XPC_LOG_ALWAYS(("mJSClass @ %x", mScriptable->GetJSClass()));
+            XPC_LOG_ALWAYS(("mJSClass @ %p", mScriptable->GetJSClass()));
             XPC_LOG_OUTDENT();
         }
     XPC_LOG_OUTDENT();

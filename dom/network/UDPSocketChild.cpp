@@ -6,8 +6,9 @@
 
 #include "UDPSocketChild.h"
 #include "mozilla/Unused.h"
-#include "mozilla/ipc/InputStreamUtils.h"
+#include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/net/NeckoChild.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/PBackgroundChild.h"
@@ -120,11 +121,8 @@ UDPSocketChild::CreatePBackgroundSpinUntilDone()
     return NS_ERROR_FAILURE;
   }
 
-  nsIThread* thread = NS_GetCurrentThread();
-  while (!done) {
-    if (NS_WARN_IF(!NS_ProcessNextEvent(thread, true /* aMayWait */))) {
-      return NS_ERROR_FAILURE;
-    }
+  if (!SpinEventLoopUntil([&done]() { return done; })) {
+    return NS_ERROR_FAILURE;
   }
 
   if (NS_WARN_IF(!BackgroundChild::GetForCurrentThread())) {
@@ -166,7 +164,8 @@ UDPSocketChild::Bind(nsIUDPSocketInternal* aSocket,
                      bool aAddressReuse,
                      bool aLoopback,
                      uint32_t recvBufferSize,
-                     uint32_t sendBufferSize)
+                     uint32_t sendBufferSize,
+                     nsIEventTarget* aMainThreadEventTarget)
 {
   UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, PromiseFlatCString(aHost).get(), aPort));
 
@@ -181,6 +180,9 @@ UDPSocketChild::Bind(nsIUDPSocketInternal* aSocket,
     MOZ_ASSERT(!aPrincipal);
     mBackgroundManager->SendPUDPSocketConstructor(this, void_t(), mFilterName);
   } else {
+    if (aMainThreadEventTarget) {
+      gNeckoChild->SetEventTargetForActor(this, aMainThreadEventTarget);
+    }
     gNeckoChild->SendPUDPSocketConstructor(this, IPC::Principal(aPrincipal),
                                            mFilterName);
   }
@@ -276,14 +278,13 @@ UDPSocketChild::SendBinaryStream(const nsACString& aHost,
 {
   NS_ENSURE_ARG(aStream);
 
-  OptionalInputStreamParams stream;
-  nsTArray<mozilla::ipc::FileDescriptor> fds;
-  SerializeInputStream(aStream, stream, fds);
-
-  MOZ_ASSERT(fds.IsEmpty());
+  mozilla::ipc::AutoIPCStream autoStream;
+  autoStream.Serialize(aStream,
+                       static_cast<mozilla::dom::ContentChild*>(gNeckoChild->Manager()));
 
   UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, PromiseFlatCString(aHost).get(), aPort));
-  SendOutgoingData(UDPData(stream), UDPSocketAddr(UDPAddressInfo(nsCString(aHost), aPort)));
+  SendOutgoingData(UDPData(autoStream.TakeOptionalValue()),
+                   UDPSocketAddr(UDPAddressInfo(nsCString(aHost), aPort)));
 
   return NS_OK;
 }
@@ -379,7 +380,7 @@ mozilla::ipc::IPCResult
 UDPSocketChild::RecvCallbackReceivedData(const UDPAddressInfo& aAddressInfo,
                                          InfallibleTArray<uint8_t>&& aData)
 {
-  UDPSOCKET_LOG(("%s: %s:%u length %u", __FUNCTION__,
+  UDPSOCKET_LOG(("%s: %s:%u length %zu", __FUNCTION__,
                  aAddressInfo.addr().get(), aAddressInfo.port(), aData.Length()));
   nsresult rv = mSocket->CallListenerReceivedData(aAddressInfo.addr(), aAddressInfo.port(),
                                                   aData.Elements(), aData.Length());

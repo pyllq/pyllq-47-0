@@ -74,7 +74,7 @@
 #include <dlfcn.h>
 
 using namespace mozilla;
-
+using namespace mozilla::gfx;
 using mozilla::dom::FontFamilyListEntry;
 
 // indexes into the NSArray objects that the Cocoa font manager returns
@@ -215,6 +215,27 @@ MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
                 charmap->ClearRange(sr->rangeStart, sr->rangeEnd);
             }
         }
+
+        // Bug 1360309, 1393624: several of Apple's Chinese fonts have spurious
+        // blank glyphs for obscure Tibetan and Arabic-script codepoints.
+        // Blacklist these so that font fallback will not use them.
+        if (mRequiresAAT && (FamilyName().EqualsLiteral("Songti SC") ||
+                             FamilyName().EqualsLiteral("Songti TC") ||
+                             FamilyName().EqualsLiteral("STSong") ||
+        // Bug 1390980: on 10.11, the Kaiti fonts are also affected.
+                             FamilyName().EqualsLiteral("Kaiti SC") ||
+                             FamilyName().EqualsLiteral("Kaiti TC") ||
+                             FamilyName().EqualsLiteral("STKaiti"))) {
+            charmap->ClearRange(0x0f6b, 0x0f70);
+            charmap->ClearRange(0x0f8c, 0x0f8f);
+            charmap->clear(0x0f98);
+            charmap->clear(0x0fbd);
+            charmap->ClearRange(0x0fcd, 0x0fff);
+            charmap->clear(0x0620);
+            charmap->clear(0x065f);
+            charmap->ClearRange(0x06ee, 0x06ef);
+            charmap->clear(0x06ff);
+        }
     }
 
     mHasCmapTable = NS_SUCCEEDED(rv);
@@ -226,7 +247,7 @@ MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
         mCharacterMap = new gfxCharacterMap();
     }
 
-    LOG_FONTLIST(("(fontlist-cmap) name: %s, size: %d hash: %8.8x%s\n",
+    LOG_FONTLIST(("(fontlist-cmap) name: %s, size: %zu hash: %8.8x%s\n",
                   NS_ConvertUTF16toUTF8(mName).get(),
                   charmap->SizeOfIncludingThis(moz_malloc_size_of),
                   charmap->mHash, mCharacterMap == charmap ? " new" : ""));
@@ -243,7 +264,29 @@ MacOSFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
 gfxFont*
 MacOSFontEntry::CreateFontInstance(const gfxFontStyle *aFontStyle, bool aNeedsBold)
 {
-    return new gfxMacFont(this, aFontStyle, aNeedsBold);
+    RefPtr<UnscaledFontMac> unscaledFont =
+        static_cast<UnscaledFontMac*>(mUnscaledFont.get());
+    if (!unscaledFont) {
+        CGFontRef baseFont = GetFontRef();
+        if (!baseFont) {
+            return nullptr;
+        }
+        unscaledFont = new UnscaledFontMac(baseFont);
+        mUnscaledFont = unscaledFont;
+    }
+
+    return new gfxMacFont(unscaledFont, this, aFontStyle, aNeedsBold);
+}
+
+bool
+MacOSFontEntry::HasVariations()
+{
+    if (!mHasVariationsInitialized) {
+        mHasVariationsInitialized = true;
+        mHasVariations = HasFontTable(TRUETYPE_TAG('f','v','a','r'));
+    }
+
+    return mHasVariations;
 }
 
 bool
@@ -267,7 +310,9 @@ MacOSFontEntry::MacOSFontEntry(const nsAString& aPostscriptName,
       mFontRefInitialized(false),
       mRequiresAAT(false),
       mIsCFF(false),
-      mIsCFFInitialized(false)
+      mIsCFFInitialized(false),
+      mHasVariations(false),
+      mHasVariationsInitialized(false)
 {
     mWeight = aWeight;
 }
@@ -284,7 +329,9 @@ MacOSFontEntry::MacOSFontEntry(const nsAString& aPostscriptName,
       mFontRefInitialized(false),
       mRequiresAAT(false),
       mIsCFF(false),
-      mIsCFFInitialized(false)
+      mIsCFFInitialized(false),
+      mHasVariations(false),
+      mHasVariationsInitialized(false)
 {
     mFontRef = aFontRef;
     mFontRefInitialized = true;
@@ -890,7 +937,7 @@ gfxMacPlatformFontList::InitSingleFaceList()
             familyEntry->AddFontEntry(fontEntry);
             familyEntry->SetHasStyles(true);
             mFontFamilies.Put(key, familyEntry);
-            LOG_FONTLIST(("(fontlist-singleface) added new family\n",
+            LOG_FONTLIST(("(fontlist-singleface) added new family: %s, key: %s\n",
                           NS_ConvertUTF16toUTF8(familyName).get(),
                           NS_ConvertUTF16toUTF8(key).get()));
         }
@@ -1023,23 +1070,11 @@ gfxMacPlatformFontList::RegisteredFontsChangedNotificationCallback(CFNotificatio
 }
 
 gfxFontEntry*
-gfxMacPlatformFontList::GlobalFontFallback(const uint32_t aCh,
-                                           Script aRunScript,
-                                           const gfxFontStyle* aMatchStyle,
-                                           uint32_t& aCmapCount,
-                                           gfxFontFamily** aMatchedFamily)
+gfxMacPlatformFontList::PlatformGlobalFontFallback(const uint32_t aCh,
+                                                   Script aRunScript,
+                                                   const gfxFontStyle* aMatchStyle,
+                                                   gfxFontFamily** aMatchedFamily)
 {
-    bool useCmaps = IsFontFamilyWhitelistActive() ||
-                    gfxPlatform::GetPlatform()->UseCmapsDuringSystemFallback();
-
-    if (useCmaps) {
-        return gfxPlatformFontList::GlobalFontFallback(aCh,
-                                                       aRunScript,
-                                                       aMatchStyle,
-                                                       aCmapCount,
-                                                       aMatchedFamily);
-    }
-
     CFStringRef str;
     UniChar ch[2];
     CFIndex length = 1;

@@ -16,6 +16,7 @@
 #include "nsINSSU2FToken.h"
 #include "nsNetCID.h"
 #include "nsNSSComponent.h"
+#include "nsThreadUtils.h"
 #include "nsURLParsers.h"
 #include "nsXPCOMCIDInternal.h"
 #include "pk11pub.h"
@@ -161,13 +162,15 @@ U2FStatus::GetResponse()
   return mResponse;
 }
 
-U2FTask::U2FTask(const nsAString& aOrigin, const nsAString& aAppId,
+U2FTask::U2FTask(const nsAString& aOrigin,
+                 const nsAString& aAppId,
                  const Authenticator& aAuthenticator,
-                 AbstractThread* aMainThread)
-  : mOrigin(aOrigin)
+                 nsISerialEventTarget* aEventTarget)
+  : Runnable("dom::U2FTask")
+  , mOrigin(aOrigin)
   , mAppId(aAppId)
   , mAuthenticator(aAuthenticator)
-  , mAbstractMainThread(aMainThread)
+  , mEventTarget(aEventTarget)
 {}
 
 U2FTask::~U2FTask()
@@ -182,14 +185,15 @@ U2FTask::Execute()
 
   // TODO: Use a thread pool here, but we have to solve the PContentChild issues
   // of being in a worker thread.
-  mAbstractMainThread->Dispatch(r.forget());
+  mEventTarget->Dispatch(r.forget());
   return p;
 }
 
 U2FPrepTask::U2FPrepTask(const Authenticator& aAuthenticator,
-                         AbstractThread* aMainThread)
-  : mAuthenticator(aAuthenticator)
-  , mAbstractMainThread(aMainThread)
+                         nsISerialEventTarget* aEventTarget)
+  : Runnable("dom::U2FPrepTask")
+  , mAuthenticator(aAuthenticator)
+  , mEventTarget(aEventTarget)
 {}
 
 U2FPrepTask::~U2FPrepTask()
@@ -204,15 +208,17 @@ U2FPrepTask::Execute()
 
   // TODO: Use a thread pool here, but we have to solve the PContentChild issues
   // of being in a worker thread.
-  mAbstractMainThread->Dispatch(r.forget());
+  mEventTarget->Dispatch(r.forget());
   return p;
 }
 
 U2FIsRegisteredTask::U2FIsRegisteredTask(const Authenticator& aAuthenticator,
                                          const LocalRegisteredKey& aRegisteredKey,
-                                         AbstractThread* aMainThread)
-  : U2FPrepTask(aAuthenticator, aMainThread)
+                                         const CryptoBuffer& aAppParam,
+                                         nsISerialEventTarget* aEventTarget)
+  : U2FPrepTask(aAuthenticator, aEventTarget)
   , mRegisteredKey(aRegisteredKey)
+  , mAppParam(aAppParam)
 {}
 
 U2FIsRegisteredTask::~U2FIsRegisteredTask()
@@ -247,6 +253,7 @@ U2FIsRegisteredTask::Run()
 
   bool isRegistered = false;
   rv = mAuthenticator->IsRegistered(keyHandle.Elements(), keyHandle.Length(),
+                                    mAppParam.Elements(), mAppParam.Length(),
                                     &isRegistered);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     mPromise.Reject(ErrorCode::OTHER_ERROR, __func__);
@@ -268,8 +275,8 @@ U2FRegisterTask::U2FRegisterTask(const nsAString& aOrigin,
                                  const CryptoBuffer& aAppParam,
                                  const CryptoBuffer& aChallengeParam,
                                  const LocalRegisterRequest& aRegisterEntry,
-                                 AbstractThread* aMainThread)
-  : U2FTask(aOrigin, aAppId, aAuthenticator, aMainThread)
+                                 nsISerialEventTarget* aEventTarget)
+  : U2FTask(aOrigin, aAppId, aAuthenticator, aEventTarget)
   , mAppParam(aAppParam)
   , mChallengeParam(aChallengeParam)
   , mRegisterEntry(aRegisterEntry)
@@ -348,8 +355,8 @@ U2FSignTask::U2FSignTask(const nsAString& aOrigin,
                          const CryptoBuffer& aChallengeParam,
                          const CryptoBuffer& aClientData,
                          const CryptoBuffer& aKeyHandle,
-                         AbstractThread* aMainThread)
-  : U2FTask(aOrigin, aAppId, aAuthenticator, aMainThread)
+                         nsISerialEventTarget* aEventTarget)
+  : U2FTask(aOrigin, aAppId, aAuthenticator, aEventTarget)
   , mVersion(aVersion)
   , mAppParam(aAppParam)
   , mChallengeParam(aChallengeParam)
@@ -377,6 +384,7 @@ U2FSignTask::Run()
 
   bool isRegistered = false;
   rv = mAuthenticator->IsRegistered(mKeyHandle.Elements(), mKeyHandle.Length(),
+                                    mAppParam.Elements(), mAppParam.Length(),
                                     &isRegistered);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     mPromise.Reject(ErrorCode::OTHER_ERROR, __func__);
@@ -437,10 +445,11 @@ U2FSignTask::Run()
 }
 
 U2FRunnable::U2FRunnable(const nsAString& aOrigin, const nsAString& aAppId,
-                         AbstractThread* aMainThread)
-  : mOrigin(aOrigin)
+                         nsISerialEventTarget* aEventTarget)
+  : Runnable("dom::U2FRunnable")
+  , mOrigin(aOrigin)
   , mAppId(aAppId)
-  , mAbstractMainThread(aMainThread)
+  , mEventTarget(aEventTarget)
 {}
 
 U2FRunnable::~U2FRunnable()
@@ -523,20 +532,19 @@ U2FRegisterRunnable::U2FRegisterRunnable(const nsAString& aOrigin,
                                          const Sequence<RegisteredKey>& aRegisteredKeys,
                                          const Sequence<Authenticator>& aAuthenticators,
                                          U2FRegisterCallback* aCallback,
-                                         AbstractThread* aMainThread)
-  : U2FRunnable(aOrigin, aAppId, aMainThread)
+                                         nsISerialEventTarget* aEventTarget)
+  : U2FRunnable(aOrigin, aAppId, aEventTarget)
   , mAuthenticators(aAuthenticators)
   // U2FRegisterCallback does not support threadsafe refcounting, and must be
   // used and destroyed on main.
-  , mCallback(new nsMainThreadPtrHolder<U2FRegisterCallback>(aCallback))
+  , mCallback(new nsMainThreadPtrHolder<U2FRegisterCallback>(
+      "U2FRegisterRunnable::mCallback", aCallback))
 {
   MOZ_ASSERT(NS_IsMainThread());
 
   // The WebIDL dictionary types RegisterRequest and RegisteredKey cannot
   // be copied to this thread, so store them serialized.
-  for (size_t i = 0; i < aRegisterRequests.Length(); ++i) {
-    RegisterRequest req(aRegisterRequests[i]);
-
+  for (const RegisterRequest& req : aRegisterRequests) {
     // Check for required attributes
     if (!req.mChallenge.WasPassed() || !req.mVersion.WasPassed()) {
       continue;
@@ -555,9 +563,7 @@ U2FRegisterRunnable::U2FRegisterRunnable(const nsAString& aOrigin,
     mRegisterRequests.AppendElement(localReq);
   }
 
-  for (size_t i = 0; i < aRegisteredKeys.Length(); ++i) {
-    RegisteredKey key(aRegisteredKeys[i]);
-
+  for (const RegisteredKey& key : aRegisteredKeys) {
     // Check for required attributes
     if (!key.mVersion.WasPassed() || !key.mKeyHandle.WasPassed()) {
       continue;
@@ -621,59 +627,7 @@ U2FRegisterRunnable::Run()
     status->Stop(appIdResult);
   }
 
-  // First, we must determine if any of the RegisteredKeys are already
-  // registered, e.g., in the whitelist.
-  for (LocalRegisteredKey key: mRegisteredKeys) {
-    nsTArray<RefPtr<U2FPrepPromise>> prepPromiseList;
-    for (size_t a = 0; a < mAuthenticators.Length(); ++a) {
-      Authenticator token(mAuthenticators[a]);
-      RefPtr<U2FIsRegisteredTask> compTask =
-        new U2FIsRegisteredTask(token, key, mAbstractMainThread);
-      prepPromiseList.AppendElement(compTask->Execute());
-    }
-
-    // Treat each call to Promise::All as a work unit, as it completes together
-    status->WaitGroupAdd();
-
-    U2FPrepPromise::All(mAbstractMainThread, prepPromiseList)
-    ->Then(mAbstractMainThread, __func__,
-      [status] (const nsTArray<Authenticator>& aTokens) {
-        MOZ_LOG(gU2FLog, LogLevel::Debug,
-                ("ALL: None of the RegisteredKeys were recognized. n=%d",
-                 aTokens.Length()));
-
-        status->WaitGroupDone();
-      },
-      [status] (ErrorCode aErrorCode) {
-        status->Stop(aErrorCode);
-        status->WaitGroupDone();
-    });
-  }
-
-  // Wait for all the IsRegistered tasks to complete
-  status->WaitGroupWait();
-
-  // Check to see whether we're supposed to stop, because one of the keys was
-  // recognized.
-  if (status->IsStopped()) {
-    status->WaitGroupAdd();
-    RefPtr<U2FRegisterRunnable> self = this;
-    mAbstractMainThread->Dispatch(NS_NewRunnableFunction(
-      [status, self] () {
-        RegisterResponse response;
-        response.mErrorCode.Construct(
-            static_cast<uint32_t>(status->GetErrorCode()));
-        self->SendResponse(response);
-        status->WaitGroupDone();
-      }
-    ));
-
-    // Don't exit until the main thread runnable completes
-    status->WaitGroupWait();
-    return NS_OK;
-  }
-
-  // Since we're continuing, we hash the AppID into the AppParam
+  // Produce the AppParam from the current AppID
   nsCString cAppId = NS_ConvertUTF16toUTF8(mAppId);
   CryptoBuffer appParam;
   if (!appParam.SetLength(SHA256_LENGTH, fallible)) {
@@ -690,6 +644,56 @@ U2FRegisterRunnable::Run()
     return NS_ERROR_FAILURE;
   }
 
+  // First, we must determine if any of the RegisteredKeys are already
+  // registered, e.g., in the whitelist.
+  for (LocalRegisteredKey key : mRegisteredKeys) {
+    nsTArray<RefPtr<U2FPrepPromise>> prepPromiseList;
+    for (const Authenticator& token : mAuthenticators) {
+      RefPtr<U2FIsRegisteredTask> compTask =
+        new U2FIsRegisteredTask(token, key, appParam, mEventTarget);
+      prepPromiseList.AppendElement(compTask->Execute());
+    }
+
+    // Treat each call to Promise::All as a work unit, as it completes together
+    status->WaitGroupAdd();
+
+    U2FPrepPromise::All(mEventTarget, prepPromiseList)
+    ->Then(mEventTarget, __func__,
+      [&status] (const nsTArray<Authenticator>& aTokens) {
+        MOZ_LOG(gU2FLog, LogLevel::Debug,
+                ("ALL: None of the RegisteredKeys were recognized. n=%zu",
+                 aTokens.Length()));
+
+        status->WaitGroupDone();
+      },
+      [&status] (ErrorCode aErrorCode) {
+        status->Stop(aErrorCode);
+        status->WaitGroupDone();
+    });
+  }
+
+  // Wait for all the IsRegistered tasks to complete
+  status->WaitGroupWait();
+
+  // Check to see whether we're supposed to stop, because one of the keys was
+  // recognized.
+  if (status->IsStopped()) {
+    status->WaitGroupAdd();
+    mEventTarget->Dispatch(NS_NewRunnableFunction(
+      "dom::U2FRegisterRunnable::Run",
+      [&status, this] () {
+        RegisterResponse response;
+        response.mErrorCode.Construct(
+            static_cast<uint32_t>(status->GetErrorCode()));
+        SendResponse(response);
+        status->WaitGroupDone();
+      }));
+
+    // Don't exit until the main thread runnable completes
+    status->WaitGroupWait();
+    return NS_OK;
+  }
+
   // Now proceed to actually register a new key.
   for (LocalRegisterRequest req : mRegisterRequests) {
     // Hash the ClientData into the ChallengeParam
@@ -704,28 +708,25 @@ U2FRegisterRunnable::Run()
       continue;
     }
 
-    for (size_t a = 0; a < mAuthenticators.Length(); ++a) {
-      Authenticator token(mAuthenticators[a]);
+    for (const Authenticator& token : mAuthenticators) {
       RefPtr<U2FRegisterTask> registerTask = new U2FRegisterTask(mOrigin, mAppId,
                                                                  token, appParam,
                                                                  challengeParam,
                                                                  req,
-                                                                 mAbstractMainThread);
+                                                                 mEventTarget);
       status->WaitGroupAdd();
 
-      registerTask->Execute()->Then(mAbstractMainThread, __func__,
-        [status, this] (nsString aResponse) {
-          if (status->IsStopped()) {
-            return;
+      registerTask->Execute()->Then(mEventTarget, __func__,
+        [&status] (nsString aResponse) {
+          if (!status->IsStopped()) {
+            status->Stop(ErrorCode::OK, aResponse);
           }
-          status->Stop(ErrorCode::OK, aResponse);
           status->WaitGroupDone();
         },
-        [status, this] (ErrorCode aErrorCode) {
-          if (status->IsStopped()) {
-            return;
-          }
-          status->Stop(aErrorCode);
+        [&status] (ErrorCode aErrorCode) {
+          // Ignore the failing error code, as we only want the first success.
+          // U2F devices don't provide much for error codes anyway, so if
+          // they all fail we'll return DEVICE_INELIGIBLE.
           status->WaitGroupDone();
      });
     }
@@ -741,9 +742,9 @@ U2FRegisterRunnable::Run()
 
   // Transmit back to the JS engine from the Main Thread
   status->WaitGroupAdd();
-  RefPtr<U2FRegisterRunnable> self = this;
-  mAbstractMainThread->Dispatch(NS_NewRunnableFunction(
-    [status, self] () {
+  mEventTarget->Dispatch(NS_NewRunnableFunction(
+    "dom::U2FRegisterRunnable::Run",
+    [&status, this] () {
       RegisterResponse response;
       if (status->GetErrorCode() == ErrorCode::OK) {
         response.Init(status->GetResponse());
@@ -751,10 +752,9 @@ U2FRegisterRunnable::Run()
         response.mErrorCode.Construct(
             static_cast<uint32_t>(status->GetErrorCode()));
       }
-      self->SendResponse(response);
+      SendResponse(response);
       status->WaitGroupDone();
-    }
-  ));
+    }));
 
   // TODO: Add timeouts, Bug 1301793
   status->WaitGroupWait();
@@ -767,19 +767,18 @@ U2FSignRunnable::U2FSignRunnable(const nsAString& aOrigin,
                                  const Sequence<RegisteredKey>& aRegisteredKeys,
                                  const Sequence<Authenticator>& aAuthenticators,
                                  U2FSignCallback* aCallback,
-                                 AbstractThread* aMainThread)
-  : U2FRunnable(aOrigin, aAppId, aMainThread)
+                                 nsISerialEventTarget* aEventTarget)
+  : U2FRunnable(aOrigin, aAppId, aEventTarget)
   , mAuthenticators(aAuthenticators)
   // U2FSignCallback does not support threadsafe refcounting, and must be used
   // and destroyed on main.
-  , mCallback(new nsMainThreadPtrHolder<U2FSignCallback>(aCallback))
+  , mCallback(new nsMainThreadPtrHolder<U2FSignCallback>(
+      "U2FSignRunnable::mCallback", aCallback))
 {
   MOZ_ASSERT(NS_IsMainThread());
 
   // Convert WebIDL objects to generic structs to pass between threads
-  for (size_t i = 0; i < aRegisteredKeys.Length(); ++i) {
-    RegisteredKey key(aRegisteredKeys[i]);
-
+  for (const RegisteredKey& key : aRegisteredKeys) {
     // Check for required attributes
     if (!key.mVersion.WasPassed() || !key.mKeyHandle.WasPassed()) {
       continue;
@@ -892,29 +891,25 @@ U2FSignRunnable::Run()
     // We ignore mTransports, as it is intended to be used for sorting the
     // available devices by preference, but is not an exclusion factor.
 
-    for (size_t a = 0; a < mAuthenticators.Length() ; ++a) {
-      Authenticator token(mAuthenticators[a]);
-
+    for (const Authenticator& token : mAuthenticators) {
       RefPtr<U2FSignTask> signTask = new U2FSignTask(mOrigin, mAppId,
                                                      key.mVersion, token,
                                                      appParam, challengeParam,
                                                      mClientData, keyHandle,
-                                                     mAbstractMainThread);
+                                                     mEventTarget);
       status->WaitGroupAdd();
 
-      signTask->Execute()->Then(mAbstractMainThread, __func__,
-        [status, this] (nsString aResponse) {
-          if (status->IsStopped()) {
-            return;
+      signTask->Execute()->Then(mEventTarget, __func__,
+        [&status] (nsString aResponse) {
+          if (!status->IsStopped()) {
+            status->Stop(ErrorCode::OK, aResponse);
           }
-          status->Stop(ErrorCode::OK, aResponse);
           status->WaitGroupDone();
         },
-        [status, this] (ErrorCode aErrorCode) {
-          if (status->IsStopped()) {
-            return;
-          }
-          status->Stop(aErrorCode);
+        [&status] (ErrorCode aErrorCode) {
+          // Ignore the failing error code, as we only want the first success.
+          // U2F devices don't provide much for error codes anyway, so if
+          // they all fail we'll return DEVICE_INELIGIBLE.
           status->WaitGroupDone();
       });
     }
@@ -930,9 +925,9 @@ U2FSignRunnable::Run()
 
   // Transmit back to the JS engine from the Main Thread
   status->WaitGroupAdd();
-  RefPtr<U2FSignRunnable> self = this;
-  mAbstractMainThread->Dispatch(NS_NewRunnableFunction(
-    [status, self] () {
+  mEventTarget->Dispatch(NS_NewRunnableFunction(
+    "dom::U2FSignRunnable::Run",
+    [&status, this] () {
       SignResponse response;
       if (status->GetErrorCode() == ErrorCode::OK) {
         response.Init(status->GetResponse());
@@ -940,10 +935,9 @@ U2FSignRunnable::Run()
         response.mErrorCode.Construct(
           static_cast<uint32_t>(status->GetErrorCode()));
       }
-      self->SendResponse(response);
+      SendResponse(response);
       status->WaitGroupDone();
-    }
-  ));
+    }));
 
   // TODO: Add timeouts, Bug 1301793
   status->WaitGroupWait();
@@ -1018,7 +1012,7 @@ U2F::Init(nsPIDOMWindowInner* aParent, ErrorResult& aRv)
     }
   }
 
-  mAbstractMainThread = doc->AbstractMainThreadFor(TaskCategory::Other);
+  mEventTarget = doc->EventTargetFor(TaskCategory::Other);
 
   mInitialized = true;
 }
@@ -1044,7 +1038,7 @@ U2F::Register(const nsAString& aAppId,
                                                              aRegisteredKeys,
                                                              mAuthenticators,
                                                              &aCallback,
-                                                             mAbstractMainThread);
+                                                             mEventTarget);
   pool->Dispatch(task.forget(), NS_DISPATCH_NORMAL);
 }
 
@@ -1067,7 +1061,7 @@ U2F::Sign(const nsAString& aAppId,
   RefPtr<U2FSignRunnable> task = new U2FSignRunnable(mOrigin, aAppId, aChallenge,
                                                      aRegisteredKeys,
                                                      mAuthenticators, &aCallback,
-                                                     mAbstractMainThread);
+                                                     mEventTarget);
   pool->Dispatch(task.forget(), NS_DISPATCH_NORMAL);
 }
 

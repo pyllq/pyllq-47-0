@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<PreferenceScreen
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:title="@string/pyllq_preferences"
+    android:summary="reload your webpages for changes to take effect"
+    >
+
+    <ListPreference
+        android:key="pyllq.pinyinLocation"
+        android:title="@string/pinyinLocation"
+        android:defaultValue="0"
+        android:summary="@string/pinyinLocationDesc"
+        android:entries="@array/pinyinLocations"
+        android:entryValues="@array/pinyinLocationsValues" />
+
+    <PreferenceCategory android:title="@string/pref_category_hanzi">
+
+    <ListPreference
+        android:key="pyllq.langEncoding"
+        android:title="@string/langEncoding"
+        android:defaultValue="0"
+        android:summary="@string/langEncodingDesc"
+        android:entries="@array/langOptions"
+        android:entryValues="@array/langOptionsValues" />
+
+    <ListPreference
+        android:key="pyllq.pinyinFormat"
+        android:title="@string/pinyinFormat"
+        android:defaultValue="0"
+        android:summary="@string/pinyinFormatDesc"
+        android:entries="@array/pinyinOptions"
+        android:entryValues="@array/pinyinOptionsValues" />
+
+    <ListPreference
+        android:key="pyllq.rsHanzi"
+        android:title="@string/pinyinRsHanzi"
+        android:defaultValue="0"
+        android:summary="@string/pinyinRsHanziDesc"
+        android:entries="@array/pinyinRsHanzi"
+        android:entryValues="@array/pinyinRsHanziValues" />       
+
+    <ListPreference
+        android:key="pyllq.grade"
+        android:title="@string/grade"
+        android:defaultValue="0"
+        android:summary="@string/gradeDesc"
+        android:entries="@array/grades"
+        android:entryValues="@array/gradesValues" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/pref_category_hangul">
+    <ListPreference
+        android:key="pyllq.hangul"
+        android:title="@string/pinyinHangul"
+        android:defaultValue="0"
+        android:summary="@string/pinyinHangulDesc"
+        android:entries="@array/pinyinHangul"
+        android:entryValues="@array/pinyinHangulValues" />
+        
+    <ListPreference
+        android:key="pyllq.rsHangul"
+        android:title="@string/pinyinRsHangul"
+        android:defaultValue="0"
+        android:summary="@string/pinyinRsHangulDesc"
+        android:entries="@array/pinyinRsHangul"
+        android:entryValues="@array/pinyinRsHangulValues" />       
+    </PreferenceCategory>
+            
+</PreferenceScreen>

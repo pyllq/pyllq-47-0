@@ -6,8 +6,8 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import argparse
 import logging
-import mozpack.path as mozpath
 import os
+import tempfile
 
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -17,7 +17,9 @@ from concurrent.futures import (
 
 import mozinfo
 from manifestparser import TestManifest
+from manifestparser import filters as mpf
 
+import mozpack.path as mozpath
 from mozbuild.base import (
     MachCommandBase,
 )
@@ -56,27 +58,33 @@ class MachCommands(MachCommandBase):
         default=False,
         action='store_true',
         help='Stop running tests after the first error or failure.')
-    @CommandArgument('--path-only',
-        default=False,
-        action='store_true',
-        help=('Collect all tests under given path instead of default '
-              'test resolution. Supports pytest-style tests.'))
     @CommandArgument('-j', '--jobs',
         default=1,
         type=int,
         help='Number of concurrent jobs to run. Default is 1.')
+    @CommandArgument('--subsuite',
+        default=None,
+        help=('Python subsuite to run. If not specified, all subsuites are run. '
+             'Use the string `default` to only run tests without a subsuite.'))
     @CommandArgument('tests', nargs='*',
         metavar='TEST',
         help=('Tests to run. Each test can be a single file or a directory. '
               'Default test resolution relies on PYTHON_UNITTEST_MANIFESTS.'))
-    def python_test(self,
-                    tests=[],
-                    test_objects=None,
-                    subsuite=None,
-                    verbose=False,
-                    path_only=False,
-                    stop=False,
-                    jobs=1):
+    def python_test(self, *args, **kwargs):
+        try:
+            tempdir = os.environ[b'PYTHON_TEST_TMP'] = str(tempfile.mkdtemp(suffix='-python-test'))
+            return self.run_python_tests(*args, **kwargs)
+        finally:
+            import mozfile
+            mozfile.remove(tempdir)
+
+    def run_python_tests(self,
+                         tests=[],
+                         test_objects=None,
+                         subsuite=None,
+                         verbose=False,
+                         stop=False,
+                         jobs=1):
         self._activate_virtualenv()
 
         def find_tests_by_path():
@@ -104,56 +112,64 @@ class MachCommands(MachCommandBase):
         # which produces output in the format Mozilla infrastructure expects.
         # Some tests are run via pytest.
         if test_objects is None:
-            # If we're not being called from `mach test`, do our own
-            # test resolution.
-            if path_only:
-                if tests:
-                    test_objects = [{'path': p} for p in find_tests_by_path()]
-                else:
-                    self.log(logging.WARN, 'python-test', {},
-                             'TEST-UNEXPECTED-FAIL | No tests specified')
-                    test_objects = []
+            from mozbuild.testing import TestResolver
+            resolver = self._spawn(TestResolver)
+            if tests:
+                # If we were given test paths, try to find tests matching them.
+                test_objects = resolver.resolve_tests(paths=tests,
+                                                      flavor='python')
             else:
-                from mozbuild.testing import TestResolver
-                resolver = self._spawn(TestResolver)
-                if tests:
-                    # If we were given test paths, try to find tests matching them.
-                    test_objects = resolver.resolve_tests(paths=tests,
-                                                          flavor='python')
-                else:
-                    # Otherwise just run everything in PYTHON_UNITTEST_MANIFESTS
-                    test_objects = resolver.resolve_tests(flavor='python')
-
-        if not test_objects:
-            message = 'TEST-UNEXPECTED-FAIL | No tests collected'
-            if not path_only:
-                message += ' (Not in PYTHON_UNITTEST_MANIFESTS? Try --path-only?)'
-            self.log(logging.WARN, 'python-test', {}, message)
-            return 1
+                # Otherwise just run everything in PYTHON_UNITTEST_MANIFESTS
+                test_objects = resolver.resolve_tests(flavor='python')
 
         mp = TestManifest()
         mp.tests.extend(test_objects)
-        tests = mp.active_tests(disabled=False, **mozinfo.info)
+
+        if not mp.tests:
+            message = 'TEST-UNEXPECTED-FAIL | No tests collected ' + \
+                      '(Not in PYTHON_UNITTEST_MANIFESTS?)'
+            self.log(logging.WARN, 'python-test', {}, message)
+            return 1
+
+        filters = []
+        if subsuite == 'default':
+            filters.append(mpf.subsuite(None))
+        elif subsuite:
+            filters.append(mpf.subsuite(subsuite))
+
+        tests = mp.active_tests(filters=filters, disabled=False, **mozinfo.info)
+        parallel = []
+        sequential = []
+        for test in tests:
+            if test.get('sequential'):
+                sequential.append(test)
+            else:
+                parallel.append(test)
 
         self.jobs = jobs
         self.terminate = False
         self.verbose = verbose
 
         return_code = 0
+
+        def on_test_finished(result):
+            output, ret, test_path = result
+
+            for line in output:
+                self.log(logging.INFO, 'python-test', {'line': line.rstrip()}, '{line}')
+
+            if ret and not return_code:
+                self.log(logging.ERROR, 'python-test', {'test_path': test_path, 'ret': ret},
+                         'Setting retcode to {ret} from {test_path}')
+            return return_code or ret
+
         with ThreadPoolExecutor(max_workers=self.jobs) as executor:
             futures = [executor.submit(self._run_python_test, test['path'])
-                       for test in tests]
+                       for test in parallel]
 
             try:
                 for future in as_completed(futures):
-                    output, ret, test_path = future.result()
-
-                    for line in output:
-                        self.log(logging.INFO, 'python-test', {'line': line.rstrip()}, '{line}')
-
-                    if ret and not return_code:
-                        self.log(logging.ERROR, 'python-test', {'test_path': test_path, 'ret': ret}, 'Setting retcode to {ret} from {test_path}')
-                    return_code = return_code or ret
+                    return_code = on_test_finished(future.result())
             except KeyboardInterrupt:
                 # Hack to force stop currently running threads.
                 # https://gist.github.com/clchiou/f2608cbe54403edb0b13
@@ -161,7 +177,11 @@ class MachCommands(MachCommandBase):
                 thread._threads_queues.clear()
                 raise
 
-        self.log(logging.INFO, 'python-test', {'return_code': return_code}, 'Return code from mach python-test: {return_code}')
+        for test in sequential:
+            return_code = on_test_finished(self._run_python_test(test['path']))
+
+        self.log(logging.INFO, 'python-test', {'return_code': return_code},
+                 'Return code from mach python-test: {return_code}')
         return return_code
 
     def _run_python_test(self, test_path):

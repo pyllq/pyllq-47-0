@@ -24,7 +24,7 @@ namespace dom {
 
 /* =============== Logging =================== */
 
-void CSP_LogLocalizedStr(const char16_t* aName,
+void CSP_LogLocalizedStr(const char* aName,
                          const char16_t** aParams,
                          uint32_t aLength,
                          const nsAString& aSourceName,
@@ -35,7 +35,7 @@ void CSP_LogLocalizedStr(const char16_t* aName,
                          const char* aCategory,
                          uint64_t aInnerWindowID);
 
-void CSP_GetLocalizedStr(const char16_t* aName,
+void CSP_GetLocalizedStr(const char* aName,
                          const char16_t** aParams,
                          uint32_t aLength,
                          char16_t** outResult);
@@ -186,7 +186,7 @@ nsresult CSP_AppendCSPFromHeader(nsIContentSecurityPolicy* aCsp,
 
 class nsCSPHostSrc;
 
-nsCSPHostSrc* CSP_CreateHostSrcFromURI(nsIURI* aURI);
+nsCSPHostSrc* CSP_CreateHostSrcFromSelfURI(nsIURI* aSelfURI);
 bool CSP_IsValidDirective(const nsAString& aDir);
 bool CSP_IsDirective(const nsAString& aValue, CSPDirective aDir);
 bool CSP_IsKeyword(const nsAString& aValue, enum CSPKeyword aKey);
@@ -213,7 +213,7 @@ class nsCSPBaseSrc {
 
     virtual void invalidate() const
       { mInvalidated = true; }
- 
+
   protected:
     // invalidate srcs if 'script-dynamic' is present or also invalidate
     // unsafe-inline' if nonce- or hash-source specified
@@ -256,6 +256,12 @@ class nsCSPHostSrc : public nsCSPBaseSrc {
     void setPort(const nsAString& aPort);
     void appendPath(const nsAString &aPath);
 
+    inline void setGeneratedFromSelfKeyword() const
+      { mGeneratedFromSelfKeyword = true; }
+
+    inline void setWithinFrameAncestorsDir(bool aValue) const
+      { mWithinFrameAncstorsDir = aValue; }
+
     inline void getScheme(nsAString& outStr) const
       { outStr.Assign(mScheme); };
 
@@ -273,6 +279,8 @@ class nsCSPHostSrc : public nsCSPBaseSrc {
     nsString mHost;
     nsString mPort;
     nsString mPath;
+    mutable bool mGeneratedFromSelfKeyword;
+    mutable bool mWithinFrameAncstorsDir;
 };
 
 /* =============== nsCSPKeywordSrc ============ */

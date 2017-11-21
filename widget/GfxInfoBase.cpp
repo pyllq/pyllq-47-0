@@ -32,6 +32,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "MediaPrefs.h"
 #include "gfxPrefs.h"
 #include "gfxPlatform.h"
@@ -166,6 +167,15 @@ GetPrefNameForFeature(int32_t aFeature)
     case nsIGfxInfo::FEATURE_CANVAS2D_ACCELERATION:
       name = BLACKLIST_PREF_BRANCH "canvas2d.acceleration";
       break;
+    case nsIGfxInfo::FEATURE_WEBGL2:
+      name = BLACKLIST_PREF_BRANCH "webgl2";
+      break;
+    case nsIGfxInfo::FEATURE_ADVANCED_LAYERS:
+      name = BLACKLIST_PREF_BRANCH "layers.advanced";
+      break;
+    case nsIGfxInfo::FEATURE_D3D11_KEYED_MUTEX:
+      name = BLACKLIST_PREF_BRANCH "d3d11.keyed.mutex";
+      break;
     case nsIGfxInfo::FEATURE_VP8_HW_DECODE:
     case nsIGfxInfo::FEATURE_VP9_HW_DECODE:
     case nsIGfxInfo::FEATURE_DX_INTEROP2:
@@ -196,8 +206,9 @@ GetPrefValueForFeature(int32_t aFeature, int32_t& aValue, nsACString& aFailureId
 
   nsCString failureprefname(prefname);
   failureprefname += ".failureid";
-  nsAdoptingCString failureValue = Preferences::GetCString(failureprefname.get());
-  if (failureValue) {
+  nsAutoCString failureValue;
+  nsresult rv = Preferences::GetCString(failureprefname.get(), failureValue);
+  if (NS_SUCCEEDED(rv)) {
     aFailureId = failureValue.get();
   } else {
     aFailureId = "FEATURE_FAILURE_BLACKLIST_PREF";
@@ -235,7 +246,7 @@ static bool
 GetPrefValueForDriverVersion(nsCString& aVersion)
 {
   return NS_SUCCEEDED(Preferences::GetCString(SUGGESTED_VERSION_PREF,
-                                              &aVersion));
+                                              aVersion));
 }
 
 static void
@@ -344,6 +355,12 @@ BlacklistFeatureToGfxFeature(const nsAString& aFeature)
     return nsIGfxInfo::FEATURE_WEBRTC_HW_ACCELERATION;
   else if (aFeature.EqualsLiteral("CANVAS2D_ACCELERATION"))
       return nsIGfxInfo::FEATURE_CANVAS2D_ACCELERATION;
+  else if (aFeature.EqualsLiteral("WEBGL2"))
+    return nsIGfxInfo::FEATURE_WEBGL2;
+  else if (aFeature.EqualsLiteral("ADVANCED_LAYERS"))
+    return nsIGfxInfo::FEATURE_ADVANCED_LAYERS;
+  else if (aFeature.EqualsLiteral("D3D11_KEYED_MUTEX"))
+    return nsIGfxInfo::FEATURE_D3D11_KEYED_MUTEX;
 
   // If we don't recognize the feature, it may be new, and something
   // this version doesn't understand.  So, nothing to do.  This is
@@ -973,6 +990,9 @@ GfxInfoBase::EvaluateDownloadedBlacklist(nsTArray<GfxDriverInfo>& aDriverInfo)
     nsIGfxInfo::FEATURE_STAGEFRIGHT,
     nsIGfxInfo::FEATURE_WEBRTC_HW_ACCELERATION,
     nsIGfxInfo::FEATURE_CANVAS2D_ACCELERATION,
+    nsIGfxInfo::FEATURE_WEBGL2,
+    nsIGfxInfo::FEATURE_ADVANCED_LAYERS,
+    nsIGfxInfo::FEATURE_D3D11_KEYED_MUTEX,
     0
   };
 
@@ -1188,12 +1208,12 @@ GetLayersBackendName(layers::LayersBackend aBackend)
       return "none";
     case layers::LayersBackend::LAYERS_OPENGL:
       return "opengl";
-    case layers::LayersBackend::LAYERS_D3D9:
-      return "d3d9";
     case layers::LayersBackend::LAYERS_D3D11:
       return "d3d11";
     case layers::LayersBackend::LAYERS_CLIENT:
       return "client";
+    case layers::LayersBackend::LAYERS_WR:
+      return "webrender";
     case layers::LayersBackend::LAYERS_BASIC:
       return "basic";
     default:
@@ -1362,8 +1382,21 @@ void
 GfxInfoBase::DescribeFeatures(JSContext* aCx, JS::Handle<JSObject*> aObj)
 {
   JS::Rooted<JSObject*> obj(aCx);
+
   gfx::FeatureStatus gpuProcess = gfxConfig::GetValue(Feature::GPU_PROCESS);
   InitFeatureObject(aCx, aObj, "gpuProcess", FEATURE_GPU_PROCESS, Some(gpuProcess), &obj);
+
+  // Only include AL if the platform attempted to use it.
+  gfx::FeatureStatus advancedLayers = gfxConfig::GetValue(Feature::ADVANCED_LAYERS);
+  if (advancedLayers != FeatureStatus::Unused) {
+    InitFeatureObject(aCx, aObj, "advancedLayers", FEATURE_ADVANCED_LAYERS,
+                      Some(advancedLayers), &obj);
+
+    if (gfxConfig::UseFallback(Fallback::NO_CONSTANT_BUFFER_OFFSETTING)) {
+      JS::Rooted<JS::Value> trueVal(aCx, JS::BooleanValue(true));
+      JS_SetProperty(aCx, obj, "noConstantBufferOffsetting", trueVal);
+    }
+  }
 }
 
 bool
@@ -1371,7 +1404,7 @@ GfxInfoBase::InitFeatureObject(JSContext* aCx,
                                JS::Handle<JSObject*> aContainer,
                                const char* aName,
                                int32_t aFeature,
-                               Maybe<mozilla::gfx::FeatureStatus> aFeatureStatus,
+                               const Maybe<mozilla::gfx::FeatureStatus>& aFeatureStatus,
                                JS::MutableHandle<JSObject*> aOutObj)
 {
   JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
@@ -1434,6 +1467,20 @@ GfxInfoBase::GetActiveCrashGuards(JSContext* aCx, JS::MutableHandle<JS::Value> a
 }
 
 NS_IMETHODIMP
+GfxInfoBase::GetWebRenderEnabled(bool* aWebRenderEnabled)
+{
+  *aWebRenderEnabled = gfxVars::UseWebRender();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+GfxInfoBase::GetIsHeadless(bool* aIsHeadless)
+{
+  *aIsHeadless = gfxPlatform::IsHeadless();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 GfxInfoBase::GetContentBackend(nsAString & aContentBackend)
 {
   BackendType backend = gfxPlatform::GetPlatform()->GetDefaultContentBackend();
@@ -1470,6 +1517,26 @@ GfxInfoBase::GetUsingGPUProcess(bool *aOutValue)
   }
 
   *aOutValue = !!gpu->GetGPUChild();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+GfxInfoBase::ControlGPUProcessForXPCShell(bool aEnable, bool *_retval)
+{
+  gfxPlatform::GetPlatform();
+
+  GPUProcessManager* gpm = GPUProcessManager::Get();
+  if (aEnable) {
+    if (!gfxConfig::IsEnabled(Feature::GPU_PROCESS)) {
+      gfxConfig::UserForceEnable(Feature::GPU_PROCESS, "xpcshell-test");
+    }
+    gpm->LaunchGPUProcess();
+    gpm->EnsureGPUReady();
+  } else {
+    gpm->KillProcess();
+  }
+
+  *_retval = true;
   return NS_OK;
 }
 

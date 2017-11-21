@@ -20,6 +20,8 @@
 #include "mozilla/CSSEnabledState.h"
 #include "mozilla/UseCounter.h"
 #include "mozilla/EnumTypeTraits.h"
+#include "mozilla/Preferences.h"
+#include "nsXULAppAPI.h"
 
 // Length of the "--" prefix on custom names (such as custom property names,
 // and, in the future, custom media query names).
@@ -406,14 +408,14 @@ public:
   static bool IsPredefinedCounterStyle(const nsACString& aStyle);
 
   // Given a property enum, get the string value
-  static const nsAFlatCString& GetStringValue(nsCSSPropertyID aProperty);
-  static const nsAFlatCString& GetStringValue(nsCSSFontDesc aFontDesc);
-  static const nsAFlatCString& GetStringValue(nsCSSCounterDesc aCounterDesc);
+  static const nsCString& GetStringValue(nsCSSPropertyID aProperty);
+  static const nsCString& GetStringValue(nsCSSFontDesc aFontDesc);
+  static const nsCString& GetStringValue(nsCSSCounterDesc aCounterDesc);
 
   // Given a CSS Property and a Property Enum Value
   // Return back a const nsString& representation of the
   // value. Return back nullstr if no value is found
-  static const nsAFlatCString& LookupPropertyValue(nsCSSPropertyID aProperty, int32_t aValue);
+  static const nsCString& LookupPropertyValue(nsCSSPropertyID aProperty, int32_t aValue);
 
   // Get a color name for a predefined color value like buttonhighlight or activeborder
   // Sets the aStr param to the name of the propertyID
@@ -443,12 +445,11 @@ public:
     return ValueToKeywordEnum(static_cast<int16_t>(aValue), aTable);
   }
   // Ditto but as a string, return "" when not found.
-  static const nsAFlatCString& ValueToKeyword(int32_t aValue,
-                                              const KTableEntry aTable[]);
+  static const nsCString& ValueToKeyword(int32_t aValue,
+                                         const KTableEntry aTable[]);
   template<typename T,
            typename = typename std::enable_if<std::is_enum<T>::value>::type>
-  static const nsAFlatCString& ValueToKeyword(T aValue,
-                                              const KTableEntry aTable[])
+  static const nsCString& ValueToKeyword(T aValue, const KTableEntry aTable[])
   {
     static_assert(mozilla::EnumTypeFitsWithin<T, int16_t>::value,
                   "aValue must be an enum that fits within KTableEntry::mValue");
@@ -631,6 +632,12 @@ public:
   static bool IsEnabled(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_with_aliases,
                "out of range");
+    // We don't have useful pref init phases in the parent process.  But in the
+    // child process, assert that we're not trying to parse stylesheets before
+    // we've gotten all our prefs.
+    MOZ_ASSERT(XRE_IsParentProcess() ||
+               mozilla::Preferences::InitPhase() == END_ALL_PREFS,
+               "Checking style preferences before they have been set");
     return gPropertyEnabled[aProperty];
   }
 
@@ -736,6 +743,7 @@ public:
   static const KTableEntry kColorAdjustKTable[];
   static const KTableEntry kColorInterpolationKTable[];
   static const KTableEntry kColumnFillKTable[];
+  static const KTableEntry kColumnSpanKTable[];
   static const KTableEntry kBoxPropSourceKTable[];
   static const KTableEntry kBoxShadowTypeKTable[];
   static const KTableEntry kBoxSizingKTable[];
@@ -748,7 +756,7 @@ public:
   static const KTableEntry kControlCharacterVisibilityKTable[];
   static const KTableEntry kCursorKTable[];
   static const KTableEntry kDirectionKTable[];
-  // Not const because we modify its entries when various 
+  // Not const because we modify its entries when various
   // "layout.css.*.enabled" prefs changes:
   static KTableEntry kDisplayKTable[];
   static const KTableEntry kElevationKTable[];
@@ -847,8 +855,10 @@ public:
   static const KTableEntry kTextEmphasisPositionKTable[];
   static const KTableEntry kTextEmphasisStyleFillKTable[];
   static const KTableEntry kTextEmphasisStyleShapeKTable[];
+  static const KTableEntry kTextJustifyKTable[];
   static const KTableEntry kTextOrientationKTable[];
   static const KTableEntry kTextOverflowKTable[];
+  static const KTableEntry kTextSizeAdjustKTable[];
   static const KTableEntry kTextTransformKTable[];
   static const KTableEntry kTouchActionKTable[];
   static const KTableEntry kTopLayerKTable[];

@@ -28,16 +28,6 @@ class VoERTP_RTCPImpl : public VoERTP_RTCP {
 
   int GetRemoteRTCP_CNAME(int channel, char cName[256]) override;
 
-  int GetRemoteRTCPReceiverInfo(int channel,
-                                uint32_t& NTPHigh,
-                                uint32_t& NTPLow,
-                                uint32_t& receivedPacketCount,
-                                uint64_t& receivedOctetCount,
-                                uint32_t& jitter,
-                                uint16_t& fractionLost,
-                                uint32_t& cumulativeLost,
-                                int32_t& rttMs) override;
-
   // SSRC
   int SetLocalSSRC(int channel, unsigned int ssrc) override;
 
@@ -53,14 +43,6 @@ class VoERTP_RTCPImpl : public VoERTP_RTCP {
                                            bool enable,
                                            unsigned char id) override;
 
-  // RTP Header Extension for Absolute Sender Time
-  int SetSendAbsoluteSenderTimeStatus(int channel,
-                                      bool enable,
-                                      unsigned char id) override;
-  int SetReceiveAbsoluteSenderTimeStatus(int channel,
-                                         bool enable,
-                                         unsigned char id) override;
-
   // Statistics
   int GetRTPStatistics(int channel,
                        unsigned int& averageJitterMs,
@@ -70,14 +52,12 @@ class VoERTP_RTCPImpl : public VoERTP_RTCP {
 
   int GetRTCPStatistics(int channel, CallStatistics& stats) override;
 
+  int GetRTCPPacketTypeCounters(int channel,
+                                RtcpPacketTypeCounter& stats) override;
+
   int GetRemoteRTCPReportBlocks(
       int channel,
       std::vector<ReportBlock>* report_blocks) override;
-
-  // RED
-  int SetREDStatus(int channel, bool enable, int redPayloadtype = -1) override;
-
-  int GetREDStatus(int channel, bool& enabled, int& redPayloadtype) override;
 
   // NACK
   int SetNACKStatus(int channel, bool enable, int maxNoPackets) override;

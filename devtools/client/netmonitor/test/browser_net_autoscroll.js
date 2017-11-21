@@ -7,15 +7,18 @@
  * Bug 863102 - Automatically scroll down upon new network requests.
  */
 add_task(function* () {
-  requestLongerTimeout(2);
+  requestLongerTimeout(4);
 
-  let { monitor } = yield initNetMonitor(INFINITE_GET_URL);
-  let { $ } = monitor.panelWin;
+  let { monitor } = yield initNetMonitor(INFINITE_GET_URL, true);
+  let { document, windowRequire, store } = monitor.panelWin;
+  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+
+  store.dispatch(Actions.batchEnable(false));
 
   // Wait until the first request makes the empty notice disappear
   yield waitForRequestListToAppear();
 
-  let requestsContainer = $(".requests-menu-contents");
+  let requestsContainer = document.querySelector(".requests-list-contents");
   ok(requestsContainer, "Container element exists as expected.");
 
   // (1) Check that the scroll position is maintained at the bottom
@@ -46,7 +49,7 @@ add_task(function* () {
 
   // (4) Now select an item in the list and check that additional requests
   // do not change the scroll position.
-  monitor.panelWin.NetMonitorView.RequestsMenu.selectedIndex = 0;
+  store.dispatch(Actions.selectRequestByIndex(0));
   yield waitForNetworkEvents(monitor, 8);
   yield waitSomeTime();
   is(requestsContainer.scrollTop, 0, "Did not scroll.");
@@ -56,7 +59,7 @@ add_task(function* () {
 
   function waitForRequestListToAppear() {
     info("Waiting until the empty notice disappears and is replaced with the list");
-    return waitUntil(() => !!$(".requests-menu-contents"));
+    return waitUntil(() => !!document.querySelector(".requests-list-contents"));
   }
 
   function* waitForRequestsToOverflowContainer() {
@@ -64,6 +67,8 @@ add_task(function* () {
     while (true) {
       info("Waiting for one network request");
       yield waitForNetworkEvents(monitor, 1);
+      console.log(requestsContainer.scrollHeight);
+      console.log(requestsContainer.clientHeight);
       if (requestsContainer.scrollHeight > requestsContainer.clientHeight) {
         info("The list is long enough, returning");
         return;

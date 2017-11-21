@@ -15,6 +15,11 @@ const {isWindowIncluded} = require("devtools/shared/layout/utils");
 const specs = require("devtools/shared/specs/storage");
 const { Task } = require("devtools/shared/task");
 
+const DEFAULT_VALUE = "value";
+
+loader.lazyRequireGetter(this, "naturalSortCaseInsensitive",
+  "devtools/client/shared/natural-sort", true);
+
 // GUID to be used as a separator in compound keys. This must match the same
 // constant in devtools/client/storage/ui.js,
 // devtools/client/storage/test/head.js and
@@ -181,7 +186,7 @@ StorageActors.defaults = function (typeName, observationTopics) {
       this.populateStoresForHosts();
       if (observationTopics) {
         observationTopics.forEach((observationTopic) => {
-          Services.obs.addObserver(this, observationTopic, false);
+          Services.obs.addObserver(this, observationTopic);
         });
       }
       this.onWindowReady = this.onWindowReady.bind(this);
@@ -357,15 +362,20 @@ StorageActors.defaults = function (typeName, observationTopics) {
             toReturn.data.push(...values);
           }
         }
+
         toReturn.total = this.getObjectsSize(host, names, options);
+
         if (offset > toReturn.total) {
           // In this case, toReturn.data is an empty array.
           toReturn.offset = toReturn.total;
           toReturn.data = [];
         } else {
-          toReturn.data = toReturn.data.sort((a, b) => {
-            return a[sortOn] - b[sortOn];
-          }).slice(offset, offset + size).map(a => this.toStoreObject(a));
+          // We need to use natural sort before slicing.
+          let sorted = toReturn.data.sort((a, b) => {
+            return naturalSortCaseInsensitive(a[sortOn], b[sortOn]);
+          });
+          let sliced = sorted.slice(offset, offset + size);
+          toReturn.data = sliced.map(a => this.toStoreObject(a));
         }
       } else {
         let obj = yield this.getValuesForHost(host, undefined, undefined,
@@ -375,15 +385,18 @@ StorageActors.defaults = function (typeName, observationTopics) {
         }
 
         toReturn.total = obj.length;
+
         if (offset > toReturn.total) {
           // In this case, toReturn.data is an empty array.
           toReturn.offset = offset = toReturn.total;
           toReturn.data = [];
         } else {
-          toReturn.data = obj.sort((a, b) => {
-            return a[sortOn] - b[sortOn];
-          }).slice(offset, offset + size)
-            .map(object => this.toStoreObject(object));
+          // We need to use natural sort before slicing.
+          let sorted = obj.sort((a, b) => {
+            return naturalSortCaseInsensitive(a[sortOn], b[sortOn]);
+          });
+          let sliced = sorted.slice(offset, offset + size);
+          toReturn.data = sliced.map(object => this.toStoreObject(object));
         }
       }
 
@@ -492,7 +505,7 @@ StorageActors.createActor({
       return host == null;
     }
 
-    host = trimHttpHttps(host);
+    host = trimHttpHttpsPort(host);
 
     if (cookie.host.startsWith(".")) {
       return ("." + host).endsWith(cookie.host);
@@ -657,6 +670,14 @@ StorageActors.createActor({
     this.editCookie(data);
   }),
 
+  addItem: Task.async(function* (guid) {
+    let doc = this.storageActor.document;
+    let time = new Date().getTime();
+    let expiry = new Date(time + 3600 * 24 * 1000).toGMTString();
+
+    doc.cookie = `${guid}=${DEFAULT_VALUE};expires=${expiry}`;
+  }),
+
   removeItem: Task.async(function* (host, name) {
     let doc = this.storageActor.document;
     this.removeCookie(host, name, doc.nodePrincipal
@@ -742,7 +763,7 @@ var cookieHelpers = {
       host = "";
     }
 
-    host = trimHttpHttps(host);
+    host = trimHttpHttpsPort(host);
 
     let cookies = Services.cookies.getCookiesFromHost(host, originAttributes);
     let store = [];
@@ -878,7 +899,7 @@ var cookieHelpers = {
       opts.path = split[2];
     }
 
-    host = trimHttpHttps(host);
+    host = trimHttpHttpsPort(host);
 
     function hostMatches(cookieHost, matchHost) {
       if (cookieHost == null) {
@@ -921,7 +942,7 @@ var cookieHelpers = {
   },
 
   addCookieObservers() {
-    Services.obs.addObserver(cookieHelpers, "cookie-changed", false);
+    Services.obs.addObserver(cookieHelpers, "cookie-changed");
     return null;
   },
 
@@ -983,6 +1004,12 @@ var cookieHelpers = {
       case "editCookie": {
         let rowdata = msg.data.args[0];
         return cookieHelpers.editCookie(rowdata);
+      }
+      case "createNewCookie": {
+        let host = msg.data.args[0];
+        let guid = msg.data.args[1];
+        let originAttributes = msg.data.args[2];
+        return cookieHelpers.createNewCookie(host, guid, originAttributes);
       }
       case "removeCookie": {
         let host = msg.data.args[0];
@@ -1111,6 +1138,14 @@ function getObjectForLocalOrSessionStorage(type) {
       ];
     }),
 
+    addItem: Task.async(function* (guid, host) {
+      let storage = this.hostVsStores.get(host);
+      if (!storage) {
+        return;
+      }
+      storage.setItem(guid, DEFAULT_VALUE);
+    }),
+
     /**
      * Edit localStorage or sessionStorage fields.
      *
@@ -1217,8 +1252,12 @@ StorageActors.createActor({
 }, {
   getCachesForHost: Task.async(function* (host) {
     let uri = Services.io.newURI(host);
+    let attrs = this.storageActor
+                    .document
+                    .nodePrincipal
+                    .originAttributes;
     let principal =
-      Services.scriptSecurityManager.getNoAppCodebasePrincipal(uri);
+      Services.scriptSecurityManager.createCodebasePrincipal(uri, attrs);
 
     // The first argument tells if you want to get |content| cache or |chrome|
     // cache.
@@ -1662,11 +1701,11 @@ StorageActors.createActor({
 
   populateStoresForHost: Task.async(function* (host) {
     let storeMap = new Map();
-    let {names} = yield this.getDBNamesForHost(host);
 
     let win = this.storageActor.getWindowFromHost(host);
     if (win) {
       let principal = win.document.nodePrincipal;
+      let {names} = yield this.getDBNamesForHost(host, principal);
 
       for (let {name, storage} of names) {
         let metadata = yield this.getDBMetaData(host, principal, name, storage);
@@ -2025,8 +2064,8 @@ var indexedDBHelpers = {
   /**
    * Fetches all the databases and their metadata for the given `host`.
    */
-  getDBNamesForHost: Task.async(function* (host) {
-    let sanitizedHost = this.getSanitizedHost(host);
+  getDBNamesForHost: Task.async(function* (host, principal) {
+    let sanitizedHost = this.getSanitizedHost(host) + principal.originSuffix;
     let profileDir = OS.Constants.Path.profileDir;
     let files = [];
     let names = [];
@@ -2358,8 +2397,8 @@ var indexedDBHelpers = {
         return indexedDBHelpers.splitNameAndStorage(name);
       }
       case "getDBNamesForHost": {
-        let [host] = args;
-        return indexedDBHelpers.getDBNamesForHost(host);
+        let [host, principal] = args;
+        return indexedDBHelpers.getDBNamesForHost(host, principal);
       }
       case "getValuesForHost": {
         let [host, name, options, hostVsStores, principal] = args;
@@ -2414,7 +2453,12 @@ exports.setupParentProcessForIndexedDB = function ({ mm, prefix }) {
 /**
  * General helpers
  */
-function trimHttpHttps(url) {
+function trimHttpHttpsPort(url) {
+  let match = url.match(/(.+):\d+$/);
+
+  if (match) {
+    url = match[1];
+  }
   if (url.startsWith("http://")) {
     return url.substr(7);
   }
@@ -2460,8 +2504,8 @@ let StorageActor = protocol.ActorClassWithSpec(specs.storageSpec, {
 
     // Notifications that help us keep track of newly added windows and windows
     // that got removed
-    Services.obs.addObserver(this, "content-document-global-created", false);
-    Services.obs.addObserver(this, "inner-window-destroyed", false);
+    Services.obs.addObserver(this, "content-document-global-created");
+    Services.obs.addObserver(this, "inner-window-destroyed");
     this.onPageChange = this.onPageChange.bind(this);
 
     let handler = tabActor.chromeEventHandler;

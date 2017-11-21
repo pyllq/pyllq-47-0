@@ -14,13 +14,13 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/Sprintf.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "nsClassHashtable.h"
 #include "nsDebug.h"
 #include "NSPRLogModulesParser.h"
 
 #include "prenv.h"
-#include "prprf.h"
 #ifdef XP_WIN
 #include <process.h>
 #else
@@ -43,18 +43,6 @@ const uint32_t kRotateFilesNumber = 4;
 namespace mozilla {
 
 namespace detail {
-
-void log_print(const PRLogModuleInfo* aModule,
-               LogLevel aLevel,
-               const char* aFmt, ...)
-{
-  va_list ap;
-  va_start(ap, aFmt);
-  char* buff = PR_vsmprintf(aFmt, ap);
-  PR_LogPrint("%s", buff);
-  PR_smprintf_free(buff);
-  va_end(ap);
-}
 
 void log_print(const LogModule* aModule,
                LogLevel aLevel,
@@ -358,22 +346,31 @@ public:
   }
 
   void Print(const char* aName, LogLevel aLevel, const char* aFmt, va_list aArgs)
+    MOZ_FORMAT_PRINTF(4, 0)
   {
     const size_t kBuffSize = 1024;
     char buff[kBuffSize];
 
     char* buffToWrite = buff;
+    SmprintfPointer allocatedBuff;
 
-    // For backwards compat we need to use the NSPR format string versions
-    // of sprintf and friends and then hand off to printf.
     va_list argsCopy;
     va_copy(argsCopy, aArgs);
-    size_t charsWritten = PR_vsnprintf(buff, kBuffSize, aFmt, argsCopy);
+    int charsWritten = VsprintfLiteral(buff, aFmt, argsCopy);
     va_end(argsCopy);
 
-    if (charsWritten == kBuffSize - 1) {
+    if (charsWritten < 0) {
+      // Print out at least something.  We must copy to the local buff,
+      // can't just assign aFmt to buffToWrite, since when
+      // buffToWrite != buff, we try to release it.
+      MOZ_ASSERT(false, "Probably incorrect format string in LOG?");
+      strncpy(buff, aFmt, kBuffSize - 1);
+      buff[kBuffSize - 1] = '\0';
+      charsWritten = strlen(buff);
+    } else if (static_cast<size_t>(charsWritten) >= kBuffSize - 1) {
       // We may have maxed out, allocate a buffer instead.
-      buffToWrite = PR_vsmprintf(aFmt, aArgs);
+      allocatedBuff = mozilla::Vsmprintf(aFmt, aArgs);
+      buffToWrite = allocatedBuff.get();
       charsWritten = strlen(buffToWrite);
     }
 
@@ -431,10 +428,6 @@ public:
 
     if (mIsSync) {
       fflush(out);
-    }
-
-    if (buffToWrite != buff) {
-      PR_smprintf_free(buffToWrite);
     }
 
     if (mRotate > 0 && outFile) {

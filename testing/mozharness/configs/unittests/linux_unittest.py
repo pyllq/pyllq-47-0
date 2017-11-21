@@ -116,6 +116,8 @@ config = {
                 "--use-test-media-devices",
                 "--screenshot-on-fail",
                 "--cleanup-crashes",
+                "--marionette-startup-timeout=180",
+                "--work-path=%(abs_work_dir)s",
             ],
             "run_filename": "runtests.py",
             "testsdir": "mochitest"
@@ -147,6 +149,7 @@ config = {
                 "--log-raw=%(raw_log_file)s",
                 "--log-errorsummary=%(error_summary_file)s",
                 "--cleanup-crashes",
+                "--work-path=%(abs_work_dir)s",
             ],
             "run_filename": "runreftest.py",
             "testsdir": "reftest"
@@ -183,6 +186,7 @@ config = {
         "plain-gpu": ["--subsuite=gpu"],
         "plain-clipboard": ["--subsuite=clipboard"],
         "plain-chunked": ["--chunk-by-dir=4"],
+        "plain-chunked-coverage": ["--chunk-by-dir=4", "--timeout=1200"],
         "mochitest-media": ["--subsuite=media"],
         "chrome": ["--flavor=chrome"],
         "chrome-gpu": ["--flavor=chrome", "--subsuite=gpu"],
@@ -203,7 +207,8 @@ config = {
         "jetpack-package-clipboard": ["--flavor=jetpack-package", "--subsuite=clipboard"],
         "jetpack-addon": ["--flavor=jetpack-addon"],
         "a11y": ["--flavor=a11y"],
-        "mochitest-style": ["--disable-e10s", "layout/style/test"],
+        "plain-style": ["--failure-pattern-file=stylo-failures.md", "layout/style/test", "dom/smil/test", "dom/animation/test"],
+        "chrome-style": ["--flavor=chrome", "--failure-pattern-file=../stylo-failures.md", "layout/style/test/chrome", "dom/animation/test"],
     },
     # local reftest suites
     "all_reftest_suites": {
@@ -223,12 +228,12 @@ config = {
         "reftest-no-accel": {
             "options": ["--suite=reftest",
                         "--setpref=layers.acceleration.force-enabled=disabled"],
-            "tests": ["tests/reftest/tests/layout/reftests/reftest.list"]},
+            "tests": ["tests/reftest/tests/layout/reftests/reftest.list"]
+        },
         "reftest-stylo": {
             "options": ["--suite=reftest",
-                        "--disable-e10s",
                         "--setpref=reftest.compareStyloToGecko=true"],
-            "tests": ["tests/reftest/tests/layout/reftests/reftest-stylo.list"],
+            "tests": ["tests/reftest/tests/layout/reftests/reftest.list"],
         },
     },
     "all_xpcshell_suites": {
@@ -245,7 +250,8 @@ config = {
         },
         "xpcshell-coverage": {
             "options": ["--xpcshell=%(abs_app_dir)s/" + XPCSHELL_NAME,
-                        "--manifest=tests/xpcshell/tests/xpcshell.ini"],
+                        "--manifest=tests/xpcshell/tests/xpcshell.ini",
+                        "--sequential"],
             "tests": []
         },
     },
@@ -289,7 +295,7 @@ config = {
     ],
     "vcs_output_timeout": 1000,
     "minidump_save_path": "%(abs_work_dir)s/../minidumps",
-    "buildbot_max_log_size": 52428800,
+    "buildbot_max_log_size": 209715200,
     "default_blob_upload_servers": [
         "https://blobupload.elasticbeanstalk.com",
     ],
@@ -305,7 +311,7 @@ config = {
     "download_minidump_stackwalk": True,
     "minidump_stackwalk_path": MINIDUMP_STACKWALK_PATH,
     "minidump_tooltool_manifest_path": TOOLTOOL_MANIFEST_PATH,
-    "tooltool_cache": "/builds/tooltool_cache",
+    "tooltool_cache": "/home/worker/tooltool-cache",
     "download_nodejs": True,
     "nodejs_path": NODEJS_PATH,
     "nodejs_tooltool_manifest_path": NODEJS_TOOLTOOL_MANIFEST_PATH,

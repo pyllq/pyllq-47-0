@@ -83,6 +83,7 @@ class ObjectBox;
     F(THROW) \
     F(DEBUGGER) \
     F(GENERATOR) \
+    F(INITIALYIELD) \
     F(YIELD) \
     F(YIELD_STAR) \
     F(GENEXP) \
@@ -178,7 +179,7 @@ class ObjectBox;
  *
  * The long comment after this enum block describes the kinds in detail.
  */
-enum ParseNodeKind
+enum ParseNodeKind : uint16_t
 {
 #define EMIT_ENUM(name) PNK_##name,
     FOR_EACH_PARSE_NODE_KIND(EMIT_ENUM)
@@ -352,8 +353,7 @@ IsTypeofKind(ParseNodeKind kind)
  * PNK_NEG
  * PNK_VOID,    unary       pn_kid: UNARY expr
  * PNK_NOT,
- * PNK_BITNOT,
- * PNK_AWAIT
+ * PNK_BITNOT
  * PNK_TYPEOFNAME, unary    pn_kid: UNARY expr
  * PNK_TYPEOFEXPR
  * PNK_PREINCREMENT, unary  pn_kid: MEMBER expr
@@ -418,8 +418,10 @@ IsTypeofKind(ParseNodeKind kind)
  * PNK_LEXICALSCOPE scope   pn_u.scope.bindings: scope bindings
  *                          pn_u.scope.body: scope body
  * PNK_GENERATOR    nullary
- * PNK_YIELD,       binary  pn_left: expr or null; pn_right: generator object
- * PNK_YIELD_STAR
+ * PNK_INITIALYIELD unary   pn_kid: generator object
+ * PNK_YIELD,       unary   pn_kid: expr or null
+ * PNK_YIELD_STAR,
+ * PNK_AWAIT
  * PNK_ARRAYCOMP    list    pn_count: 1
  *                          pn_head: list of 1 element, which is block
  *                          enclosing for loop(s) and optionally
@@ -448,7 +450,11 @@ class PropertyAccess;
 
 class ParseNode
 {
-    uint16_t pn_type;   /* PNK_* type */
+    ParseNodeKind pn_type;   /* PNK_* type */
+    // pn_op and pn_arity are not declared as the correct enum types
+    // due to difficulties with MS bitfield layout rules and a GCC
+    // bug.  See https://bugzilla.mozilla.org/show_bug.cgi?id=1383157#c4 for
+    // details.
     uint8_t pn_op;      /* see JSOp enum and jsopcode.tbl */
     uint8_t pn_arity:4; /* see ParseNodeArity enum */
     bool pn_parens:1;   /* this expr was enclosed in parens */
@@ -492,7 +498,7 @@ class ParseNode
 
     ParseNodeKind getKind() const {
         MOZ_ASSERT(pn_type < PNK_LIMIT);
-        return ParseNodeKind(pn_type);
+        return pn_type;
     }
     void setKind(ParseNodeKind kind) {
         MOZ_ASSERT(kind < PNK_LIMIT);
@@ -788,7 +794,7 @@ class ParseNode
         ForCopyOnWriteArray
     };
 
-    MOZ_MUST_USE bool getConstantValue(ExclusiveContext* cx, AllowConstantObjects allowObjects,
+    MOZ_MUST_USE bool getConstantValue(JSContext* cx, AllowConstantObjects allowObjects,
                                        MutableHandleValue vp, Value* compare = nullptr,
                                        size_t ncompare = 0, NewObjectKind newKind = TenuredObject);
     inline bool isConstant();
@@ -1244,7 +1250,7 @@ struct CallSiteNode : public ListNode {
         return node.isKind(PNK_CALLSITEOBJ);
     }
 
-    MOZ_MUST_USE bool getRawArrayValue(ExclusiveContext* cx, MutableHandleValue vp) {
+    MOZ_MUST_USE bool getRawArrayValue(JSContext* cx, MutableHandleValue vp) {
         return pn_head->getConstantValue(cx, AllowObjects, vp);
     }
 };
@@ -1309,8 +1315,9 @@ struct ClassNames : public BinaryNode {
 };
 
 struct ClassNode : public TernaryNode {
-    ClassNode(ParseNode* names, ParseNode* heritage, ParseNode* methodsOrBlock)
-      : TernaryNode(PNK_CLASS, JSOP_NOP, names, heritage, methodsOrBlock)
+    ClassNode(ParseNode* names, ParseNode* heritage, ParseNode* methodsOrBlock,
+              const TokenPos& pos)
+      : TernaryNode(PNK_CLASS, JSOP_NOP, names, heritage, methodsOrBlock, pos)
     {
         MOZ_ASSERT_IF(names, names->is<ClassNames>());
         MOZ_ASSERT(methodsOrBlock->is<LexicalScopeNode>() ||
@@ -1351,7 +1358,7 @@ void DumpParseTree(ParseNode* pn, int indent = 0);
 class ParseNodeAllocator
 {
   public:
-    explicit ParseNodeAllocator(ExclusiveContext* cx, LifoAlloc& alloc)
+    explicit ParseNodeAllocator(JSContext* cx, LifoAlloc& alloc)
       : cx(cx), alloc(alloc), freelist(nullptr)
     {}
 
@@ -1361,7 +1368,7 @@ class ParseNodeAllocator
     void prepareNodeForMutation(ParseNode* pn);
 
   private:
-    ExclusiveContext* cx;
+    JSContext* cx;
     LifoAlloc& alloc;
     ParseNode* freelist;
 };

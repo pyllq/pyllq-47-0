@@ -102,15 +102,15 @@ public:
   // post-scales.
   virtual float GetPostXScale() const override {
     if (mScaleToResolution) {
-      return mPostXScale * mPresShellResolution;
+      return mSimpleAttrs.PostXScale() * mPresShellResolution;
     }
-    return mPostXScale;
+    return mSimpleAttrs.PostXScale();
   }
   virtual float GetPostYScale() const override {
     if (mScaleToResolution) {
-      return mPostYScale * mPresShellResolution;
+      return mSimpleAttrs.PostYScale() * mPresShellResolution;
     }
-    return mPostYScale;
+    return mSimpleAttrs.PostYScale();
   }
 
   virtual const char* Name() const override { return "ContainerLayerComposite"; }
@@ -182,6 +182,8 @@ public:
   {
     DefaultComputeEffectiveTransforms(aTransformToSurface);
   }
+
+  virtual void Cleanup() override;
 
   virtual void CleanupResources() override;
 

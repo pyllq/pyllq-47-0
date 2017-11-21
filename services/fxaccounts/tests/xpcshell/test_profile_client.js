@@ -18,8 +18,13 @@ let mockResponse = function(response) {
   let Request = function(requestUri) {
     // Store the request uri so tests can inspect it
     Request._requestUri = requestUri;
+    Request.ifNoneMatchSet = false;
     return {
-      setHeader() {},
+      setHeader(header, value) {
+        if (header == "If-None-Match" && value == "bogusETag") {
+          Request.ifNoneMatchSet = true;
+        }
+      },
       get() {
         this.response = response;
         this.onComplete();
@@ -67,7 +72,7 @@ add_test(function successfulResponse() {
   let response = {
     success: true,
     status: STATUS_SUCCESS,
-    headers: { etag:"bogusETag" },
+    headers: { etag: "bogusETag" },
     body: "{\"email\":\"someone@restmail.net\",\"uid\":\"0d5c1a89b8c54580b8e3e8adadae864a\"}",
   };
 
@@ -93,28 +98,6 @@ add_test(function setsIfNoneMatchETagHeader() {
     body: "{\"email\":\"someone@restmail.net\",\"uid\":\"0d5c1a89b8c54580b8e3e8adadae864a\"}",
   };
 
-  let ifNoneMatchSet = false;
-
-  let mockResponse = function(response) {
-    let Request = function(requestUri) {
-      // Store the request uri so tests can inspect it
-      Request._requestUri = requestUri;
-      return {
-        setHeader(header, value) {
-          if (header == "If-None-Match" && value == "bogusETag") {
-            ifNoneMatchSet = true;
-          }
-        },
-        get() {
-          this.response = response;
-          this.onComplete();
-        }
-      };
-    };
-
-    return Request;
-  };
-
   let req = new mockResponse(response);
   client._Request = req;
   client.fetchProfile("bogusETag")
@@ -123,7 +106,25 @@ add_test(function setsIfNoneMatchETagHeader() {
         do_check_eq(client._Request._requestUri, "http://127.0.0.1:1111/v1/profile");
         do_check_eq(result.body.email, "someone@restmail.net");
         do_check_eq(result.body.uid, "0d5c1a89b8c54580b8e3e8adadae864a");
-        do_check_true(ifNoneMatchSet);
+        do_check_true(req.ifNoneMatchSet);
+        run_next_test();
+      }
+    );
+});
+
+add_test(function successful304Response() {
+  let client = new FxAccountsProfileClient(PROFILE_OPTIONS);
+  let response = {
+    success: true,
+    headers: { etag: "bogusETag" },
+    status: 304,
+  };
+
+  client._Request = new mockResponse(response);
+  client.fetchProfile()
+    .then(
+      function(result) {
+        do_check_eq(result, null);
         run_next_test();
       }
     );
@@ -139,9 +140,7 @@ add_test(function parseErrorResponse() {
 
   client._Request = new mockResponse(response);
   client.fetchProfile()
-    .then(
-      null,
-      function(e) {
+    .catch(function(e) {
         do_check_eq(e.name, "FxAccountsProfileClientError");
         do_check_eq(e.code, STATUS_SUCCESS);
         do_check_eq(e.errno, ERRNO_PARSE);
@@ -161,9 +160,7 @@ add_test(function serverErrorResponse() {
 
   client._Request = new mockResponse(response);
   client.fetchProfile()
-    .then(
-    null,
-    function(e) {
+    .catch(function(e) {
       do_check_eq(e.name, "FxAccountsProfileClientError");
       do_check_eq(e.code, 500);
       do_check_eq(e.errno, 100);
@@ -182,7 +179,7 @@ add_test(function server401ResponseThenSuccess() {
   // The number of times our removeCachedOAuthToken function was called.
   let numTokensRemoved = 0;
 
-  let mockFxa = {
+  let mockFxaWithRemove = {
     getOAuthToken(options) {
       do_check_eq(options.scope, "profile");
       return "" + ++lastToken; // tokens are strings.
@@ -196,7 +193,7 @@ add_test(function server401ResponseThenSuccess() {
   }
   let profileOptions = {
     serverURL: "http://127.0.0.1:1111/v1",
-    fxa: mockFxa,
+    fxa: mockFxaWithRemove,
   };
   let client = new FxAccountsProfileClient(profileOptions);
 
@@ -256,7 +253,7 @@ add_test(function server401ResponsePersists() {
   // The number of times our removeCachedOAuthToken function was called.
   let numTokensRemoved = 0;
 
-  let mockFxa = {
+  let mockFxaWithRemove = {
     getOAuthToken(options) {
       do_check_eq(options.scope, "profile");
       return "" + ++lastToken; // tokens are strings.
@@ -270,7 +267,7 @@ add_test(function server401ResponsePersists() {
   }
   let profileOptions = {
     serverURL: "http://127.0.0.1:1111/v1",
-    fxa: mockFxa,
+    fxa: mockFxaWithRemove,
   };
   let client = new FxAccountsProfileClient(profileOptions);
 
@@ -297,9 +294,7 @@ add_test(function server401ResponsePersists() {
     };
   }
 
-  client.fetchProfile().then(
-    null,
-    function(e) {
+  client.fetchProfile().catch(function(e) {
       do_check_eq(e.name, "FxAccountsProfileClientError");
       do_check_eq(e.code, 401);
       do_check_eq(e.errno, 100);
@@ -316,13 +311,11 @@ add_test(function server401ResponsePersists() {
 
 add_test(function networkErrorResponse() {
   let client = new FxAccountsProfileClient({
-    serverURL: "http://",
+    serverURL: "http://domain.dummy",
     fxa: mockFxa,
   });
   client.fetchProfile()
-    .then(
-      null,
-      function(e) {
+    .catch(function(e) {
         do_check_eq(e.name, "FxAccountsProfileClientError");
         do_check_eq(e.code, null);
         do_check_eq(e.errno, ERRNO_NETWORK);
@@ -336,9 +329,7 @@ add_test(function unsupportedMethod() {
   let client = new FxAccountsProfileClient(PROFILE_OPTIONS);
 
   return client._createRequest("/profile", "PUT")
-    .then(
-      null,
-      function(e) {
+    .catch(function(e) {
         do_check_eq(e.name, "FxAccountsProfileClientError");
         do_check_eq(e.code, ERROR_CODE_METHOD_NOT_ALLOWED);
         do_check_eq(e.errno, ERRNO_NETWORK);
@@ -353,9 +344,7 @@ add_test(function onCompleteRequestError() {
   let client = new FxAccountsProfileClient(PROFILE_OPTIONS);
   client._Request = new mockResponseError(new Error("onComplete error"));
   client.fetchProfile()
-    .then(
-      null,
-      function(e) {
+    .catch(function(e) {
         do_check_eq(e.name, "FxAccountsProfileClientError");
         do_check_eq(e.code, null);
         do_check_eq(e.errno, ERRNO_NETWORK);

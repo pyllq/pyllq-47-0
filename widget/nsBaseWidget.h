@@ -11,6 +11,7 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WidgetUtils.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
+#include "mozilla/layers/CompositorOptions.h"
 #include "nsRect.h"
 #include "nsIWidget.h"
 #include "nsWidgetsCID.h"
@@ -32,7 +33,6 @@ const mozilla::gfx::SurfaceFormat kScrollCaptureFormat =
 #endif
 
 class nsIContent;
-class nsAutoRollup;
 class gfxContext;
 
 namespace mozilla {
@@ -112,7 +112,6 @@ public:
 
 class nsBaseWidget : public nsIWidget, public nsSupportsWeakReference
 {
-  friend class nsAutoRollup;
   friend class DispatchWheelEventOnMainThread;
   friend class mozilla::widget::InProcessCompositorWidget;
   friend class mozilla::layers::RemoteCompositorSession;
@@ -170,6 +169,11 @@ public:
     return mSizeMode;
   }
 
+  virtual bool            IsFullyOccluded() const override
+  {
+    return mIsFullyOccluded;
+  }
+
   virtual nsCursor        GetCursor() override;
   virtual void            SetCursor(nsCursor aCursor) override;
   virtual nsresult        SetCursor(imgIContainer* aCursor,
@@ -204,7 +208,7 @@ public:
   //
   // A reference to the session object is held until this function has
   // returned.
-  void NotifyRemoteCompositorSessionLost(mozilla::layers::CompositorSession* aSession);
+  void NotifyCompositorSessionLost(mozilla::layers::CompositorSession* aSession);
 
   mozilla::CompositorVsyncDispatcher* GetCompositorVsyncDispatcher();
   void            CreateCompositorVsyncDispatcher();
@@ -281,14 +285,8 @@ public:
                             const mozilla::WidgetPluginEvent& aEvent) override
                           { }
   virtual MOZ_MUST_USE nsresult AttachNativeKeyEvent(mozilla::WidgetKeyboardEvent& aEvent) override { return NS_ERROR_NOT_IMPLEMENTED; }
-  virtual bool            ExecuteNativeKeyBinding(
-                            NativeKeyBindingsType aType,
-                            const mozilla::WidgetKeyboardEvent& aEvent,
-                            DoCommandCallback aCallback,
-                            void* aCallbackData) override { return false; }
   bool                    ComputeShouldAccelerate();
   virtual bool            WidgetTypeSupportsAcceleration() { return true; }
-  virtual nsIMEUpdatePreference GetIMEUpdatePreference() override { return nsIMEUpdatePreference(); }
   virtual MOZ_MUST_USE nsresult OnDefaultButtonLoaded(const LayoutDeviceIntRect& aButtonRect) override { return NS_ERROR_NOT_IMPLEMENTED; }
   virtual already_AddRefed<nsIWidget>
   CreateChild(const LayoutDeviceIntRect& aRect,
@@ -368,6 +366,11 @@ public:
 
   virtual void StartAsyncScrollbarDrag(const AsyncDragMetrics& aDragMetrics) override;
 
+  virtual void StartAsyncAutoscroll(const ScreenPoint& aAnchorLocation,
+                                    const ScrollableLayerGuid& aGuid) override;
+
+  virtual void StopAsyncAutoscroll(const ScrollableLayerGuid& aGuid) override;
+
   /**
    * Use this when GetLayerManager() returns a BasicLayerManager
    * (nsBaseWidget::GetLayerManager() does). This sets up the widget's
@@ -407,6 +410,12 @@ public:
   void NotifyLiveResizeStarted();
   void NotifyLiveResizeStopped();
 
+#if defined(MOZ_WIDGET_ANDROID)
+  void RecvToolbarAnimatorMessageFromCompositor(int32_t) override {};
+  void UpdateRootFrameMetrics(const ScreenPoint& aScrollOffset, const CSSToScreenScale& aZoom) override {};
+  void RecvScreenPixels(mozilla::ipc::Shmem&& aMem, const ScreenIntSize& aSize) override {};
+#endif
+
 protected:
   // These are methods for CompositorWidgetWrapper, and should only be
   // accessed from that class. Derived widgets can choose which methods to
@@ -443,9 +452,6 @@ protected:
     return true;
   }
   virtual uint32_t GetGLFrameBufferFormat();
-  virtual mozilla::layers::Composer2D* GetComposer2D() {
-    return nullptr;
-  }
 
 protected:
   void            ResolveIconName(const nsAString &aIconName,
@@ -468,11 +474,6 @@ protected:
   const LayoutDeviceIntRegion RegionFromArray(const nsTArray<LayoutDeviceIntRect>& aRects);
   void ArrayFromRegion(const LayoutDeviceIntRegion& aRegion,
                        nsTArray<LayoutDeviceIntRect>& aRects);
-
-  virtual nsIContent* GetLastRollup() override
-  {
-    return mLastRollup;
-  }
 
   virtual nsresult SynthesizeNativeKeyEvent(int32_t aNativeKeyboardLayout,
                                             int32_t aNativeKeyCode,
@@ -525,9 +526,6 @@ protected:
     return NS_ERROR_UNEXPECTED;
   }
 
-  virtual nsresult NotifyIMEInternal(const IMENotification& aIMENotification)
-  { return NS_ERROR_NOT_IMPLEMENTED; }
-
   /**
    * GetPseudoIMEContext() returns pseudo IME context when TextEventDispatcher
    * has non-native input transaction.  Otherwise, returns nullptr.
@@ -553,6 +551,8 @@ protected:
   LayerManager* CreateBasicLayerManager();
 
   nsPopupType PopupType() const { return mPopupType; }
+
+  bool HasRemoteContent() const { return mHasRemoteContent; }
 
   void NotifyRollupGeometryChange()
   {
@@ -591,7 +591,7 @@ protected:
   void EnsureTextEventDispatcher();
 
   // Notify the compositor that a device reset has occurred.
-  void OnRenderingDeviceReset(uint64_t aSeqNo);
+  void OnRenderingDeviceReset();
 
   bool UseAPZ();
 
@@ -688,20 +688,18 @@ protected:
   nsPopupLevel      mPopupLevel;
   nsPopupType       mPopupType;
   SizeConstraints   mSizeConstraints;
+  bool              mHasRemoteContent;
 
   CompositorWidgetDelegate* mCompositorWidgetDelegate;
 
   bool              mUpdateCursor;
   bool              mUseAttachedEvents;
   bool              mIMEHasFocus;
+  bool              mIsFullyOccluded;
 #if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_GTK)
   bool              mAccessibilityInUseFlag;
 #endif
   static nsIRollupListener* gRollupListener;
-
-  // the last rolled up popup. Only set this when an nsAutoRollup is in scope,
-  // so it can be cleared automatically.
-  static nsIContent* mLastRollup;
 
   struct InitialZoomConstraints {
     InitialZoomConstraints(const uint32_t& aPresShellID,
@@ -748,28 +746,11 @@ protected:
 
   static bool debug_GetCachedBoolPref(const char* aPrefName);
 #endif
-};
 
-// A situation can occur when a mouse event occurs over a menu label while the
-// menu popup is already open. The expected behaviour is to close the popup.
-// This happens by calling nsIRollupListener::Rollup before the mouse event is
-// processed. However, in cases where the mouse event is not consumed, this
-// event will then get targeted at the menu label causing the menu to open
-// again. To prevent this, we store in mLastRollup a reference to the popup
-// that was closed during the Rollup call, and prevent this popup from
-// reopening while processing the mouse event.
-// mLastRollup should only be set while an nsAutoRollup is in scope;
-// when it goes out of scope mLastRollup is cleared automatically.
-// As mLastRollup is static, it can be retrieved by calling
-// nsIWidget::GetLastRollup on any widget.
-class nsAutoRollup
-{
-  bool wasClear;
-
-  public:
-
-  nsAutoRollup();
-  ~nsAutoRollup();
+private:
+  already_AddRefed<LayerManager>
+  CreateCompositorSession(int aWidth, int aHeight,
+                          mozilla::layers::CompositorOptions* aOptionsOut);
 };
 
 #endif // nsBaseWidget_h__

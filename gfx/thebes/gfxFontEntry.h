@@ -15,11 +15,13 @@
 #include "nsTHashtable.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/MemoryReporting.h"
+#include "MainThreadUtils.h"
 #include "nsUnicodeScriptCodes.h"
 #include "nsDataHashtable.h"
 #include "harfbuzz/hb.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/WeakPtr.h"
 
 typedef struct gr_face gr_face;
 
@@ -101,7 +103,8 @@ public:
     typedef mozilla::gfx::DrawTarget DrawTarget;
     typedef mozilla::unicode::Script Script;
 
-    NS_INLINE_DECL_REFCOUNTING(gfxFontEntry)
+    // Used by stylo
+    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(gfxFontEntry)
 
     explicit gfxFontEntry(const nsAString& aName, bool aIsStandardFace = false);
 
@@ -186,7 +189,7 @@ public:
     bool HasSVGGlyph(uint32_t aGlyphId);
     bool GetSVGGlyphExtents(DrawTarget* aDrawTarget, uint32_t aGlyphId,
                             gfxRect *aResult);
-    bool RenderSVGGlyph(gfxContext *aContext, uint32_t aGlyphId,
+    void RenderSVGGlyph(gfxContext *aContext, uint32_t aGlyphId,
                         mozilla::SVGContextPaint* aContextPaint);
     // Call this when glyph geometry or rendering has changed
     // (e.g. animated SVG glyphs)
@@ -246,10 +249,15 @@ public:
         AutoTable& operator=(const AutoTable&) = delete;
     };
 
-    already_AddRefed<gfxFont>
-    FindOrMakeFont(const gfxFontStyle *aStyle,
-                   bool aNeedsBold,
-                   gfxCharacterMap* aUnicodeRangeMap = nullptr);
+    // Return a font instance for a particular style. This may be a newly-
+    // created instance, or a font already in the global cache.
+    // We can't return a UniquePtr here, because we may be returning a shared
+    // cached instance; but we also don't return already_AddRefed, because
+    // the caller may only need to use the font temporarily and doesn't need
+    // a strong reference.
+    gfxFont* FindOrMakeFont(const gfxFontStyle *aStyle,
+                            bool aNeedsBold,
+                            gfxCharacterMap* aUnicodeRangeMap = nullptr);
 
     // Get an existing font table cache entry in aBlob if it has been
     // registered, or return false if not.  Callers must call
@@ -393,10 +401,8 @@ protected:
     // Protected destructor, to discourage deletion outside of Release():
     virtual ~gfxFontEntry();
 
-    virtual gfxFont *CreateFontInstance(const gfxFontStyle *aFontStyle, bool aNeedsBold) {
-        NS_NOTREACHED("oops, somebody didn't override CreateFontInstance");
-        return nullptr;
-    }
+    virtual gfxFont *CreateFontInstance(const gfxFontStyle *aFontStyle,
+                                        bool aNeedsBold) = 0;
 
     virtual void CheckForGraphiteTables();
 
@@ -587,7 +593,8 @@ struct GlobalFontMatch {
 
 class gfxFontFamily {
 public:
-    NS_INLINE_DECL_REFCOUNTING(gfxFontFamily)
+    // Used by stylo
+    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(gfxFontFamily)
 
     explicit gfxFontFamily(const nsAString& aName) :
         mName(aName),
@@ -730,9 +737,7 @@ public:
 
 protected:
     // Protected destructor, to discourage deletion outside of Release():
-    virtual ~gfxFontFamily()
-    {
-    }
+    virtual ~gfxFontFamily();
 
     bool ReadOtherFamilyNamesForFace(gfxPlatformFontList *aPlatformFontList,
                                      hb_blob_t           *aNameTable,

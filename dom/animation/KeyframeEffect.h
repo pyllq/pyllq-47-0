@@ -69,15 +69,9 @@ public:
   // we are in the middle of updating style. If we need to use this when
   // updating style, we should pass the nsStyleContext into this method and use
   // that to update the properties rather than calling
-  // GetStyleContextForElement.
+  // GetStyleContext.
   void SetTarget(const Nullable<ElementOrCSSPseudoElement>& aTarget);
 
-  void GetSpacing(nsString& aRetVal, CallerType aCallerType)
-  {
-    KeyframeEffectReadOnly::GetSpacing(aRetVal);
-  }
-  void SetSpacing(JSContext* aCx, const nsAString& aSpacing,
-                  CallerType aCallerType, ErrorResult& aRv);
   IterationCompositeOperation IterationComposite(CallerType aCallerType)
   {
     return KeyframeEffectReadOnly::IterationComposite();

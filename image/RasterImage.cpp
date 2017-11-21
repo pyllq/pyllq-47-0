@@ -84,7 +84,8 @@ RasterImage::RasterImage(ImageURL* aURI /* = nullptr */) :
   mTransient(false),
   mSyncLoad(false),
   mDiscardable(false),
-  mHasSourceData(false),
+  mSomeSourceData(false),
+  mAllSourceData(false),
   mHasBeenDecoded(false),
   mPendingAnimation(false),
   mAnimationFinished(false),
@@ -106,6 +107,9 @@ RasterImage::~RasterImage()
 
   // Record Telemetry.
   Telemetry::Accumulate(Telemetry::IMAGE_DECODE_COUNT, mDecodeCount);
+  if (mAnimationState) {
+    Telemetry::Accumulate(Telemetry::IMAGE_ANIMATED_DECODE_COUNT, mDecodeCount);
+  }
 }
 
 nsresult
@@ -146,14 +150,6 @@ RasterImage::Init(const char* aMimeType,
     SurfaceCache::LockImage(ImageKey(this));
   }
 
-  if (!mSyncLoad) {
-    // Create an async metadata decoder and verify we succeed in doing so.
-    nsresult rv = DecodeMetadata(DECODE_FLAGS_DEFAULT);
-    if (NS_FAILED(rv)) {
-      return NS_ERROR_FAILURE;
-    }
-  }
-
   // Mark us as initialized
   mInitialized = true;
 
@@ -177,7 +173,7 @@ RasterImage::RequestRefresh(const TimeStamp& aTime)
   RefreshResult res;
   if (mAnimationState) {
     MOZ_ASSERT(mFrameAnimator);
-    res = mFrameAnimator->RequestRefresh(*mAnimationState, aTime);
+    res = mFrameAnimator->RequestRefresh(*mAnimationState, aTime, mAnimationFinished);
   }
 
   if (res.mFrameAdvanced) {
@@ -224,6 +220,24 @@ RasterImage::GetHeight(int32_t* aHeight)
   }
 
   *aHeight = mSize.height;
+  return NS_OK;
+}
+
+//******************************************************************************
+nsresult
+RasterImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) const
+{
+  if (mError) {
+    return NS_ERROR_FAILURE;
+  }
+
+  if (mNativeSizes.IsEmpty()) {
+    aNativeSizes.Clear();
+    aNativeSizes.AppendElement(mSize);
+  } else {
+    aNativeSizes = mNativeSizes;
+  }
+
   return NS_OK;
 }
 
@@ -333,6 +347,7 @@ RasterImage::LookupFrame(const IntSize& aSize,
     // one. (Or we're sync decoding and the existing decoder hasn't even started
     // yet.) Trigger decoding so it'll be available next time.
     MOZ_ASSERT(aPlaybackType != PlaybackType::eAnimated ||
+               gfxPrefs::ImageMemAnimatedDiscardable() ||
                !mAnimationState || mAnimationState->KnownFrameCount() < 1,
                "Animated frames should be locked");
 
@@ -359,7 +374,7 @@ RasterImage::LookupFrame(const IntSize& aSize,
   // Sync decoding guarantees that we got the frame, but if it's owned by an
   // async decoder that's currently running, the contents of the frame may not
   // be available yet. Make sure we get everything.
-  if (mHasSourceData && (aFlags & FLAG_SYNC_DECODE)) {
+  if (mAllSourceData && (aFlags & FLAG_SYNC_DECODE)) {
     result.Surface()->WaitUntilFinished();
   }
 
@@ -401,14 +416,21 @@ RasterImage::WillDrawOpaqueNow()
   }
 
   if (mAnimationState) {
-    // We never discard frames of animated images.
-    return true;
+    if (!gfxPrefs::ImageMemAnimatedDiscardable()) {
+      // We never discard frames of animated images.
+      return true;
+    } else {
+      if (mAnimationState->GetCompositedFrameInvalid()) {
+        // We're not going to draw anything at all.
+        return false;
+      }
+    }
   }
 
   // If we are not locked our decoded data could get discard at any time (ie
   // between the call to this function and when we are asked to draw), so we
   // have to return false if we are unlocked.
-  if (IsUnlocked()) {
+  if (mLockCount == 0) {
     return false;
   }
 
@@ -427,11 +449,37 @@ RasterImage::WillDrawOpaqueNow()
 }
 
 void
-RasterImage::OnSurfaceDiscarded()
+RasterImage::OnSurfaceDiscarded(const SurfaceKey& aSurfaceKey)
 {
   MOZ_ASSERT(mProgressTracker);
 
-  NS_DispatchToMainThread(NewRunnableMethod(mProgressTracker, &ProgressTracker::OnDiscard));
+  bool animatedFramesDiscarded =
+    mAnimationState && aSurfaceKey.Playback() == PlaybackType::eAnimated;
+
+  RefPtr<RasterImage> image = this;
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+                            "RasterImage::OnSurfaceDiscarded",
+                            [=]() -> void {
+    image->OnSurfaceDiscardedInternal(animatedFramesDiscarded);
+  }));
+}
+
+void
+RasterImage::OnSurfaceDiscardedInternal(bool aAnimatedFramesDiscarded)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (aAnimatedFramesDiscarded && mAnimationState) {
+    MOZ_ASSERT(gfxPrefs::ImageMemAnimatedDiscardable());
+    mImageContainer = nullptr;
+    gfx::IntRect rect =
+      mAnimationState->UpdateState(mAnimationFinished, this, mSize);
+    NotifyProgress(NoProgress, rect);
+  }
+
+  if (mProgressTracker) {
+    mProgressTracker->OnDiscard();
+  }
 }
 
 //******************************************************************************
@@ -486,7 +534,7 @@ NS_IMETHODIMP_(already_AddRefed<SourceSurface>)
 RasterImage::GetFrame(uint32_t aWhichFrame,
                       uint32_t aFlags)
 {
-  return GetFrameInternal(mSize, aWhichFrame, aFlags).second().forget();
+  return GetFrameAtSize(mSize, aWhichFrame, aFlags);
 }
 
 NS_IMETHODIMP_(already_AddRefed<SourceSurface>)
@@ -494,7 +542,12 @@ RasterImage::GetFrameAtSize(const IntSize& aSize,
                             uint32_t aWhichFrame,
                             uint32_t aFlags)
 {
-  return GetFrameInternal(aSize, aWhichFrame, aFlags).second().forget();
+  RefPtr<SourceSurface> surf =
+    GetFrameInternal(aSize, aWhichFrame, aFlags).second().forget();
+  // If we are here, it suggests the image is embedded in a canvas or some
+  // other path besides layers, and we won't need the file handle.
+  MarkSurfaceShared(surf);
+  return surf.forget();
 }
 
 Pair<DrawResult, RefPtr<SourceSurface>>
@@ -586,7 +639,7 @@ RasterImage::GetImageContainer(LayerManager* aManager, uint32_t aFlags)
     return nullptr;
   }
 
-  if (IsUnlocked()) {
+  if (mAnimationConsumers == 0) {
     SendOnUnlockedDraw(aFlags);
   }
 
@@ -612,7 +665,7 @@ RasterImage::GetImageContainer(LayerManager* aManager, uint32_t aFlags)
   }
 
   // |image| holds a reference to a SourceSurface which in turn holds a lock on
-  // the current frame's VolatileBuffer, ensuring that it doesn't get freed as
+  // the current frame's data buffer, ensuring that it doesn't get freed as
   // long as the layer system keeps this ImageContainer alive.
   AutoTArray<ImageContainer::NonOwningImage, 1> imageList;
   imageList.AppendElement(ImageContainer::NonOwningImage(image, TimeStamp(),
@@ -652,9 +705,10 @@ RasterImage::UpdateImageContainer()
 }
 
 size_t
-RasterImage::SizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf) const
+RasterImage::SizeOfSourceWithComputedFallback(SizeOfState& aState) const
 {
-  return mSourceBuffer->SizeOfIncludingThisWithComputedFallback(aMallocSizeOf);
+  return mSourceBuffer->SizeOfIncludingThisWithComputedFallback(
+    aState.mMallocSizeOf);
 }
 
 void
@@ -699,6 +753,7 @@ RasterImage::SetMetadata(const ImageMetadata& aMetadata,
     // Set the size and flag that we have it.
     mSize = size;
     mOrientation = orientation;
+    mNativeSizes = aMetadata.GetNativeSizes();
     mHasSize = true;
   }
 
@@ -707,9 +762,11 @@ RasterImage::SetMetadata(const ImageMetadata& aMetadata,
     mAnimationState.emplace(mAnimationMode);
     mFrameAnimator = MakeUnique<FrameAnimator>(this, mSize);
 
-    // We don't support discarding animated images (See bug 414259).
-    // Lock the image and throw away the key.
-    LockImage();
+    if (!gfxPrefs::ImageMemAnimatedDiscardable()) {
+      // We don't support discarding animated images (See bug 414259).
+      // Lock the image and throw away the key.
+      LockImage();
+    }
 
     if (!aFromMetadataDecode) {
       // The metadata decode reported that this image isn't animated, but we
@@ -874,7 +931,7 @@ RasterImage::OnImageDataComplete(nsIRequest*, nsISupports*, nsresult aStatus,
   MOZ_ASSERT(NS_IsMainThread());
 
   // Record that we have all the data we're going to get now.
-  mHasSourceData = true;
+  mAllSourceData = true;
 
   // Let decoders know that there won't be any more data coming.
   mSourceBuffer->Complete(aStatus);
@@ -946,6 +1003,14 @@ RasterImage::OnImageDataAvailable(nsIRequest*,
                                   uint32_t aCount)
 {
   nsresult rv = mSourceBuffer->AppendFromInputStream(aInputStream, aCount);
+  if (NS_SUCCEEDED(rv) && !mSomeSourceData) {
+    mSomeSourceData = true;
+    if (!mSyncLoad) {
+      // Create an async metadata decoder and verify we succeed in doing so.
+      rv = DecodeMetadata(DECODE_FLAGS_DEFAULT);
+    }
+  }
+
   if (NS_FAILED(rv)) {
     DoError();
   }
@@ -1016,10 +1081,18 @@ RasterImage::Discard()
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(CanDiscard(), "Asked to discard but can't");
-  MOZ_ASSERT(!mAnimationState, "Asked to discard for animated image");
+  MOZ_ASSERT(!mAnimationState || gfxPrefs::ImageMemAnimatedDiscardable(),
+    "Asked to discard for animated image");
 
   // Delete all the decoded frames.
   SurfaceCache::RemoveImage(ImageKey(this));
+
+  if (mAnimationState) {
+    mImageContainer = nullptr;
+    gfx::IntRect rect =
+      mAnimationState->UpdateState(mAnimationFinished, this, mSize);
+    NotifyProgress(NoProgress, rect);
+  }
 
   // Notify that we discarded.
   if (mProgressTracker) {
@@ -1029,8 +1102,9 @@ RasterImage::Discard()
 
 bool
 RasterImage::CanDiscard() {
-  return mHasSourceData &&       // ...have the source data...
-         !mAnimationState;       // Can never discard animated images
+  return mAllSourceData &&
+         // Can discard animated images if the pref is set
+         (!mAnimationState || gfxPrefs::ImageMemAnimatedDiscardable());
 }
 
 NS_IMETHODIMP
@@ -1116,20 +1190,16 @@ LaunchDecodingTask(IDecodingTask* aTask,
                    bool aHaveSourceData)
 {
   if (aHaveSourceData) {
+    nsCString uri(aImage->GetURIString());
+
     // If we have all the data, we can sync decode if requested.
     if (aFlags & imgIContainer::FLAG_SYNC_DECODE) {
-      PROFILER_LABEL_PRINTF("DecodePool", "SyncRunIfPossible",
-        js::ProfileEntry::Category::GRAPHICS,
-        "%s", aImage->GetURIString().get());
-      DecodePool::Singleton()->SyncRunIfPossible(aTask);
+      DecodePool::Singleton()->SyncRunIfPossible(aTask, uri);
       return true;
     }
 
     if (aFlags & imgIContainer::FLAG_SYNC_DECODE_IF_FAST) {
-      PROFILER_LABEL_PRINTF("DecodePool", "SyncRunIfPreferred",
-        js::ProfileEntry::Category::GRAPHICS,
-        "%s", aImage->GetURIString().get());
-      return DecodePool::Singleton()->SyncRunIfPreferred(aTask);
+      return DecodePool::Singleton()->SyncRunIfPreferred(aTask, uri);
     }
   }
 
@@ -1190,6 +1260,14 @@ RasterImage::Decode(const IntSize& aSize,
     task = DecoderFactory::CreateAnimationDecoder(mDecoderType, WrapNotNull(this),
                                                   mSourceBuffer, mSize,
                                                   decoderFlags, surfaceFlags);
+    // We pass false for aAllowInvalidation because we may be asked to use
+    // async notifications. Any potential invalidation here will be sent when
+    // RequestRefresh is called, or NotifyDecodeComplete.
+#ifdef DEBUG
+    gfx::IntRect rect =
+#endif
+      mAnimationState->UpdateState(mAnimationFinished, this, mSize, false);
+    MOZ_ASSERT(rect.IsEmpty());
   } else {
     task = DecoderFactory::CreateDecoder(mDecoderType, WrapNotNull(this),
                                          mSourceBuffer, mSize, aSize,
@@ -1204,7 +1282,7 @@ RasterImage::Decode(const IntSize& aSize,
   mDecodeCount++;
 
   // We're ready to decode; start the decoder.
-  return LaunchDecodingTask(task, this, aFlags, mHasSourceData);
+  return LaunchDecodingTask(task, this, aFlags, mAllSourceData);
 }
 
 NS_IMETHODIMP
@@ -1227,7 +1305,7 @@ RasterImage::DecodeMetadata(uint32_t aFlags)
   }
 
   // We're ready to decode; start the decoder.
-  LaunchDecodingTask(task, this, aFlags, mHasSourceData);
+  LaunchDecodingTask(task, this, aFlags, mAllSourceData);
   return NS_OK;
 }
 
@@ -1318,6 +1396,20 @@ RasterImage::DrawInternal(DrawableSurface&& aSurface,
   ImageRegion region(aRegion);
   bool frameIsFinished = aSurface->IsFinished();
 
+#ifdef DEBUG
+  // Record the image drawing for startup performance testing.
+  if (NS_IsMainThread()) {
+    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+    NS_WARNING_ASSERTION(obs, "Can't get an observer service handle");
+    if (obs) {
+      nsCOMPtr<nsIURI> imageURI = mURI->ToIURI();
+      nsAutoCString spec;
+      imageURI->GetSpec(spec);
+      obs->NotifyObservers(nullptr, "image-drawing", NS_ConvertUTF8toUTF16(spec).get());
+    }
+  }
+#endif
+
   // By now we may have a frame with the requested size. If not, we need to
   // adjust the drawing parameters accordingly.
   IntSize finalSize = aSurface->GetImageSize();
@@ -1374,7 +1466,7 @@ RasterImage::Draw(gfxContext* aContext,
     return DrawResult::BAD_ARGS;
   }
 
-  if (IsUnlocked()) {
+  if (mAnimationConsumers == 0) {
     SendOnUnlockedDraw(aFlags);
   }
 
@@ -1405,6 +1497,11 @@ RasterImage::Draw(gfxContext* aContext,
       TimeDuration drawLatency = TimeStamp::Now() - mDrawStartTime;
       Telemetry::Accumulate(Telemetry::IMAGE_DECODE_ON_DRAW_LATENCY,
                             int32_t(drawLatency.ToMicroseconds()));
+      if (mAnimationState) {
+        Telemetry::Accumulate(Telemetry::IMAGE_ANIMATED_DECODE_ON_DRAW_LATENCY,
+                              int32_t(drawLatency.ToMicroseconds()));
+
+      }
       mDrawStartTime = TimeStamp();
   }
 
@@ -1524,7 +1621,8 @@ RasterImage::HandleErrorWorker::DispatchIfNeeded(RasterImage* aImage)
 }
 
 RasterImage::HandleErrorWorker::HandleErrorWorker(RasterImage* aImage)
-  : mImage(aImage)
+  : Runnable("image::RasterImage::HandleErrorWorker")
+  , mImage(aImage)
 {
   MOZ_ASSERT(mImage, "Should have image");
 }
@@ -1641,7 +1739,11 @@ RasterImage::NotifyDecodeComplete(const DecoderFinalStatus& aStatus,
       mHasBeenDecoded && mAnimationState) {
     // We've finished a full decode of all animation frames and our AnimationState
     // has been notified about them all, so let it know not to expect anymore.
-    mAnimationState->SetDoneDecoding(true);
+    mAnimationState->NotifyDecodeComplete();
+    gfx::IntRect rect = mAnimationState->UpdateState(mAnimationFinished, this, mSize);
+    if (!rect.IsEmpty()) {
+      NotifyProgress(NoProgress, rect);
+    }
   }
 
   // Do some telemetry if this isn't a metadata decode.
@@ -1653,6 +1755,11 @@ RasterImage::NotifyDecodeComplete(const DecoderFinalStatus& aStatus,
     if (aStatus.mFinished) {
       Telemetry::Accumulate(Telemetry::IMAGE_DECODE_TIME,
                             int32_t(aTelemetry.mDecodeTime.ToMicroseconds()));
+
+      if (mAnimationState) {
+        Telemetry::Accumulate(Telemetry::IMAGE_ANIMATED_DECODE_TIME,
+                              int32_t(aTelemetry.mDecodeTime.ToMicroseconds()));
+      }
 
       if (aTelemetry.mSpeedHistogram) {
         Telemetry::Accumulate(*aTelemetry.mSpeedHistogram, aTelemetry.Speed());

@@ -119,8 +119,8 @@ GMPStorageParent::RecvRead(const nsCString& aRecordName)
     Unused << SendReadComplete(aRecordName, GMPClosedErr, data);
   } else {
     GMPErr rv = mStorage->Read(aRecordName, data);
-    LOGD(("GMPStorageParent[%p]::RecvRead(record='%s') read %d bytes rv=%d",
-      this, aRecordName.get(), data.Length(), rv));
+    LOGD(("GMPStorageParent[%p]::RecvRead(record='%s') read %zu bytes rv=%" PRIu32,
+          this, aRecordName.get(), data.Length(), static_cast<uint32_t>(rv)));
     Unused << SendReadComplete(aRecordName, rv, data);
   }
 
@@ -131,7 +131,7 @@ mozilla::ipc::IPCResult
 GMPStorageParent::RecvWrite(const nsCString& aRecordName,
                             InfallibleTArray<uint8_t>&& aBytes)
 {
-  LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') %d bytes",
+  LOGD(("GMPStorageParent[%p]::RecvWrite(record='%s') %zu bytes",
         this, aRecordName.get(), aBytes.Length()));
 
   if (mShutdown) {
@@ -157,24 +157,6 @@ GMPStorageParent::RecvWrite(const nsCString& aRecordName,
         this, aRecordName.get(), rv));
 
   Unused << SendWriteComplete(aRecordName, rv);
-
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult
-GMPStorageParent::RecvGetRecordNames()
-{
-  if (mShutdown) {
-    return IPC_OK();
-  }
-
-  nsTArray<nsCString> recordNames;
-  GMPErr status = mStorage->GetRecordNames(recordNames);
-
-  LOGD(("GMPStorageParent[%p]::RecvGetRecordNames() status=%d numRecords=%d",
-        this, status, recordNames.Length()));
-
-  Unused << SendRecordNames(recordNames, status);
 
   return IPC_OK();
 }

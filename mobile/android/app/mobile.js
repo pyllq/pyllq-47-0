@@ -23,7 +23,7 @@ pref("toolkit.browser.cacheRatioHeight", 3000);
 // expires.
 pref("toolkit.browser.contentViewExpire", 3000);
 
-pref("toolkit.defaultChromeURI", "chrome://browser/content/browser.xul");
+pref("toolkit.defaultChromeURI", "chrome://geckoview/content/geckoview.xul");
 pref("browser.chromeURL", "chrome://browser/content/");
 
 // If a tab has not been active for this long (seconds), then it may be
@@ -52,6 +52,9 @@ pref("browser.zoom.reflowZoom.reflowTextOnPageLoad", false);
 pref("browser.zoom.siteSpecific", false);
 pref("browser.zoom.pyllq-fit-images", true);
 pref("browser.zoom.pyllq-hide-overlays", true);
+
+pref("pyllq.rsHanzi", "128");
+pref("pyllq.rsHangul", "64");
 
 // fixes some website dependencies on webkit
 // see dom/base/WebKitCSSMatrix.cpp
@@ -113,10 +116,6 @@ pref("network.protocol-handler.warn-external.mailto", false);
 pref("network.protocol-handler.warn-external.vnd.youtube", false);
 
 /* http prefs */
-pref("network.http.pipelining", false);
-pref("network.http.pipelining.ssl", false);
-pref("network.http.proxy.pipelining", false);
-pref("network.http.pipelining.maxrequests" , 6);
 pref("network.http.keep-alive.timeout", 109);
 pref("network.http.max-connections", 20);
 pref("network.http.max-persistent-connections-per-server", 6);
@@ -125,6 +124,10 @@ pref("network.http.max-persistent-connections-per-proxy", 20);
 // spdy
 pref("network.http.spdy.push-allowance", 32768);
 pref("network.http.spdy.default-hpack-buffer", 4096); // 4k
+
+// Racing the cache with the network should be disabled to prevent accidental
+// data usage.
+pref("network.http.rcwn.enabled", false);
 
 // See bug 545869 for details on why these are set the way they are
 pref("network.buffer.cache.count", 24);
@@ -136,7 +139,7 @@ pref("network.predictor.max-db-size", 2097152); // bytes
 pref("network.predictor.preserve", 50); // percentage of predictor data to keep when cleaning up
 
 // Use JS mDNS as a fallback
-pref("network.mdns.use_js_fallback", true);
+pref("network.mdns.use_js_fallback", false);
 
 /* history max results display */
 pref("browser.display.history.maxresults", 100);
@@ -151,12 +154,11 @@ pref("browser.sessionhistory.contentViewerTimeout", 360);
 pref("browser.sessionhistory.bfcacheIgnoreMemoryPressure", false);
 
 /* session store */
-pref("browser.sessionstore.resume_session_once", false);
 pref("browser.sessionstore.resume_from_crash", true);
 pref("browser.sessionstore.interval", 10000); // milliseconds
 pref("browser.sessionstore.backupInterval", 120000); // milliseconds -> 2 minutes
 pref("browser.sessionstore.max_tabs_undo", 10);
-pref("browser.sessionstore.max_resumed_crashes", 1);
+pref("browser.sessionstore.max_resumed_crashes", 2);
 pref("browser.sessionstore.privacy_level", 0); // saving data: 0 = all, 1 = unencrypted sites, 2 = never
 pref("browser.sessionstore.debug_logging", false);
 
@@ -170,15 +172,6 @@ pref("layout.css.report_errors", false);
 /* download manager (don't show the window or alert) */
 pref("browser.download.useDownloadDir", true);
 pref("browser.download.folderList", 1); // Default to ~/Downloads
-pref("browser.download.manager.showAlertOnComplete", false);
-pref("browser.download.manager.showAlertInterval", 2000);
-pref("browser.download.manager.retention", 2);
-pref("browser.download.manager.showWhenStarting", false);
-pref("browser.download.manager.closeWhenDone", true);
-pref("browser.download.manager.openDelay", 0);
-pref("browser.download.manager.focusWhenStarting", false);
-pref("browser.download.manager.flashCount", 2);
-pref("browser.download.manager.displayedHistoryDays", 7);
 pref("browser.download.manager.addToRecentDocs", true);
 
 /* download helper */
@@ -319,12 +312,6 @@ pref("browser.search.noCurrentEngine", true);
 
 // Control media casting & mirroring features
 pref("browser.casting.enabled", true);
-#ifdef RELEASE_OR_BETA
-// Chromecast mirroring is broken (bug 1131084)
-pref("browser.mirroring.enabled", false);
-#else
-pref("browser.mirroring.enabled", true);
-#endif
 
 // Enable sparse localization by setting a few package locale overrides
 pref("chrome.override_package.global", "browser");
@@ -443,14 +430,19 @@ pref("browser.ui.zoom.force-user-scalable", true);
 // When removing this Nightly flag, also remember to remove the flags surrounding this feature
 // in GeckoPreferences and BrowserApp (see bug 1245930).
 #ifdef NIGHTLY_BUILD
-pref("ui.zoomedview.enabled", true);
+pref("ui.bookmark.mobilefolder.enabled", true);
 #else
-pref("ui.zoomedview.enabled", false);
+pref("ui.bookmark.mobilefolder.enabled", false);
 #endif
-pref("ui.zoomedview.keepLimitSize", 16); // value in layer pixels, used to not keep the large elements in the cluster list (Bug 1191041)
-pref("ui.zoomedview.limitReadableSize", 8); // value in layer pixels
-pref("ui.zoomedview.defaultZoomFactor", 2);
-pref("ui.zoomedview.simplified", true); // Do not display all the zoomed view controls, do not use size heurisistic
+
+#if MOZ_UPDATE_CHANNEL == nightly
+pref("mma.enabled", true);
+#elif MOZ_UPDATE_CHANNEL == beta
+pref("mma.enabled", true);
+#else
+pref("mma.enabled", true);
+#endif
+
 
 pref("ui.touch.radius.enabled", false);
 pref("ui.touch.radius.leftmm", 3);
@@ -482,14 +474,8 @@ pref("browser.search.suggest.max", 3);
 pref("browser.ui.selection.distance", 250);
 
 // plugins
-pref("plugin.disable", false);
+pref("plugin.disable", true);
 pref("dom.ipc.plugins.enabled", false);
-
-// This pref isn't actually used anymore, but we're leaving this here to avoid changing
-// the default so that we can migrate a user-set pref. See bug 885357.
-pref("plugins.click_to_play", true);
-// The default value for nsIPluginTag.enabledState (STATE_CLICKTOPLAY = 1)
-pref("plugin.default.state", 1);
 
 // product URLs
 // The breakpad report server to link to in about:crashes
@@ -586,12 +572,14 @@ pref("ui.dragThresholdY", 25);
 pref("layers.acceleration.disabled", false);
 pref("layers.async-video.enabled", true);
 
-pref("apz.content_response_timeout", 600);
+// APZ physics settings (fling acceleration, fling curving and axis lock) have
+// been reviewed by UX
 pref("apz.allow_immediate_handoff", false);
-pref("apz.touch_start_tolerance", "0.06");
 pref("apz.axis_lock.breakout_angle", "0.7853982");    // PI / 4 (45 degrees)
-// APZ physics settings reviewed by UX
 pref("apz.axis_lock.mode", 1); // Use "strict" axis locking
+pref("apz.content_response_timeout", 600);
+pref("apz.drag.enabled", false);
+pref("apz.fling_accel_interval_ms", 750);
 pref("apz.fling_curve_function_x1", "0.59");
 pref("apz.fling_curve_function_y1", "0.46");
 pref("apz.fling_curve_function_x2", "0.05");
@@ -601,8 +589,10 @@ pref("apz.fling_curve_threshold_inches_per_ms", "0.01");
 pref("apz.fling_friction", "0.004");
 pref("apz.fling_stopped_threshold", "0.0");
 pref("apz.max_velocity_inches_per_ms", "0.07");
-pref("apz.fling_accel_interval_ms", 750);
 pref("apz.overscroll.enabled", true);
+pref("apz.second_tap_tolerance", "0.3");
+pref("apz.touch_move_tolerance", "0.03");
+pref("apz.touch_start_tolerance", "0.06");
 
 pref("layers.progressive-paint", true);
 pref("layers.low-precision-buffer", true);
@@ -632,6 +622,9 @@ pref("media.cache_size", 32768);    // 32MB media cache
 // below 10s of buffered data.
 pref("media.cache_resume_threshold", 10);
 pref("media.cache_readahead_limit", 30);
+// On mobile we'll throttle the download once the readahead_limit is hit,
+// even if the download is slow. This is to preserve battery and data.
+pref("media.throttle-regardless-of-download-rate", true);
 
 // Number of video frames we buffer while decoding video.
 // On Android this is decided by a similar value which varies for
@@ -651,17 +644,23 @@ pref("media.decoder.recycle.enabled", true);
 // Enable the MediaCodec PlatformDecoderModule by default.
 pref("media.android-media-codec.enabled", true);
 pref("media.android-media-codec.preferred", true);
-// Run decoder in seperate process.
-pref("media.android-remote-codec.enabled", false);
 
 // Enable MSE
 pref("media.mediasource.enabled", true);
 
 pref("media.mediadrm-widevinecdm.visible", true);
 
-// Enable EME(Encrypted media extensions)
-pref("media.eme.enabled", false);
-pref("media.eme.apiVisible", false);
+#ifdef NIGHTLY_BUILD
+// Enable EME (Encrypted Media Extensions)
+pref("media.eme.enabled", true);
+#endif
+
+#ifdef NIGHTLY_BUILD
+pref("media.hls.enabled", true);
+#endif
+
+// Whether to suspend decoding of videos in background tabs.
+pref("media.suspend-bkgnd-video.enabled", true);
 
 // optimize images memory usage
 pref("image.downscale-during-decode.enabled", true);
@@ -807,6 +806,7 @@ pref("dom.phonenumber.substringmatching.VE", 7);
 // Enable hardware-accelerated Skia canvas
 pref("gfx.canvas.azure.backends", "skia");
 pref("gfx.canvas.azure.accelerated", true);
+pref("gfx.canvas.azure.accelerated.limit", 64);
 
 // See ua-update.json.in for the packaged UA override list
 pref("general.useragent.updates.enabled", false);
@@ -942,9 +942,19 @@ pref("dom.presentation.receiver.enabled", true); // enable 1-UA mode
 
 pref("dom.audiochannel.audioCompeting", true);
 pref("dom.audiochannel.mediaControl", true);
+pref("media.block-autoplay-until-in-foreground", false);
 
 // Space separated list of URLS that are allowed to send objects (instead of
 // only strings) through webchannels. This list is duplicated in browser/app/profile/firefox.js
 pref("webchannel.allowObject.urlWhitelist", "https://accounts.firefox.com https://content.cdn.mozilla.net https://input.mozilla.org https://support.mozilla.org https://install.mozilla.org");
 
 pref("media.openUnsupportedTypeWithExternalApp", true);
+
+pref("dom.keyboardevent.dispatch_during_composition", true);
+
+#if CPU_ARCH == aarch64
+pref("javascript.options.native_regexp", false);
+#endif
+
+// Ask for permission when enumerating WebRTC devices.
+pref("media.navigator.permission.device", true);

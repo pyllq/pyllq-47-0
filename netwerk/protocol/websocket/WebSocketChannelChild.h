@@ -7,24 +7,26 @@
 #ifndef mozilla_net_WebSocketChannelChild_h
 #define mozilla_net_WebSocketChannelChild_h
 
+#include "mozilla/net/NeckoTargetHolder.h"
 #include "mozilla/net/PWebSocketChild.h"
 #include "mozilla/net/BaseWebSocketChannel.h"
 #include "nsString.h"
 
 namespace mozilla {
+
 namespace net {
 
 class ChannelEvent;
 class ChannelEventQueue;
 
 class WebSocketChannelChild final : public BaseWebSocketChannel,
-                                    public PWebSocketChild
+                                    public PWebSocketChild,
+                                    public NeckoTargetHolder
 {
  public:
   explicit WebSocketChannelChild(bool aSecure);
 
   NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_NSITHREADRETARGETABLEREQUEST
 
   // nsIWebSocketChannel methods BaseWebSocketChannel didn't implement for us
   //
@@ -36,7 +38,6 @@ class WebSocketChannelChild final : public BaseWebSocketChannel,
   NS_IMETHOD SendMsg(const nsACString &aMsg) override;
   NS_IMETHOD SendBinaryMsg(const nsACString &aMsg) override;
   NS_IMETHOD SendBinaryStream(nsIInputStream *aStream, uint32_t aLength) override;
-  MOZ_MUST_USE nsresult SendBinaryStream(OptionalInputStreamParams *aStream, uint32_t aLength);
   NS_IMETHOD GetSecurityInfo(nsISupports **aSecurityInfo) override;
 
   void AddIPDLReference();
@@ -64,12 +65,15 @@ class WebSocketChannelChild final : public BaseWebSocketChannel,
   void OnBinaryMessageAvailable(const nsCString& aMsg);
   void OnAcknowledge(const uint32_t& aSize);
   void OnServerClose(const uint16_t& aCode, const nsCString& aReason);
-  void AsyncOpenFailed();  
+  void AsyncOpenFailed();
 
   void DispatchToTargetThread(ChannelEvent *aChannelEvent);
   bool IsOnTargetThread();
 
   void MaybeReleaseIPCObject();
+
+  // This function tries to get a labeled event target for |mNeckoTarget|.
+  void SetupNeckoTarget();
 
   RefPtr<ChannelEventQueue> mEventQ;
   nsString mEffectiveURL;

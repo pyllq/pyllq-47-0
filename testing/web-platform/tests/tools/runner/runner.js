@@ -112,14 +112,48 @@ ManifestIterator.prototype = {
         }
     },
 
-    matches: function(manifest_item) {
-        if (this.regex_pattern !== null) {
-            return manifest_item.url.match(this.regex_pattern);
-        } else {
-            return this.paths.some(function(p) {
-                return manifest_item.url.indexOf(p) === 0;
-            });
+    // Calculate the location of a match within a provided URL.
+    //
+    // @param {string} url - Valid URL
+    //
+    // @returns {null|object} - null if the URL does not satisfy the iterator's
+    //                          filtering criteria. Otherwise, an object with
+    //                          the following properties:
+    //
+    //                          - index - the zero-indexed offset of the start
+    //                                    of the match
+    //                          - width - the total number of matching
+    //                                    characters
+    match_location: function(url) {
+        var match;
+
+        if (this.regex_pattern) {
+           match = url.match(this.regex_pattern);
+
+           if (!match) {
+              return null;
+           }
+
+           return { index: match.index, width: match[0].length };
         }
+
+        this.paths.some(function(path) {
+            if (url.indexOf(path) === 0) {
+                match = path;
+                return true;
+            }
+            return false;
+        });
+
+        if (!match) {
+            return null;
+        }
+
+        return { index: 0, width: match.length };
+    },
+
+    matches: function(manifest_item) {
+        return this.match_location(manifest_item.url) !== null;
     },
 
     to_test: function(manifest_item) {
@@ -152,7 +186,6 @@ function VisualOutput(elem, runner) {
     this.section_wrapper = null;
     this.results_table = this.elem.querySelector(".results > table");
     this.section = null;
-    this.manifest_status = this.elem.querySelector("#manifest");
     this.progress = this.elem.querySelector(".summary .progress");
     this.meter = this.progress.querySelector(".progress-bar");
     this.result_count = null;
@@ -195,7 +228,7 @@ VisualOutput.prototype = {
         }
         this.meter.style.width = '0px';
         this.meter.textContent = '0%';
-        this.manifest_status.style.display = "none";
+        this.meter.classList.remove("stopped", "loading-manifest");
         this.elem.querySelector(".jsonResults").style.display = "none";
         this.results_table.removeChild(this.results_table.tBodies[0]);
         this.results_table.appendChild(document.createElement("tbody"));
@@ -205,14 +238,13 @@ VisualOutput.prototype = {
         this.clear();
         this.instructions.style.display = "none";
         this.elem.style.display = "block";
-        this.manifest_status.style.display = "inline";
+        this.steady_status("loading-manifest");
     },
 
     on_start: function() {
         this.clear();
         this.instructions.style.display = "none";
         this.elem.style.display = "block";
-        this.meter.classList.remove("stopped");
         this.meter.classList.add("progress-striped", "active");
     },
 
@@ -233,7 +265,8 @@ VisualOutput.prototype = {
         if (subtest_pass_count === subtests_count &&
             (status == "OK" || status == "PASS")) {
             test_status = "PASS";
-        } else if (subtest_notrun_count == subtests_count) {
+        } else if ((!subtests_count && status === "NOTRUN") ||
+            (subtests_count && (subtest_notrun_count == subtests_count) ) ) {
             test_status = "NOTRUN";
         } else if (subtests_count > 0 && status === "OK") {
             test_status = "FAIL";
@@ -281,17 +314,24 @@ VisualOutput.prototype = {
         this.update_meter(this.runner.progress(), this.runner.results.count(), this.runner.test_count());
     },
 
-    on_done: function() {
+    steady_status: function(statusName) {
+        var statusTexts = {
+            done: "Done!",
+            stopped: "Stopped",
+            "loading-manifest": "Updating and loading test manifest; this may take several minutes."
+        };
+        var textContent = statusTexts[statusName];
+
         this.meter.setAttribute("aria-valuenow", this.meter.getAttribute("aria-valuemax"));
         this.meter.style.width = "100%";
-        if (this.runner.stop_flag) {
-            this.meter.textContent = "Stopped";
-            this.meter.classList.add("stopped");
-        } else {
-            this.meter.textContent = "Done!";
-        }
-        this.meter.classList.remove("progress-striped", "active");
-        this.runner.test_div.textContent = "";
+        this.meter.textContent = textContent;
+        this.meter.classList.remove("progress-striped", "active", "stopped", "loading-manifest");
+        this.meter.classList.add(statusName);
+        this.runner.display_current_test(null);
+    },
+
+    on_done: function() {
+        this.steady_status(this.runner.stop_flag ? "stopped" : "done");
         //add the json serialization of the results
         var a = this.elem.querySelector(".jsonResults");
         var json = this.runner.results.to_json();
@@ -358,6 +398,7 @@ function ManualUI(elem, runner) {
     this.runner = runner;
     this.pass_button = this.elem.querySelector("button.pass");
     this.fail_button = this.elem.querySelector("button.fail");
+    this.skip_button = this.elem.querySelector("button.skip");
     this.ref_buttons = this.elem.querySelector(".reftestUI");
     this.ref_type = this.ref_buttons.querySelector(".refType");
     this.ref_warning = this.elem.querySelector(".reftestWarn");
@@ -373,6 +414,11 @@ function ManualUI(elem, runner) {
     this.pass_button.onclick = function() {
         this.disable_buttons();
         this.runner.on_result("PASS", "", []);
+    }.bind(this);
+
+    this.skip_button.onclick = function() {
+        this.disable_buttons();
+        this.runner.on_result("NOTRUN", "", []);
     }.bind(this);
 
     this.fail_button.onclick = function() {
@@ -615,7 +661,8 @@ function Runner(manifest_path) {
     this.manifest_iterator = null;
 
     this.test_window = null;
-    this.test_div = document.getElementById('test_url');
+    this.test_div = document.getElementById('current_test');
+    this.test_url = this.test_div.getElementsByTagName('a')[0];
     this.current_test = null;
     this.timeout = null;
     this.num_tests = null;
@@ -644,8 +691,10 @@ Runner.prototype = {
         return this.manifest[this.mTestCount];
     },
 
-    open_test_window: function() {
-        this.test_window = window.open("about:blank", 800, 600);
+    ensure_test_window: function() {
+        if (!this.test_window || this.test_window.location === null) {
+          this.test_window = window.open("about:blank", 800, 600);
+        }
     },
 
     manifest_loaded: function() {
@@ -666,6 +715,7 @@ Runner.prototype = {
         this.manifest_iterator = new ManifestIterator(this.manifest, this.path, this.test_types, this.use_regex);
         this.num_tests = null;
 
+        this.ensure_test_window();
         if (this.manifest.data === null) {
             this.wait_for_manifest();
         } else {
@@ -682,7 +732,6 @@ Runner.prototype = {
 
     do_start: function() {
         if (this.manifest_iterator.count() > 0) {
-            this.open_test_window();
             this.start_callbacks.forEach(function(callback) {
                 callback();
             });
@@ -727,6 +776,7 @@ Runner.prototype = {
         this.done_flag = true;
         if (this.test_window) {
             this.test_window.close();
+            this.test_window = undefined;
         }
         this.done_callbacks.forEach(function(callback) {
             callback();
@@ -749,7 +799,7 @@ Runner.prototype = {
             this.timeout = setTimeout(this.on_timeout.bind(this),
                                       this.test_timeout * window.testharness_properties.timeout_multiplier);
         }
-        this.test_div.textContent = this.current_test.url;
+        this.display_current_test(this.current_test.url);
         this.load(this.current_test.url);
 
         this.test_start_callbacks.forEach(function(callback) {
@@ -757,10 +807,31 @@ Runner.prototype = {
         }.bind(this));
     },
 
-    load: function(path) {
-        if (this.test_window.location === null) {
-            this.open_test_window();
+    display_current_test: function(url) {
+        var match_location, index, width;
+
+        if (url === null) {
+            this.test_div.style.visibility = "hidden";
+            this.test_url.removeAttribute("href");
+            this.test_url.textContent = "";
+            return;
         }
+
+        match_location = this.manifest_iterator.match_location(url);
+        index = match_location.index;
+        width = match_location.width;
+
+        this.test_url.setAttribute("href", url);
+        this.test_url.innerHTML = url.substring(0, index) +
+            "<span class='match'>" +
+            url.substring(index, index + width) +
+            "</span>" +
+            url.substring(index + width);
+        this.test_div.style.visibility = "visible";
+    },
+
+    load: function(path) {
+        this.ensure_test_window();
         this.test_window.location.href = this.server + path;
     },
 

@@ -88,8 +88,19 @@ LossyCopyUTF16toASCII(const nsAString& aSource, nsACString& aDest)
 void
 CopyASCIItoUTF16(const nsACString& aSource, nsAString& aDest)
 {
+  if (!CopyASCIItoUTF16(aSource, aDest, mozilla::fallible)) {
+    // Note that this may wildly underestimate the allocation that failed, as
+    // we report the length of aSource as UTF-16 instead of UTF-8.
+    aDest.AllocFailed(aDest.Length() + aSource.Length());
+  }
+}
+
+bool
+CopyASCIItoUTF16(const nsACString& aSource, nsAString& aDest,
+                 const mozilla::fallible_t& aFallible)
+{
   aDest.Truncate();
-  AppendASCIItoUTF16(aSource, aDest);
+  return AppendASCIItoUTF16(aSource, aDest, aFallible);
 }
 
 void
@@ -741,7 +752,7 @@ public:
 };
 
 void
-ToUpperCase(nsCSubstring& aCString)
+ToUpperCase(nsACString& aCString)
 {
   ConvertToUpperCase converter;
   char* start;
@@ -825,7 +836,7 @@ public:
 };
 
 void
-ToLowerCase(nsCSubstring& aCString)
+ToLowerCase(nsACString& aCString)
 {
   ConvertToLowerCase converter;
   char* start;
@@ -1248,7 +1259,7 @@ StringEndsWith(const nsACString& aSource, const nsACString& aSubstring,
 
 static const char16_t empty_buffer[1] = { '\0' };
 
-const nsAFlatString&
+const nsString&
 EmptyString()
 {
   static const nsDependentString sEmpty(empty_buffer);
@@ -1256,7 +1267,7 @@ EmptyString()
   return sEmpty;
 }
 
-const nsAFlatCString&
+const nsCString&
 EmptyCString()
 {
   static const nsDependentCString sEmpty((const char*)empty_buffer);
@@ -1264,7 +1275,7 @@ EmptyCString()
   return sEmpty;
 }
 
-const nsAFlatString&
+const nsString&
 NullString()
 {
   static const nsXPIDLString sNull;
@@ -1272,7 +1283,7 @@ NullString()
   return sNull;
 }
 
-const nsAFlatCString&
+const nsCString&
 NullCString()
 {
   static const nsXPIDLCString sNull;
@@ -1281,8 +1292,8 @@ NullCString()
 }
 
 int32_t
-CompareUTF8toUTF16(const nsASingleFragmentCString& aUTF8String,
-                   const nsASingleFragmentString& aUTF16String)
+CompareUTF8toUTF16(const nsACString& aUTF8String,
+                   const nsAString& aUTF16String)
 {
   static const uint32_t NOT_ASCII = uint32_t(~0x7F);
 
@@ -1378,6 +1389,16 @@ void Gecko_AppendUTF16toCString(nsACString* aThis, const nsAString* aOther)
 void Gecko_AppendUTF8toString(nsAString* aThis, const nsACString* aOther)
 {
   AppendUTF8toUTF16(*aOther, *aThis);
+}
+
+bool Gecko_FallibleAppendUTF16toCString(nsACString* aThis, const nsAString* aOther)
+{
+  return AppendUTF16toUTF8(*aOther, *aThis, mozilla::fallible);
+}
+
+bool Gecko_FallibleAppendUTF8toString(nsAString* aThis, const nsACString* aOther)
+{
+  return AppendUTF8toUTF16(*aOther, *aThis, mozilla::fallible);
 }
 
 }

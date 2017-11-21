@@ -24,8 +24,8 @@
 
 namespace mozilla {
 
-class RestyleManager;
 class ElementRestyler;
+class GeckoRestyleManager;
 
 class RestyleTracker {
 public:
@@ -52,7 +52,7 @@ public:
                     "Shouldn't have both root flags");
   }
 
-  void Init(RestyleManager* aRestyleManager) {
+  void Init(GeckoRestyleManager* aRestyleManager) {
     mRestyleManager = aRestyleManager;
   }
 
@@ -72,7 +72,7 @@ public:
   bool AddPendingRestyle(Element* aElement, nsRestyleHint aRestyleHint,
                          nsChangeHint aMinChangeHint,
                          const RestyleHintData* aRestyleHintData = nullptr,
-                         mozilla::Maybe<Element*> aRestyleRoot =
+                         const mozilla::Maybe<Element*>& aRestyleRoot =
                            mozilla::Nothing());
 
   Element* FindClosestRestyleRoot(Element* aElement);
@@ -203,7 +203,7 @@ private:
   // from ELEMENT_POTENTIAL_RESTYLE_ROOT_FLAGS, and might also include
   // ELEMENT_IS_CONDITIONAL_RESTYLE_ANCESTOR.
   Element::FlagsType mRestyleBits;
-  RestyleManager* mRestyleManager; // Owns us
+  GeckoRestyleManager* mRestyleManager; // Owns us
   // A hashtable that maps elements to pointers to RestyleData structs.  The
   // values only make sense if the element's current document is our
   // document and it has our RestyleBit() flag set.  In particular,
@@ -259,7 +259,7 @@ RestyleTracker::AddPendingRestyleToTable(Element* aElement,
   if (!existingData) {
     RestyleData* rd =
       new RestyleData(aRestyleHint, aMinChangeHint, aRestyleHintData);
-    if (profiler_feature_active("restyle")) {
+    if (profiler_feature_active(ProfilerFeature::Restyle)) {
       rd->mBacktrace = profiler_get_backtrace();
     }
     mPendingRestyles.Put(aElement, rd);
@@ -312,7 +312,7 @@ RestyleTracker::AddPendingRestyle(Element* aElement,
                                   nsRestyleHint aRestyleHint,
                                   nsChangeHint aMinChangeHint,
                                   const RestyleHintData* aRestyleHintData,
-                                  mozilla::Maybe<Element*> aRestyleRoot)
+                                  const mozilla::Maybe<Element*>& aRestyleRoot)
 {
   bool hadRestyleLaterSiblings =
     AddPendingRestyleToTable(aElement, aRestyleHint, aMinChangeHint,
@@ -345,11 +345,12 @@ RestyleTracker::AddPendingRestyle(Element* aElement,
       // the descendant.
       RestyleData* curData;
       mPendingRestyles.Get(cur, &curData);
-      NS_ASSERTION(curData, "expected to find a RestyleData for cur");
-      // If cur has an eRestyle_ForceDescendants restyle hint, then we
-      // know that we will get to all descendants.  Don't bother
-      // recording the descendant to restyle in that case.
-      if (curData && !(curData->mRestyleHint & eRestyle_ForceDescendants)) {
+
+      // Even if cur has a ForceDescendants restyle hint, we're not guaranteed
+      // to reach aElement in the case the PresShell posts a restyle event from
+      // PostRecreateFramesFor, so we need to track it here.
+      MOZ_ASSERT(curData, "expected to find a RestyleData for cur");
+      if (curData) {
         curData->mDescendants.AppendElement(aElement);
       }
     }

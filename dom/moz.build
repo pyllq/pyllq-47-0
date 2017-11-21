@@ -4,6 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+# interfaces/*/ are annotated per directory, this is for new files
+with Files("**"):
+    BUG_COMPONENT = ("Core", "DOM")
+
+with Files("plugins/**"):
+    BUG_COMPONENT = ("Core", "Plug-ins")
+
 JAR_MANIFESTS += ['jar.mn']
 
 interfaces = [
@@ -29,6 +36,7 @@ interfaces = [
     'svg',
     'smil',
     'push',
+    'payments',
 ]
 
 DIRS += ['interfaces/' + i for i in interfaces]
@@ -36,13 +44,13 @@ DIRS += ['interfaces/' + i for i in interfaces]
 DIRS += [
     'animation',
     'base',
-    'archivereader',
     'bindings',
     'battery',
     'browser-element',
     'cache',
     'canvas',
     'commandhandler',
+    'credentialmanagement',
     'crypto',
     'encoding',
     'events',
@@ -98,6 +106,8 @@ DIRS += [
     'webbrowserpersist',
     'xhr',
     'worklet',
+    'script',
+    'payments',
 ]
 
 if CONFIG['OS_ARCH'] == 'WINNT':
@@ -113,6 +123,6 @@ TEST_DIRS += [
     'imptests',
 ]
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk2', 'gtk3', 'cocoa', 'windows', 'android'):
+if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk2', 'gtk3', 'cocoa', 'windows'):
     TEST_DIRS += ['plugins/test']
 

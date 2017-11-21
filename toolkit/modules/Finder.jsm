@@ -10,7 +10,6 @@ const { interfaces: Ci, classes: Cc, utils: Cu } = Components;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Geometry.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/Task.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "BrowserUtils",
   "resource://gre/modules/BrowserUtils.jsm");
@@ -238,9 +237,9 @@ Finder.prototype = {
     return searchString;
   },
 
-  highlight: Task.async(function* (aHighlight, aWord, aLinksOnly) {
-    yield this.highlighter.highlight(aHighlight, aWord, aLinksOnly);
-  }),
+  async highlight(aHighlight, aWord, aLinksOnly) {
+    await this.highlighter.highlight(aHighlight, aWord, aLinksOnly);
+  },
 
   getInitialSelection() {
     this._getWindow().setTimeout(() => {
@@ -358,7 +357,7 @@ Finder.prototype = {
     switch (aEvent.keyCode) {
       case Ci.nsIDOMKeyEvent.DOM_VK_RETURN:
         if (this._fastFind.foundLink) {
-          let view = this._fastFind.foundLink.ownerDocument.defaultView;
+          let view = this._fastFind.foundLink.ownerGlobal;
           this._fastFind.foundLink.dispatchEvent(new view.MouseEvent("click", {
             view,
             cancelable: true,
@@ -523,8 +522,8 @@ Finder.prototype = {
 
     for (let frame = win; frame != topWin; frame = frame.parent) {
       let rect = frame.frameElement.getBoundingClientRect();
-      let left = frame.getComputedStyle(frame.frameElement, "").borderLeftWidth;
-      let top = frame.getComputedStyle(frame.frameElement, "").borderTopWidth;
+      let left = frame.getComputedStyle(frame.frameElement).borderLeftWidth;
+      let top = frame.getComputedStyle(frame.frameElement).borderTopWidth;
       scrollX.value += rect.left + parseInt(left, 10);
       scrollY.value += rect.top + parseInt(top, 10);
     }

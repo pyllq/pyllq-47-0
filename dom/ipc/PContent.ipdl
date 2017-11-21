@@ -5,13 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include protocol PBackground;
-include protocol PBlob;
 include protocol PBrowser;
-include protocol PCompositorBridge;
+include protocol PCompositorManager;
 include protocol PContentBridge;
 include protocol PContentPermissionRequest;
 include protocol PCycleCollectWithLogs;
-include protocol PCrashReporter;
 include protocol PPSMContentDownloader;
 include protocol PExternalHelperApp;
 include protocol PHandlerService;
@@ -20,25 +18,19 @@ include protocol PHal;
 include protocol PHeapSnapshotTempFileHelper;
 include protocol PProcessHangMonitor;
 include protocol PImageBridge;
+include protocol PIPCBlobInputStream;
 include protocol PMedia;
-include protocol PMemoryReportRequest;
 include protocol PNecko;
-// FIXME This is pretty ridiculous, but we have to keep the order of the
-//       following 4 includes, or the parser is confused about PGMPContent
-//       bridging PContent and PGMP. As soon as it registers the bridge between
-//       PContent and PPluginModule it seems to think that PContent's parent and
-//       child live in the same process!
 include protocol PGMPContent;
 include protocol PGMPService;
 include protocol PPluginModule;
 include protocol PGMP;
 include protocol PPrinting;
-include protocol PSendStream;
+include protocol PChildToParentStream;
+include protocol PParentToChildStream;
 include protocol POfflineCacheUpdate;
 include protocol PRenderFrame;
-include protocol PScreenManager;
 include protocol PSpeechSynthesis;
-include protocol PStorage;
 include protocol PTestShell;
 include protocol PJavaScript;
 include protocol PRemoteSpellcheckEngine;
@@ -46,12 +38,16 @@ include protocol PWebBrowserPersistDocument;
 include protocol PWebrtcGlobal;
 include protocol PPresentation;
 include protocol PURLClassifier;
+include protocol PURLClassifierLocal;
 include protocol PVRManager;
 include protocol PVideoDecoderManager;
 include protocol PFlyWebPublishedServer;
+include protocol PProfiler;
+include protocol PScriptCache;
 include DOMTypes;
 include JavaScriptTypes;
-include InputStreamParams;
+include IPCBlob;
+include IPCStream;
 include PTabContext;
 include URIParams;
 include PluginTypes;
@@ -60,7 +56,7 @@ include PBackgroundSharedTypes;
 include PContentPermission;
 include ServiceWorkerConfiguration;
 include GraphicsMessages;
-include ProfilerTypes;
+include MemoryReportTypes;
 
 // Workaround to prevent error if PContentChild.cpp & PContentBridgeParent.cpp
 // are put into different UnifiedProtocolsXX.cpp files.
@@ -78,7 +74,7 @@ using base::ProcessId from "base/process.h";
 using struct IPC::Permission from "mozilla/net/NeckoMessageUtils.h";
 using class IPC::Principal from "mozilla/dom/PermissionMessageUtils.h";
 using struct mozilla::null_t from "ipc/IPCMessageUtils.h";
-using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
+using mozilla::a11y::IHandlerControlHolder from "mozilla/a11y/IPCTypes.h";
 using mozilla::dom::NativeThreadId from "mozilla/dom/TabMessageUtils.h";
 using mozilla::hal::ProcessPriority from "mozilla/HalTypes.h";
 using mozilla::gfx::IntSize from "mozilla/gfx/2D.h";
@@ -91,11 +87,15 @@ using class mozilla::dom::ipc::StructuredCloneData from "mozilla/dom/ipc/Structu
 using mozilla::DataStorageType from "ipc/DataStorageIPCUtils.h";
 using mozilla::OriginAttributes from "mozilla/ipc/BackgroundUtils.h";
 using struct mozilla::layers::TextureFactoryIdentifier from "mozilla/layers/CompositorTypes.h";
+using mozilla::layers::CompositorOptions from "mozilla/layers/CompositorOptions.h";
 using struct mozilla::dom::FlyWebPublishOptions from "mozilla/dom/FlyWebPublishOptionsIPCSerializer.h";
 using mozilla::Telemetry::Accumulation from "mozilla/TelemetryComms.h";
 using mozilla::Telemetry::KeyedAccumulation from "mozilla/TelemetryComms.h";
 using mozilla::Telemetry::ScalarAction from "mozilla/TelemetryComms.h";
 using mozilla::Telemetry::KeyedScalarAction from "mozilla/TelemetryComms.h";
+using mozilla::Telemetry::ChildEventData from "mozilla/TelemetryComms.h";
+using mozilla::Telemetry::DiscardedData from "mozilla/TelemetryComms.h";
+using mozilla::CrossProcessMutexHandle from "mozilla/ipc/CrossProcessMutex.h";
 
 union ChromeRegistryItem
 {
@@ -117,7 +117,6 @@ struct FontListEntry {
     int16_t   stretch;
     uint8_t   italic;
     uint8_t   index;
-    bool      isHidden;
 };
 
 // Used on Mac OS X to pass the list of font families (not faces)
@@ -152,14 +151,14 @@ struct DataStorageItem {
   DataStorageType type;
 };
 
+struct DataStorageEntry {
+  DataStorageItem[] items;
+  nsString filename;
+};
+
 struct ClipboardCapabilities {
   bool supportsSelectionClipboard;
   bool supportsFindClipboard;
-};
-
-union MaybeFileDesc {
-    FileDescriptor;
-    void_t;
 };
 
 union FileDescOrError {
@@ -176,14 +175,6 @@ struct DomainPolicyClone
     URIParams[] superWhitelist;
 };
 
-
-
-struct FrameScriptInfo
-{
-    nsString url;
-    bool runInGlobalScope;
-};
-
 struct AndroidSystemInfo
 {
     nsString device;
@@ -196,7 +187,7 @@ struct AndroidSystemInfo
 
 struct GetFilesResponseSuccess
 {
-  PBlob[] blobs;
+  IPCBlob[] blobs;
 };
 
 struct GetFilesResponseFailure
@@ -210,10 +201,26 @@ union GetFilesResponseResult
   GetFilesResponseFailure;
 };
 
+struct FileCreationSuccessResult
+{
+  IPCBlob blob;
+};
+
+struct FileCreationErrorResult
+{
+  nsresult errorCode;
+};
+
+union FileCreationResult
+{
+  FileCreationSuccessResult;
+  FileCreationErrorResult;
+};
+
 struct BlobURLRegistrationData
 {
     nsCString url;
-    PBlob blob;
+    IPCBlob blob;
     Principal principal;
 };
 
@@ -237,6 +244,28 @@ struct GfxInfoFeatureStatus
     nsCString failureId;
 };
 
+struct XPCOMInitData
+{
+    bool isOffline;
+    bool isConnected;
+    int32_t captivePortalState;
+    bool isLangRTL;
+    bool haveBidiKeyboards;
+    nsString[] dictionaries;
+    ClipboardCapabilities clipboardCaps;
+    DomainPolicyClone domainPolicy;
+    /* used on MacOSX only */
+    FontFamilyListEntry[] fontFamilies;
+    OptionalURIParams userContentSheetURL;
+    PrefSetting[] prefs;
+    GfxVarUpdate[] gfxNonDefaultVarUpdates;
+    ContentDeviceData contentDeviceData;
+    GfxInfoFeatureStatus[] gfxFeatureStatus;
+    DataStorageEntry[] dataStorage;
+    nsCString[] appLocales;
+    nsCString[] requestedLocales;
+};
+
 /**
  * The PContent protocol is a top-level protocol between the UI process
  * and a content process. There is exactly one PContentParent/PContentChild pair
@@ -244,15 +273,8 @@ struct GfxInfoFeatureStatus
  */
 nested(upto inside_cpow) sync protocol PContent
 {
-    parent spawns PPluginModule;
-
-    parent opens PGMPService;
-    child opens PBackground;
-
-    manages PBlob;
     manages PBrowser;
     manages PContentPermissionRequest;
-    manages PCrashReporter;
     manages PCycleCollectWithLogs;
     manages PPSMContentDownloader;
     manages PExternalHelperApp;
@@ -260,15 +282,14 @@ nested(upto inside_cpow) sync protocol PContent
     manages PHal;
     manages PHandlerService;
     manages PHeapSnapshotTempFileHelper;
+    manages PIPCBlobInputStream;
     manages PMedia;
-    manages PMemoryReportRequest;
     manages PNecko;
     manages POfflineCacheUpdate;
     manages PPrinting;
-    manages PSendStream;
-    manages PScreenManager;
+    manages PChildToParentStream;
+    manages PParentToChildStream;
     manages PSpeechSynthesis;
-    manages PStorage;
     manages PTestShell;
     manages PJavaScript;
     manages PRemoteSpellcheckEngine;
@@ -277,6 +298,8 @@ nested(upto inside_cpow) sync protocol PContent
     manages PPresentation;
     manages PFlyWebPublishedServer;
     manages PURLClassifier;
+    manages PURLClassifierLocal;
+    manages PScriptCache;
 
 both:
     // Depending on exactly how the new browser is being created, it might be
@@ -296,11 +319,14 @@ both:
     // type PopupIPCTabContext.  The parent checks that if the opener is a
     // browser element, the context is also for a browser element.
     //
+    // If |sameTabGroupAs| is non-zero, the new tab should go in the same
+    // TabGroup as |sameTabGroupAs|. This parameter should always be zero
+    // for PBrowser messages sent from the child to the parent.
+    //
     // Keep the last 3 attributes in sync with GetProcessAttributes!
-    async PBrowser(TabId tabId, IPCTabContext context, uint32_t chromeFlags,
+    async PBrowser(TabId tabId, TabId sameTabGroupAs,
+                   IPCTabContext context, uint32_t chromeFlags,
                    ContentParentId cpId, bool isForBrowser);
-
-    async PBlob(BlobConstructorParams params);
 
     async PFileDescriptorSet(FileDescriptor fd);
 
@@ -312,23 +338,33 @@ both:
                                      uint64_t aOuterWindowID);
 
 child:
+    async InitGMPService(Endpoint<PGMPServiceChild> service);
     async InitProcessHangMonitor(Endpoint<PProcessHangMonitorChild> hangMonitor);
+    async InitContentBridgeChild(Endpoint<PContentBridgeChild> endpoint);
+    async InitProfiler(Endpoint<PProfilerChild> aEndpoint);
 
     // Give the content process its endpoints to the compositor.
     async InitRendering(
-      Endpoint<PCompositorBridgeChild> compositor,
+      Endpoint<PCompositorManagerChild> compositor,
       Endpoint<PImageBridgeChild> imageBridge,
       Endpoint<PVRManagerChild> vr,
-      Endpoint<PVideoDecoderManagerChild> video);
+      Endpoint<PVideoDecoderManagerChild> video,
+      uint32_t[] namespaces);
 
     // Re-create the rendering stack using the given endpoints. This is sent
     // after the compositor process has crashed. The new endpoints may be to a
     // newly launched GPU process, or the compositor thread of the UI process.
     async ReinitRendering(
-      Endpoint<PCompositorBridgeChild> compositor,
+      Endpoint<PCompositorManagerChild> compositor,
       Endpoint<PImageBridgeChild> bridge,
       Endpoint<PVRManagerChild> vr,
-      Endpoint<PVideoDecoderManagerChild> video);
+      Endpoint<PVideoDecoderManagerChild> video,
+      uint32_t[] namespaces);
+
+    async AudioDefaultDeviceChange();
+
+    // Re-create the rendering stack for a device reset.
+    async ReinitRenderingForDeviceReset();
 
     /**
      * Enable system-level sandboxing features, if available.  Can
@@ -337,8 +373,10 @@ child:
      */
     async SetProcessSandbox(MaybeFileDesc aBroker);
 
-    async PMemoryReportRequest(uint32_t generation, bool anonymize,
-                               bool minimizeMemoryUsage, MaybeFileDesc DMDFile);
+    async RequestMemoryReport(uint32_t generation,
+                              bool anonymize,
+                              bool minimizeMemoryUsage,
+                              MaybeFileDesc DMDFile);
 
     /**
      * Communication between the PuppetBidiKeyboard and the actual
@@ -357,6 +395,8 @@ child:
                                 FileDescriptor ccLog);
 
     async PTestShell();
+
+    async PScriptCache(FileDescOrError cacheFile, bool wantCacheData);
 
     async RegisterChrome(ChromePackage[] packages, SubstitutionMapping[] substitutions,
                          OverrideMapping[] overrides, nsCString locale, bool reset);
@@ -385,6 +425,9 @@ child:
 
     async UpdateDictionaryList(nsString[] dictionaries);
 
+    async UpdateAppLocales(nsCString[] appLocales);
+    async UpdateRequestedLocales(nsCString[] requestedLocales);
+
     // nsIPermissionManager messages
     async AddPermission(Permission permission);
 
@@ -395,11 +438,13 @@ child:
 
     /**
      * Start accessibility engine in content process.
+     * @param aTid is the thread ID of the chrome process main thread. Only used
+     *             on Windows; pass 0 on other platforms.
      * @param aMsaaID is an a11y-specific unique id for the content process
      *                that is generated by the chrome process. Only used on
      *                Windows; pass 0 on other platforms.
      */
-    async ActivateA11y(uint32_t aMsaaID);
+    async ActivateA11y(uint32_t aMainChromeTid, uint32_t aMsaaID);
 
     /**
      * Shutdown accessibility engine in content process (if not in use).
@@ -424,6 +469,8 @@ child:
      */
     async InitBlobURLs(BlobURLRegistrationData[] registrations);
 
+    async SetXPCOMProcessAttributes(XPCOMInitData xpcomInit, StructuredCloneData initialData, LookAndFeelInt[] lookAndFeelIntCache);
+
     // Notify child that last-pb-context-exited notification was observed
     async LastPrivateDocShellDestroyed();
 
@@ -441,32 +488,11 @@ child:
      */
     async NotifyIdleObserver(uint64_t observerId, nsCString topic, nsString str);
 
-    /**
-     * Called during plugin initialization to map a plugin id to a child process
-     * id.
-     */
-    async AssociatePluginId(uint32_t aPluginId, ProcessId aProcessId);
-
-    /**
-     * This call is used by async plugin initialization to notify the
-     * PluginModuleContentParent that the PluginModuleChromeParent's async
-     * init has completed.
-     */
-    async LoadPluginResult(uint32_t aPluginId, bool aResult);
-
-    /**
-     * Control the Gecko Profiler in the child process.
-     */
-    async StartProfiler(ProfilerInitParams params);
-    async StopProfiler();
-    async PauseProfiler(bool aPause);
-
-    async GatherProfile();
-
     async InvokeDragSession(IPCDataTransfer[] transfers, uint32_t action);
 
     async EndDragSession(bool aDoneDrag, bool aUserCancelled,
-                         LayoutDeviceIntPoint aDragEndPoint);
+                         LayoutDeviceIntPoint aDragEndPoint,
+                         uint32_t aKeyModifiers);
 
     async DomainSetChanged(uint32_t aSetType, uint32_t aChangeType, OptionalURIParams aDomain);
 
@@ -533,87 +559,86 @@ child:
 
     async GetFilesResponse(nsID aID, GetFilesResponseResult aResult);
 
-    async BlobURLRegistration(nsCString aURI, PBlob aBlob,
+    async BlobURLRegistration(nsCString aURI, IPCBlob aBlob,
                               Principal aPrincipal);
 
     async BlobURLUnregistration(nsCString aURI);
 
-
     async GMPsChanged(GMPCapabilityData[] capabilities);
 
-parent:
+
+    async FileCreationResponse(nsID aID, FileCreationResult aResult);
+
     /**
-     * Tell the content process some attributes of itself.  This is
-     * among the first information queried by content processes after
-     * startup.  (The message is sync to allow the content process to
-     * control when it receives the information.)
-     *
-     * |id| is a unique ID among all subprocesses. When
-     * |isForBrowser|, we're loading <browser> or <xul:browser remote>.
-     *
-     * Keep the return values in sync with PBrowser()!
+     * Sending an activate message moves focus to the child.
      */
-    sync GetProcessAttributes()
-        returns (ContentParentId cpId, bool isForBrowser);
-    sync GetXPCOMProcessAttributes()
-        returns (bool isOffline, bool isConnected, int32_t captivePortalState,
-                 bool isLangRTL,
-                 bool haveBidiKeyboards, nsString[] dictionaries,
-                 ClipboardCapabilities clipboardCaps,
-                 DomainPolicyClone domainPolicy,
-                 StructuredCloneData initialData,
-                 FontFamilyListEntry[] fontFamilies /* used on MacOSX only */,
-                 OptionalURIParams userContentSheetURL,
-                 LookAndFeelInt[] lookAndFeelIntCache);
+    async Activate(PBrowser aTab);
+
+    async Deactivate(PBrowser aTab);
+
+    async ParentActivated(PBrowser aTab, bool aActivated);
+
+    async PParentToChildStream();
+
+    async ProvideAnonymousTemporaryFile(uint64_t aID, FileDescOrError aFD);
+
+    async SetPermissionsWithKey(nsCString aPermissionKey, Permission[] aPermissions);
+
+    async RefreshScreens(ScreenDetails[] aScreens);
+
+    async PIPCBlobInputStream(nsID aID, uint64_t aSize);
+
+    /**
+     * This call takes the set of plugins loaded in the chrome process, and
+     * sends them to the content process. However, in many cases this set will
+     * not have changed since the last SetPluginList message. To keep track of
+     * this, the chrome process increments an epoch number every time the set of
+     * plugins changes. The chrome process sends up the last epoch it observed.
+     * If the epoch last seen by the content process is the same, the content
+     * process ignores the update. Otherwise the content process updates its
+     * list and reloads its plugins.
+     **/
+    async SetPluginList(uint32_t pluginEpoch, PluginTag[] plugins, FakePluginTag[] fakePlugins);
+
+    async ShareCodeCoverageMutex(CrossProcessMutexHandle handle);
+    async DumpCodeCoverageCounters();
+    async ResetCodeCoverageCounters();
+
+parent:
+    async InitBackground(Endpoint<PBackgroundParent> aEndpoint);
 
     sync CreateChildProcess(IPCTabContext context,
                             ProcessPriority priority,
-                            TabId openerTabId)
-        returns (ContentParentId cpId, bool isForBrowser, TabId tabId);
-    sync BridgeToChildProcess(ContentParentId cpId);
+                            TabId openerTabId,
+                            TabId tabId)
+        returns (ContentParentId cpId, bool isForBrowser);
+    sync BridgeToChildProcess(ContentParentId cpId)
+        returns (Endpoint<PContentBridgeParent> endpoint);
 
     async CreateGMPService();
 
     /**
-     * This call connects the content process to a plugin process. While this
-     * call runs, a new PluginModuleParent will be created in the ContentChild
-     * via bridging. The corresponding PluginModuleChild will live in the plugin
-     * process.
+     * This call connects the content process to a plugin process. This call
+     * returns an endpoint for a new PluginModuleParent. The corresponding
+     * PluginModuleChild will be started up in the plugin process.
      */
-    sync LoadPlugin(uint32_t aPluginId) returns (nsresult aResult, uint32_t aRunID);
+    sync LoadPlugin(uint32_t aPluginId)
+        returns (nsresult aResult, uint32_t aRunID, Endpoint<PPluginModuleParent> aEndpoint);
 
     /**
      * This call is used by asynchronous plugin instantiation to notify the
      * content parent that it is now safe to initiate the plugin bridge for
-     * the specified plugin id. When this call returns, the requested bridge
-     * connection has been made.
+     * the specified plugin id. The endpoint for the content process part of the
+     * bridge is returned.
      */
-    sync ConnectPluginBridge(uint32_t aPluginId) returns (nsresult rv);
-
-    /**
-     * Return the current blocklist state for a particular plugin.
-     */
-    sync GetBlocklistState(uint32_t aPluginId) returns (uint32_t aState);
-
-    /**
-     * This call returns the set of plugins loaded in the chrome
-     * process. However, in many cases this set will not have changed since the
-     * last FindPlugins message. Consequently, the chrome process increments an
-     * epoch number every time the set of plugins changes. The content process
-     * sends up the last epoch it observed. If the epochs are the same, the
-     * chrome process returns no plugins. Otherwise it returns a complete list.
-     *
-     * |pluginEpoch| is the epoch last observed by the content
-     * process. |newPluginEpoch| is the current epoch in the chrome process. If
-     * |pluginEpoch == newPluginEpoch|, then |plugins| will be left empty.
-     */
-    sync FindPlugins(uint32_t pluginEpoch) returns (nsresult aResult, PluginTag[] plugins, uint32_t newPluginEpoch);
+    sync ConnectPluginBridge(uint32_t aPluginId)
+        returns (nsresult rv, Endpoint<PPluginModuleParent> aEndpoint);
 
     async PJavaScript();
 
     async PRemoteSpellcheckEngine();
 
-    sync PCrashReporter(NativeThreadId tid, uint32_t processType);
+    async InitCrashReporter(Shmem shmem, NativeThreadId tid);
 
     /**
      * Is this token compatible with the provided version?
@@ -628,9 +653,10 @@ parent:
      * Return whether the provided KeyHandle belongs to this Token
      *
      * |keyHandle| Key Handle to evaluate.
+     * |application| The FIDO Application data that is associated with this key.
      * Returns |True| if the Key Handle is ours.
      */
-    sync NSSU2FTokenIsRegistered(uint8_t[] keyHandle)
+    sync NSSU2FTokenIsRegistered(uint8_t[] keyHandle, uint8_t[] application)
         returns (bool isValidKeyHandle);
 
     /**
@@ -659,10 +685,12 @@ parent:
                          uint8_t[] keyHandle)
         returns (uint8_t[] signature);
 
-    sync IsSecureURI(uint32_t type, URIParams uri, uint32_t flags)
+    sync IsSecureURI(uint32_t aType, URIParams aURI, uint32_t aFlags,
+                     OriginAttributes aOriginAttributes)
         returns (bool isSecureURI);
 
-    async AccumulateMixedContentHSTS(URIParams uri, bool active, bool hasHSTSPriming);
+    async AccumulateMixedContentHSTS(URIParams aURI, bool aActive, bool aHasHSTSPriming,
+                                     OriginAttributes aOriginAttributes);
 
     nested(inside_cpow) async PHal();
 
@@ -672,16 +700,9 @@ parent:
 
     async PPrinting();
 
-    async PSendStream();
-
-    nested(inside_sync) sync PScreenManager()
-        returns (uint32_t numberOfScreens,
-                 float systemDefaultScale,
-                 bool success);
+    async PChildToParentStream();
 
     async PSpeechSynthesis();
-
-    nested(inside_cpow) async PStorage();
 
     async PMedia();
 
@@ -695,6 +716,8 @@ parent:
         returns (bool success);
     sync ClassifyLocal(URIParams uri, nsCString tables)
         returns (nsresult rv, nsCString[] results);
+    // The async version of ClassifyLocal.
+    async PURLClassifierLocal(URIParams uri, nsCString tables);
 
     // Services remoting
 
@@ -706,13 +729,9 @@ parent:
     async ExtProtocolChannelConnectParent(uint32_t registrarId);
 
     // PrefService message
-    sync ReadPrefsArray() returns (PrefSetting[] prefs) verify;
     sync GetGfxVars() returns (GfxVarUpdate[] vars);
 
     sync ReadFontList() returns (FontListEntry[] retValue);
-
-    sync ReadDataStorageArray(nsString aFilename)
-      returns (DataStorageItem[] retValue);
 
     sync SyncMessage(nsString aMessage, ClonedMessageData aData,
                      CpowEntry[] aCpows, Principal aPrincipal)
@@ -754,9 +773,6 @@ parent:
                       uint32_t lineNumber, uint32_t colNumber, uint32_t flags,
                       nsCString category);
 
-    // nsIPermissionManager messages
-    sync ReadPermissions() returns (Permission[] permissions);
-
     // Places the items within dataTransfer on the clipboard.
     async SetClipboard(IPCDataTransfer aDataTransfer,
                        bool aIsPrivateData,
@@ -787,14 +803,13 @@ parent:
     // Notify the parent of the presence or absence of private docshells
     async PrivateDocShellsExist(bool aExist);
 
-    async AudioChannelServiceStatus(bool aActiveTelephonyChannel,
-                                    bool aContentOrNormalChannel,
-                                    bool aAnyActiveChannel);
+    // Tell the parent that the child has gone idle for the first time.
+    async FirstIdle();
 
-    async AudioChannelChangeDefVolChannel(int32_t aChannel, bool aHidden);
+    async DeviceReset();
 
     sync KeywordToURI(nsCString keyword)
-        returns (nsString providerName, OptionalInputStreamParams postData, OptionalURIParams uri);
+        returns (nsString providerName, OptionalIPCStream postData, OptionalURIParams uri);
 
     sync NotifyKeywordSearchLoading(nsString providerName, nsString keyword);
 
@@ -803,7 +818,7 @@ parent:
     // Tell the compositor to allocate a layer tree id for nested remote mozbrowsers.
     sync AllocateLayerTreeId(ContentParentId cpId, TabId tabId)
         returns (uint64_t id);
-    async DeallocateLayerTreeId(uint64_t id);
+    async DeallocateLayerTreeId(ContentParentId cpId, uint64_t id);
 
     /**
      * Notifies the parent about a recording device is starting or shutdown.
@@ -816,8 +831,6 @@ parent:
                                 nsString pageURL,
                                 bool isAudio,
                                 bool isVideo);
-
-    sync GetGfxInfoFeatureStatus() returns (GfxInfoFeatureStatus[] features);
 
     // Graphics errors
     async GraphicsError(nsCString aError);
@@ -842,7 +855,7 @@ parent:
      */
     async BackUpXResources(FileDescriptor aXSocketFd);
 
-    sync OpenAnonymousTemporaryFile() returns (FileDescOrError aFD);
+    async RequestAnonymousTemporaryFile(uint64_t aID);
 
     /**
      * Keygen requires us to call it after a <keygen> element is parsed and
@@ -861,15 +874,10 @@ parent:
     sync KeygenProvideContent()
         returns (nsString aAttribute, nsString[] aContent);
 
-    /**
-     * Tell the chrome process there is an creation of PBrowser.
-     * return a system-wise unique Id.
-     */
-    sync AllocateTabId(TabId openerTabId, IPCTabContext context, ContentParentId cpId)
-        returns (TabId tabId);
-    async DeallocateTabId(TabId tabId,
-                          ContentParentId cpId,
-                          bool aMarkedDestroying);
+    /** Clear RemoteFrameInfo of the given tab id. */
+    async UnregisterRemoteFrame(TabId tabId,
+                                ContentParentId cpId,
+                                bool aMarkedDestroying);
 
     /**
      * Tell the chrome process there is a destruction of PBrowser(Tab)
@@ -938,7 +946,7 @@ parent:
     async PContentPermissionRequest(PermissionRequest[] aRequests, Principal aPrincipal,
                                     TabId tabId);
 
-    async Profile(nsCString aProfile);
+    async ShutdownProfile(nsCString aProfile);
 
     /**
      * Request graphics initialization information from the parent.
@@ -946,23 +954,18 @@ parent:
     sync GetGraphicsDeviceInitData()
         returns (ContentDeviceData aData);
 
-    sync CreateWindow(nullable PBrowser aThisTab,
-                      PBrowser aNewTab,
-                      PRenderFrame aRenderFrame,
-                      uint32_t aChromeFlags,
-                      bool aCalledFromJS,
-                      bool aPositionSpecified,
-                      bool aSizeSpecified,
-                      nsCString aFeatures,
-                      nsCString aBaseURI,
-                      OriginAttributes aOpenerOriginAttributes,
-                      float aFullZoom)
-      returns (nsresult rv,
-               bool windowOpened,
-               FrameScriptInfo[] frameScripts,
-               nsCString urlToLoad,
-               TextureFactoryIdentifier textureFactoryIdentifier,
-               uint64_t layersId);
+    async CreateWindow(nullable PBrowser aThisTab,
+                       PBrowser aNewTab,
+                       PRenderFrame aRenderFrame,
+                       uint32_t aChromeFlags,
+                       bool aCalledFromJS,
+                       bool aPositionSpecified,
+                       bool aSizeSpecified,
+                       nsCString aFeatures,
+                       nsCString aBaseURI,
+                       float aFullZoom,
+                       Principal aTriggeringPrincipal)
+        returns (CreatedWindowInfo window);
 
     async CreateWindowInDifferentProcess(
       PBrowser aThisTab,
@@ -973,8 +976,9 @@ parent:
       URIParams aURIToLoad,
       nsCString aFeatures,
       nsCString aBaseURI,
-      OriginAttributes aOpenerOriginAttributes,
-      float aFullZoom);
+      float aFullZoom,
+      nsString aName,
+      Principal aTriggeringPrincipal);
 
     sync GetAndroidSystemInfo()
         returns (AndroidSystemInfo info);
@@ -1023,7 +1027,12 @@ parent:
      async GetFilesRequest(nsID aID, nsString aDirectory, bool aRecursiveFlag);
      async DeleteGetFilesRequest(nsID aID);
 
-     async StoreAndBroadcastBlobURLRegistration(nsCString url, PBlob blob,
+     async FileCreationRequest(nsID aID, nsString aFullPath, nsString aType,
+                               nsString aName, bool lastModifiedPassed,
+                               int64_t lastModified, bool aExistenceCheck,
+                               bool aIsFromNsIFile);
+
+     async StoreAndBroadcastBlobURLRegistration(nsCString url, IPCBlob blob,
                                                 Principal principal);
 
      async UnstoreAndBroadcastBlobURLUnregistration(nsCString url);
@@ -1031,13 +1040,21 @@ parent:
     /**
      * Messages for communicating child Telemetry to the parent process
      */
-    async AccumulateChildHistogram(Accumulation[] accumulations);
-    async AccumulateChildKeyedHistogram(KeyedAccumulation[] accumulations);
+    async AccumulateChildHistograms(Accumulation[] accumulations);
+    async AccumulateChildKeyedHistograms(KeyedAccumulation[] accumulations);
     async UpdateChildScalars(ScalarAction[] updates);
     async UpdateChildKeyedScalars(KeyedScalarAction[] updates);
+    async RecordChildEvents(ChildEventData[] events);
+    async RecordDiscardedData(DiscardedData data);
 
     sync GetA11yContentId() returns (uint32_t aContentId);
+    async A11yHandlerControl(uint32_t aPid,
+                             IHandlerControlHolder aHandlerControl);
 
+    async AddMemoryReport(MemoryReport aReport);
+    async FinishMemoryReport(uint32_t aGeneration);
+
+    async MaybeReloadPlugins();
 both:
      async AsyncMessage(nsString aMessage, CpowEntry[] aCpows,
                         Principal aPrincipal, ClonedMessageData aData);

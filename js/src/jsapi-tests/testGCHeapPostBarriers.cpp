@@ -12,6 +12,35 @@
 #include "jsapi-tests/tests.h"
 #include "vm/Runtime.h"
 
+#include "jscntxtinlines.h"
+
+// A heap-allocated structure containing one of our barriered pointer wrappers
+// to test.
+template <typename W>
+struct TestStruct
+{
+    W wrapper;
+};
+
+// A specialized version for GCPtr that adds a zone() method.
+template <typename T>
+struct TestStruct<js::GCPtr<T>>
+{
+    js::GCPtr<T> wrapper;
+
+    void trace(JSTracer* trc) {
+        TraceNullableEdge(trc, &wrapper, "TestStruct::wrapper");
+    }
+};
+
+// Give the GCPtr version GCManagedDeletePolicy as required.
+namespace JS {
+template <typename T>
+struct DeletePolicy<TestStruct<js::GCPtr<T>>>
+    : public js::GCManagedDeletePolicy<TestStruct<js::GCPtr<T>>>
+{};
+} // namespace JS
+
 template <typename T>
 static T* CreateGCThing(JSContext* cx)
 {
@@ -102,25 +131,30 @@ TestHeapPostBarrierUpdate()
     CHECK(js::gc::IsInsideNursery(initialObj));
     uintptr_t initialObjAsInt = uintptr_t(initialObj);
 
-    W* ptr = nullptr;
+    TestStruct<W>* ptr = nullptr;
 
     {
-        auto heapPtr = cx->make_unique<W>();
-        CHECK(heapPtr);
+        auto testStruct = cx->make_unique<TestStruct<W>>();
+        CHECK(testStruct);
 
-        W& wrapper = *heapPtr;
+        W& wrapper = testStruct->wrapper;
         CHECK(wrapper.get() == nullptr);
         wrapper = initialObj;
         CHECK(wrapper == initialObj);
 
-        ptr = heapPtr.release();
+        ptr = testStruct.release();
     }
 
     cx->minorGC(JS::gcreason::API);
 
-    CHECK(uintptr_t(ptr->get()) != initialObjAsInt);
-    CHECK(!js::gc::IsInsideNursery(ptr->get()));
-    CHECK(CanAccessObject(ptr->get()));
+    W& wrapper = ptr->wrapper;
+    CHECK(uintptr_t(wrapper.get()) != initialObjAsInt);
+    CHECK(!js::gc::IsInsideNursery(wrapper.get()));
+    CHECK(CanAccessObject(wrapper.get()));
+
+    JS::DeletePolicy<TestStruct<W>>()(ptr);
+
+    cx->minorGC(JS::gcreason::API);
 
     return true;
 }
@@ -137,13 +171,15 @@ TestHeapPostBarrierInitFailure()
     CHECK(js::gc::IsInsideNursery(initialObj));
 
     {
-        auto heapPtr = cx->make_unique<W>();
-        CHECK(heapPtr);
+        auto testStruct = cx->make_unique<TestStruct<W>>();
+        CHECK(testStruct);
 
-        W& wrapper = *heapPtr;
+        W& wrapper = testStruct->wrapper;
         CHECK(wrapper.get() == nullptr);
         wrapper = initialObj;
         CHECK(wrapper == initialObj);
+
+        // testStruct deleted here, as if we left this block due to an error.
     }
 
     cx->minorGC(JS::gcreason::API);
@@ -155,11 +191,15 @@ END_TEST(testGCHeapPostBarriers)
 
 BEGIN_TEST(testUnbarrieredEquality)
 {
+#ifdef JS_GC_ZEAL
+    AutoLeaveZeal nozeal(cx);
+#endif /* JS_GC_ZEAL */
+
     // Use ArrayBuffers because they have finalizers, which allows using them
     // in ObjectPtr without awkward conversations about nursery allocatability.
     JS::RootedObject robj(cx, JS_NewArrayBuffer(cx, 20));
     JS::RootedObject robj2(cx, JS_NewArrayBuffer(cx, 30));
-    cx->gc.evictNursery(); // Need tenured objects
+    cx->runtime()->gc.evictNursery(); // Need tenured objects
 
     // Need some bare pointers to compare against.
     JSObject* obj = robj;
@@ -172,10 +212,10 @@ BEGIN_TEST(testUnbarrieredEquality)
     using namespace js::gc;
     TenuredCell* cell = &obj->asTenured();
     TenuredCell* cell2 = &obj2->asTenured();
-    cell->markIfUnmarked(GRAY);
-    cell2->markIfUnmarked(GRAY);
-    MOZ_ASSERT(cell->isMarked(GRAY));
-    MOZ_ASSERT(cell2->isMarked(GRAY));
+    cell->markIfUnmarked(MarkColor::Gray);
+    cell2->markIfUnmarked(MarkColor::Gray);
+    MOZ_ASSERT(cell->isMarkedGray());
+    MOZ_ASSERT(cell2->isMarkedGray());
 
     {
         JS::Heap<JSObject*> heap(obj);
@@ -206,8 +246,8 @@ BEGIN_TEST(testUnbarrieredEquality)
         JS::Heap<JSObject*> heap2(obj2);
         heap.get();
         heap2.get();
-        CHECK(cell->isMarked(BLACK));
-        CHECK(cell2->isMarked(BLACK));
+        CHECK(cell->isMarkedBlack());
+        CHECK(cell2->isMarkedBlack());
     }
 
     return true;
@@ -224,35 +264,35 @@ TestWrapper(ObjectT obj, ObjectT obj2, WrapperT& wrapper, WrapperT& wrapper2)
 
     int x = 0;
 
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += obj == obj2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += obj == wrapper2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += wrapper == obj2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += wrapper == wrapper2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
 
     CHECK(x == 0);
 
     x += obj != obj2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += obj != wrapper2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += wrapper != obj2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
     x += wrapper != wrapper2;
-    CHECK(cell.isMarked(GRAY));
-    CHECK(cell2.isMarked(GRAY));
+    CHECK(cell.isMarkedGray());
+    CHECK(cell2.isMarkedGray());
 
     CHECK(x == 4);
 

@@ -37,8 +37,6 @@ using namespace mozilla::widget;
 char16_t *nsFilePicker::mLastUsedUnicodeDirectory;
 char nsFilePicker::mLastUsedDirectory[MAX_PATH+1] = { 0 };
 
-static const wchar_t kDialogPtrProp[] = L"DialogPtrProperty";
-static const DWORD kDialogTimerID = 9999;
 static const unsigned long kDialogTimerTimeout = 300;
 
 #define MAX_EXTENSION_LENGTH 10
@@ -144,8 +142,10 @@ class AutoTimerCallbackCancel
 {
 public:
   AutoTimerCallbackCancel(nsFilePicker* aTarget,
-                          nsTimerCallbackFunc aCallbackFunc) {
-    Init(aTarget, aCallbackFunc);
+                          nsTimerCallbackFunc aCallbackFunc,
+                          const char* aName)
+  {
+    Init(aTarget, aCallbackFunc, aName);
   }
 
   ~AutoTimerCallbackCancel() {
@@ -156,19 +156,21 @@ public:
 
 private:
   void Init(nsFilePicker* aTarget,
-            nsTimerCallbackFunc aCallbackFunc) {
+            nsTimerCallbackFunc aCallbackFunc,
+            const char* aName)
+  {
     mPickerCallbackTimer = do_CreateInstance("@mozilla.org/timer;1");
     if (!mPickerCallbackTimer) {
       NS_WARNING("do_CreateInstance for timer failed??");
       return;
     }
-    mPickerCallbackTimer->InitWithFuncCallback(aCallbackFunc,
-                                               aTarget,
-                                               kDialogTimerTimeout,
-                                               nsITimer::TYPE_REPEATING_SLACK);
+    mPickerCallbackTimer->InitWithNamedFuncCallback(aCallbackFunc,
+                                                    aTarget,
+                                                    kDialogTimerTimeout,
+                                                    nsITimer::TYPE_REPEATING_SLACK,
+                                                    aName);
   }
   nsCOMPtr<nsITimer> mPickerCallbackTimer;
-    
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -373,9 +375,9 @@ nsFilePicker::ShowFolderPicker(const nsString& aInitialDir)
   if (!aInitialDir.IsEmpty()) {
     RefPtr<IShellItem> folder;
     if (SUCCEEDED(
-          WinUtils::SHCreateItemFromParsingName(aInitialDir.get(), nullptr,
-                                                IID_IShellItem,
-                                                getter_AddRefs(folder)))) {
+          SHCreateItemFromParsingName(aInitialDir.get(), nullptr,
+                                      IID_IShellItem,
+                                      getter_AddRefs(folder)))) {
       dialog->SetFolder(folder);
     }
   }
@@ -426,7 +428,7 @@ nsFilePicker::ShowFolderPicker(const nsString& aInitialDir)
 bool
 nsFilePicker::ShowFilePicker(const nsString& aInitialDir)
 {
-  PROFILER_LABEL_FUNC(js::ProfileEntry::Category::OTHER);
+  AUTO_PROFILER_LABEL("nsFilePicker::ShowFilePicker", OTHER);
 
   if (!IsWin8OrLater()) {
     // Some Windows 7 users are experiencing a race condition when some dlls
@@ -501,22 +503,20 @@ nsFilePicker::ShowFilePicker(const nsString& aInitialDir)
     dialog->SetFileName(mDefaultFilename.get());
   }
   
-  NS_NAMED_LITERAL_STRING(htmExt, "html");
-
   // default extension to append to new files
   if (!mDefaultExtension.IsEmpty()) {
     dialog->SetDefaultExtension(mDefaultExtension.get());
   } else if (IsDefaultPathHtml()) {
-    dialog->SetDefaultExtension(htmExt.get());
+    dialog->SetDefaultExtension(L"html");
   }
 
   // initial location
   if (!aInitialDir.IsEmpty()) {
     RefPtr<IShellItem> folder;
     if (SUCCEEDED(
-          WinUtils::SHCreateItemFromParsingName(aInitialDir.get(), nullptr,
-                                                IID_IShellItem,
-                                                getter_AddRefs(folder)))) {
+          SHCreateItemFromParsingName(aInitialDir.get(), nullptr,
+                                      IID_IShellItem,
+                                      getter_AddRefs(folder)))) {
       dialog->SetFolder(folder);
     }
   }
@@ -532,7 +532,8 @@ nsFilePicker::ShowFilePicker(const nsString& aInitialDir)
   {
     AutoDestroyTmpWindow adtw((HWND)(mParentWidget.get() ?
       mParentWidget->GetNativeData(NS_NATIVE_TMP_WINDOW) : nullptr));
-    AutoTimerCallbackCancel atcc(this, PickerCallbackTimerFunc);
+    AutoTimerCallbackCancel atcc(this, PickerCallbackTimerFunc,
+                                 "nsFilePicker::PickerCallbackTimerFunc");
     AutoWidgetPickerState awps(mParentWidget);
 
     if (FAILED(dialog->Show(adtw.get()))) {

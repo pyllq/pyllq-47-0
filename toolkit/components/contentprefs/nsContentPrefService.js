@@ -24,10 +24,10 @@ function ContentPrefService() {
   // was due to a temporary condition (like being out of disk space).
   this._dbInit();
 
-  this._observerSvc.addObserver(this, "last-pb-context-exited", false);
+  this._observerSvc.addObserver(this, "last-pb-context-exited");
 
   // Observe shutdown so we can shut down the database connection.
-  this._observerSvc.addObserver(this, "xpcom-shutdown", false);
+  this._observerSvc.addObserver(this, "xpcom-shutdown");
 }
 
 Cu.import("resource://gre/modules/ContentPrefStore.jsm");
@@ -173,7 +173,9 @@ ContentPrefService.prototype = {
     if (this._contentPrefService2)
       this._contentPrefService2.destroy();
 
-    this._dbConnection.asyncClose();
+    this._dbConnection.asyncClose(() => {
+      Services.obs.notifyObservers(null, "content-prefs-db-closed");
+    });
 
     // Delete references to XPCOM components to make sure we don't leak them
     // (although we haven't observed leakage in tests).  Also delete references
@@ -574,7 +576,7 @@ ContentPrefService.prototype = {
 
   _scheduleCallback(func) {
     let tm = Cc["@mozilla.org/thread-manager;1"].getService(Ci.nsIThreadManager);
-    tm.mainThread.dispatch(func, Ci.nsIThread.DISPATCH_NORMAL);
+    tm.dispatchToMainThread(func);
   },
 
   _selectPref: function ContentPrefService__selectPref(aGroup, aSetting, aCallback) {

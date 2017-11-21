@@ -84,13 +84,6 @@ public:
                                            uint32_t aLength) override;
 
     /**
-     * Check whether format is supported on a platform or not (if unclear,
-     * returns true).
-     */
-    virtual bool IsFontFormatSupported(nsIURI *aFontURI,
-                                         uint32_t aFormatFlags) override;
-
-    /**
      * Calls XFlush if xrender is enabled.
      */
     virtual void FlushContentDrawing() override;
@@ -103,8 +96,8 @@ public:
     static GdkDrawable *GetGdkDrawable(cairo_surface_t *target);
 #endif
 
-    static int32_t GetDPI();
-    static double  GetDPIScale();
+    static int32_t GetFontScaleDPI();
+    static double  GetFontScaleFactor();
 
 #ifdef MOZ_X11
     virtual void GetAzureBackendInfo(mozilla::widget::InfoObject &aObj) override {
@@ -112,8 +105,6 @@ public:
       aObj.DefineProperty("CairoUseXRender", mozilla::gfx::gfxVars::UseXRender());
     }
 #endif
-
-    static bool UseFcFontList() { return sUseFcFontList; }
 
     bool UseImageOffscreenSurfaces();
 
@@ -158,10 +149,6 @@ private:
 #ifdef MOZ_X11
     Display* mCompositorDisplay;
 #endif
-
-    // xxx - this will be removed once the new fontconfig platform font list
-    // replaces gfxPangoFontGroup
-    static bool sUseFcFontList;
 };
 
 #endif /* GFX_PLATFORM_GTK_H */

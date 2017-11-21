@@ -14,9 +14,16 @@ UNIFIED_SOURCES += [
     'nsPopupWindowManager.cpp',
 ]
 
+LOCAL_INCLUDES += [
+    '/caps',
+]
+
 include('/ipc/chromium/chromium-config.mozbuild')
 
 FINAL_LIBRARY = 'xul'
 
 if CONFIG['GNU_CXX']:
     CXXFLAGS += ['-Wno-error=shadow']
+
+with Files('**'):
+    BUG_COMPONENT = ('Core', 'Networking: Cookies')

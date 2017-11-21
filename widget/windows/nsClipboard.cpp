@@ -36,15 +36,39 @@
 #include "nsIOutputStream.h"
 #include "nsEscape.h"
 #include "nsIObserverService.h"
+#include "HeadlessClipboard.h"
+#include "mozilla/ClearOnShutdown.h"
 
 using mozilla::LogLevel;
 
-PRLogModuleInfo* gWin32ClipboardLog = nullptr;
+static mozilla::LazyLogModule gWin32ClipboardLog("nsClipboard");
 
 // oddly, this isn't in the MSVC headers anywhere.
 UINT nsClipboard::CF_HTML = ::RegisterClipboardFormatW(L"HTML Format");
 UINT nsClipboard::CF_CUSTOMTYPES = ::RegisterClipboardFormatW(L"application/x-moz-custom-clipdata");
 
+namespace mozilla {
+namespace clipboard {
+StaticRefPtr<nsIClipboard> sInstance;
+}
+}
+/* static */ already_AddRefed<nsIClipboard>
+nsClipboard::GetInstance()
+{
+  using namespace mozilla::clipboard;
+
+  if (!sInstance) {
+    if (gfxPlatform::IsHeadless()) {
+      sInstance = new widget::HeadlessClipboard();
+    } else {
+      sInstance = new nsClipboard();
+    }
+    ClearOnShutdown(&sInstance);
+  }
+
+  RefPtr<nsIClipboard> service = sInstance.get();
+  return service.forget();
+}
 
 //-------------------------------------------------------------------------
 //
@@ -53,10 +77,6 @@ UINT nsClipboard::CF_CUSTOMTYPES = ::RegisterClipboardFormatW(L"application/x-mo
 //-------------------------------------------------------------------------
 nsClipboard::nsClipboard() : nsBaseClipboard()
 {
-  if (!gWin32ClipboardLog) {
-    gWin32ClipboardLog = PR_NewLogModule("nsClipboard");
-  }
-
   mIgnoreEmptyNotification = false;
   mWindow         = nullptr;
 
@@ -65,7 +85,7 @@ nsClipboard::nsClipboard() : nsBaseClipboard()
   nsCOMPtr<nsIObserverService> observerService =
     do_GetService("@mozilla.org/observer-service;1");
   if (observerService) {
-    observerService->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, PR_FALSE);
+    observerService->AddObserver(this, NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID, PR_FALSE);
   }
 }
 

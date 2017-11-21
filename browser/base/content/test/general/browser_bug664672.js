@@ -1,11 +1,9 @@
 function test() {
   waitForExplicitFinish();
 
-  var tab = gBrowser.addTab();
+  var tab = BrowserTestUtils.addTab(gBrowser);
 
   tab.addEventListener("TabClose", function() {
-    tab.removeEventListener("TabClose", arguments.callee);
-
     ok(tab.linkedBrowser, "linkedBrowser should still exist during the TabClose event");
 
     executeSoon(function() {
@@ -13,7 +11,7 @@ function test() {
 
       finish();
     });
-  });
+  }, {once: true});
 
   gBrowser.removeTab(tab);
 }

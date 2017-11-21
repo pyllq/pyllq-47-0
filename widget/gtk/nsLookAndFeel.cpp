@@ -18,7 +18,7 @@
 
 #include <fontconfig/fontconfig.h>
 #include "gfxPlatformGtk.h"
-#include "nsScreenGtk.h"
+#include "ScreenHelperGTK.h"
 
 #include "gtkdrawing.h"
 #include "nsStyleConsts.h"
@@ -49,9 +49,15 @@ nsLookAndFeel::nsLookAndFeel()
       mStyle(nullptr),
 #endif
       mDefaultFontCached(false), mButtonFontCached(false),
-      mFieldFontCached(false), mMenuFontCached(false)
+      mFieldFontCached(false), mMenuFontCached(false),
+      mInitialized(false)
 {
-    Init();    
+}
+
+void
+nsLookAndFeel::NativeInit()
+{
+    EnsureInit();
 }
 
 nsLookAndFeel::~nsLookAndFeel()
@@ -223,6 +229,8 @@ GetBorderColors(GtkStyleContext* aContext,
 nsresult
 nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aColor)
 {
+    EnsureInit();
+
 #if (MOZ_WIDGET_GTK == 3)
     GdkRGBA gdk_color;
 #endif
@@ -674,6 +682,11 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         return res;
     res = NS_OK;
 
+    // We use delayed initialization by EnsureInit() here
+    // to make sure mozilla::Preferences is available (Bug 115807).
+    // eIntID_UseAccessibilityTheme is requested before user preferences
+    // are read, and so EnsureInit(), which depends on preference values,
+    // is deliberately delayed until required.
     switch (aID) {
     case eIntID_CaretBlinkTime:
         {
@@ -777,11 +790,11 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
             aResult = threshold;
         }
         break;
-    case eIntID_ScrollArrowStyle:
-        moz_gtk_init();
-        aResult =
-            ConvertGTKStepperStyleToMozillaScrollArrowStyle(moz_gtk_get_scrollbar_widget());
+    case eIntID_ScrollArrowStyle: {
+        GtkWidget* scrollbar = GetWidget(MOZ_GTK_SCROLLBAR_HORIZONTAL);
+        aResult = ConvertGTKStepperStyleToMozillaScrollArrowStyle(scrollbar);
         break;
+    }
     case eIntID_ScrollSliderStyle:
         aResult = eScrollThumbStyle_Proportional;
         break;
@@ -836,6 +849,7 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         aResult = NS_STYLE_TEXT_DECORATION_STYLE_WAVY;
         break;
     case eIntID_MenuBarDrag:
+        EnsureInit();
         aResult = sMenuSupportsDrag;
         break;
     case eIntID_ScrollbarButtonAutoRepeatBehavior:
@@ -876,6 +890,7 @@ nsLookAndFeel::GetFloatImpl(FloatID aID, float &aResult)
         aResult = 1.0f;
         break;
     case eFloatID_CaretAspectRatio:
+        EnsureInit();
         aResult = sCaretRatio;
         break;
     default:
@@ -919,13 +934,13 @@ GetSystemFontInfo(GtkWidget *aWidget,
 
     if (!pango_font_description_get_size_is_absolute(desc)) {
         // |size| is in pango-points, so convert to pixels.
-        size *= float(gfxPlatformGtk::GetDPI()) / POINTS_PER_INCH_FLOAT;
+        size *= float(gfxPlatformGtk::GetFontScaleDPI()) / POINTS_PER_INCH_FLOAT;
     }
 
     // Scale fonts up on HiDPI displays.
     // This would be done automatically with cairo, but we manually manage
     // the display scale for platform consistency.
-    size *= nsScreenGtk::GetGtkMonitorScaleFactor();
+    size *= ScreenHelperGTK::GetGTKMonitorScaleFactor();
 
     // |size| is now pixels
 
@@ -1056,10 +1071,17 @@ nsLookAndFeel::GetFontImpl(FontID aID, nsString& aFontName,
 }
 
 void
-nsLookAndFeel::Init()
+nsLookAndFeel::EnsureInit()
 {
     GdkColor colorValue;
     GdkColor *colorValuePtr;
+
+    if (mInitialized)
+        return;
+    mInitialized = true;
+
+    // gtk does non threadsafe refcounting
+    MOZ_ASSERT(NS_IsMainThread());
 
 #if (MOZ_WIDGET_GTK == 2)
     NS_ASSERTION(!mStyle, "already initialized");
@@ -1133,16 +1155,40 @@ nsLookAndFeel::Init()
     // with wrong color theme, see Bug 972382
     GtkSettings *settings = gtk_settings_get_for_screen(gdk_screen_get_default());
 
-    // Disable dark theme because it interacts poorly with widget styling in
-    // web content (see bug 1216658).
+    // Dark themes interacts poorly with widget styling (see bug 1216658).
+    // We disable dark themes by default for all processes (chrome, web content)
+    // but allow user to overide it by prefs.
+    const gchar* dark_setting = "gtk-application-prefer-dark-theme";
+    gboolean darkThemeDefault;
+    g_object_get(settings, dark_setting, &darkThemeDefault, nullptr);
+
     // To avoid triggering reload of theme settings unnecessarily, only set the
     // setting when necessary.
-    const gchar* dark_setting = "gtk-application-prefer-dark-theme";
-    gboolean dark;
-    g_object_get(settings, dark_setting, &dark, nullptr);
+    if (darkThemeDefault) {
+        bool allowDarkTheme;
+        if (XRE_IsContentProcess()) {
+            allowDarkTheme =
+                mozilla::Preferences::GetBool("widget.content.allow-gtk-dark-theme",
+                                              false);
+        } else {
+            allowDarkTheme = (PR_GetEnv("MOZ_ALLOW_GTK_DARK_THEME") != nullptr) ||
+                mozilla::Preferences::GetBool("widget.chrome.allow-gtk-dark-theme",
+                                              false);
+        }
+        if (!allowDarkTheme) {
+            g_object_set(settings, dark_setting, FALSE, nullptr);
+        }
+    }
 
-    if (dark && !PR_GetEnv("MOZ_ALLOW_GTK_DARK_THEME")) {
-        g_object_set(settings, dark_setting, FALSE, nullptr);
+    // Allow content Gtk theme override by pref, it's useful when styled Gtk+
+    // widgets break web content.
+    if (XRE_IsContentProcess()) {
+        nsAutoCString contentThemeName;
+        mozilla::Preferences::GetCString("widget.content.gtk-theme-override",
+                                         contentThemeName);
+        if (!contentThemeName.IsEmpty()) {
+            g_object_set(settings, "gtk-theme-name", contentThemeName.get(), nullptr);
+        }
     }
 
     // Scrollbar colors
@@ -1438,6 +1484,7 @@ nsLookAndFeel::Init()
 char16_t
 nsLookAndFeel::GetPasswordCharacterImpl()
 {
+    EnsureInit();
     return sInvisibleCharacter;
 }
 
@@ -1445,6 +1492,7 @@ void
 nsLookAndFeel::RefreshImpl()
 {
     nsXPLookAndFeel::RefreshImpl();
+    moz_gtk_refresh();
 
     mDefaultFontCached = false;
     mButtonFontCached = false;
@@ -1456,7 +1504,7 @@ nsLookAndFeel::RefreshImpl()
     mStyle = nullptr;
 #endif
 
-    Init();
+    mInitialized = false;
 }
 
 bool

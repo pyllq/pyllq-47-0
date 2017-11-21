@@ -39,7 +39,7 @@ NS_NewFileControlFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(nsFileControlFrame)
 
 nsFileControlFrame::nsFileControlFrame(nsStyleContext* aContext)
-  : nsBlockFrame(aContext)
+  : nsBlockFrame(aContext, kClassID)
 {
   AddStateBits(NS_BLOCK_FLOAT_MGR);
 }
@@ -110,15 +110,15 @@ MakeAnonButton(nsIDocument* aDoc, const char* labelKey,
     HTMLButtonElement::FromContentOrNull(button);
 
   if (!aAccessKey.IsEmpty()) {
-    buttonElement->SetAccessKey(aAccessKey);
+    IgnoredErrorResult ignored;
+    buttonElement->SetAccessKey(aAccessKey, ignored);
   }
 
   // Both elements are given the same tab index so that the user can tab
   // to the file control at the correct index, and then between the two
   // buttons.
-  int32_t tabIndex;
-  aInputElement->GetTabIndex(&tabIndex);
-  buttonElement->SetTabIndex(tabIndex);
+  IgnoredErrorResult ignored;
+  buttonElement->SetTabIndex(aInputElement->TabIndex(), ignored);
 
   return button.forget();
 }
@@ -191,7 +191,7 @@ NS_QUERYFRAME_HEAD(nsFileControlFrame)
   NS_QUERYFRAME_ENTRY(nsIFormControlFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsBlockFrame)
 
-void 
+void
 nsFileControlFrame::SetFocus(bool aOn, bool aRepaint)
 {
 }
@@ -206,15 +206,14 @@ AppendBlobImplAsDirectory(nsTArray<OwningFileOrDirectory>& aArray,
 
   nsAutoString fullpath;
   ErrorResult err;
-  aBlobImpl->GetMozFullPath(fullpath, err);
+  aBlobImpl->GetMozFullPath(fullpath, SystemCallerGuarantee(), err);
   if (err.Failed()) {
     err.SuppressException();
     return;
   }
 
   nsCOMPtr<nsIFile> file;
-  NS_ConvertUTF16toUTF8 path(fullpath);
-  nsresult rv = NS_NewNativeLocalFile(path, true, getter_AddRefs(file));
+  nsresult rv = NS_NewLocalFile(fullpath, true, getter_AddRefs(file));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
@@ -298,7 +297,9 @@ nsFileControlFrame::DnDListener::HandleEvent(nsIDOMEvent* aEvent)
     } else {
       bool blinkFileSystemEnabled =
         Preferences::GetBool("dom.webkitBlink.filesystem.enabled", false);
-      if (blinkFileSystemEnabled) {
+      bool dirPickerEnabled =
+        Preferences::GetBool("dom.input.dirpicker", false);
+      if (blinkFileSystemEnabled || dirPickerEnabled) {
         FileList* files = static_cast<FileList*>(fileList.get());
         if (files) {
           for (uint32_t i = 0; i < files->Length(); ++i) {
@@ -315,13 +316,23 @@ nsFileControlFrame::DnDListener::HandleEvent(nsIDOMEvent* aEvent)
         }
       }
 
-      // This is rather ugly. Pass the directories as Files using SetFiles,
-      // but then if blink filesystem API is enabled, it wants
-      // FileOrDirectory array.
-      inputElement->SetFiles(fileList, true);
+      // Entries API.
       if (blinkFileSystemEnabled) {
+        // This is rather ugly. Pass the directories as Files using SetFiles,
+        // but then if blink filesystem API is enabled, it wants
+        // FileOrDirectory array.
+        inputElement->SetFiles(fileList, true);
         inputElement->UpdateEntries(array);
       }
+      // Directory Upload API
+      else if (dirPickerEnabled) {
+        inputElement->SetFilesOrDirectories(array, true);
+      }
+      // Normal DnD
+      else {
+        inputElement->SetFiles(fileList, true);
+      }
+
       nsContentUtils::DispatchTrustedEvent(content->OwnerDoc(), content,
                                            NS_LITERAL_STRING("input"), true,
                                            false);
@@ -411,7 +422,7 @@ nsFileControlFrame::DnDListener::CanDropTheseFiles(nsIDOMDataTransfer* aDOMDataT
 }
 
 nscoord
-nsFileControlFrame::GetMinISize(nsRenderingContext *aRenderingContext)
+nsFileControlFrame::GetMinISize(gfxContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_MIN_WIDTH(this, result);

@@ -187,6 +187,29 @@ opensl_set_draining(cubeb_stream * stm, int value)
   stm->draining = value;
 }
 
+static void
+opensl_notify_drained(cubeb_stream * stm)
+{
+  assert(stm);
+  int r = pthread_mutex_lock(&stm->mutex);
+  assert(r == 0);
+  int draining = opensl_get_draining(stm);
+  r = pthread_mutex_unlock(&stm->mutex);
+  assert(r == 0);
+  if (draining) {
+    stm->state_callback(stm, stm->user_ptr, CUBEB_STATE_DRAINED);
+    if (stm->play) {
+      LOG("stop player in play_callback");
+      r = opensl_stop_player(stm);
+      assert(r == CUBEB_OK);
+    }
+    if (stm->recorderItf) {
+      r = opensl_stop_recorder(stm);
+      assert(r == CUBEB_OK);
+    }
+  }
+}
+
 static uint32_t
 opensl_get_shutdown(cubeb_stream * stm)
 {
@@ -217,24 +240,7 @@ play_callback(SLPlayItf caller, void * user_ptr, SLuint32 event)
   assert(stm);
   switch (event) {
     case SL_PLAYEVENT_HEADATMARKER:
-    {
-      int r = pthread_mutex_lock(&stm->mutex);
-      assert(r == 0);
-      draining = opensl_get_draining(stm);
-      r = pthread_mutex_unlock(&stm->mutex);
-      assert(r == 0);
-      if (draining) {
-        stm->state_callback(stm, stm->user_ptr, CUBEB_STATE_DRAINED);
-        if (stm->play) {
-          r = opensl_stop_player(stm);
-          assert(r == CUBEB_OK);
-        }
-        if (stm->recorderItf) {
-          r = opensl_stop_recorder(stm);
-          assert(r == CUBEB_OK);
-        }
-      }
-    }
+      opensl_notify_drained(stm);
     break;
   default:
     break;
@@ -330,9 +336,16 @@ bufferqueue_callback(SLBufferQueueItf caller, void * user_ptr)
     opensl_set_draining(stm, 1);
     r = pthread_mutex_unlock(&stm->mutex);
     assert(r == 0);
-    // Use SL_PLAYEVENT_HEADATMARKER event from slPlayCallback of SLPlayItf
-    // to make sure all the data has been processed.
-    (*stm->play)->SetMarkerPosition(stm->play, (SLmillisecond)written_duration);
+
+    if (written_duration == 0) {
+      // since we didn't write any sample, it's not possible to reach the marker
+      // time and trigger the callback. We should initiative notify drained.
+      opensl_notify_drained(stm);
+    } else {
+      // Use SL_PLAYEVENT_HEADATMARKER event from slPlayCallback of SLPlayItf
+      // to make sure all the data has been processed.
+      (*stm->play)->SetMarkerPosition(stm->play, (SLmillisecond)written_duration);
+    }
     return;
   }
 }
@@ -614,16 +627,11 @@ convert_stream_type_to_sl_stream(cubeb_stream_type stream_type)
 static void opensl_destroy(cubeb * ctx);
 
 #if defined(__ANDROID__)
-
-// The bionic header file on B2G contains the required
-// declarations on all releases.
-#ifndef MOZ_WIDGET_GONK
-
 #if (__ANDROID_API__ >= ANDROID_VERSION_LOLLIPOP)
 typedef int (system_property_get)(const char*, char*);
 
 static int
-__system_property_get(const char* name, char* value)
+wrap_system_property_get(const char* name, char* value)
 {
   void* libc = dlopen("libc.so", RTLD_LAZY);
   if (!libc) {
@@ -640,7 +648,6 @@ __system_property_get(const char* name, char* value)
   return ret;
 }
 #endif
-#endif
 
 static int
 get_android_version(void)
@@ -649,7 +656,11 @@ get_android_version(void)
 
   memset(version_string, 0, PROP_VALUE_MAX);
 
+#if (__ANDROID_API__ >= ANDROID_VERSION_LOLLIPOP)
+  int len = wrap_system_property_get("ro.build.version.sdk", version_string);
+#else
   int len = __system_property_get("ro.build.version.sdk", version_string);
+#endif
   if (len <= 0) {
     LOG("Failed to get Android version!\n");
     return len;
@@ -1742,11 +1753,13 @@ static struct cubeb_ops const opensl_ops = {
   .get_preferred_sample_rate = opensl_get_preferred_sample_rate,
   .get_preferred_channel_layout = NULL,
   .enumerate_devices = NULL,
+  .device_collection_destroy = NULL,
   .destroy = opensl_destroy,
   .stream_init = opensl_stream_init,
   .stream_destroy = opensl_stream_destroy,
   .stream_start = opensl_stream_start,
   .stream_stop = opensl_stream_stop,
+  .stream_reset_default_device = NULL,
   .stream_get_position = opensl_stream_get_position,
   .stream_get_latency = opensl_stream_get_latency,
   .stream_set_volume = opensl_stream_set_volume,

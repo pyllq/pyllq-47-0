@@ -8,6 +8,7 @@
 #ifndef mozilla_StyleAnimationValue_h_
 #define mozilla_StyleAnimationValue_h_
 
+#include "gfxPoint.h"
 #include "mozilla/gfx/MatrixFwd.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/UniquePtr.h"
@@ -18,13 +19,15 @@
 #include "nsCSSProps.h"
 #include "nsCSSValue.h"
 #include "nsStyleCoord.h"
+#include "nsStyleTransformMatrix.h"
 
 class nsIFrame;
 class nsStyleContext;
 class gfx3DMatrix;
-struct RawServoDeclarationBlock;
 
 namespace mozilla {
+
+class GeckoStyleContext;
 
 namespace css {
 class StyleRule;
@@ -107,7 +110,7 @@ public:
   ComputeDistance(nsCSSPropertyID aProperty,
                   const StyleAnimationValue& aStartValue,
                   const StyleAnimationValue& aEndValue,
-                  nsStyleContext* aStyleContext,
+                  GeckoStyleContext* aStyleContext,
                   double& aDistance);
 
   /**
@@ -203,7 +206,7 @@ public:
   static MOZ_MUST_USE bool
   ComputeValue(nsCSSPropertyID aProperty,
                mozilla::dom::Element* aTargetElement,
-               nsStyleContext* aStyleContext,
+               mozilla::GeckoStyleContext* aStyleContext,
                const nsAString& aSpecifiedValue,
                bool aUseSVGMode,
                StyleAnimationValue& aComputedValue,
@@ -223,7 +226,7 @@ public:
   ComputeValues(nsCSSPropertyID aProperty,
                 mozilla::CSSEnabledState aEnabledState,
                 mozilla::dom::Element* aTargetElement,
-                nsStyleContext* aStyleContext,
+                mozilla::GeckoStyleContext* aStyleContext,
                 const nsAString& aSpecifiedValue,
                 bool aUseSVGMode,
                 nsTArray<PropertyStyleAnimationValuePair>& aResult);
@@ -236,21 +239,10 @@ public:
   ComputeValues(nsCSSPropertyID aProperty,
                 mozilla::CSSEnabledState aEnabledState,
                 mozilla::dom::Element* aTargetElement,
-                nsStyleContext* aStyleContext,
+                mozilla::GeckoStyleContext* aStyleContext,
                 const nsCSSValue& aSpecifiedValue,
                 bool aUseSVGMode,
                 nsTArray<PropertyStyleAnimationValuePair>& aResult);
-
-  /**
-   * A variant of ComputeValues that takes a RawServoDeclarationBlock
-   * as the specified value.
-   */
-  static MOZ_MUST_USE bool
-  ComputeValues(nsCSSPropertyID aProperty,
-                mozilla::CSSEnabledState aEnabledState,
-                nsStyleContext* aStyleContext,
-                const RawServoDeclarationBlock& aDeclarations,
-                nsTArray<PropertyStyleAnimationValuePair>& aValues);
 
   /**
    * Creates a specified value for the given computed value.
@@ -268,9 +260,6 @@ public:
    * @param aComputedValue The computed value to be converted.
    * @param [out] aSpecifiedValue The resulting specified value.
    * @return true on success, false on failure.
-   *
-   * These functions are not MOZ_MUST_USE because failing to check the return
-   * value is common and reasonable.
    */
   static MOZ_MUST_USE bool
   UncomputeValue(nsCSSPropertyID aProperty,
@@ -301,7 +290,7 @@ public:
    */
   static MOZ_MUST_USE bool ExtractComputedValue(
     nsCSSPropertyID aProperty,
-    nsStyleContext* aStyleContext,
+    mozilla::GeckoStyleContext* aStyleContext,
     StyleAnimationValue& aComputedValue);
 
   static already_AddRefed<nsCSSValue::Array>
@@ -582,11 +571,83 @@ private:
   }
 };
 
+struct AnimationValue
+{
+  explicit AnimationValue(const StyleAnimationValue& aValue)
+    : mGecko(aValue) { }
+  explicit AnimationValue(const RefPtr<RawServoAnimationValue>& aValue)
+    : mServo(aValue) { }
+  AnimationValue() = default;
+
+  AnimationValue(const AnimationValue& aOther)
+    : mGecko(aOther.mGecko), mServo(aOther.mServo) { }
+  AnimationValue(AnimationValue&& aOther)
+    : mGecko(Move(aOther.mGecko)), mServo(Move(aOther.mServo)) { }
+
+  AnimationValue& operator=(const AnimationValue& aOther)
+  {
+    if (this != &aOther) {
+      mGecko = aOther.mGecko;
+      mServo = aOther.mServo;
+    }
+    return *this;
+  }
+  AnimationValue& operator=(AnimationValue&& aOther)
+  {
+    MOZ_ASSERT(this != &aOther, "Do not move itself");
+    if (this != &aOther) {
+      mGecko = Move(aOther.mGecko);
+      mServo = Move(aOther.mServo);
+    }
+    return *this;
+  }
+
+  bool operator==(const AnimationValue& aOther) const;
+  bool operator!=(const AnimationValue& aOther) const;
+
+  bool IsNull() const { return mGecko.IsNull() && !mServo; }
+
+  float GetOpacity() const;
+
+  // Returns the scale for mGecko or mServo, which are calculated with
+  // reference to aFrame.
+  gfxSize GetScaleValue(const nsIFrame* aFrame) const;
+
+  // Uncompute this AnimationValue and then serialize it.
+  void SerializeSpecifiedValue(nsCSSPropertyID aProperty,
+                               nsAString& aString) const;
+
+  // Check if |*this| and |aToValue| can be interpolated.
+  bool IsInterpolableWith(nsCSSPropertyID aProperty,
+                          const AnimationValue& aToValue) const;
+
+  // Compute the distance between *this and aOther.
+  // If |aStyleContext| is nullptr, we will return 0.0 if we have mismatched
+  // transform lists.
+  double ComputeDistance(nsCSSPropertyID aProperty,
+                         const AnimationValue& aOther,
+                         nsStyleContext* aStyleContext) const;
+
+  // Create an AnimaitonValue from a string. This method flushes style, so we
+  // should use this carefully. Now, it is only used by
+  // nsDOMWindowUtils::ComputeAnimationDistance.
+  static AnimationValue FromString(nsCSSPropertyID aProperty,
+                                   const nsAString& aValue,
+                                   dom::Element* aElement);
+
+  // mGecko and mServo are mutually exclusive: only one or the other should
+  // ever be set.
+  // FIXME: After obsoleting StyleAnimationValue, we should remove mGecko, and
+  // make AnimationValue a wrapper of RawServoAnimationValue to hide these
+  // FFIs.
+  StyleAnimationValue mGecko;
+  RefPtr<RawServoAnimationValue> mServo;
+};
+
 struct PropertyStyleAnimationValuePair
 {
   nsCSSPropertyID mProperty;
-  StyleAnimationValue mValue;
-  RefPtr<RawServoAnimationValue> mServoValue;
+  AnimationValue mValue;
 };
 } // namespace mozilla
 

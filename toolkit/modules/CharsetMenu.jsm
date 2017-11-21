@@ -46,7 +46,7 @@ const kEncodings = new Set([
   "windows-1250",
   "ISO-8859-2",
   // Chinese, Simplified
-  "gbk",
+  "GBK",
   // Chinese, Traditional
   "Big5",
   // Cyrillic
@@ -103,9 +103,8 @@ function CharsetComparator(a, b) {
 }
 
 function SetDetector(event) {
-  let str = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
-  str.data = event.target.getAttribute("detector");
-  Services.prefs.setComplexValue("intl.charset.detector", Ci.nsISupportsString, str);
+  Services.prefs.setStringPref("intl.charset.detector",
+                               event.target.getAttribute("detector"));
 }
 
 function UpdateDetectorMenu(event) {
@@ -218,7 +217,7 @@ var CharsetMenu = {
   },
 
   _getCharsetLabel(charset) {
-    if (charset == "gbk") {
+    if (charset == "GBK") {
       // Localization key has been revised
       charset = "gbk.bis";
     }
@@ -228,7 +227,7 @@ var CharsetMenu = {
     return charset;
   },
   _getCharsetAccessKey(charset) {
-    if (charset == "gbk") {
+    if (charset == "GBK") {
       // Localization key has been revised
       charset = "gbk.bis";
     }
@@ -248,7 +247,7 @@ var CharsetMenu = {
         return "windows-1255";
 
       case "gb18030":
-        return "gbk";
+        return "GBK";
 
       default:
         return charset;

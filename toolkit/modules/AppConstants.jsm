@@ -102,13 +102,6 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_SERVICES_CLOUDSYNC:
-#ifdef MOZ_SERVICES_CLOUDSYNC
-  true,
-#else
-  false,
-#endif
-
   MOZ_UPDATER:
 #ifdef MOZ_UPDATER
   true,
@@ -163,8 +156,6 @@ this.AppConstants = Object.freeze({
   "macosx",
 #elif MOZ_WIDGET_ANDROID
   "android",
-#elif MOZ_WIDGET_GONK
-  "gonk",
 #elif XP_LINUX
   "linux",
 #else
@@ -185,13 +176,6 @@ this.AppConstants = Object.freeze({
 
   MOZ_CRASHREPORTER:
 #ifdef MOZ_CRASHREPORTER
-  true,
-#else
-  false,
-#endif
-
-  MOZ_VERIFY_MAR_SIGNATURE:
-#ifdef MOZ_VERIFY_MAR_SIGNATURE
   true,
 #else
   false,
@@ -253,8 +237,22 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
+  MOZ_ADDON_SIGNING:
+#ifdef MOZ_ADDON_SIGNING
+  true,
+#else
+  false,
+#endif
+
   MOZ_REQUIRE_SIGNING:
 #ifdef MOZ_REQUIRE_SIGNING
+  true,
+#else
+  false,
+#endif
+
+  MOZ_ALLOW_LEGACY_EXTENSIONS:
+#ifdef MOZ_ALLOW_LEGACY_EXTENSIONS
   true,
 #else
   false,
@@ -295,8 +293,8 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_ENABLE_PROFILER_SPS:
-#ifdef MOZ_ENABLE_PROFILER_SPS
+  MOZ_GECKO_PROFILER:
+#ifdef MOZ_GECKO_PROFILER
   true,
 #else
   false,
@@ -304,6 +302,13 @@ this.AppConstants = Object.freeze({
 
   MOZ_ANDROID_ACTIVITY_STREAM:
 #ifdef MOZ_ANDROID_ACTIVITY_STREAM
+  true,
+#else
+  false,
+#endif
+
+  MOZ_ANDROID_MOZILLA_ONLINE:
+#ifdef MOZ_ANDROID_MOZILLA_ONLINE
   true,
 #else
   false,
@@ -326,6 +331,11 @@ this.AppConstants = Object.freeze({
 
   DEBUG_JS_MODULES: "@DEBUG_JS_MODULES@",
 
+  MOZ_BING_API_CLIENTID: "@MOZ_BING_API_CLIENTID@",
+  MOZ_BING_API_KEY: "@MOZ_BING_API_KEY@",
+  MOZ_GOOGLE_API_KEY: "@MOZ_GOOGLE_API_KEY@",
+  MOZ_MOZILLA_API_KEY: "@MOZ_MOZILLA_API_KEY@",
+
   // URL to the hg revision this was built from (e.g.
   // "https://hg.mozilla.org/mozilla-central/rev/6256ec9113c1")
   // On unofficial builds, this is an empty string.
@@ -347,4 +357,33 @@ this.AppConstants = Object.freeze({
 #else
     false,
 #endif
+
+  MOZ_PHOTON_ANIMATIONS:
+#ifdef MOZ_PHOTON_ANIMATIONS
+    true,
+#else
+    false,
+#endif
+
+  MOZ_PHOTON_PREFERENCES:
+#ifdef MOZ_PHOTON_PREFERENCES
+    true,
+#else
+    false,
+#endif
+
+  MOZ_PHOTON_THEME:
+#ifdef MOZ_PHOTON_THEME
+    true,
+#else
+    false,
+#endif
+
+  MOZ_STYLO:
+#ifdef MOZ_STYLO
+    true,
+#else
+    false,
+#endif
+
 });

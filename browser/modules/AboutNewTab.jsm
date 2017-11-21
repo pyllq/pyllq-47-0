@@ -24,11 +24,24 @@ var AboutNewTab = {
 
   pageListener: null,
 
-  init() {
-    this.pageListener = new RemotePages("about:newtab");
-    this.pageListener.addMessageListener("NewTab:Customize", this.customize.bind(this));
-    this.pageListener.addMessageListener("NewTab:MaybeShowAutoMigrationUndoNotification",
-      (msg) => AutoMigrate.maybeShowUndoNotification(msg.target.browser));
+  isOverridden: false,
+
+  init(pageListener) {
+    if (this.isOverridden) {
+      return;
+    }
+    this.pageListener = pageListener || new RemotePages("about:newtab");
+    this.pageListener.addMessageListener("NewTab:Customize", this.customize);
+    this.pageListener.addMessageListener("NewTab:MaybeShowMigrateMessage",
+      this.maybeShowMigrateMessage);
+  },
+
+  maybeShowMigrateMessage({ target }) {
+    AutoMigrate.shouldShowMigratePrompt(target.browser).then((prompt) => {
+      if (prompt) {
+        AutoMigrate.showUndoNotificationBar(target.browser);
+      }
+    });
   },
 
   customize(message) {
@@ -37,7 +50,30 @@ var AboutNewTab = {
   },
 
   uninit() {
-    this.pageListener.destroy();
-    this.pageListener = null;
+    if (this.pageListener) {
+      this.pageListener.destroy();
+      this.pageListener = null;
+    }
   },
+
+  override(shouldPassPageListener) {
+    this.isOverridden = true;
+    const pageListener = this.pageListener;
+    if (!pageListener)
+      return null;
+    if (shouldPassPageListener) {
+      this.pageListener = null;
+      pageListener.removeMessageListener("NewTab:Customize", this.customize);
+      pageListener.removeMessageListener("NewTab:MaybeShowMigrateMessage",
+        this.maybeShowMigrateMessage);
+      return pageListener;
+    }
+    this.uninit();
+    return null;
+  },
+
+  reset(pageListener) {
+    this.isOverridden = false;
+    this.init(pageListener);
+  }
 };

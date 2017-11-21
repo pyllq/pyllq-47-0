@@ -333,7 +333,9 @@ operator<(const RefPtr<nsPluginElement>& lhs,
 static bool
 PluginShouldBeHidden(const nsCString& aName) {
   // This only supports one hidden plugin
-  return Preferences::GetCString("plugins.navigator.hidden_ctp_plugin").Equals(aName);
+  nsAutoCString value;
+  Preferences::GetCString("plugins.navigator.hidden_ctp_plugin", value);
+  return value.Equals(aName);
 }
 
 void
@@ -372,9 +374,21 @@ nsPluginArray::EnsurePlugins()
           nsCString permString;
           nsresult rv = pluginHost->GetPermissionStringForTag(pluginTag, 0, permString);
           if (rv == NS_OK) {
-            nsIPrincipal* principal = mWindow->GetExtantDoc()->NodePrincipal();
-            nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
-            permMgr->TestPermissionFromPrincipal(principal, permString.get(), &permission);
+            nsCOMPtr<nsIDocument> currentDoc = mWindow->GetExtantDoc();
+
+            // The top-level content document gets the final say on whether or not
+            // a plugin is going to be hidden or not, regardless of the origin
+            // that a subframe is hosted at. This is to avoid spamming the user
+            // with the hidden plugin notification bar when third-party iframes
+            // attempt to access navigator.plugins after the user has already
+            // expressed that the top-level document has this permission.
+            nsCOMPtr<nsIDocument> topDoc = currentDoc->GetTopLevelContentDocument();
+
+            if (topDoc) {
+              nsIPrincipal* principal = topDoc->NodePrincipal();
+              nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
+              permMgr->TestPermissionFromPrincipal(principal, permString.get(), &permission);
+            }
           }
         }
       }
@@ -387,8 +401,8 @@ nsPluginArray::EnsurePlugins()
   }
 
   if (mPlugins.Length() == 0 && mCTPPlugins.Length() != 0) {
-    nsCOMPtr<nsPluginTag> hiddenTag = new nsPluginTag("Hidden Plugin", NULL, "dummy.plugin", NULL, NULL,
-                                                      NULL, NULL, NULL, 0, 0, false);
+    nsCOMPtr<nsPluginTag> hiddenTag = new nsPluginTag("Hidden Plugin", nullptr, "dummy.plugin", nullptr, nullptr,
+                                                      nullptr, nullptr, nullptr, 0, 0, false);
     mPlugins.AppendElement(new nsPluginElement(mWindow, hiddenTag));
   }
 
@@ -396,7 +410,6 @@ nsPluginArray::EnsurePlugins()
   // fingerprintable entropy based on plugins' installation file times.
   mPlugins.Sort();
 }
-
 // nsPluginElement implementation.
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsPluginElement)

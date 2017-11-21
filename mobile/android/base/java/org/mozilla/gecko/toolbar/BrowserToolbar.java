@@ -14,6 +14,7 @@ import android.support.v4.content.ContextCompat;
 import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.BrowserApp;
 import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.GeckoSharedPrefs;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.SiteIdentity;
 import org.mozilla.gecko.Tab;
@@ -28,6 +29,8 @@ import org.mozilla.gecko.lwt.LightweightTheme;
 import org.mozilla.gecko.lwt.LightweightThemeDrawable;
 import org.mozilla.gecko.menu.GeckoMenu;
 import org.mozilla.gecko.menu.MenuPopup;
+import org.mozilla.gecko.preferences.GeckoPreferences;
+import org.mozilla.gecko.skin.SkinConfig;
 import org.mozilla.gecko.tabs.TabHistoryController;
 import org.mozilla.gecko.toolbar.ToolbarDisplayLayout.OnStopListener;
 import org.mozilla.gecko.toolbar.ToolbarDisplayLayout.OnTitleChangeListener;
@@ -122,7 +125,8 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
 
     private ToolbarProgressView progressBar;
     protected final TabCounter tabsCounter;
-    protected final ThemedFrameLayout menuButton;
+    protected final View menuButton;
+    // bug 1375351: There is no menuIcon in Photon flavor, menuIcon should be removed
     protected final ThemedImageView menuIcon;
     private MenuPopup menuPopup;
     protected final List<View> focusOrder;
@@ -193,7 +197,7 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
         tabsCounter = (TabCounter) findViewById(R.id.tabs_counter);
         tabsCounter.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
-        menuButton = (ThemedFrameLayout) findViewById(R.id.menu);
+        menuButton = findViewById(R.id.menu);
         menuIcon = (ThemedImageView) findViewById(R.id.menu_icon);
 
         // The focusOrder List should be filled by sub-classes.
@@ -239,14 +243,18 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
                     if (url == null) {
                         menu.findItem(R.id.copyurl).setVisible(false);
                         menu.findItem(R.id.add_to_launcher).setVisible(false);
+                        menu.findItem(R.id.set_as_homepage).setVisible(false);
                     }
 
 //                    MenuUtils.safeSetVisible(menu, R.id.subscribe, tab.hasFeeds());
                     MenuUtils.safeSetVisible(menu, R.id.add_search_engine, tab.hasOpenSearch());
+                    final boolean distSetAsHomepage = GeckoSharedPrefs.forProfile(context).getBoolean(GeckoPreferences.PREFS_SET_AS_HOMEPAGE, false);
+                    MenuUtils.safeSetVisible(menu, R.id.set_as_homepage, distSetAsHomepage);
                 } else {
                     // if there is no tab, remove anything tab dependent
                     menu.findItem(R.id.copyurl).setVisible(false);
                     menu.findItem(R.id.add_to_launcher).setVisible(false);
+                    menu.findItem(R.id.set_as_homepage).setVisible(false);
 //                    MenuUtils.safeSetVisible(menu, R.id.subscribe, false);
                     MenuUtils.safeSetVisible(menu, R.id.add_search_engine, false);
                 }
@@ -833,8 +841,16 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
         super.setPrivateMode(isPrivate);
 
         tabsButton.setPrivateMode(isPrivate);
-        menuButton.setPrivateMode(isPrivate);
+        tabsCounter.setPrivateMode(isPrivate);
         urlEditLayout.setPrivateMode(isPrivate);
+        urlDisplayLayout.setPrivateMode(isPrivate);
+
+        // bug 1375351: menuButton is a ThemedImageButton in Photon flavor
+        if (SkinConfig.isPhoton()) {
+            ((ThemedImageButton)menuButton).setPrivateMode(isPrivate);
+        } else {
+            ((ThemedFrameLayout)menuButton).setPrivateMode(isPrivate);
+        }
 
         shadowPaint.setColor(isPrivate ? shadowPrivateColor : shadowColor);
     }
@@ -871,7 +887,7 @@ public abstract class BrowserToolbar extends ThemedRelativeLayout
             });
         }
 
-        GeckoAppShell.getGeckoInterface().invalidateOptionsMenu();
+        activity.invalidateOptionsMenu();
         if (!menuPopup.isShowing()) {
             menuPopup.showAsDropDown(menuButton);
         }

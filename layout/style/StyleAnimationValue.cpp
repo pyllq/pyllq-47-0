@@ -6,15 +6,16 @@
 
 /* Utilities for animation of computed style values */
 
+#include "mozilla/StyleAnimationValue.h"
+
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/RuleNodeCacheConditions.h"
-#include "mozilla/StyleAnimationValue.h"
+#include "mozilla/ServoBindings.h"
 #include "mozilla/StyleSetHandle.h"
 #include "mozilla/StyleSetHandleInlines.h"
 #include "mozilla/Tuple.h"
 #include "mozilla/UniquePtr.h"
-#include "nsStyleTransformMatrix.h"
 #include "nsAutoPtr.h"
 #include "nsCOMArray.h"
 #include "nsIStyleRule.h"
@@ -23,11 +24,13 @@
 #include "nsStyleContext.h"
 #include "nsStyleSet.h"
 #include "nsComputedDOMStyle.h"
+#include "nsContentUtils.h"
 #include "nsCSSParser.h"
 #include "nsCSSPseudoElements.h"
 #include "mozilla/css/Declaration.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/KeyframeUtils.h" // KeyframeUtils::ParseProperty
 #include "mozilla/Likely.h"
 #include "mozilla/ServoBindings.h" // RawServoDeclarationBlock
 #include "gfxMatrix.h"
@@ -35,6 +38,7 @@
 #include "nsIDocument.h"
 #include "nsIFrame.h"
 #include "gfx2DGlue.h"
+#include "nsStyleContextInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::css;
@@ -322,7 +326,8 @@ ToPrimitive(nsCSSValue::Array* aArray)
 
 static void
 AppendCSSShadowValue(const nsCSSShadowItem *aShadow,
-                     nsCSSValueList **&aResultTail)
+                     nsCSSValueList **&aResultTail,
+                     nsCSSPropertyID aProperty)
 {
   MOZ_ASSERT(aShadow, "shadow expected");
 
@@ -331,9 +336,9 @@ AppendCSSShadowValue(const nsCSSShadowItem *aShadow,
   arr->Item(0).SetIntegerCoordValue(aShadow->mXOffset);
   arr->Item(1).SetIntegerCoordValue(aShadow->mYOffset);
   arr->Item(2).SetIntegerCoordValue(aShadow->mRadius);
-  // NOTE: This code sometimes stores mSpread: 0 even when
-  // the parser would be required to leave it null.
-  arr->Item(3).SetIntegerCoordValue(aShadow->mSpread);
+  if (aProperty == eCSSProperty_box_shadow) {
+    arr->Item(3).SetIntegerCoordValue(aShadow->mSpread);
+  }
   if (aShadow->mHasColor) {
     arr->Item(4).SetColorValue(aShadow->mColor);
   }
@@ -882,7 +887,8 @@ GetNumberOrPercent(const nsCSSValue &aValue);
 static bool
 ComputeSingleShadowSquareDistance(const nsCSSValueList* aShadow1,
                                   const nsCSSValueList* aShadow2,
-                                  double& aSquareDistance)
+                                  double& aSquareDistance,
+                                  nsCSSPropertyID aProperty)
 {
   MOZ_ASSERT(aShadow1->mValue.GetUnit() == eCSSUnit_Array, "wrong unit");
   MOZ_ASSERT(aShadow2->mValue.GetUnit() == eCSSUnit_Array, "wrong unit");
@@ -892,6 +898,11 @@ ComputeSingleShadowSquareDistance(const nsCSSValueList* aShadow1,
   double squareDistance = 0.0;
   // X, Y, Radius, Spread
   for (size_t i = 0; i < 4; ++i) {
+    // Spread value is not necessary on text-shadow,
+    // so we skip the computing distance.
+    if (i == 3 && (aProperty != eCSSProperty_box_shadow)) {
+      continue;
+    }
     MOZ_ASSERT(array1->Item(i).GetUnit() == eCSSUnit_Pixel,
                "unexpected unit");
     MOZ_ASSERT(array2->Item(i).GetUnit() == eCSSUnit_Pixel,
@@ -998,7 +1009,8 @@ ComputeFilterSquareDistance(const nsCSSValueList* aList1,
                  "drop-shadow filter func doesn't support lists");
       if (!ComputeSingleShadowSquareDistance(func1.GetListValue(),
                                              func2.GetListValue(),
-                                             aSquareDistance)) {
+                                             aSquareDistance,
+                                             eCSSProperty_filter)) {
         return false;
       }
       break;
@@ -1433,7 +1445,7 @@ ComputeTransformListDistance(const nsCSSValueList* aList1,
 static double
 ComputeMismatchedTransfromListDistance(const nsCSSValueList* aList1,
                                        const nsCSSValueList* aList2,
-                                       nsStyleContext* aStyleContext)
+                                       GeckoStyleContext* aStyleContext)
 {
   // We need nsStyleContext and nsPresContext to compute calc() values while
   // processing the translate part of transforms.
@@ -1468,7 +1480,7 @@ bool
 StyleAnimationValue::ComputeDistance(nsCSSPropertyID aProperty,
                                      const StyleAnimationValue& aStartValue,
                                      const StyleAnimationValue& aEndValue,
-                                     nsStyleContext* aStyleContext,
+                                     GeckoStyleContext* aStyleContext,
                                      double& aDistance)
 {
   Unit commonUnit =
@@ -1789,7 +1801,8 @@ StyleAnimationValue::ComputeDistance(nsCSSPropertyID aProperty,
       while (shadow1) {
         double squareDistance = 0.0;
         if (!ComputeSingleShadowSquareDistance(shadow1, shadow2,
-                                               squareDistance)) {
+                                               squareDistance,
+                                               aProperty)) {
           NS_ERROR("Unexpected ComputeSingleShadowSquareDistance failure; "
                    "why didn't we fail earlier, in AddWeighted calls above?");
         }
@@ -2032,7 +2045,8 @@ AppendToCSSValuePairList(UniquePtr<nsCSSValuePairList>& aHead,
 static UniquePtr<nsCSSValueList>
 AddWeightedShadowItems(double aCoeff1, const nsCSSValue &aValue1,
                        double aCoeff2, const nsCSSValue &aValue2,
-                       ColorAdditionType aColorAdditionType)
+                       ColorAdditionType aColorAdditionType,
+                       nsCSSPropertyID aProperty)
 {
   // X, Y, Radius, Spread, Color, Inset
   MOZ_ASSERT(aValue1.GetUnit() == eCSSUnit_Array,
@@ -2044,6 +2058,9 @@ AddWeightedShadowItems(double aCoeff1, const nsCSSValue &aValue1,
   RefPtr<nsCSSValue::Array> resultArray = nsCSSValue::Array::Create(6);
 
   for (size_t i = 0; i < 4; ++i) {
+    // The text-shadow is not need to spread radius,
+    // So we skip this interpolation.
+    if (i == 3 && (aProperty != eCSSProperty_box_shadow)) continue;
     AddCSSValuePixel(aCoeff1, array1->Item(i), aCoeff2, array2->Item(i),
                      resultArray->Item(i),
                      // blur radius must be nonnegative
@@ -2130,16 +2147,23 @@ AddDifferentTransformLists(double aCoeff1, const nsCSSValueList* aList1,
     StyleAnimationValue::AppendTransformFunction(aOperatorType,
                                                  resultTail);
 
-  // FIXME: We should change the other transform code to also only
-  // take a single progress value, as having values that don't
-  // sum to 1 doesn't make sense for these.
-  if (aList1 == aList2) {
+  if (aCoeff1 == 0) {
+    // If the first coeffient is zero, we don't need to care about the first
+    // list at all.
     arr->Item(1).Reset();
-    // For accumulation, we need to increase accumulation count for |aList1|.
-    if (aOperatorType == eCSSKeyword_accumulatematrix) {
-      aCoeff2 += 1.0;
-    }
+  } else if (aList1 == aList2) {
+    // If we have the same list, clear the first list, add the first coefficient
+    // into the second one so that we can simply multiply the second list by the
+    // second coefficient value.
+    arr->Item(1).Reset();
+    aCoeff2 += aCoeff1;
   } else {
+    MOZ_ASSERT((aOperatorType == eCSSKeyword_accumulatematrix &&
+                aCoeff1 == 1.0) ||
+               (aOperatorType == eCSSKeyword_interpolatematrix &&
+                FuzzyEqualsAdditive(aCoeff1 + aCoeff2, 1.0)),
+              "|aCoeff1| should be 1.0 for accumulation, "
+              "|aCoeff1| + |aCoeff2| == 1.0 for interpolation");
     aList1->CloneInto(arr->Item(1).SetListValue());
   }
 
@@ -2227,7 +2251,8 @@ AddWeightedFilterFunctionImpl(double aCoeff1, const nsCSSValueList* aList1,
                                funcArg1.GetListValue()->mValue,
                                aCoeff2,
                                funcArg2.GetListValue()->mValue,
-                               aColorAdditionType);
+                               aColorAdditionType,
+                               eCSSProperty_filter);
       if (!shadowValue) {
         return nullptr;
       }
@@ -2767,7 +2792,8 @@ AddWeightedShadowList(double aCoeff1,
                       const nsCSSValueList* aShadow1,
                       double aCoeff2,
                       const nsCSSValueList* aShadow2,
-                      ColorAdditionType aColorAdditionType)
+                      ColorAdditionType aColorAdditionType,
+                      nsCSSPropertyID aProperty)
 {
   // This is implemented according to:
   // http://dev.w3.org/csswg/css3-transitions/#animation-of-property-types-
@@ -2779,7 +2805,8 @@ AddWeightedShadowList(double aCoeff1,
     UniquePtr<nsCSSValueList> shadowValue =
       AddWeightedShadowItems(aCoeff1, aShadow1->mValue,
                              aCoeff2, aShadow2->mValue,
-                             aColorAdditionType);
+                             aColorAdditionType,
+                             aProperty);
     if (!shadowValue) {
       return nullptr;
     }
@@ -2805,7 +2832,7 @@ AddWeightedShadowList(double aCoeff1,
       UniquePtr<nsCSSValueList> shadowValue =
         AddWeightedShadowItems(longCoeff, longShadow->mValue,
                                0.0, longShadow->mValue,
-                               aColorAdditionType);
+                               aColorAdditionType, aProperty);
       if (!shadowValue) {
         return nullptr;
       }
@@ -2882,9 +2909,10 @@ StyleAnimationValue::AddWeighted(nsCSSPropertyID aProperty,
     case eUnit_Enumerated:
       switch (aProperty) {
         case eCSSProperty_font_stretch: {
-          // Animate just like eUnit_Integer.
-          int32_t result = floor(aCoeff1 * double(aValue1.GetIntValue()) +
-                                 aCoeff2 * double(aValue2.GetIntValue()));
+          // https://drafts.csswg.org/css-fonts-3/#font-stretch-animation
+          double interpolatedValue = aCoeff1 * double(aValue1.GetIntValue()) +
+                                     aCoeff2 * double(aValue2.GetIntValue());
+          int32_t result = floor(interpolatedValue + 0.5);
           if (result < NS_STYLE_FONT_STRETCH_ULTRA_CONDENSED) {
             result = NS_STYLE_FONT_STRETCH_ULTRA_CONDENSED;
           } else if (result > NS_STYLE_FONT_STRETCH_ULTRA_EXPANDED) {
@@ -2916,17 +2944,15 @@ StyleAnimationValue::AddWeighted(nsCSSPropertyID aProperty,
       return true;
     }
     case eUnit_Integer: {
-      // http://dev.w3.org/csswg/css3-transitions/#animation-of-property-types-
-      // says we should use floor
-      int32_t result = floor(aCoeff1 * double(aValue1.GetIntValue()) +
-                             aCoeff2 * double(aValue2.GetIntValue()));
+      // https://drafts.csswg.org/css-transitions/#animtype-integer
+      double interpolatedValue = aCoeff1 * double(aValue1.GetIntValue()) +
+                                 aCoeff2 * double(aValue2.GetIntValue());
+      int32_t result = floor(interpolatedValue + 0.5);
       if (aProperty == eCSSProperty_font_weight) {
-        if (result < 100) {
-          result = 100;
-        } else if (result > 900) {
-          result = 900;
-        }
+        // https://drafts.csswg.org/css-transitions/#animtype-font-weight
+        result += 50;
         result -= result % 100;
+        result = Clamp(result, 100, 900);
       } else {
         result = RestrictValue(aProperty, result);
       }
@@ -3176,7 +3202,8 @@ StyleAnimationValue::AddWeighted(nsCSSPropertyID aProperty,
                               aValue1.GetCSSValueListValue(),
                               aCoeff2,
                               aValue2.GetCSSValueListValue(),
-                              ColorAdditionType::Clamped);
+                              ColorAdditionType::Clamped,
+                              aProperty);
       if (!result) {
         return false;
       }
@@ -3329,7 +3356,8 @@ StyleAnimationValue::Accumulate(nsCSSPropertyID aProperty,
       UniquePtr<nsCSSValueList> resultList =
         AddWeightedShadowList(1.0, result.GetCSSValueListValue(),
                               aCount, aA.GetCSSValueListValue(),
-                              ColorAdditionType::Unclamped);
+                              ColorAdditionType::Unclamped,
+                              aProperty);
       if (resultList) {
         result.SetAndAdoptCSSValueListValue(resultList.release(), eUnit_Shadow);
       }
@@ -3352,9 +3380,19 @@ StyleAnimationValue::Accumulate(nsCSSPropertyID aProperty,
       MOZ_ASSERT(listB);
 
       nsAutoPtr<nsCSSValueList> resultList;
-      if (listA->mValue.GetUnit() == eCSSUnit_None ||
-          listB->mValue.GetUnit() == eCSSUnit_None) {
+      if (listA->mValue.GetUnit() == eCSSUnit_None) {
+        // If |aA| is 'none' then we are calculating:
+        //
+        //    none * |aCount| + |aB|
+        //    = none + |aB|
+        //    = |aB|
+        //
+        // Hence the result should just be |aB|, even if |aB| is also 'none'.
+        // Since |result| is already initialized to |aB|, we just return that.
         break;
+      } else if (listB->mValue.GetUnit() == eCSSUnit_None) {
+        resultList = AddTransformLists(0.0, listA, aCount, listA,
+                                       eCSSKeyword_accumulatematrix);
       } else if (TransformFunctionListsMatch(listA, listB)) {
         resultList = AddTransformLists(1.0, listB, aCount, listA,
                                        eCSSKeyword_accumulatematrix);
@@ -3444,7 +3482,7 @@ static bool
 ComputeValuesFromStyleContext(
   nsCSSPropertyID aProperty,
   CSSEnabledState aEnabledState,
-  nsStyleContext* aStyleContext,
+  GeckoStyleContext* aStyleContext,
   nsTArray<PropertyStyleAnimationValuePair>& aValues)
 {
   // Extract computed value of our property (or all longhand components, if
@@ -3458,7 +3496,7 @@ ComputeValuesFromStyleContext(
       PropertyStyleAnimationValuePair* pair = aValues.AppendElement();
       pair->mProperty = *p;
       if (!StyleAnimationValue::ExtractComputedValue(*p, aStyleContext,
-                                                     pair->mValue)) {
+                                                     pair->mValue.mGecko)) {
         return false;
       }
     }
@@ -3468,13 +3506,13 @@ ComputeValuesFromStyleContext(
   PropertyStyleAnimationValuePair* pair = aValues.AppendElement();
   pair->mProperty = aProperty;
   return StyleAnimationValue::ExtractComputedValue(aProperty, aStyleContext,
-                                                   pair->mValue);
+                                                   pair->mValue.mGecko);
 }
 
 static bool
 ComputeValuesFromStyleRule(nsCSSPropertyID aProperty,
                            CSSEnabledState aEnabledState,
-                           nsStyleContext* aStyleContext,
+                           GeckoStyleContext* aStyleContext,
                            css::StyleRule* aStyleRule,
                            nsTArray<PropertyStyleAnimationValuePair>& aValues,
                            bool* aIsContextSensitive)
@@ -3488,7 +3526,7 @@ ComputeValuesFromStyleRule(nsCSSPropertyID aProperty,
              "ServoStyleSet should not use StyleAnimationValue for animations");
   nsStyleSet* styleSet = aStyleContext->PresContext()->StyleSet()->AsGecko();
 
-  RefPtr<nsStyleContext> tmpStyleContext;
+  RefPtr<GeckoStyleContext> tmpStyleContext;
   if (aIsContextSensitive) {
     MOZ_ASSERT(!nsCSSProps::IsShorthand(aProperty),
                "to correctly set aIsContextSensitive for shorthand properties, "
@@ -3541,7 +3579,7 @@ ComputeValuesFromStyleRule(nsCSSPropertyID aProperty,
 /* static */ bool
 StyleAnimationValue::ComputeValue(nsCSSPropertyID aProperty,
                                   dom::Element* aTargetElement,
-                                  nsStyleContext* aStyleContext,
+                                  GeckoStyleContext* aStyleContext,
                                   const nsAString& aSpecifiedValue,
                                   bool aUseSVGMode,
                                   StyleAnimationValue& aComputedValue,
@@ -3583,7 +3621,7 @@ StyleAnimationValue::ComputeValue(nsCSSPropertyID aProperty,
   MOZ_ASSERT(values.Length() == 1);
   MOZ_ASSERT(values[0].mProperty == aProperty);
 
-  aComputedValue = values[0].mValue;
+  aComputedValue = values[0].mValue.mGecko;
   return true;
 }
 
@@ -3593,7 +3631,7 @@ ComputeValuesFromSpecifiedValue(
     nsCSSPropertyID aProperty,
     CSSEnabledState aEnabledState,
     dom::Element* aTargetElement,
-    nsStyleContext* aStyleContext,
+    GeckoStyleContext* aStyleContext,
     T& aSpecifiedValue,
     bool aUseSVGMode,
     nsTArray<PropertyStyleAnimationValuePair>& aResult)
@@ -3621,7 +3659,7 @@ StyleAnimationValue::ComputeValues(
     nsCSSPropertyID aProperty,
     CSSEnabledState aEnabledState,
     dom::Element* aTargetElement,
-    nsStyleContext* aStyleContext,
+    GeckoStyleContext* aStyleContext,
     const nsAString& aSpecifiedValue,
     bool aUseSVGMode,
     nsTArray<PropertyStyleAnimationValuePair>& aResult)
@@ -3637,7 +3675,7 @@ StyleAnimationValue::ComputeValues(
     nsCSSPropertyID aProperty,
     CSSEnabledState aEnabledState,
     dom::Element* aTargetElement,
-    nsStyleContext* aStyleContext,
+    GeckoStyleContext* aStyleContext,
     const nsCSSValue& aSpecifiedValue,
     bool aUseSVGMode,
     nsTArray<PropertyStyleAnimationValuePair>& aResult)
@@ -3646,46 +3684,6 @@ StyleAnimationValue::ComputeValues(
                                          aTargetElement, aStyleContext,
                                          aSpecifiedValue, aUseSVGMode,
                                          aResult);
-}
-
-/* static */ bool
-StyleAnimationValue::ComputeValues(
-  nsCSSPropertyID aProperty,
-  CSSEnabledState aEnabledState,
-  nsStyleContext* aStyleContext,
-  const RawServoDeclarationBlock& aDeclarations,
-  nsTArray<PropertyStyleAnimationValuePair>& aValues)
-{
-  MOZ_ASSERT(aStyleContext->PresContext()->StyleSet()->IsServo(),
-             "Should be using ServoStyleSet if we have a"
-             " RawServoDeclarationBlock");
-
-  if (!nsCSSProps::IsEnabled(aProperty, aEnabledState)) {
-    return false;
-  }
-
-  const ServoComputedValues* previousStyle =
-    aStyleContext->StyleSource().AsServoComputedValues();
-
-  // FIXME: Servo bindings don't yet represent const-ness so we just
-  // cast it away for now.
-  auto declarations = const_cast<RawServoDeclarationBlock*>(&aDeclarations);
-  RefPtr<ServoComputedValues> computedValues =
-    aStyleContext->PresContext()->StyleSet()->AsServo()->
-      RestyleWithAddedDeclaration(declarations, previousStyle).Consume();
-  if (!computedValues) {
-    return false;
-  }
-
-  RefPtr<nsStyleContext> tmpStyleContext =
-    NS_NewStyleContext(aStyleContext, aStyleContext->PresContext(),
-                       aStyleContext->GetPseudo(),
-                       aStyleContext->GetPseudoType(),
-                       computedValues.forget(),
-                       false /* skipFixup */);
-
-  return ComputeValuesFromStyleContext(aProperty, aEnabledState,
-                                       tmpStyleContext, aValues);
 }
 
 bool
@@ -3992,7 +3990,7 @@ SetPositionCoordValue(const Position::Coord& aPosCoord,
  * expressions replaced with canonical ones.
  */
 static void
-SubstitutePixelValues(nsStyleContext* aStyleContext,
+SubstitutePixelValues(GeckoStyleContext* aStyleContext,
                       const nsCSSValue& aInput, nsCSSValue& aOutput)
 {
   if (aInput.IsCalcUnit()) {
@@ -4142,7 +4140,7 @@ ExtractImageLayerSizePairList(const nsStyleImageLayers& aLayer,
 }
 
 static bool
-StyleClipBasicShapeToCSSArray(const StyleClipPath& aClipPath,
+StyleClipBasicShapeToCSSArray(const StyleShapeSource& aClipPath,
                               nsCSSValue::Array* aResult)
 {
   MOZ_ASSERT(aResult->Count() == 2,
@@ -4230,9 +4228,19 @@ StyleClipBasicShapeToCSSArray(const StyleClipPath& aClipPath,
   return true;
 }
 
+static void
+SetFallbackValue(nsCSSValuePair* aPair, const nsStyleSVGPaint& aPaint)
+{
+  if (aPaint.GetFallbackType() == eStyleSVGFallbackType_Color) {
+    aPair->mYValue.SetColorValue(aPaint.GetFallbackColor());
+  } else {
+    aPair->mYValue.SetNoneValue();
+  }
+}
+
 bool
 StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
-                                          nsStyleContext* aStyleContext,
+                                          GeckoStyleContext* aStyleContext,
                                           StyleAnimationValue& aComputedValue)
 {
   MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_no_shorthands,
@@ -4326,6 +4334,21 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
           if (!StyleCoordToCSSValue(styleDisplay->mPerspectiveOrigin[0],
                                     pair->mXValue) ||
               !StyleCoordToCSSValue(styleDisplay->mPerspectiveOrigin[1],
+                                    pair->mYValue)) {
+            return false;
+          }
+          aComputedValue.SetAndAdoptCSSValuePairValue(pair.forget(),
+                                                      eUnit_CSSValuePair);
+          break;
+        }
+
+        case eCSSProperty__moz_window_transform_origin: {
+          const nsStyleUIReset *styleUIReset =
+            static_cast<const nsStyleUIReset*>(styleStruct);
+          nsAutoPtr<nsCSSValuePair> pair(new nsCSSValuePair);
+          if (!StyleCoordToCSSValue(styleUIReset->mWindowTransformOrigin[0],
+                                    pair->mXValue) ||
+              !StyleCoordToCSSValue(styleUIReset->mWindowTransformOrigin[1],
                                     pair->mYValue)) {
             return false;
           }
@@ -4514,7 +4537,7 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
         case eCSSProperty_clip_path: {
           const nsStyleSVGReset* svgReset =
             static_cast<const nsStyleSVGReset*>(styleStruct);
-          const StyleClipPath& clipPath = svgReset->mClipPath;
+          const StyleShapeSource& clipPath = svgReset->mClipPath;
           const StyleShapeSourceType type = clipPath.GetType();
 
           if (type == StyleShapeSourceType::URL) {
@@ -4570,7 +4593,8 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
                 nsCSSShadowArray* shadowArray = filter.GetDropShadow();
                 MOZ_ASSERT(shadowArray->Length() == 1,
                            "expected exactly one shadow");
-                AppendCSSShadowValue(shadowArray->ShadowAt(0), tmpShadowResultTail);
+                AppendCSSShadowValue(shadowArray->ShadowAt(0),
+                                     tmpShadowResultTail, aProperty);
                 *shadowResult = *tmpShadowValue;
               } else {
                 // We checked all possible nsStyleFilter types but
@@ -4594,6 +4618,31 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
             // Clone, and convert all lengths (not percents) to pixels.
             nsCSSValueList **resultTail = getter_Transfers(result);
             for (const nsCSSValueList *l = display->mSpecifiedTransform->mHead;
+                 l; l = l->mNext) {
+              nsCSSValueList *clone = new nsCSSValueList;
+              *resultTail = clone;
+              resultTail = &clone->mNext;
+
+              SubstitutePixelValues(aStyleContext, l->mValue, clone->mValue);
+            }
+          } else {
+            result = new nsCSSValueList();
+            result->mValue.SetNoneValue();
+          }
+
+          aComputedValue.SetTransformValue(
+              new nsCSSValueSharedList(result.forget()));
+          break;
+        }
+
+        case eCSSProperty__moz_window_transform: {
+          const nsStyleUIReset *uiReset =
+            static_cast<const nsStyleUIReset*>(styleStruct);
+          nsAutoPtr<nsCSSValueList> result;
+          if (uiReset->mSpecifiedWindowTransform) {
+            // Clone, and convert all lengths (not percents) to pixels.
+            nsCSSValueList **resultTail = getter_Transfers(result);
+            for (const nsCSSValueList *l = uiReset->mSpecifiedWindowTransform->mHead;
                  l; l = l->mNext) {
               nsCSSValueList *clone = new nsCSSValueList;
               *resultTail = clone;
@@ -4747,22 +4796,33 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
             NS_WARNING("Null paint server");
             return false;
           }
-          nsAutoPtr<nsCSSValuePair> pair(new nsCSSValuePair);
-          pair->mXValue.SetURLValue(url);
-          pair->mYValue.SetColorValue(paint.GetFallbackColor());
-          aComputedValue.SetAndAdoptCSSValuePairValue(pair.forget(),
-                                                      eUnit_CSSValuePair);
+          if (paint.GetFallbackType() != eStyleSVGFallbackType_NotSet) {
+            nsAutoPtr<nsCSSValuePair> pair(new nsCSSValuePair);
+            pair->mXValue.SetURLValue(url);
+            SetFallbackValue(pair, paint);
+            aComputedValue.SetAndAdoptCSSValuePairValue(pair.forget(),
+                                                        eUnit_CSSValuePair);
+          } else {
+            auto result = MakeUnique<nsCSSValue>();
+            result->SetURLValue(url);
+            aComputedValue.SetAndAdoptCSSValueValue(
+              result.release(), eUnit_URL);
+          }
           return true;
         }
         case eStyleSVGPaintType_ContextFill:
         case eStyleSVGPaintType_ContextStroke: {
-          nsAutoPtr<nsCSSValuePair> pair(new nsCSSValuePair);
-          pair->mXValue.SetIntValue(paint.Type() == eStyleSVGPaintType_ContextFill ?
-                                    NS_COLOR_CONTEXT_FILL : NS_COLOR_CONTEXT_STROKE,
-                                    eCSSUnit_Enumerated);
-          pair->mYValue.SetColorValue(paint.GetFallbackColor());
-          aComputedValue.SetAndAdoptCSSValuePairValue(pair.forget(),
-                                                      eUnit_CSSValuePair);
+          int32_t value = paint.Type() == eStyleSVGPaintType_ContextFill ?
+                            NS_COLOR_CONTEXT_FILL : NS_COLOR_CONTEXT_STROKE;
+          if (paint.GetFallbackType() != eStyleSVGFallbackType_NotSet) {
+            nsAutoPtr<nsCSSValuePair> pair(new nsCSSValuePair);
+            pair->mXValue.SetIntValue(value, eCSSUnit_Enumerated);
+            SetFallbackValue(pair, paint);
+            aComputedValue.SetAndAdoptCSSValuePairValue(pair.forget(),
+                                                        eUnit_CSSValuePair);
+          } else {
+            aComputedValue.SetIntValue(value, eUnit_Enumerated);
+          }
           return true;
         }
         default:
@@ -4782,7 +4842,7 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
       nsAutoPtr<nsCSSValueList> result;
       nsCSSValueList **resultTail = getter_Transfers(result);
       for (uint32_t i = 0, i_end = shadowArray->Length(); i < i_end; ++i) {
-        AppendCSSShadowValue(shadowArray->ShadowAt(i), resultTail);
+        AppendCSSShadowValue(shadowArray->ShadowAt(i), resultTail, aProperty);
       }
       aComputedValue.SetAndAdoptCSSValueListValue(result.forget(),
                                                   eUnit_Shadow);
@@ -4795,7 +4855,7 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
           eUnit_Visibility);
         return true;
       }
-      if (aStyleContext->StyleSource().IsServoComputedValues()) {
+      if (aStyleContext->IsServo()) {
         NS_ERROR("stylo: extracting discretely animated values not supported");
         return false;
       }
@@ -4815,29 +4875,10 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
 gfxSize
 StyleAnimationValue::GetScaleValue(const nsIFrame* aForFrame) const
 {
-  MOZ_ASSERT(aForFrame);
   MOZ_ASSERT(GetUnit() == StyleAnimationValue::eUnit_Transform);
 
   nsCSSValueSharedList* list = GetCSSValueSharedListValue();
-  MOZ_ASSERT(list->mHead);
-
-  RuleNodeCacheConditions dontCare;
-  bool dontCareBool;
-  nsStyleTransformMatrix::TransformReferenceBox refBox(aForFrame);
-  Matrix4x4 transform = nsStyleTransformMatrix::ReadTransforms(
-                          list->mHead,
-                          aForFrame->StyleContext(),
-                          aForFrame->PresContext(), dontCare, refBox,
-                          aForFrame->PresContext()->AppUnitsPerDevPixel(),
-                          &dontCareBool);
-
-  Matrix transform2d;
-  bool canDraw2D = transform.CanDraw2D(&transform2d);
-  if (!canDraw2D) {
-    return gfxSize();
-  }
-
-  return ThebesMatrix(transform2d).ScaleFactors(true);
+  return nsStyleTransformMatrix::GetScaleValue(list, aForFrame);
 }
 
 StyleAnimationValue::StyleAnimationValue(int32_t aInt, Unit aUnit,
@@ -5250,4 +5291,167 @@ StyleAnimationValue::operator==(const StyleAnimationValue& aOther) const
 
   NS_NOTREACHED("incomplete case");
   return false;
+}
+
+
+// AnimationValue Implementation
+
+bool
+AnimationValue::operator==(const AnimationValue& aOther) const
+{
+  // It is possible to compare an empty AnimationValue with others, so both
+  // mServo and mGecko could be null while comparing.
+  MOZ_ASSERT(!mServo || mGecko.IsNull());
+  if (mServo && aOther.mServo) {
+    return Servo_AnimationValue_DeepEqual(mServo, aOther.mServo);
+  }
+  return !mServo && !aOther.mServo &&
+         mGecko == aOther.mGecko;
+}
+
+bool
+AnimationValue::operator!=(const AnimationValue& aOther) const
+{
+  return !operator==(aOther);
+}
+
+float
+AnimationValue::GetOpacity() const
+{
+  MOZ_ASSERT(!mServo != mGecko.IsNull());
+  return mServo ? Servo_AnimationValue_GetOpacity(mServo)
+                : mGecko.GetFloatValue();
+}
+
+gfxSize
+AnimationValue::GetScaleValue(const nsIFrame* aFrame) const
+{
+  MOZ_ASSERT(!mServo != mGecko.IsNull());
+  if (mServo) {
+    RefPtr<nsCSSValueSharedList> list;
+    Servo_AnimationValue_GetTransform(mServo, &list);
+    return nsStyleTransformMatrix::GetScaleValue(list, aFrame);
+  }
+  return mGecko.GetScaleValue(aFrame);
+}
+
+void
+AnimationValue::SerializeSpecifiedValue(nsCSSPropertyID aProperty,
+                                        nsAString& aString) const
+{
+  MOZ_ASSERT(!mServo != mGecko.IsNull());
+  if (mServo) {
+    Servo_AnimationValue_Serialize(mServo, aProperty, &aString);
+    return;
+  }
+
+  DebugOnly<bool> uncomputeResult =
+    StyleAnimationValue::UncomputeValue(aProperty, mGecko, aString);
+  MOZ_ASSERT(uncomputeResult, "failed to uncompute StyleAnimationValue");
+}
+
+bool
+AnimationValue::IsInterpolableWith(nsCSSPropertyID aProperty,
+                                   const AnimationValue& aToValue) const
+{
+  if (IsNull() || aToValue.IsNull()) {
+    return false;
+  }
+
+  MOZ_ASSERT(!mServo != mGecko.IsNull());
+  MOZ_ASSERT(mGecko.IsNull() == aToValue.mGecko.IsNull() &&
+             !mServo == !aToValue.mServo,
+             "Animation values should have the same style engine");
+
+  if (mServo) {
+    return Servo_AnimationValues_IsInterpolable(mServo, aToValue.mServo);
+  }
+
+  // If this is ever a performance problem, we could add a
+  // StyleAnimationValue::IsInterpolatable method, but it seems fine for now.
+  StyleAnimationValue dummy;
+  return StyleAnimationValue::Interpolate(
+           aProperty, mGecko, aToValue.mGecko, 0.5, dummy);
+}
+
+double
+AnimationValue::ComputeDistance(nsCSSPropertyID aProperty,
+                                const AnimationValue& aOther,
+                                nsStyleContext* aStyleContext) const
+{
+  if (IsNull() || aOther.IsNull()) {
+    return 0.0;
+  }
+
+  MOZ_ASSERT(!mServo != mGecko.IsNull());
+  MOZ_ASSERT(mGecko.IsNull() == aOther.mGecko.IsNull() &&
+             !mServo == !aOther.mServo,
+             "Animation values should have the same style engine");
+
+  if (mServo) {
+    return Servo_AnimationValues_ComputeDistance(mServo, aOther.mServo);
+  }
+
+  double distance = 0.0;
+  return StyleAnimationValue::ComputeDistance(aProperty,
+                                              mGecko,
+                                              aOther.mGecko,
+                                              aStyleContext->AsGecko(),
+                                              distance)
+         ? distance
+         : 0.0;
+}
+
+/* static */ AnimationValue
+AnimationValue::FromString(nsCSSPropertyID aProperty,
+                           const nsAString& aValue,
+                           Element* aElement)
+{
+  MOZ_ASSERT(aElement);
+
+  AnimationValue result;
+
+  nsCOMPtr<nsIDocument> doc = aElement->GetComposedDoc();
+  if (!doc) {
+    return result;
+  }
+
+  nsCOMPtr<nsIPresShell> shell = doc->GetShell();
+  if (!shell) {
+    return result;
+  }
+
+  // GetStyleContext() flushes style, so we shouldn't assume that any
+  // non-owning references we have are still valid.
+  RefPtr<nsStyleContext> styleContext =
+    nsComputedDOMStyle::GetStyleContext(aElement, nullptr, shell);
+
+  if (auto servoContext = styleContext->GetAsServo()) {
+    nsPresContext* presContext = shell->GetPresContext();
+    if (!presContext) {
+      return result;
+    }
+
+    RefPtr<RawServoDeclarationBlock> declarations =
+      KeyframeUtils::ParseProperty(aProperty, aValue, doc);
+
+    if (!declarations) {
+      return result;
+    }
+
+    result.mServo = presContext->StyleSet()
+                               ->AsServo()
+                               ->ComputeAnimationValue(aElement,
+                                                       declarations,
+                                                       servoContext);
+    return result;
+  }
+
+  if (!StyleAnimationValue::ComputeValue(aProperty, aElement,
+                                         styleContext->AsGecko(),
+                                         aValue, false /* |aUseSVGMode| */,
+                                         result.mGecko)) {
+    MOZ_ASSERT(result.IsNull());
+  }
+  return result;
 }

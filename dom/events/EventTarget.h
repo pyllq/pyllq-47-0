@@ -70,7 +70,10 @@ public:
 
   // Note, for an event 'foo' aType will be 'onfoo'.
   virtual void EventListenerAdded(nsIAtom* aType) {}
+  virtual void EventListenerAdded(const nsAString& aType) {}
+
   virtual void EventListenerRemoved(nsIAtom* aType) {}
+  virtual void EventListenerRemoved(const nsAString& aType) {}
 
   // Returns an outer window that corresponds to the inner window this event
   // target is associated with.  Will return null if the inner window is not the
@@ -95,6 +98,10 @@ public:
 
   // Called from AsyncEventDispatcher to notify it is running.
   virtual void AsyncEventRunning(AsyncEventDispatcher* aEvent) {}
+
+  // Used by FocusTarget to determine whether this event target has listeners
+  // for untrusted or non system group key events.
+  bool HasUntrustedOrNonSystemGroupKeyEventListeners() const;
 
   virtual bool IsApzAware() const;
 

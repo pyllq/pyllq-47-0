@@ -28,11 +28,11 @@ function getTestPlugin(pluginName) {
 function setTestPluginEnabledState(newEnabledState, pluginName) {
   var oldEnabledState = SpecialPowers.setTestPluginEnabledState(newEnabledState, pluginName);
   var plugin = getTestPlugin(pluginName);
-  while (plugin.enabledState != newEnabledState) {
-    // Run a nested event loop to wait for the preference change to
-    // propagate to the child. Yuck!
-    SpecialPowers.Services.tm.currentThread.processNextEvent(true);
-  }
+  // Run a nested event loop to wait for the preference change to
+  // propagate to the child. Yuck!
+  SpecialPowers.Services.tm.spinEventLoopUntil(() => {
+    return plugin.enabledState == newEnabledState;
+  });
   SimpleTest.registerCleanupFunction(function() {
     SpecialPowers.setTestPluginEnabledState(oldEnabledState, pluginName);
   });
@@ -99,10 +99,9 @@ function crashAndGetCrashServiceRecord(crashMethodName, callback) {
  */
 function promiseFullScreenChange(){
   return new Promise(resolve => {
-    document.addEventListener("fullscreenchange", function onFullScreen(e) {
-      document.removeEventListener("fullscreenchange", onFullScreen);
+    document.addEventListener("fullscreenchange", function(e) {
       resolve();
-    });
+    }, {once: true});
   });
 }
 

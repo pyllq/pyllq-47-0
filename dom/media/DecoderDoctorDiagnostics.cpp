@@ -32,14 +32,6 @@ static mozilla::LazyLogModule sDecoderDoctorLog("DecoderDoctor");
 
 namespace mozilla {
 
-struct NotificationAndReportStringId
-{
-  // Notification type, handled by browser-media.js.
-  dom::DecoderDoctorNotificationType mNotificationType;
-  // Console message id. Key in dom/locales/.../chrome/dom/dom.properties.
-  const char* mReportStringId;
-};
-
 // Class that collects a sequence of diagnostics from the same document over a
 // small period of time, in order to provide a synthesized analysis.
 //
@@ -49,7 +41,7 @@ struct NotificationAndReportStringId
 // nothing new happened, StopWatching() will remove the document property and
 // timer (if present), so no more work will happen and the watcher will be
 // destroyed once all references are gone.
-class DecoderDoctorDocumentWatcher : public nsITimerCallback
+class DecoderDoctorDocumentWatcher : public nsITimerCallback, public nsINamed
 {
 public:
   static already_AddRefed<DecoderDoctorDocumentWatcher>
@@ -57,6 +49,7 @@ public:
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSITIMERCALLBACK
+  NS_DECL_NSINAMED
 
   void AddDiagnostics(DecoderDoctorDiagnostics&& aDiagnostics,
                       const char* aCallSite);
@@ -118,7 +111,7 @@ private:
 };
 
 
-NS_IMPL_ISUPPORTS(DecoderDoctorDocumentWatcher, nsITimerCallback)
+NS_IMPL_ISUPPORTS(DecoderDoctorDocumentWatcher, nsITimerCallback, nsINamed)
 
 // static
 already_AddRefed<DecoderDoctorDocumentWatcher>
@@ -246,28 +239,58 @@ DecoderDoctorDocumentWatcher::EnsureTimerIsStarted()
   }
 }
 
+enum class ReportParam : uint8_t
+{
+  // Marks the end of the parameter list.
+  // Keep this zero! (For implicit zero-inits when used in definitions below.)
+  None = 0,
+
+  Formats,
+  DecodeIssue,
+  DocURL,
+  ResourceURL
+};
+
+struct NotificationAndReportStringId
+{
+  // Notification type, handled by browser-media.js.
+  dom::DecoderDoctorNotificationType mNotificationType;
+  // Console message id. Key in dom/locales/.../chrome/dom/dom.properties.
+  const char* mReportStringId;
+  static const int maxReportParams = 4;
+  ReportParam mReportParams[maxReportParams];
+};
+
 // Note: ReportStringIds are limited to alphanumeric only.
 static const NotificationAndReportStringId sMediaWidevineNoWMF=
   { dom::DecoderDoctorNotificationType::Platform_decoder_not_found,
-    "MediaWidevineNoWMF" };
+    "MediaWidevineNoWMF", { ReportParam::None } };
 static const NotificationAndReportStringId sMediaWMFNeeded =
   { dom::DecoderDoctorNotificationType::Platform_decoder_not_found,
-    "MediaWMFNeeded" };
+    "MediaWMFNeeded", { ReportParam::Formats } };
 static const NotificationAndReportStringId sMediaPlatformDecoderNotFound =
   { dom::DecoderDoctorNotificationType::Platform_decoder_not_found,
-    "MediaPlatformDecoderNotFound" };
+    "MediaPlatformDecoderNotFound", { ReportParam::Formats } };
 static const NotificationAndReportStringId sMediaCannotPlayNoDecoders =
   { dom::DecoderDoctorNotificationType::Cannot_play,
-    "MediaCannotPlayNoDecoders" };
+    "MediaCannotPlayNoDecoders", { ReportParam::Formats } };
 static const NotificationAndReportStringId sMediaNoDecoders =
   { dom::DecoderDoctorNotificationType::Can_play_but_some_missing_decoders,
-    "MediaNoDecoders" };
+    "MediaNoDecoders", { ReportParam::Formats } };
 static const NotificationAndReportStringId sCannotInitializePulseAudio =
   { dom::DecoderDoctorNotificationType::Cannot_initialize_pulseaudio,
-    "MediaCannotInitializePulseAudio" };
+    "MediaCannotInitializePulseAudio", { ReportParam::None } };
 static const NotificationAndReportStringId sUnsupportedLibavcodec =
   { dom::DecoderDoctorNotificationType::Unsupported_libavcodec,
-    "MediaUnsupportedLibavcodec" };
+    "MediaUnsupportedLibavcodec", { ReportParam::None } };
+static const NotificationAndReportStringId sMediaDecodeError =
+  { dom::DecoderDoctorNotificationType::Decode_error,
+    "MediaDecodeError",
+    { ReportParam::ResourceURL, ReportParam::DecodeIssue } };
+static const NotificationAndReportStringId sMediaDecodeWarning =
+  { dom::DecoderDoctorNotificationType::Decode_warning,
+    "MediaDecodeWarning",
+    { ReportParam::ResourceURL, ReportParam::DecodeIssue } };
 
 static const NotificationAndReportStringId *const
 sAllNotificationsAndReportStringIds[] =
@@ -279,13 +302,33 @@ sAllNotificationsAndReportStringIds[] =
   &sMediaNoDecoders,
   &sCannotInitializePulseAudio,
   &sUnsupportedLibavcodec,
+  &sMediaDecodeError,
+  &sMediaDecodeWarning
 };
+
+// Create a webcompat-friendly description of a MediaResult.
+static nsString
+MediaResultDescription(const MediaResult& aResult, bool aIsError)
+{
+  nsCString name;
+  GetErrorName(aResult.Code(), name);
+  return NS_ConvertUTF8toUTF16(
+           nsPrintfCString(
+             "%s Code: %s (0x%08" PRIx32 ")%s%s",
+             aIsError ? "Error" : "Warning", name.get(),
+             static_cast<uint32_t>(aResult.Code()),
+             aResult.Message().IsEmpty() ? "" : "\nDetails: ",
+             aResult.Message().get()));
+}
 
 static void
 DispatchNotification(nsISupports* aSubject,
                      const NotificationAndReportStringId& aNotification,
                      bool aIsSolved,
-                     const nsAString& aFormats)
+                     const nsAString& aFormats,
+                     const nsAString& aDecodeIssue,
+                     const nsACString& aDocURL,
+                     const nsAString& aResourceURL)
 {
   if (!aSubject) {
     return;
@@ -297,6 +340,15 @@ DispatchNotification(nsISupports* aSubject,
     NS_ConvertUTF8toUTF16(aNotification.mReportStringId));
   if (!aFormats.IsEmpty()) {
     data.mFormats.Construct(aFormats);
+  }
+  if (!aDecodeIssue.IsEmpty()) {
+    data.mDecodeIssue.Construct(aDecodeIssue);
+  }
+  if (!aDocURL.IsEmpty()) {
+    data.mDocURL.Construct(NS_ConvertUTF8toUTF16(aDocURL));
+  }
+  if (!aResourceURL.IsEmpty()) {
+    data.mResourceURL.Construct(aResourceURL);
   }
   nsAutoString json;
   data.ToJSON(json);
@@ -316,30 +368,85 @@ DispatchNotification(nsISupports* aSubject,
 static void
 ReportToConsole(nsIDocument* aDocument,
                 const char* aConsoleStringId,
-                const nsAString& aParams)
+                nsTArray<const char16_t*>& aParams)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aDocument);
 
-  // 'params' will only be forwarded for non-empty strings.
-  const char16_t* params[1] = { aParams.Data() };
-  DD_DEBUG("DecoderDoctorDiagnostics.cpp:ReportToConsole(doc=%p) ReportToConsole - aMsg='%s' params[0]='%s'",
+  DD_DEBUG("DecoderDoctorDiagnostics.cpp:ReportToConsole(doc=%p) ReportToConsole"
+           " - aMsg='%s' params={%s%s%s%s}",
            aDocument, aConsoleStringId,
-           aParams.IsEmpty() ? "<no params>" : NS_ConvertUTF16toUTF8(params[0]).get());
+           aParams.IsEmpty()
+           ? "<no params>"
+           : NS_ConvertUTF16toUTF8(aParams[0]).get(),
+           (aParams.Length() < 1 || !aParams[1]) ? "" : ", ",
+           (aParams.Length() < 1 || !aParams[1])
+           ? ""
+           : NS_ConvertUTF16toUTF8(aParams[1]).get(),
+           aParams.Length() < 2 ? "" : ", ...");
   nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
                                   NS_LITERAL_CSTRING("Media"),
                                   aDocument,
                                   nsContentUtils::eDOM_PROPERTIES,
                                   aConsoleStringId,
-                                  aParams.IsEmpty() ? nullptr : params,
-                                  aParams.IsEmpty() ? 0 : 1);
+                                  aParams.IsEmpty()
+                                  ? nullptr
+                                  : aParams.Elements(),
+                                  aParams.Length());
+}
+
+static bool
+AllowNotification(const NotificationAndReportStringId& aNotification)
+{
+  // "media.decoder-doctor.notifications-allowed" controls which notifications
+  // may be dispatched to the front-end. It either contains:
+  // - '*' -> Allow everything.
+  // - Comma-separater list of ids -> Allow if aReportStringId (from
+  //                                  dom.properties) is one of them.
+  // - Nothing (missing or empty) -> Disable everything.
+  nsAutoCString filter;
+  Preferences::GetCString("media.decoder-doctor.notifications-allowed", filter);
+  return filter.EqualsLiteral("*") ||
+         StringListContains(filter, aNotification.mReportStringId);
+}
+
+static bool
+AllowDecodeIssue(const MediaResult& aDecodeIssue, bool aDecodeIssueIsError)
+{
+  if (aDecodeIssue == NS_OK) {
+    // 'NS_OK' means we are not actually reporting a decode issue, so we
+    // allow the report.
+    return true;
+  }
+
+  // "media.decoder-doctor.decode-{errors,warnings}-allowed" controls which
+  // decode issues may be dispatched to the front-end. It either contains:
+  // - '*' -> Allow everything.
+  // - Comma-separater list of ids -> Allow if the issue name is one of them.
+  // - Nothing (missing or empty) -> Disable everything.
+  nsAutoCString filter;
+  Preferences::GetCString(aDecodeIssueIsError
+                          ? "media.decoder-doctor.decode-errors-allowed"
+                          : "media.decoder-doctor.decode-warnings-allowed",
+                          filter);
+  if (filter.EqualsLiteral("*")) {
+    return true;
+  }
+
+  nsCString decodeIssueName;
+  GetErrorName(aDecodeIssue.Code(), static_cast<nsACString&>(decodeIssueName));
+  return StringListContains(filter, decodeIssueName);
 }
 
 static void
 ReportAnalysis(nsIDocument* aDocument,
                const NotificationAndReportStringId& aNotification,
                bool aIsSolved,
-               const nsAString& aParams)
+               const nsAString& aFormats = NS_LITERAL_STRING(""),
+               const MediaResult& aDecodeIssue = NS_OK,
+               bool aDecodeIssueIsError = true,
+               const nsACString& aDocURL = NS_LITERAL_CSTRING(""),
+               const nsAString& aResourceURL = NS_LITERAL_STRING(""))
 {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -347,24 +454,50 @@ ReportAnalysis(nsIDocument* aDocument,
     return;
   }
 
-  // Report non-solved issues to console.
-  if (!aIsSolved) {
-    ReportToConsole(aDocument, aNotification.mReportStringId, aParams);
+  nsString decodeIssueDescription;
+  if (aDecodeIssue != NS_OK) {
+    decodeIssueDescription.Assign(MediaResultDescription(aDecodeIssue,
+                                                         aDecodeIssueIsError));
   }
 
-  // "media.decoder-doctor.notifications-allowed" controls which notifications
-  // may be dispatched to the front-end. It either contains:
-  // - '*' -> Allow everything.
-  // - Comma-separater list of ids -> Allow if aReportStringId (from
-  //                                  dom.properties) is one of them.
-  // - Nothing (missing or empty) -> Disable everything.
-  nsAdoptingCString filter =
-    Preferences::GetCString("media.decoder-doctor.notifications-allowed");
-  filter.StripWhitespace();
-  if (filter.EqualsLiteral("*")
-      || StringListContains(filter, aNotification.mReportStringId)) {
+  // Report non-solved issues to console.
+  if (!aIsSolved) {
+    // Build parameter array needed by console message.
+    AutoTArray<const char16_t*,
+               NotificationAndReportStringId::maxReportParams> params;
+    for (int i = 0; i < NotificationAndReportStringId::maxReportParams; ++i) {
+      if (aNotification.mReportParams[i] == ReportParam::None) {
+        break;
+      }
+      switch (aNotification.mReportParams[i]) {
+      case ReportParam::Formats:
+        params.AppendElement(aFormats.Data());
+        break;
+      case ReportParam::DecodeIssue:
+        params.AppendElement(decodeIssueDescription.Data());
+        break;
+      case ReportParam::DocURL:
+        params.AppendElement(NS_ConvertUTF8toUTF16(aDocURL).Data());
+        break;
+      case ReportParam::ResourceURL:
+        params.AppendElement(aResourceURL.Data());
+        break;
+      default:
+        MOZ_ASSERT_UNREACHABLE("Bad notification parameter choice");
+        break;
+      }
+    }
+    ReportToConsole(aDocument, aNotification.mReportStringId, params);
+  }
+
+  if (AllowNotification(aNotification) &&
+      AllowDecodeIssue(aDecodeIssue, aDecodeIssueIsError)) {
     DispatchNotification(
-      aDocument->GetInnerWindow(), aNotification, aIsSolved, aParams);
+      aDocument->GetInnerWindow(), aNotification, aIsSolved,
+      aFormats,
+      decodeIssueDescription,
+      aDocURL,
+      aResourceURL);
   }
 }
 
@@ -413,6 +546,12 @@ DecoderDoctorDocumentWatcher::SynthesizeAnalysis()
   nsAutoString unsupportedKeySystems;
   DecoderDoctorDiagnostics::KeySystemIssue lastKeySystemIssue =
     DecoderDoctorDiagnostics::eUnset;
+  // Only deal with one decode error per document (the first one found).
+  const MediaResult* firstDecodeError = nullptr;
+  const nsString* firstDecodeErrorMediaSrc = nullptr;
+  // Only deal with one decode warning per document (the first one found).
+  const MediaResult* firstDecodeWarning = nullptr;
+  const nsString* firstDecodeWarningMediaSrc = nullptr;
 
   for (const auto& diag : mDiagnosticsSequence) {
     switch (diag.mDecoderDoctorDiagnostics.Type()) {
@@ -454,11 +593,22 @@ DecoderDoctorDocumentWatcher::SynthesizeAnalysis()
       case DecoderDoctorDiagnostics::eEvent:
         MOZ_ASSERT_UNREACHABLE("Events shouldn't be stored for processing.");
         break;
+      case DecoderDoctorDiagnostics::eDecodeError:
+        if (!firstDecodeError) {
+          firstDecodeError = &diag.mDecoderDoctorDiagnostics.DecodeIssue();
+          firstDecodeErrorMediaSrc =
+            &diag.mDecoderDoctorDiagnostics.DecodeIssueMediaSrc();
+        }
+        break;
+      case DecoderDoctorDiagnostics::eDecodeWarning:
+        if (!firstDecodeWarning) {
+          firstDecodeWarning = &diag.mDecoderDoctorDiagnostics.DecodeIssue();
+          firstDecodeWarningMediaSrc =
+            &diag.mDecoderDoctorDiagnostics.DecodeIssueMediaSrc();
+        }
+        break;
       default:
-        MOZ_ASSERT(diag.mDecoderDoctorDiagnostics.Type()
-                     == DecoderDoctorDiagnostics::eFormatSupportCheck
-                   || diag.mDecoderDoctorDiagnostics.Type()
-                        == DecoderDoctorDiagnostics::eMediaKeySystemAccessRequest);
+        MOZ_ASSERT_UNREACHABLE("Unhandled DecoderDoctorDiagnostics type");
         break;
     }
   }
@@ -479,8 +629,8 @@ DecoderDoctorDocumentWatcher::SynthesizeAnalysis()
       nsAutoCString formatsPref("media.decoder-doctor.");
       formatsPref += id->mReportStringId;
       formatsPref += ".formats";
-      nsAdoptingString formatsWithIssues =
-        Preferences::GetString(formatsPref.Data());
+      nsAutoString formatsWithIssues;
+      Preferences::GetString(formatsPref.Data(), formatsWithIssues);
       if (formatsWithIssues.IsEmpty()) {
         continue;
       }
@@ -590,6 +740,31 @@ DecoderDoctorDocumentWatcher::SynthesizeAnalysis()
     }
     return;
   }
+
+  if (firstDecodeError) {
+    DD_INFO("DecoderDoctorDocumentWatcher[%p, doc=%p]::SynthesizeAnalysis() - Decode error: %s",
+            this, mDocument, firstDecodeError->Description().get());
+    ReportAnalysis(mDocument, sMediaDecodeError, false,
+                   NS_LITERAL_STRING(""),
+                   *firstDecodeError,
+                   true, // aDecodeIssueIsError=true
+                   mDocument->GetDocumentURI()->GetSpecOrDefault(),
+                   *firstDecodeErrorMediaSrc);
+    return;
+  }
+
+  if (firstDecodeWarning) {
+    DD_INFO("DecoderDoctorDocumentWatcher[%p, doc=%p]::SynthesizeAnalysis() - Decode warning: %s",
+            this, mDocument, firstDecodeWarning->Description().get());
+    ReportAnalysis(mDocument, sMediaDecodeWarning, false,
+                   NS_LITERAL_STRING(""),
+                   *firstDecodeWarning,
+                   false, // aDecodeIssueIsError=false
+                   mDocument->GetDocumentURI()->GetSpecOrDefault(),
+                   *firstDecodeWarningMediaSrc);
+    return;
+  }
+
   DD_DEBUG("DecoderDoctorDocumentWatcher[%p, doc=%p]::SynthesizeAnalysis() - Can play media, decoders available for all requested formats",
            this, mDocument);
 }
@@ -645,6 +820,12 @@ DecoderDoctorDocumentWatcher::Notify(nsITimer* timer)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+DecoderDoctorDocumentWatcher::GetName(nsACString& aName)
+{
+  aName.AssignASCII("DecoderDoctorDocumentWatcher_timer");
+  return NS_OK;
+}
 
 void
 DecoderDoctorDiagnostics::StoreFormatDiagnostics(nsIDocument* aDocument,
@@ -767,6 +948,88 @@ DecoderDoctorDiagnostics::StoreEvent(nsIDocument* aDocument,
 #endif // MOZ_PULSEAUDIO
 }
 
+void
+DecoderDoctorDiagnostics::StoreDecodeError(nsIDocument* aDocument,
+                                           const MediaResult& aError,
+                                           const nsString& aMediaSrc,
+                                           const char* aCallSite)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  // Make sure we only store once.
+  MOZ_ASSERT(mDiagnosticsType == eUnsaved);
+  mDiagnosticsType = eDecodeError;
+
+  if (NS_WARN_IF(!aDocument)) {
+    DD_WARN("DecoderDoctorDiagnostics[%p]::StoreDecodeError("
+            "nsIDocument* aDocument=nullptr, aError=%s,"
+            " aMediaSrc=<provided>, call site '%s')",
+            this, aError.Description().get(), aCallSite);
+    return;
+  }
+
+  RefPtr<DecoderDoctorDocumentWatcher> watcher =
+    DecoderDoctorDocumentWatcher::RetrieveOrCreate(aDocument);
+
+  if (NS_WARN_IF(!watcher)) {
+    DD_WARN("DecoderDoctorDiagnostics[%p]::StoreDecodeError("
+            "nsIDocument* aDocument=%p, aError='%s', aMediaSrc=<provided>,"
+            " call site '%s') - Could not create document watcher",
+            this, aDocument, aError.Description().get(), aCallSite);
+    return;
+  }
+
+  mDecodeIssue = aError;
+  mDecodeIssueMediaSrc = aMediaSrc;
+
+  // StoreDecodeError should only be called once, after all data is
+  // available, so it is safe to Move() from this object.
+  watcher->AddDiagnostics(Move(*this), aCallSite);
+  // Even though it's moved-from, the type should stay set
+  // (Only used to ensure that we do store only once.)
+  MOZ_ASSERT(mDiagnosticsType == eDecodeError);
+}
+
+void
+DecoderDoctorDiagnostics::StoreDecodeWarning(nsIDocument* aDocument,
+                                             const MediaResult& aWarning,
+                                             const nsString& aMediaSrc,
+                                             const char* aCallSite)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  // Make sure we only store once.
+  MOZ_ASSERT(mDiagnosticsType == eUnsaved);
+  mDiagnosticsType = eDecodeWarning;
+
+  if (NS_WARN_IF(!aDocument)) {
+    DD_WARN("DecoderDoctorDiagnostics[%p]::StoreDecodeWarning("
+            "nsIDocument* aDocument=nullptr, aWarning=%s,"
+            " aMediaSrc=<provided>, call site '%s')",
+            this, aWarning.Description().get(), aCallSite);
+    return;
+  }
+
+  RefPtr<DecoderDoctorDocumentWatcher> watcher =
+    DecoderDoctorDocumentWatcher::RetrieveOrCreate(aDocument);
+
+  if (NS_WARN_IF(!watcher)) {
+    DD_WARN("DecoderDoctorDiagnostics[%p]::StoreDecodeWarning("
+            "nsIDocument* aDocument=%p, aWarning='%s', aMediaSrc=<provided>,"
+            " call site '%s') - Could not create document watcher",
+            this, aDocument, aWarning.Description().get(), aCallSite);
+    return;
+  }
+
+  mDecodeIssue = aWarning;
+  mDecodeIssueMediaSrc = aMediaSrc;
+
+  // StoreDecodeWarning should only be called once, after all data is
+  // available, so it is safe to Move() from this object.
+  watcher->AddDiagnostics(Move(*this), aCallSite);
+  // Even though it's moved-from, the type should stay set
+  // (Only used to ensure that we do store only once.)
+  MOZ_ASSERT(mDiagnosticsType == eDecodeWarning);
+}
+
 static const char*
 EventDomainString(DecoderDoctorEvent::Domain aDomain)
 {
@@ -822,8 +1085,22 @@ DecoderDoctorDiagnostics::GetDescription() const
       }
       break;
     case eEvent:
-      s = nsPrintfCString("event domain %s result=%u",
-                          EventDomainString(mEvent.mDomain), mEvent.mResult);
+      s = nsPrintfCString("event domain %s result=%" PRIu32,
+                          EventDomainString(mEvent.mDomain), static_cast<uint32_t>(mEvent.mResult));
+      break;
+    case eDecodeError:
+      s = "decode error: ";
+      s += mDecodeIssue.Description();
+      s += ", src='";
+      s += mDecodeIssueMediaSrc.IsEmpty() ? "<none>" : "<provided>";
+      s += "'";
+      break;
+    case eDecodeWarning:
+      s = "decode warning: ";
+      s += mDecodeIssue.Description();
+      s += ", src='";
+      s += mDecodeIssueMediaSrc.IsEmpty() ? "<none>" : "<provided>";
+      s += "'";
       break;
     default:
       MOZ_ASSERT_UNREACHABLE("Unexpected DiagnosticsType");

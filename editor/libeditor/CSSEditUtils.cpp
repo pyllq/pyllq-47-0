@@ -549,15 +549,13 @@ CSSEditUtils::GetCSSInlinePropertyBase(nsINode* aNode,
   if (!decl) {
     return NS_OK;
   }
-  if (decl->IsServo()) {
-    MOZ_CRASH("stylo: not implemented");
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
+
   nsCSSPropertyID prop =
     nsCSSProps::LookupProperty(nsDependentAtomString(aProperty),
                                CSSEnabledState::eForAllContent);
   MOZ_ASSERT(prop != eCSSProperty_UNKNOWN);
-  decl->AsGecko()->GetPropertyValueByID(prop, aValue);
+
+  decl->GetPropertyValueByID(prop, aValue);
 
   return NS_OK;
 }
@@ -582,11 +580,11 @@ CSSEditUtils::GetComputedStyle(Element* aElement)
 // remove the CSS style "aProperty : aPropertyValue" and possibly remove the whole node
 // if it is a span and if its only attribute is _moz_dirty
 nsresult
-CSSEditUtils::RemoveCSSInlineStyle(nsIDOMNode* aNode,
+CSSEditUtils::RemoveCSSInlineStyle(nsINode& aNode,
                                    nsIAtom* aProperty,
                                    const nsAString& aPropertyValue)
 {
-  nsCOMPtr<Element> element = do_QueryInterface(aNode);
+  RefPtr<Element> element = aNode.AsElement();
   NS_ENSURE_STATE(element);
 
   // remove the property from the style attribute
@@ -615,7 +613,7 @@ void
 CSSEditUtils::GetDefaultBackgroundColor(nsAString& aColor)
 {
   if (Preferences::GetBool("editor.use_custom_colors", false)) {
-    nsresult rv = Preferences::GetString("editor.background_color", &aColor);
+    nsresult rv = Preferences::GetString("editor.background_color", aColor);
     // XXX Why don't you validate the pref value?
     if (NS_FAILED(rv)) {
       NS_WARNING("failed to get editor.background_color");
@@ -629,7 +627,7 @@ CSSEditUtils::GetDefaultBackgroundColor(nsAString& aColor)
   }
 
   nsresult rv =
-    Preferences::GetString("browser.display.background_color", &aColor);
+    Preferences::GetString("browser.display.background_color", aColor);
   // XXX Why don't you validate the pref value?
   if (NS_FAILED(rv)) {
     NS_WARNING("failed to get browser.display.background_color");
@@ -642,7 +640,7 @@ void
 CSSEditUtils::GetDefaultLengthUnit(nsAString& aLengthUnit)
 {
   nsresult rv =
-    Preferences::GetString("editor.css.default_length_unit", &aLengthUnit);
+    Preferences::GetString("editor.css.default_length_unit", aLengthUnit);
   // XXX Why don't you validate the pref value?
   if (NS_FAILED(rv)) {
     aLengthUnit.AssignLiteral("px");
@@ -1241,6 +1239,44 @@ CSSEditUtils::IsCSSEquivalentToHTMLInlineStyleSet(
   } while ((nsGkAtoms::u == aHTMLProperty ||
             nsGkAtoms::strike == aHTMLProperty) && !isSet && aNode);
   return isSet;
+}
+
+bool
+CSSEditUtils::HaveCSSEquivalentStyles(
+                nsINode& aNode,
+                nsIAtom* aHTMLProperty,
+                nsIAtom* aHTMLAttribute,
+                StyleType aStyleType)
+{
+  nsAutoString valueString;
+  nsCOMPtr<nsINode> node = &aNode;
+  do {
+    // get the value of the CSS equivalent styles
+    nsresult rv =
+      GetCSSEquivalentToHTMLInlineStyleSet(node, aHTMLProperty, aHTMLAttribute,
+                                           valueString, aStyleType);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return false;
+    }
+
+    if (!valueString.IsEmpty()) {
+      return true;
+    }
+
+    if (nsGkAtoms::u != aHTMLProperty && nsGkAtoms::strike != aHTMLProperty) {
+      return false;
+    }
+
+    // unfortunately, the value of the text-decoration property is not
+    // inherited.
+    // that means that we have to look at ancestors of node to see if they
+    // are underlined
+
+    // set to null if it's not a dom element
+    node = node->GetParentElement();
+  } while (node);
+
+  return false;
 }
 
 void

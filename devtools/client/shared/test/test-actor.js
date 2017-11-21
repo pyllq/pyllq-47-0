@@ -439,10 +439,9 @@ var TestActor = exports.TestActor = protocol.ActorClassWithSpec(testSpec, {
   waitForEventOnNode: function (eventName, selector) {
     return new Promise(resolve => {
       let node = selector ? this._querySelector(selector) : this.content;
-      node.addEventListener(eventName, function onEvent() {
-        node.removeEventListener(eventName, onEvent);
+      node.addEventListener(eventName, function () {
         resolve();
-      });
+      }, {once: true});
     });
   },
 
@@ -700,12 +699,10 @@ var TestActor = exports.TestActor = protocol.ActorClassWithSpec(testSpec, {
     }
 
     let deferred = defer();
-    this.content.addEventListener("scroll", function onScroll(event) {
-      this.removeEventListener("scroll", onScroll);
-
+    this.content.addEventListener("scroll", function (event) {
       let data = {x: this.content.scrollX, y: this.content.scrollY};
       deferred.resolve(data);
-    });
+    }, {once: true});
 
     this.content[relative ? "scrollBy" : "scrollTo"](x, y);
 
@@ -816,11 +813,12 @@ var TestActorFront = exports.TestActorFront = protocol.FrontClassWithSpec(testSp
   /**
    * Zoom the current page to a given level.
    * @param {Number} level The new zoom level.
+   * @param {String} actorID Optional. The highlighter actor ID.
    * @return {Promise} The returned promise will only resolve when the
    * highlighter has updated to the new zoom level.
    */
-  zoomPageTo: function (level) {
-    return this.changeZoomLevel(level, this.toolbox.highlighter.actorID);
+  zoomPageTo: function (level, actorID = this.toolbox.highlighter.actorID) {
+    return this.changeZoomLevel(level, actorID);
   },
 
   /* eslint-disable max-len */
@@ -1063,9 +1061,9 @@ var TestActorFront = exports.TestActorFront = protocol.FrontClassWithSpec(testSp
 
     return {
       p1: {x: lGuide.x1, y: tGuide.y1},
-      p2: {x: rGuide.x1, y: tGuide. y1},
-      p3: {x: rGuide.x1, y: bGuide.y1},
-      p4: {x: lGuide.x1, y: bGuide.y1}
+      p2: {x: +rGuide.x1 + 1, y: tGuide.y1},
+      p3: {x: +rGuide.x1 + 1, y: +bGuide.y1 + 1},
+      p4: {x: lGuide.x1, y: +bGuide.y1 + 1}
     };
   }),
 

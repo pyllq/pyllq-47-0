@@ -50,7 +50,7 @@ void
 SourceBuffer::SetMode(SourceBufferAppendMode aMode, ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("SetMode(aMode=%d)", aMode);
+  MSE_API("SetMode(aMode=%" PRIu32 ")", static_cast<uint32_t>(aMode));
   if (!IsAttached() || mUpdating) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
@@ -212,6 +212,7 @@ void
 SourceBuffer::AbortBufferAppend()
 {
   if (mUpdating) {
+    mCompletionPromise.DisconnectIfExists();
     if (mPendingAppend.Exists()) {
       mPendingAppend.Disconnect();
       mTrackBuffersManager->AbortAppendData();
@@ -359,7 +360,7 @@ SourceBuffer::QueueAsyncSimpleEvent(const char* aName)
 {
   MSE_DEBUG("Queuing event '%s'", aName);
   nsCOMPtr<nsIRunnable> event = new AsyncEventRunner<SourceBuffer>(this, aName);
-  NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+  mAbstractMainThread->Dispatch(event.forget());
 }
 
 void
@@ -417,7 +418,7 @@ SourceBuffer::AppendData(const uint8_t* aData, uint32_t aLength, ErrorResult& aR
   }
   StartUpdating();
 
-  mTrackBuffersManager->AppendData(data, mCurrentAttributes)
+  mTrackBuffersManager->AppendData(data.forget(), mCurrentAttributes)
     ->Then(mAbstractMainThread, __func__, this,
            &SourceBuffer::AppendDataCompletedWithSuccess,
            &SourceBuffer::AppendDataErrored)
@@ -425,7 +426,7 @@ SourceBuffer::AppendData(const uint8_t* aData, uint32_t aLength, ErrorResult& aR
 }
 
 void
-SourceBuffer::AppendDataCompletedWithSuccess(SourceBufferTask::AppendBufferResult aResult)
+SourceBuffer::AppendDataCompletedWithSuccess(const SourceBufferTask::AppendBufferResult& aResult)
 {
   MOZ_ASSERT(mUpdating);
   mPendingAppend.Complete();
@@ -433,21 +434,31 @@ SourceBuffer::AppendDataCompletedWithSuccess(SourceBufferTask::AppendBufferResul
   if (aResult.first()) {
     if (!mActive) {
       mActive = true;
-      mMediaSource->SourceBufferIsActive(this);
+      MSE_DEBUG("Init segment received");
+      RefPtr<SourceBuffer> self = this;
+      mMediaSource->SourceBufferIsActive(this)
+        ->Then(mAbstractMainThread, __func__,
+               [self, this]() {
+                 MSE_DEBUG("Complete AppendBuffer operation");
+                 mCompletionPromise.Complete();
+                 StopUpdating();
+               })
+        ->Track(mCompletionPromise);
     }
   }
   if (mActive) {
-    // Tell our parent decoder that we have received new data.
+    // Tell our parent decoder that we have received new data
+    // and send progress event.
     mMediaSource->GetDecoder()->NotifyDataArrived();
-    // Send progress event.
-    mMediaSource->GetDecoder()->NotifyBytesDownloaded();
   }
 
   mCurrentAttributes = aResult.second();
 
   CheckEndTime();
 
-  StopUpdating();
+  if (!mCompletionPromise.Exists()) {
+    StopUpdating();
+  }
 }
 
 void

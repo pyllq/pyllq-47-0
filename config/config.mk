@@ -225,6 +225,9 @@ endif
 endif # MOZ_PROFILE_USE
 endif # NO_PROFILE_GUIDED_OPTIMIZE
 
+# linker
+OS_LDFLAGS += $(LINKER_LDFLAGS)
+
 MAKE_JARS_FLAGS = \
 	-t $(topsrcdir) \
 	-f $(MOZ_JAR_MAKER_FILE_FORMAT) \
@@ -292,13 +295,11 @@ HOST_CFLAGS	+= $(_DEPEND_CFLAGS)
 HOST_CXXFLAGS	+= $(_DEPEND_CFLAGS)
 ifdef CROSS_COMPILE
 HOST_CFLAGS	+= $(HOST_OPTIMIZE_FLAGS)
+HOST_CXXFLAGS	+= $(HOST_OPTIMIZE_FLAGS)
 else
 ifdef MOZ_OPTIMIZE
-ifeq (1,$(MOZ_OPTIMIZE))
 HOST_CFLAGS	+= $(MOZ_OPTIMIZE_FLAGS)
-else
-HOST_CFLAGS	+= $(MOZ_OPTIMIZE_FLAGS)
-endif # MOZ_OPTIMIZE == 1
+HOST_CXXFLAGS	+= $(MOZ_OPTIMIZE_FLAGS)
 endif # MOZ_OPTIMIZE
 endif # CROSS_COMPILE
 
@@ -413,8 +414,13 @@ endif # WINNT
 
 ifdef _MSC_VER
 ifeq ($(CPU_ARCH),x86_64)
+ifdef MOZ_ASAN
+# ASan could have 3x stack memory usage of normal builds.
+WIN32_EXE_LDFLAGS	+= -STACK:6291456
+else
 # set stack to 2MB on x64 build.  See bug 582910
 WIN32_EXE_LDFLAGS	+= -STACK:2097152
+endif
 endif
 endif
 

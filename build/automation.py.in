@@ -179,20 +179,11 @@ class Automation(object):
       if Automation().IS_WIN32:
         import platform
         pid = "%i" % self.pid
-        if platform.release() == "2000":
-          # Windows 2000 needs 'kill.exe' from the 
-          #'Windows 2000 Resource Kit tools'. (See bug 475455.)
-          try:
-            subprocess.Popen(["kill", "-f", pid]).wait()
-          except:
-            self.log.info("TEST-UNEXPECTED-FAIL | automation.py | Missing 'kill' utility to kill process with pid=%s. Kill it manually!", pid)
-        else:
-          # Windows XP and later.
-          subprocess.Popen(["taskkill", "/F", "/PID", pid]).wait()
+        subprocess.Popen(["taskkill", "/F", "/PID", pid]).wait()
       else:
         os.kill(self.pid, signal.SIGKILL)
 
-  def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False, dmdPath=None, lsanPath=None):
+  def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False, dmdPath=None, lsanPath=None, ubsanPath=None):
     if xrePath == None:
       xrePath = self.DIST_BIN
     if env == None:
@@ -594,7 +585,7 @@ class Automation(object):
     if os.path.exists(processLog):
       os.unlink(processLog)
 
-    return status
+    return status, self.lastTestSeen
 
   def elf_arm(self, filename):
     data = open(filename, 'rb').read(20)

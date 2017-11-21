@@ -8,13 +8,14 @@
 
 #include "imgIContainer.h"
 #include "nsMargin.h"
+#include "nsCSSRenderingBorders.h"
 
+class gfxContext;
 class nsIFrame;
 class nsFrame;
 class nsDisplayList;
 class nsDisplayListBuilder;
 class nsPresContext;
-class nsRenderingContext;
 struct nsRect;
 class nsStyleContext;
 
@@ -39,24 +40,29 @@ public:
 
   DrawResult PaintInnerFocusBorder(nsDisplayListBuilder* aBuilder,
                                    nsPresContext* aPresContext,
-                                   nsRenderingContext& aRenderingContext,
+                                   gfxContext& aRenderingContext,
                                    const nsRect& aDirtyRect,
                                    const nsRect& aRect);
 
+  mozilla::Maybe<nsCSSBorderRenderer> CreateInnerFocusBorderRenderer(nsDisplayListBuilder* aBuilder,
+                                                                     nsPresContext* aPresContext,
+                                                                     gfxContext* aRenderingContext,
+                                                                     const nsRect& aDirtyRect,
+                                                                     const nsRect& aRect);
+
   DrawResult PaintBorder(nsDisplayListBuilder* aBuilder,
                          nsPresContext* aPresContext,
-                         nsRenderingContext& aRenderingContext,
+                         gfxContext& aRenderingContext,
                          const nsRect& aDirtyRect,
                          const nsRect& aRect);
 
   void SetFrame(nsFrame* aFrame, nsPresContext* aPresContext);
- 
+
   void SetDisabled(bool aDisabled, bool notify);
 
   bool isActive();
   bool isDisabled();
 
-  void GetButtonRect(const nsRect& aRect, nsRect& aResult);
   void GetButtonInnerFocusRect(const nsRect& aRect, nsRect& aResult);
 
   nsStyleContext* GetStyleContext(int32_t aIndex) const;

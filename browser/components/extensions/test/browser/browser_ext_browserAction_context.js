@@ -2,7 +2,7 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-function* runTests(options) {
+async function runTests(options) {
   async function background(getTests) {
     async function checkDetails(expecting, tabId) {
       let title = await browser.browserAction.getTitle({tabId});
@@ -124,7 +124,9 @@ function* runTests(options) {
   }
 
   let awaitFinish = new Promise(resolve => {
-    extension.onMessage("nextTest", (expecting, testsRemaining) => {
+    extension.onMessage("nextTest", async (expecting, testsRemaining) => {
+      await promiseAnimationFrame();
+
       checkDetails(expecting);
 
       if (testsRemaining) {
@@ -135,15 +137,15 @@ function* runTests(options) {
     });
   });
 
-  yield extension.startup();
+  await extension.startup();
 
-  yield awaitFinish;
+  await awaitFinish;
 
-  yield extension.unload();
+  await extension.unload();
 }
 
-add_task(function* testTabSwitchContext() {
-  yield runTests({
+add_task(async function testTabSwitchContext() {
+  await runTests({
     manifest: {
       "browser_action": {
         "default_icon": "default.png",
@@ -175,7 +177,7 @@ add_task(function* testTabSwitchContext() {
       "2.png": imageBuffer,
     },
 
-    getTests(tabs, expectDefaults) {
+    getTests: function(tabs, expectDefaults) {
       const DEFAULT_BADGE_COLOR = [0xd9, 0, 0, 255];
 
       let details = [
@@ -315,8 +317,8 @@ add_task(function* testTabSwitchContext() {
   });
 });
 
-add_task(function* testDefaultTitle() {
-  yield runTests({
+add_task(async function testDefaultTitle() {
+  await runTests({
     manifest: {
       "name": "Foo Extension",
 
@@ -331,7 +333,7 @@ add_task(function* testDefaultTitle() {
       "icon.png": imageBuffer,
     },
 
-    getTests(tabs, expectDefaults) {
+    getTests: function(tabs, expectDefaults) {
       const DEFAULT_BADGE_COLOR = [0xd9, 0, 0, 255];
 
       let details = [
@@ -388,6 +390,15 @@ add_task(function* testDefaultTitle() {
         async expect => {
           browser.test.log("Set default title to null string. Expect null string from API, extension title in UI.");
           browser.browserAction.setTitle({title: ""});
+
+          await expectDefaults(details[3]);
+          expect(details[3]);
+        },
+        async expect => {
+          browser.test.assertRejects(
+            browser.browserAction.setPopup({popup: "about:addons"}),
+            /Access denied for URL about:addons/,
+            "unable to set popup to about:addons");
 
           await expectDefaults(details[3]);
           expect(details[3]);

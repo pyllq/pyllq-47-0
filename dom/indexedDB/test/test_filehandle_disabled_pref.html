@@ -12,7 +12,9 @@
 
     <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
 
-    <script type="text/javascript;version=1.7">
+    <script type="text/javascript">
+      /* import-globals-from file.js */
+      /* import-globals-from helpers.js */
       function* testSteps()
       {
         const databaseName = window.location.pathname;
@@ -167,6 +169,7 @@
         event = yield undefined;
 
         try {
+          // eslint-disable-next-line no-unused-vars
           let result = request.result;
           ok(false, "Should have thrown!");
         }
@@ -193,8 +196,8 @@
       }
     </script>
 
-    <script type="text/javascript;version=1.7" src="helpers.js"></script>
-    <script type="text/javascript;version=1.7" src="file.js"></script>
+    <script type="text/javascript" src="helpers.js"></script>
+    <script type="text/javascript" src="file.js"></script>
 
   </head>
 

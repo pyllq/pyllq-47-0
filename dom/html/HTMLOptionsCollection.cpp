@@ -10,6 +10,7 @@
 #include "mozAutoDocUpdate.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/GenericSpecifiedValuesInlines.h"
 #include "mozilla/dom/HTMLFormSubmission.h"
 #include "mozilla/dom/HTMLOptionElement.h"
 #include "mozilla/dom/HTMLOptionsCollectionBinding.h"
@@ -69,7 +70,7 @@ HTMLOptionsCollection::GetOptionIndex(Element* aOption,
     if (index == -1) {
       return NS_ERROR_FAILURE;
     }
-    
+
     *aIndex = index;
     return NS_OK;
   }
@@ -161,7 +162,7 @@ HTMLOptionsCollection::IndexedSetter(uint32_t aIndex,
   }
 
   NS_ASSERTION(aIndex <= mElements.Length(), "SetLength lied");
-  
+
   if (aIndex == mElements.Length()) {
     mSelect->AppendChild(*aOption, aError);
     return;

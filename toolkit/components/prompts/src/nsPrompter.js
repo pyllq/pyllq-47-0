@@ -18,8 +18,8 @@ function Prompter() {
 }
 
 Prompter.prototype = {
-    classID          : Components.ID("{1c978d25-b37f-43a8-a2d6-0c7a239ead87}"),
-    QueryInterface   : XPCOMUtils.generateQI([Ci.nsIPromptFactory, Ci.nsIPromptService, Ci.nsIPromptService2]),
+    classID: Components.ID("{1c978d25-b37f-43a8-a2d6-0c7a239ead87}"),
+    QueryInterface: XPCOMUtils.generateQI([Ci.nsIPromptFactory, Ci.nsIPromptService, Ci.nsIPromptService2]),
 
 
     /* ----------  private members  ---------- */
@@ -118,7 +118,7 @@ Prompter.prototype = {
 
 // Common utils not specific to a particular prompter style.
 var PromptUtilsTemp = {
-    __proto__ : PromptUtils,
+    __proto__: PromptUtils,
 
     getLocalizedString(key, formatArgs) {
         if (formatArgs)
@@ -299,8 +299,7 @@ var PromptUtilsTemp = {
             var chromeWin = promptWin.QueryInterface(Ci.nsIInterfaceRequestor)
                                      .getInterface(Ci.nsIWebNavigation)
                                      .QueryInterface(Ci.nsIDocShell)
-                                     .chromeEventHandler.ownerDocument
-                                     .defaultView.wrappedJSObject;
+                                     .chromeEventHandler.ownerGlobal.wrappedJSObject;
 
             if (chromeWin.getTabModalPromptBox)
                 promptBox = chromeWin.getTabModalPromptBox(promptWin);
@@ -375,6 +374,10 @@ function openTabPrompt(domWin, tabPrompt, args) {
                          .getInterface(Ci.nsIDOMWindowUtils);
     winUtils.enterModalState();
 
+    let frameMM = docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIContentFrameMessageManager);
+    frameMM.QueryInterface(Ci.nsIDOMEventTarget);
+
     // We provide a callback so the prompt can close itself. We don't want to
     // wait for this event loop to return... Otherwise the presence of other
     // prompts on the call stack would in this dialog appearing unresponsive
@@ -388,16 +391,25 @@ function openTabPrompt(domWin, tabPrompt, args) {
         if (newPrompt)
             tabPrompt.removePrompt(newPrompt);
 
-        domWin.removeEventListener("pagehide", pagehide);
+        frameMM.removeEventListener("pagehide", pagehide, true);
 
         winUtils.leaveModalState();
 
         PromptUtils.fireDialogEvent(domWin, "DOMModalDialogClosed");
     }
 
-    domWin.addEventListener("pagehide", pagehide);
-    function pagehide() {
-        domWin.removeEventListener("pagehide", pagehide);
+    frameMM.addEventListener("pagehide", pagehide, true);
+    function pagehide(e) {
+        // Check whether the event relates to our window or its ancestors
+        let window = domWin;
+        let eventWindow = e.target.defaultView;
+        while (window != eventWindow && window.parent != window) {
+          window = window.parent;
+        }
+        if (window != eventWindow) {
+          return;
+        }
+        frameMM.removeEventListener("pagehide", pagehide, true);
 
         if (newPrompt) {
             newPrompt.abortPrompt();
@@ -416,9 +428,7 @@ function openTabPrompt(domWin, tabPrompt, args) {
         // there's other stuff in nsWindowWatcher::OpenWindowInternal
         // that we might need to do here as well.
 
-        let thread = Services.tm.currentThread;
-        while (args.promptActive)
-            thread.processNextEvent(true);
+        Services.tm.spinEventLoopUntil(() => !args.promptActive);
         delete args.promptActive;
 
         if (args.promptAborted)
@@ -446,6 +456,9 @@ function openRemotePrompt(domWin, args, tabPrompt) {
     winUtils.enterModalState();
     let closed = false;
 
+    let frameMM = docShell.getInterface(Ci.nsIContentFrameMessageManager);
+    frameMM.QueryInterface(Ci.nsIDOMEventTarget);
+
     // It should be hard or impossible to cause a window to create multiple
     // prompts, but just in case, give our prompt an ID.
     let id = "id" + Cc["@mozilla.org/uuid-generator;1"]
@@ -457,7 +470,7 @@ function openRemotePrompt(domWin, args, tabPrompt) {
         }
 
         messageManager.removeMessageListener("Prompt:Close", listener);
-        domWin.removeEventListener("pagehide", pagehide);
+        frameMM.removeEventListener("pagehide", pagehide, true);
 
         winUtils.leaveModalState();
         PromptUtils.fireDialogEvent(domWin, "DOMModalDialogClosed");
@@ -474,9 +487,18 @@ function openRemotePrompt(domWin, args, tabPrompt) {
         closed = true;
     });
 
-    domWin.addEventListener("pagehide", pagehide);
-    function pagehide() {
-        domWin.removeEventListener("pagehide", pagehide);
+    frameMM.addEventListener("pagehide", pagehide, true);
+    function pagehide(e) {
+        // Check whether the event relates to our window or its ancestors
+        let window = domWin;
+        let eventWindow = e.target.defaultView;
+        while (window != eventWindow && window.parent != window) {
+          window = window.parent;
+        }
+        if (window != eventWindow) {
+          return;
+        }
+        frameMM.removeEventListener("pagehide", pagehide, true);
         messageManager.sendAsyncMessage("Prompt:ForceClose", { _remoteId: id });
     }
 
@@ -490,25 +512,22 @@ function openRemotePrompt(domWin, args, tabPrompt) {
 
     messageManager.sendAsyncMessage("Prompt:Open", args, {});
 
-    let thread = Services.tm.currentThread;
-    while (!closed) {
-        thread.processNextEvent(true);
-    }
+    Services.tm.spinEventLoopUntil(() => closed);
 }
 
 function ModalPrompter(domWin) {
     this.domWin = domWin;
 }
 ModalPrompter.prototype = {
-    domWin : null,
+    domWin: null,
     /*
      * Default to not using a tab-modal prompt, unless the caller opts in by
      * QIing to nsIWritablePropertyBag and setting the value of this property
      * to true.
      */
-    allowTabModal : false,
+    allowTabModal: false,
 
-    QueryInterface : XPCOMUtils.generateQI([Ci.nsIPrompt, Ci.nsIAuthPrompt,
+    QueryInterface: XPCOMUtils.generateQI([Ci.nsIPrompt, Ci.nsIAuthPrompt,
                                             Ci.nsIAuthPrompt2,
                                             Ci.nsIWritablePropertyBag2]),
 
@@ -874,8 +893,8 @@ ModalPrompter.prototype = {
 function AuthPromptAdapterFactory() {
 }
 AuthPromptAdapterFactory.prototype = {
-    classID          : Components.ID("{6e134924-6c3a-4d86-81ac-69432dd971dc}"),
-    QueryInterface   : XPCOMUtils.generateQI([Ci.nsIAuthPromptAdapterFactory]),
+    classID: Components.ID("{6e134924-6c3a-4d86-81ac-69432dd971dc}"),
+    QueryInterface: XPCOMUtils.generateQI([Ci.nsIAuthPromptAdapterFactory]),
 
     /* ----------  nsIAuthPromptAdapterFactory ---------- */
 
@@ -890,8 +909,8 @@ function AuthPromptAdapter(oldPrompter) {
     this.oldPrompter = oldPrompter;
 }
 AuthPromptAdapter.prototype = {
-    QueryInterface : XPCOMUtils.generateQI([Ci.nsIAuthPrompt2]),
-    oldPrompter    : null,
+    QueryInterface: XPCOMUtils.generateQI([Ci.nsIAuthPrompt2]),
+    oldPrompter: null,
 
     /* ----------  nsIAuthPrompt2 ---------- */
 

@@ -33,7 +33,7 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(CallbackObject)
 NS_IMPL_CYCLE_COLLECTION_CLASS(CallbackObject)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CallbackObject)
-  tmp->DropJSObjects();
+  tmp->ClearJSReferences();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mIncumbentGlobal)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -334,7 +334,7 @@ CallbackObject::CallSetup::~CallSetup()
 
         // IsJSContextException shouldn't be true anymore because we will report
         // the exception on the JSContext ... so throw something else.
-        mErrorResult.Throw(NS_ERROR_UNEXPECTED);
+        mErrorResult.ThrowWithCustomCleanup(NS_ERROR_UNEXPECTED);
       }
     }
   }

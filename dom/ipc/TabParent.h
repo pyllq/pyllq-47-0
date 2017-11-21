@@ -90,7 +90,6 @@ class TabParent final : public PBrowserParent
                       , public nsIKeyEventInPluginCallback
                       , public nsSupportsWeakReference
                       , public TabContext
-                      , public nsAPostRefreshObserver
                       , public nsIWebBrowserPersistable
                       , public LiveResizeListener
 {
@@ -119,19 +118,6 @@ public:
 
   void CacheFrameLoader(nsFrameLoader* aFrameLoader);
 
-  /**
-   * Get the mozapptype attribute from this TabParent's owner DOM element.
-   */
-  void GetAppType(nsAString& aOut);
-
-  /**
-   * Returns true iff this TabParent's nsIFrameLoader is visible.
-   *
-   * The frameloader's visibility can be independent of e.g. its docshell's
-   * visibility.
-   */
-  bool IsVisible() const;
-
   nsIBrowserDOMWindow *GetBrowserDOMWindow() const { return mBrowserDOMWindow; }
 
   void SetBrowserDOMWindow(nsIBrowserDOMWindow* aBrowserDOMWindow)
@@ -158,8 +144,6 @@ public:
 
   void AddWindowListeners();
 
-  void DidRefresh() override;
-
   virtual mozilla::ipc::IPCResult RecvMoveFocus(const bool& aForward,
                                                 const bool& aForDocumentNavigation) override;
 
@@ -178,14 +162,16 @@ public:
   virtual mozilla::ipc::IPCResult
   RecvAccessKeyNotHandled(const WidgetKeyboardEvent& aEvent) override;
 
-  virtual mozilla::ipc::IPCResult RecvBrowserFrameOpenWindow(PBrowserParent* aOpener,
-                                                             PRenderFrameParent* aRenderFrame,
-                                                             const nsString& aURL,
-                                                             const nsString& aName,
-                                                             const nsString& aFeatures,
-                                                             bool* aOutWindowOpened,
-                                                             TextureFactoryIdentifier* aTextureFactoryIdentifier,
-                                                             uint64_t* aLayersId) override;
+  virtual mozilla::ipc::IPCResult
+  RecvSetHasBeforeUnload(const bool& aHasBeforeUnload) override;
+
+  virtual mozilla::ipc::IPCResult
+  RecvBrowserFrameOpenWindow(PBrowserParent* aOpener,
+                             PRenderFrameParent* aRenderFrame,
+                             const nsString& aURL,
+                             const nsString& aName,
+                             const nsString& aFeatures,
+                             BrowserFrameOpenWindowResolver&& aResolve) override;
 
   virtual mozilla::ipc::IPCResult
   RecvSyncMessage(const nsString& aMessage,
@@ -209,7 +195,7 @@ public:
   virtual mozilla::ipc::IPCResult
   RecvNotifyIMEFocus(const ContentCache& aContentCache,
                      const widget::IMENotification& aEventMessage,
-                     nsIMEUpdatePreference* aPreference) override;
+                     widget::IMENotificationRequests* aRequests) override;
 
   virtual mozilla::ipc::IPCResult
   RecvNotifyIMETextChange(const ContentCache& aContentCache,
@@ -313,15 +299,6 @@ public:
 
   virtual mozilla::ipc::IPCResult RecvHideTooltip() override;
 
-  virtual mozilla::ipc::IPCResult RecvGetDPI(float* aValue) override;
-
-  virtual mozilla::ipc::IPCResult RecvGetDefaultScale(double* aValue) override;
-
-  virtual mozilla::ipc::IPCResult RecvGetWidgetRounding(int32_t* aValue) override;
-
-  virtual mozilla::ipc::IPCResult RecvGetMaxTouchPoints(uint32_t* aTouchPoints) override;
-
-  virtual mozilla::ipc::IPCResult RecvGetWidgetNativeData(WindowsHandle* aValue) override;
 
   virtual mozilla::ipc::IPCResult RecvSetNativeChildOfShareableWindow(const uintptr_t& childWindow) override;
 
@@ -345,10 +322,6 @@ public:
 
   virtual bool
   DeallocPColorPickerParent(PColorPickerParent* aColorPicker) override;
-
-  virtual PDatePickerParent*
-  AllocPDatePickerParent(const nsString& aTitle, const nsString& aInitialDate) override;
-  virtual bool DeallocPDatePickerParent(PDatePickerParent* aDatePicker) override;
 
   virtual PDocAccessibleParent*
   AllocPDocAccessibleParent(PDocAccessibleParent*, const uint64_t&,
@@ -379,6 +352,8 @@ public:
 
   void UpdateDimensions(const nsIntRect& aRect, const ScreenIntSize& aSize);
 
+  DimensionInfo GetDimensionInfo();
+
   void SizeModeChanged(const nsSizeMode& aSizeMode);
 
   void UIResolutionChanged();
@@ -386,8 +361,7 @@ public:
   void ThemeChanged();
 
   void HandleAccessKey(const WidgetKeyboardEvent& aEvent,
-                       nsTArray<uint32_t>& aCharCodes,
-                       const int32_t& aModifierMask);
+                       nsTArray<uint32_t>& aCharCodes);
 
   void Activate();
 
@@ -401,8 +375,10 @@ public:
   LayoutDeviceToCSSScale GetLayoutDeviceToCSSScale();
 
   virtual mozilla::ipc::IPCResult
-  RecvRequestNativeKeyBindings(const mozilla::WidgetKeyboardEvent& aEvent,
-                               MaybeNativeKeyBinding* aBindings) override;
+  RecvRequestNativeKeyBindings(
+    const uint32_t& aType,
+    const mozilla::WidgetKeyboardEvent& aEvent,
+    nsTArray<mozilla::CommandInt>* aCommands) override;
 
   virtual mozilla::ipc::IPCResult
   RecvSynthesizeNativeKeyEvent(const int32_t& aNativeKeyboardLayout,
@@ -456,17 +432,35 @@ public:
                     int32_t aCharCode, int32_t aModifiers,
                     bool aPreventDefault);
 
-  bool SendRealMouseEvent(mozilla::WidgetMouseEvent& aEvent);
+  /**
+   * The following Send*Event() marks aEvent as posted to remote process if
+   * it succeeded.  So, you can check the result with
+   * aEvent.HasBeenPostedToRemoteProcess().
+   */
+  void SendRealMouseEvent(WidgetMouseEvent& aEvent);
 
-  bool SendRealDragEvent(mozilla::WidgetDragEvent& aEvent,
+  void SendRealDragEvent(WidgetDragEvent& aEvent,
                          uint32_t aDragAction,
                          uint32_t aDropEffect);
 
-  bool SendMouseWheelEvent(mozilla::WidgetWheelEvent& aEvent);
+  void SendMouseWheelEvent(WidgetWheelEvent& aEvent);
 
-  bool SendRealKeyEvent(mozilla::WidgetKeyboardEvent& aEvent);
+  void SendRealKeyEvent(WidgetKeyboardEvent& aEvent);
 
-  bool SendRealTouchEvent(WidgetTouchEvent& aEvent);
+  void SendRealTouchEvent(WidgetTouchEvent& aEvent);
+
+  void SendPluginEvent(WidgetPluginEvent& aEvent);
+
+  /**
+   * Different from above Send*Event(), these methods return true if the
+   * event has been posted to the remote process or failed to do that but
+   * shouldn't be handled by following event listeners.
+   * If you need to check if it's actually posted to the remote process,
+   * you can refer aEvent.HasBeenPostedToRemoteProcess().
+   */
+  bool SendCompositionEvent(mozilla::WidgetCompositionEvent& aEvent);
+
+  bool SendSelectionEvent(mozilla::WidgetSelectionEvent& aEvent);
 
   bool SendHandleTap(TapType aType,
                      const LayoutDevicePoint& aPoint,
@@ -514,10 +508,6 @@ public:
 
   bool HandleQueryContentEvent(mozilla::WidgetQueryContentEvent& aEvent);
 
-  bool SendCompositionEvent(mozilla::WidgetCompositionEvent& aEvent);
-
-  bool SendSelectionEvent(mozilla::WidgetSelectionEvent& aEvent);
-
   bool SendPasteTransferable(const IPCDataTransfer& aDataTransfer,
                              const bool& aIsPrivateData,
                              const IPC::Principal& aRequestingPrincipal);
@@ -542,14 +532,28 @@ public:
    */
   bool IsDestroyed() const { return mIsDestroyed; }
 
+  // Returns the closest widget for our frameloader's content.
   already_AddRefed<nsIWidget> GetWidget() const;
+
+  // Returns the top-level widget for our frameloader's document.
+  already_AddRefed<nsIWidget> GetDocWidget() const;
 
   const TabId GetTabId() const
   {
     return mTabId;
   }
 
+  // Returns the offset from the origin of our frameloader's nearest widget to
+  // the origin of its layout frame. This offset is used to translate event
+  // coordinates relative to the PuppetWidget origin in the child process.
   LayoutDeviceIntPoint GetChildProcessOffset();
+
+  // Returns the offset from the on-screen origin of our top-level window's
+  // widget (including window decorations) to the origin of our frameloader's
+  // nearest widget. This offset is used to translate coordinates from the
+  // PuppetWidget's origin to absolute screen coordinates in the child.
+  LayoutDeviceIntPoint GetClientOffset();
+
   LayoutDevicePoint AdjustTapToChildWidget(const LayoutDevicePoint& aPoint);
 
   /**
@@ -560,11 +564,15 @@ public:
   virtual bool
   DeallocPPluginWidgetParent(PPluginWidgetParent* aActor) override;
 
+  virtual PPaymentRequestParent*
+  AllocPPaymentRequestParent() override;
+
+  virtual bool
+  DeallocPPaymentRequestParent(PPaymentRequestParent* aActor) override;
+
   void SetInitedByParent() { mInitedByParent = true; }
 
   bool IsInitedByParent() const { return mInitedByParent; }
-
-  static TabParent* GetNextTabParent();
 
   bool SendLoadRemoteScript(const nsString& aURL,
                             const bool& aRunInGlobalScope);
@@ -585,15 +593,11 @@ public:
 
   layout::RenderFrameParent* GetRenderFrame();
 
-  void AudioChannelChangeNotification(nsPIDOMWindowOuter* aWindow,
-                                      AudioChannel aAudioChannel,
-                                      float aVolume,
-                                      bool aMuted);
   bool SetRenderFrame(PRenderFrameParent* aRFParent);
   bool GetRenderFrameInfo(TextureFactoryIdentifier* aTextureFactoryIdentifier,
                           uint64_t* aLayersId);
 
-  mozilla::ipc::IPCResult RecvEnsureLayersConnected() override;
+  mozilla::ipc::IPCResult RecvEnsureLayersConnected(CompositorOptions* aCompositorOptions) override;
 
   // LiveResizeListener implementation
   void LiveResizeStarted() override;
@@ -631,9 +635,6 @@ protected:
                                                     const int32_t& aCx, const int32_t& aCy) override;
 
   virtual mozilla::ipc::IPCResult RecvGetTabCount(uint32_t* aValue) override;
-
-  virtual mozilla::ipc::IPCResult RecvAudioChannelActivityNotification(const uint32_t& aAudioChannel,
-                                                                       const bool& aActive) override;
 
   virtual mozilla::ipc::IPCResult RecvSHistoryUpdate(const uint32_t& aCount,
                                                      const uint32_t& aLocalIndex,
@@ -707,13 +708,6 @@ private:
 
   TabId mTabId;
 
-  // When loading a new tab or window via window.open, the child process sends
-  // a new PBrowser to use. We store that tab in sNextTabParent and then
-  // proceed through the browser's normal paths to create a new
-  // window/tab. When it comes time to create a new TabParent, we instead use
-  // sNextTabParent.
-  static TabParent* sNextTabParent;
-
   // When loading a new tab or window via window.open, the child is
   // responsible for loading the URL it wants into the new TabChild. When the
   // parent receives the CreateWindow message, though, it sends a LoadURL
@@ -752,8 +746,6 @@ private:
   // cursor.  This happens whenever the cursor is in the tab's region.
   bool mTabSetsCursor;
 
-  RefPtr<nsIPresShell> mPresShellWithRefreshListener;
-
   bool mHasContentOpener;
 
 #ifdef DEBUG
@@ -778,6 +770,14 @@ private:
   // the tab's docshell is inactive.
   bool mPreserveLayers;
 
+  // True if this TabParent has had its layer tree sent to the compositor
+  // at least once.
+  bool mHasPresented;
+
+  // True if at least one window hosted in the TabChild has added a
+  // beforeunload event listener.
+  bool mHasBeforeUnload;
+
 public:
   static TabParent* GetTabParentFromLayersId(uint64_t aLayersId);
 };
@@ -785,13 +785,11 @@ public:
 struct MOZ_STACK_CLASS TabParent::AutoUseNewTab final
 {
 public:
-  AutoUseNewTab(TabParent* aNewTab, bool* aWindowIsNew, nsCString* aURLToLoad)
-   : mNewTab(aNewTab), mWindowIsNew(aWindowIsNew), mURLToLoad(aURLToLoad)
+  AutoUseNewTab(TabParent* aNewTab, nsCString* aURLToLoad)
+   : mNewTab(aNewTab), mURLToLoad(aURLToLoad)
   {
-    MOZ_ASSERT(!TabParent::sNextTabParent);
     MOZ_ASSERT(!aNewTab->mCreatingWindow);
 
-    TabParent::sNextTabParent = aNewTab;
     aNewTab->mCreatingWindow = true;
     aNewTab->mDelayedURL.Truncate();
   }
@@ -800,17 +798,10 @@ public:
   {
     mNewTab->mCreatingWindow = false;
     *mURLToLoad = mNewTab->mDelayedURL;
-
-    if (TabParent::sNextTabParent) {
-      MOZ_ASSERT(TabParent::sNextTabParent == mNewTab);
-      TabParent::sNextTabParent = nullptr;
-      *mWindowIsNew = false;
-    }
   }
 
 private:
   TabParent* mNewTab;
-  bool* mWindowIsNew;
   nsCString* mURLToLoad;
 };
 

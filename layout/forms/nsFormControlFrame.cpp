@@ -17,19 +17,14 @@ using namespace mozilla;
 
 //#define FCF_NOISY
 
-nsFormControlFrame::nsFormControlFrame(nsStyleContext* aContext)
-  : nsAtomicContainerFrame(aContext)
+nsFormControlFrame::nsFormControlFrame(nsStyleContext* aContext,
+                                       nsIFrame::ClassID aID)
+  : nsAtomicContainerFrame(aContext, aID)
 {
 }
 
 nsFormControlFrame::~nsFormControlFrame()
 {
-}
-
-nsIAtom*
-nsFormControlFrame::GetType() const
-{
-  return nsGkAtoms::formControlFrame;
 }
 
 void
@@ -45,26 +40,34 @@ NS_QUERYFRAME_HEAD(nsFormControlFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsAtomicContainerFrame)
 
 /* virtual */ nscoord
-nsFormControlFrame::GetMinISize(nsRenderingContext *aRenderingContext)
+nsFormControlFrame::GetMinISize(gfxContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_MIN_WIDTH(this, result);
-  result = GetIntrinsicISize();
+#if !defined(MOZ_WIDGET_ANDROID)
+  result = StyleDisplay()->mAppearance == NS_THEME_NONE ? 0 : DefaultSize();
+#else
+  result = DefaultSize();
+#endif
   return result;
 }
 
 /* virtual */ nscoord
-nsFormControlFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
+nsFormControlFrame::GetPrefISize(gfxContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_PREF_WIDTH(this, result);
-  result = GetIntrinsicISize();
+#if !defined(MOZ_WIDGET_ANDROID)
+  result = StyleDisplay()->mAppearance == NS_THEME_NONE ? 0 : DefaultSize();
+#else
+  result = DefaultSize();
+#endif
   return result;
 }
 
 /* virtual */
 LogicalSize
-nsFormControlFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
+nsFormControlFrame::ComputeAutoSize(gfxContext*         aRC,
                                     WritingMode         aWM,
                                     const LogicalSize&  aCBSize,
                                     nscoord             aAvailableISize,
@@ -73,27 +76,18 @@ nsFormControlFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
                                     const LogicalSize&  aPadding,
                                     ComputeSizeFlags    aFlags)
 {
-  const WritingMode wm = GetWritingMode();
-  LogicalSize result(wm, GetIntrinsicISize(), GetIntrinsicBSize());
-  return result.ConvertTo(aWM, wm);
-}
-
-nscoord
-nsFormControlFrame::GetIntrinsicISize()
-{
-  // Provide a reasonable default for sites that use an "auto" height.
-  // Note that if you change this, you should change the values in forms.css
-  // as well.  This is the 13px default width minus the 2px default border.
-  return nsPresContext::CSSPixelsToAppUnits(13 - 2 * 2);
-}
-
-nscoord
-nsFormControlFrame::GetIntrinsicBSize()
-{
-  // Provide a reasonable default for sites that use an "auto" height.
-  // Note that if you change this, you should change the values in forms.css
-  // as well. This is the 13px default width minus the 2px default border.
-  return nsPresContext::CSSPixelsToAppUnits(13 - 2 * 2);
+  LogicalSize size(aWM, 0, 0);
+#if !defined(MOZ_WIDGET_ANDROID)
+  if (StyleDisplay()->mAppearance == NS_THEME_NONE) {
+    return size;
+  }
+#endif
+  // Note: this call always set the BSize to NS_UNCONSTRAINEDSIZE.
+  size = nsAtomicContainerFrame::ComputeAutoSize(aRC, aWM, aCBSize,
+                                                 aAvailableISize, aMargin,
+                                                 aBorder, aPadding, aFlags);
+  size.BSize(aWM) = DefaultSize();
+  return size;
 }
 
 nscoord
@@ -142,7 +136,7 @@ nsFormControlFrame::Reflow(nsPresContext*          aPresContext,
     RegUnRegAccessKey(static_cast<nsIFrame*>(this), true);
   }
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
   aDesiredSize.SetSize(aReflowInput.GetWritingMode(),
                        aReflowInput.ComputedSizeWithBorderPadding());
 
@@ -165,9 +159,9 @@ nsresult
 nsFormControlFrame::RegUnRegAccessKey(nsIFrame * aFrame, bool aDoReg)
 {
   NS_ENSURE_ARG_POINTER(aFrame);
-  
+
   nsPresContext* presContext = aFrame->PresContext();
-  
+
   NS_ASSERTION(presContext, "aPresContext is NULL in RegUnRegAccessKey!");
 
   nsAutoString accessKey;
@@ -186,13 +180,13 @@ nsFormControlFrame::RegUnRegAccessKey(nsIFrame * aFrame, bool aDoReg)
   return NS_ERROR_FAILURE;
 }
 
-void 
+void
 nsFormControlFrame::SetFocus(bool aOn, bool aRepaint)
 {
 }
 
 nsresult
-nsFormControlFrame::HandleEvent(nsPresContext* aPresContext, 
+nsFormControlFrame::HandleEvent(nsPresContext* aPresContext,
                                 WidgetGUIEvent* aEvent,
                                 nsEventStatus* aEventStatus)
 {

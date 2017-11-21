@@ -13,19 +13,18 @@ module.metadata = {
 };
 
 const { Class, mix } = require("./core/heritage");
-const { addCollectionProperty } = require("./util/collection");
 const { ns } = require("./core/namespace");
-const { validateOptions, getTypeOf } = require("./deprecated/api-utils");
-const { URL, isValidURI } = require("./url");
-const { WindowTracker, browserWindowIterator } = require("./deprecated/window-utils");
-const { isBrowser, getInnerId } = require("./window/utils");
-const { MatchPattern } = require("./util/match-pattern");
+lazyRequire(this, "./deprecated/api-utils", "validateOptions", "getTypeOf");
+lazyRequire(this, "./url", "URL", "isValidURI");
+lazyRequire(this, "./deprecated/window-utils", "WindowTracker", "browserWindowIterator");
+lazyRequire(this, "./window/utils", "isBrowser", "getInnerId");
+lazyRequire(this, "./util/match-pattern", "MatchPattern");
 const { EventTarget } = require("./event/target");
-const { emit } = require('./event/core');
+lazyRequire(this, './event/core', "emit");
 const { when } = require('./system/unload');
 const { contract: loaderContract } = require('./content/loader');
 const { omit } = require('./util/object');
-const self = require('./self')
+lazyRequireModule(this, './self', "self");
 const { remoteRequire, processes } = require('./remote/parent');
 remoteRequire('sdk/content/context-menu');
 
@@ -966,14 +965,14 @@ var MenuWrapper = Class({
       if (toplevel.length == 0) {
         let separator = this.separator;
         if (separator)
-          separator.parentNode.removeChild(separator);
+          separator.remove();
       }
     }
     else if (parent == this.overflowPopup) {
       // If there are no more items then remove the overflow menu and separator
       if (parent.childNodes.length == 0) {
         let separator = this.separator;
-        separator.parentNode.removeChild(separator);
+        separator.remove();
         this.contextMenu.removeChild(parent.parentNode);
       }
     }
@@ -996,7 +995,7 @@ var MenuWrapper = Class({
         this.populate(this.items);
       }
 
-      let mainWindow = event.target.ownerDocument.defaultView;
+      let mainWindow = event.target.ownerGlobal;
       this.contextMenuContentData = mainWindow.gContextMenuContentData
       if (!(self.id in this.contextMenuContentData.addonInfo)) {
         console.warn("No context menu state data was provided.");

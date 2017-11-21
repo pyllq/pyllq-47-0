@@ -4,6 +4,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+with Files('*Selection*'):
+    BUG_COMPONENT = ('Core', 'Selection')
+
+with Files("**"):
+    BUG_COMPONENT = ("Core", "DOM")
+
 TEST_DIRS += ['test']
 
 XPIDL_SOURCES += [
@@ -24,14 +30,12 @@ XPIDL_SOURCES += [
     'nsIObjectLoadingContent.idl',
     'nsIRemoteWindowContext.idl',
     'nsIScriptChannel.idl',
-    'nsIScriptLoaderObserver.idl',
     'nsISelection.idl',
     'nsISelectionController.idl',
     'nsISelectionDisplay.idl',
     'nsISelectionListener.idl',
     'nsISelectionPrivate.idl',
     'nsISimpleContentPolicy.idl',
-    'nsISiteSpecificUserAgent.idl',
     'nsISlowScriptDebug.idl',
 ]
 
@@ -80,6 +84,7 @@ EXPORTS += [
     'nsIContentInlines.h',
     'nsIContentIterator.h',
     'nsIContentSerializer.h',
+    'nsIdentifierMapEntry.h',
     'nsIDocument.h',
     'nsIDocumentInlines.h',
     'nsIDocumentObserver.h',
@@ -90,7 +95,6 @@ EXPORTS += [
     'nsINode.h',
     'nsINodeList.h',
     'nsIScriptContext.h',
-    'nsIScriptElement.h',
     'nsIScriptGlobalObject.h',
     'nsIScriptNameSpaceManager.h',
     'nsIScriptObjectPrincipal.h',
@@ -111,7 +115,6 @@ EXPORTS += [
     'nsRange.h',
     'nsReferencedElement.h',
     'nsSandboxFlags.h',
-    'nsScriptLoader.h',
     'nsStructuredCloneContainer.h',
     'nsStubAnimationObserver.h',
     'nsStubDocumentObserver.h',
@@ -125,6 +128,7 @@ EXPORTS += [
     'nsWrapperCache.h',
     'nsWrapperCacheInlines.h',
     'nsXMLNameSpaceMap.h',
+    'XPathGenerator.h',
 ]
 
 if CONFIG['MOZ_WEBRTC']:
@@ -154,7 +158,7 @@ EXPORTS.mozilla.dom += [
     'Comment.h',
     'CustomElementRegistry.h',
     'DirectionalityUtils.h',
-    'Dispatcher.h',
+    'DispatcherTrait.h',
     'DocGroup.h',
     'DocumentFragment.h',
     'DocumentType.h',
@@ -182,7 +186,6 @@ EXPORTS.mozilla.dom += [
     'IdleRequest.h',
     'ImageEncoder.h',
     'ImageTracker.h',
-    'ImportManager.h',
     'Link.h',
     'Location.h',
     'NameSpaceConstants.h',
@@ -196,8 +199,9 @@ EXPORTS.mozilla.dom += [
     'ResponsiveImageSelector.h',
     'SameProcessMessageQueue.h',
     'ScreenOrientation.h',
-    'ScriptSettings.h',
+    'Selection.h',
     'ShadowRoot.h',
+    'StructuredCloneBlob.h',
     'StructuredCloneHolder.h',
     'StructuredCloneTags.h',
     'StyleSheetList.h',
@@ -205,12 +209,18 @@ EXPORTS.mozilla.dom += [
     'TabGroup.h',
     'Text.h',
     'Timeout.h',
+    'TimeoutHandler.h',
     'TimeoutManager.h',
     'TreeWalker.h',
     'WebKitCSSMatrix.h',
     'WebSocket.h',
     'WindowOrientationObserver.h',
 ]
+
+if CONFIG['FUZZING']:
+    EXPORTS.mozilla.dom += [
+        'FuzzingFunctions.h',
+    ]
 
 UNIFIED_SOURCES += [
     'AnonymousContent.cpp',
@@ -225,7 +235,7 @@ UNIFIED_SOURCES += [
     'Crypto.cpp',
     'CustomElementRegistry.cpp',
     'DirectionalityUtils.cpp',
-    'Dispatcher.cpp',
+    'DispatcherTrait.cpp',
     'DocGroup.cpp',
     'DocumentFragment.cpp',
     'DocumentType.cpp',
@@ -249,7 +259,6 @@ UNIFIED_SOURCES += [
     'IdleRequest.cpp',
     'ImageEncoder.cpp',
     'ImageTracker.cpp',
-    'ImportManager.cpp',
     'Link.cpp',
     'Location.cpp',
     'Navigator.cpp',
@@ -307,8 +316,6 @@ UNIFIED_SOURCES += [
     'nsRange.cpp',
     'nsReferencedElement.cpp',
     'nsScreen.cpp',
-    'nsScriptElement.cpp',
-    'nsScriptLoader.cpp',
     'nsScriptNameSpaceManager.cpp',
     'nsStructuredCloneContainer.cpp',
     'nsStubAnimationObserver.cpp',
@@ -335,8 +342,10 @@ UNIFIED_SOURCES += [
     'ResponsiveImageSelector.cpp',
     'SameProcessMessageQueue.cpp',
     'ScreenOrientation.cpp',
-    'ScriptSettings.cpp',
+    'Selection.cpp',
+    'SelectionChangeListener.cpp',
     'ShadowRoot.cpp',
+    'StructuredCloneBlob.cpp',
     'StructuredCloneHolder.cpp',
     'StyleSheetList.cpp',
     'SubtleCrypto.cpp',
@@ -345,17 +354,34 @@ UNIFIED_SOURCES += [
     'TextInputProcessor.cpp',
     'ThirdPartyUtil.cpp',
     'Timeout.cpp',
+    'TimeoutBudgetManager.cpp',
+    'TimeoutExecutor.cpp',
+    'TimeoutHandler.cpp',
     'TimeoutManager.cpp',
     'TreeWalker.cpp',
     'WebKitCSSMatrix.cpp',
     'WebSocket.cpp',
     'WindowNamedPropertiesHandler.cpp',
     'WindowOrientationObserver.cpp',
+    'XPathGenerator.cpp',
 ]
 
 if CONFIG['MOZ_WEBRTC']:
     UNIFIED_SOURCES += [
         'nsDOMDataChannel.cpp',
+    ]
+
+if CONFIG['FUZZING']:
+    UNIFIED_SOURCES += [
+        'FuzzingFunctions.cpp',
+    ]
+
+if CONFIG['ENABLE_INTL_API']:
+    UNIFIED_SOURCES += [
+        'IntlUtils.cpp',
+    ]
+    EXPORTS.mozilla.dom += [
+        'IntlUtils.h',
     ]
 
 # these files couldn't be in UNIFIED_SOURCES for now for reasons given below:
@@ -387,18 +413,11 @@ if CONFIG['INTEL_ARCHITECTURE']:
 EXTRA_COMPONENTS += [
     'contentAreaDropListener.js',
     'contentAreaDropListener.manifest',
-    'messageWakeupService.js',
-    'messageWakeupService.manifest',
+    'ProcessSelector.js',
+    'ProcessSelector.manifest',
     'SlowScriptDebug.js',
     'SlowScriptDebug.manifest',
 ]
-
-# Firefox for Android provides an alternate version of this component
-if CONFIG['MOZ_BUILD_APP'] != 'mobile/android':
-    EXTRA_COMPONENTS += [
-        'SiteSpecificUserAgent.js',
-        'SiteSpecificUserAgent.manifest',
-    ]
 
 EXTRA_JS_MODULES += [
     'DOMRequestHelper.jsm',
@@ -441,11 +460,6 @@ LOCAL_INCLUDES += [
     '/widget',
     '/xpcom/ds',
 ]
-
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
-    LOCAL_INCLUDES += [
-        '../system/gonk',
-    ]
 
 if CONFIG['MOZ_WEBRTC']:
     LOCAL_INCLUDES += [

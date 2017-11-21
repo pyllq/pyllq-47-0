@@ -13,6 +13,9 @@
 namespace mozilla {
 namespace gfx {
 
+int32_t
+StrideForFormatAndWidth(SurfaceFormat aFormat, int32_t aWidth);
+
 /**
  * Create a DataSourceSurface and init the surface with the |aData|. The stride
  * of this source surface might be different from the input data's |aDataStride|.
@@ -34,9 +37,6 @@ CreateDataSourceSurfaceWithStrideFromData(const IntSize &aSize,
                                           int32_t aStride,
                                           const uint8_t* aData,
                                           int32_t aDataStride);
-
-void
-ConvertBGRXToBGRA(uint8_t* aData, const IntSize &aSize, const int32_t aStride);
 
 /**
  * Copy the pixel data from aSrc and pack it into aDst. aSrcSize, aSrcStride

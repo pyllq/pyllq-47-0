@@ -20,7 +20,7 @@ class ContentBridgeParent : public PContentBridgeParent
                           , public nsIObserver
 {
 public:
-  explicit ContentBridgeParent(Transport* aTransport);
+  explicit ContentBridgeParent();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
@@ -31,19 +31,19 @@ public:
   void NotifyTabDestroyed();
 
   static ContentBridgeParent*
-  Create(Transport* aTransport, ProcessId aOtherProcess);
-
-  virtual PBlobParent*
-  SendPBlobConstructor(PBlobParent* actor,
-                       const BlobConstructorParams& params) override;
+  Create(Endpoint<PContentBridgeParent>&& aEndpoint);
 
   virtual PBrowserParent*
   SendPBrowserConstructor(PBrowserParent* aActor,
                           const TabId& aTabId,
+                          const TabId& aSameTabGroupAs,
                           const IPCTabContext& aContext,
                           const uint32_t& aChromeFlags,
                           const ContentParentId& aCpID,
                           const bool& aIsForBrowser) override;
+
+  virtual PFileDescriptorSetParent*
+  SendPFileDescriptorSetConstructor(const FileDescriptor&) override;
 
   FORWARD_SHMEM_ALLOCATOR_TO(PContentBridgeParent)
 
@@ -62,6 +62,30 @@ public:
     // XXX: do we need this for ContentBridgeParent?
     return -1;
   }
+  virtual bool IsForJSPlugin() const override
+  {
+    return mIsForJSPlugin;
+  }
+
+
+  virtual mozilla::ipc::PParentToChildStreamParent*
+  SendPParentToChildStreamConstructor(mozilla::ipc::PParentToChildStreamParent*) override;
+
+  virtual bool SendActivate(PBrowserParent* aTab) override
+  {
+    return PContentBridgeParent::SendActivate(aTab);
+  }
+
+  virtual bool SendDeactivate(PBrowserParent* aTab) override
+  {
+    return PContentBridgeParent::SendDeactivate(aTab);
+  }
+
+  virtual bool SendParentActivated(PBrowserParent* aTab,
+                                   const bool& aActivated) override
+  {
+    return PContentBridgeParent::SendParentActivated(aTab, aActivated);
+  }
 
 protected:
   virtual ~ContentBridgeParent();
@@ -74,6 +98,10 @@ protected:
   void SetIsForBrowser(bool aIsForBrowser)
   {
     mIsForBrowser = aIsForBrowser;
+  }
+  void SetIsForJSPlugin(bool aIsForJSPlugin)
+  {
+    mIsForJSPlugin = aIsForJSPlugin;
   }
 
   void Close()
@@ -102,6 +130,7 @@ protected:
 
   virtual PBrowserParent*
   AllocPBrowserParent(const TabId& aTabId,
+                      const TabId& aSameTabGroupAs,
                       const IPCTabContext &aContext,
                       const uint32_t& aChromeFlags,
                       const ContentParentId& aCpID,
@@ -109,14 +138,28 @@ protected:
 
   virtual bool DeallocPBrowserParent(PBrowserParent*) override;
 
-  virtual PBlobParent*
-  AllocPBlobParent(const BlobConstructorParams& aParams) override;
+  virtual PIPCBlobInputStreamParent*
+  SendPIPCBlobInputStreamConstructor(PIPCBlobInputStreamParent* aActor,
+                                     const nsID& aID,
+                                     const uint64_t& aSize) override;
 
-  virtual bool DeallocPBlobParent(PBlobParent*) override;
+  virtual PIPCBlobInputStreamParent*
+  AllocPIPCBlobInputStreamParent(const nsID& aID,
+                                 const uint64_t& aSize) override;
 
-  virtual PSendStreamParent* AllocPSendStreamParent() override;
+  virtual bool
+  DeallocPIPCBlobInputStreamParent(PIPCBlobInputStreamParent*) override;
 
-  virtual bool DeallocPSendStreamParent(PSendStreamParent* aActor) override;
+  virtual PChildToParentStreamParent* AllocPChildToParentStreamParent() override;
+
+  virtual bool
+  DeallocPChildToParentStreamParent(PChildToParentStreamParent* aActor) override;
+
+  virtual mozilla::ipc::PParentToChildStreamParent*
+  AllocPParentToChildStreamParent() override;
+
+  virtual bool
+  DeallocPParentToChildStreamParent(mozilla::ipc::PParentToChildStreamParent* aActor) override;
 
   virtual PFileDescriptorSetParent*
   AllocPFileDescriptorSetParent(const mozilla::ipc::FileDescriptor&) override;
@@ -128,9 +171,9 @@ protected:
 
 protected: // members
   RefPtr<ContentBridgeParent> mSelfRef;
-  Transport* mTransport; // owned
   ContentParentId mChildID;
   bool mIsForBrowser;
+  bool mIsForJSPlugin;
 
 private:
   friend class ContentParent;

@@ -236,7 +236,7 @@ bool
 JavaScriptShared::toVariant(JSContext* cx, JS::HandleValue from, JSVariant* to)
 {
     switch (JS_TypeOfValue(cx, from)) {
-      case JSTYPE_VOID:
+      case JSTYPE_UNDEFINED:
         *to = UndefinedVariant();
         return true;
 
@@ -498,6 +498,30 @@ JavaScriptShared::ConvertID(const JSIID& from, nsID* to)
     to->m3[5] = from.m3_5();
     to->m3[6] = from.m3_6();
     to->m3[7] = from.m3_7();
+}
+
+JSObject*
+JavaScriptShared::findCPOWById(const ObjectId& objId)
+{
+    JSObject* obj = findCPOWByIdPreserveColor(objId);
+    if (obj)
+        JS::ExposeObjectToActiveJS(obj);
+    return obj;
+}
+
+JSObject*
+JavaScriptShared::findCPOWByIdPreserveColor(const ObjectId& objId)
+{
+    JSObject* obj = cpows_.findPreserveColor(objId);
+    if (!obj)
+        return nullptr;
+
+    if (js::gc::EdgeNeedsSweepUnbarriered(&obj)) {
+        cpows_.remove(objId);
+        return nullptr;
+    }
+
+    return obj;
 }
 
 JSObject*

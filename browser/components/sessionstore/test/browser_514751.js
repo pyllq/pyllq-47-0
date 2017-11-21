@@ -19,10 +19,8 @@ function test() {
   };
 
   var theWin = openDialog(location, "", "chrome,all,dialog=no");
-  theWin.addEventListener("load", function () {
-    theWin.removeEventListener("load", arguments.callee);
-
-    executeSoon(function () {
+  theWin.addEventListener("load", function() {
+    executeSoon(function() {
       var gotError = false;
       try {
         ss.setWindowState(theWin, JSON.stringify(state), true);
@@ -33,6 +31,6 @@ function test() {
       ok(!gotError, "Didn't get a malformed URI error.");
       BrowserTestUtils.closeWindow(theWin).then(finish);
     });
-  });
+  }, {once: true});
 }
 

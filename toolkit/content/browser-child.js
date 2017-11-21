@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/frame-script */
+
 var Cc = Components.classes;
 var Ci = Components.interfaces;
 var Cu = Components.utils;
@@ -31,6 +33,7 @@ var WebProgressListener = {
     this._filter = Cc["@mozilla.org/appshell/component/browser-status-filter;1"]
                      .createInstance(Ci.nsIWebProgress);
     this._filter.addProgressListener(this, Ci.nsIWebProgress.NOTIFY_ALL);
+    this._filter.target = tabEventTarget;
 
     let webProgress = docShell.QueryInterface(Ci.nsIInterfaceRequestor)
                               .getInterface(Ci.nsIWebProgress);
@@ -52,20 +55,30 @@ var WebProgressListener = {
     return aRequest.QueryInterface(Ci.nsIChannel)[aPropertyName].spec;
   },
 
-  _setupJSON: function setupJSON(aWebProgress, aRequest) {
+  _setupJSON: function setupJSON(aWebProgress, aRequest, aStateFlags) {
+    // Avoid accessing content.document when being called from onStateChange
+    // unless if we are in STATE_STOP, because otherwise the getter will
+    // instantiate an about:blank document for us.
+    let contentDocument = null;
+    if (aStateFlags) {
+      // We're being called from onStateChange
+      if (aStateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
+        contentDocument = content.document;
+      }
+    } else {
+      contentDocument = content.document;
+    }
+
     let innerWindowID = null;
     if (aWebProgress) {
       let domWindowID = null;
       try {
-        let utils = aWebProgress.DOMWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                                .getInterface(Ci.nsIDOMWindowUtils);
-        domWindowID = utils.outerWindowID;
-        innerWindowID = utils.currentInnerWindowID;
+        domWindowID = aWebProgress.DOMWindowID;
+        innerWindowID = aWebProgress.innerDOMWindowID;
       } catch (e) {
-        // If nsDocShell::Destroy has already been called, then we'll
-        // get NS_NOINTERFACE when trying to get the DOM window.
-        // If there is no current inner window, we'll get
-        // NS_ERROR_NOT_AVAILABLE.
+        // The DOM Window ID getters above may throw if the inner or outer
+        // windows aren't created yet or are destroyed at the time we're making
+        // this call but that isn't fatal so ignore the exceptions here.
       }
 
       aWebProgress = {
@@ -80,7 +93,7 @@ var WebProgressListener = {
       webProgress: aWebProgress || null,
       requestURI: this._requestSpec(aRequest, "URI"),
       originalRequestURI: this._requestSpec(aRequest, "originalURI"),
-      documentContentType: content.document && content.document.contentType,
+      documentContentType: contentDocument ? contentDocument.contentType : null,
       innerWindowID,
     };
   },
@@ -114,7 +127,7 @@ var WebProgressListener = {
   },
 
   onStateChange: function onStateChange(aWebProgress, aRequest, aStateFlags, aStatus) {
-    let json = this._setupJSON(aWebProgress, aRequest);
+    let json = this._setupJSON(aWebProgress, aRequest, aStateFlags);
     let objects = this._setupObjects(aWebProgress, aRequest);
 
     json.stateFlags = aStateFlags;
@@ -134,6 +147,9 @@ var WebProgressListener = {
     this._send("Content:StateChange", json, objects);
   },
 
+  // Note: Because the nsBrowserStatusFilter timeout runnable is
+  // SystemGroup-labeled, this method should not modify content DOM or
+  // run content JS.
   onProgressChange: function onProgressChange(aWebProgress, aRequest, aCurSelf, aMaxSelf, aCurTotal, aMaxTotal) {
     let json = this._setupJSON(aWebProgress, aRequest);
     let objects = this._setupObjects(aWebProgress, aRequest);
@@ -184,6 +200,9 @@ var WebProgressListener = {
     this._send("Content:LocationChange", json, objects);
   },
 
+  // Note: Because the nsBrowserStatusFilter timeout runnable is
+  // SystemGroup-labeled, this method should not modify content DOM or
+  // run content JS.
   onStatusChange: function onStatusChange(aWebProgress, aRequest, aStatus, aMessage) {
     let json = this._setupJSON(aWebProgress, aRequest);
     let objects = this._setupObjects(aWebProgress, aRequest);
@@ -262,6 +281,10 @@ var WebNavigation =  {
         this.gotoIndex(message.data.index);
         break;
       case "WebNavigation:LoadURI":
+        let histogram = Services.telemetry.getKeyedHistogramById("FX_TAB_REMOTE_NAVIGATION_DELAY_MS");
+        histogram.add("WebNavigation:LoadURI",
+                      Services.telemetry.msSystemNow() - message.data.requestTime);
+
         this.loadURI(message.data.uri, message.data.flags,
                      message.data.referrer, message.data.referrerPolicy,
                      message.data.postData, message.data.headers,
@@ -402,15 +425,9 @@ var ControllerCommands = {
 ControllerCommands.init()
 
 addEventListener("DOMTitleChanged", function(aEvent) {
-  let document = content.document;
-  switch (aEvent.type) {
-  case "DOMTitleChanged":
-    if (!aEvent.isTrusted || aEvent.target.defaultView != content)
-      return;
-
-    sendAsyncMessage("DOMTitleChanged", { title: document.title });
-    break;
-  }
+  if (!aEvent.isTrusted || aEvent.target.defaultView != content)
+    return;
+  sendAsyncMessage("DOMTitleChanged", { title: content.document.title });
 }, false);
 
 addEventListener("DOMWindowClose", function(aEvent) {
@@ -584,20 +601,6 @@ if (AddonsChild) {
     RemoteAddonsChild.uninit(AddonsChild);
   });
 }
-
-addMessageListener("NetworkPrioritizer:AdjustPriority", (msg) => {
-  let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
-  let loadGroup = webNav.QueryInterface(Ci.nsIDocumentLoader)
-                        .loadGroup.QueryInterface(Ci.nsISupportsPriority);
-  loadGroup.adjustPriority(msg.data.adjustment);
-});
-
-addMessageListener("NetworkPrioritizer:SetPriority", (msg) => {
-  let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
-  let loadGroup = webNav.QueryInterface(Ci.nsIDocumentLoader)
-                        .loadGroup.QueryInterface(Ci.nsISupportsPriority);
-  loadGroup.priority = msg.data.priority;
-});
 
 addMessageListener("InPermitUnload", msg => {
   let inPermitUnload = docShell.contentViewer && docShell.contentViewer.inPermitUnload;

@@ -77,10 +77,10 @@ class MIRGenerator
     abort(AbortReason r, const char* message, ...) MOZ_FORMAT_PRINTF(3, 4);
 
     mozilla::GenericErrorResult<AbortReason>
-    abortFmt(AbortReason r, const char* message, va_list ap);
+    abortFmt(AbortReason r, const char* message, va_list ap) MOZ_FORMAT_PRINTF(3, 0);
 
     // Collect the evaluation result of phases after IonBuilder, such that
-    // off-main-thread compilation can report what error got encountered.
+    // off-thread compilation can report what error got encountered.
     void setOffThreadStatus(AbortReasonOr<Ok> result) {
         MOZ_ASSERT(offThreadStatus_.isOk());
         offThreadStatus_ = result;
@@ -91,7 +91,7 @@ class MIRGenerator
 
     MOZ_MUST_USE bool instrumentedProfiling() {
         if (!instrumentedProfilingIsCached_) {
-            instrumentedProfiling_ = GetJitContext()->runtime->spsProfiler().enabled();
+            instrumentedProfiling_ = GetJitContext()->runtime->geckoProfiler().enabled();
             instrumentedProfilingIsCached_ = true;
         }
         return instrumentedProfiling_;
@@ -102,7 +102,8 @@ class MIRGenerator
     }
 
     bool isOptimizationTrackingEnabled() {
-        return isProfilerInstrumentationEnabled() && !info().isAnalysis();
+        return isProfilerInstrumentationEnabled() && !info().isAnalysis() &&
+               !JitOptions.disableOptimizationTracking;
     }
 
     bool safeForMinorGC() const {
@@ -112,7 +113,7 @@ class MIRGenerator
         safeForMinorGC_ = false;
     }
 
-    // Whether the main thread is trying to cancel this build.
+    // Whether the active thread is trying to cancel this build.
     bool shouldCancel(const char* why) {
         maybePause();
         return cancelBuild_;
@@ -145,12 +146,21 @@ class MIRGenerator
     uint32_t minWasmHeapLength() const {
         return minWasmHeapLength_;
     }
-    void setPerformsCall() {
-        performsCall_ = true;
+
+    void setNeedsOverrecursedCheck() {
+        needsOverrecursedCheck_ = true;
     }
-    bool performsCall() const {
-        return performsCall_;
+    bool needsOverrecursedCheck() const {
+        return needsOverrecursedCheck_;
     }
+
+    void setNeedsStaticStackAlignment() {
+        needsStaticStackAlignment_ = true;
+    }
+    bool needsStaticStackAlignment() const {
+        return needsOverrecursedCheck_;
+    }
+
     // Traverses the graph to find if there's any SIMD instruction. Costful but
     // the value is cached, so don't worry about calling it several times.
     bool usesSimd();
@@ -181,7 +191,8 @@ class MIRGenerator
     mozilla::Atomic<bool, mozilla::Relaxed> cancelBuild_;
 
     uint32_t wasmMaxStackArgBytes_;
-    bool performsCall_;
+    bool needsOverrecursedCheck_;
+    bool needsStaticStackAlignment_;
     bool usesSimd_;
     bool cachedUsesSimd_;
 

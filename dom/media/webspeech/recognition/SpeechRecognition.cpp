@@ -72,8 +72,8 @@ GetSpeechRecognitionService(const nsAString& aLang)
 {
   nsAutoCString speechRecognitionServiceCID;
 
-  nsAdoptingCString prefValue =
-    Preferences::GetCString(PREFERENCE_DEFAULT_RECOGNITION_SERVICE);
+  nsAutoCString prefValue;
+  Preferences::GetCString(PREFERENCE_DEFAULT_RECOGNITION_SERVICE, prefValue);
   nsAutoCString speechRecognitionService;
 
   if (!aLang.IsEmpty()) {
@@ -147,7 +147,6 @@ SpeechRecognition::SetState(FSMState state)
 {
   mCurrentState = state;
   SR_LOG("Transitioned to state %s", GetName(mCurrentState));
-  return;
 }
 
 JSObject*
@@ -187,6 +186,7 @@ SpeechRecognition::Constructor(const GlobalObject& aGlobal,
   nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(aGlobal.GetAsSupports());
   if (!win) {
     aRv.Throw(NS_ERROR_FAILURE);
+    return nullptr;
   }
 
   MOZ_ASSERT(win->IsInnerWindow());
@@ -374,8 +374,6 @@ SpeechRecognition::Transition(SpeechEvent* aEvent)
     case STATE_COUNT:
       MOZ_CRASH("Invalid state STATE_COUNT");
   }
-
-  return;
 }
 
 /*
@@ -558,8 +556,6 @@ SpeechRecognition::NotifyError(SpeechEvent* aEvent)
 
   bool defaultActionEnabled;
   this->DispatchEvent(aEvent->mError, &defaultActionEnabled);
-
-  return;
 }
 
 /**************************************
@@ -640,8 +636,6 @@ SpeechRecognition::ProcessTestEventRequest(nsISupports* aSubject, const nsAStrin
 
     // let the fake recognition service handle the request
   }
-
-  return;
 }
 
 already_AddRefed<SpeechGrammarList>
@@ -680,7 +674,6 @@ void
 SpeechRecognition::SetContinuous(bool aArg, ErrorResult& aRv)
 {
   aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
-  return;
 }
 
 bool
@@ -693,7 +686,6 @@ void
 SpeechRecognition::SetInterimResults(bool aArg)
 {
   mInterimResults = aArg;
-  return;
 }
 
 uint32_t
@@ -706,25 +698,24 @@ void
 SpeechRecognition::SetMaxAlternatives(uint32_t aArg)
 {
   mMaxAlternatives = aArg;
-  return;
 }
 
 void
 SpeechRecognition::GetServiceURI(nsString& aRetVal, ErrorResult& aRv) const
 {
   aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
-  return;
 }
 
 void
 SpeechRecognition::SetServiceURI(const nsAString& aArg, ErrorResult& aRv)
 {
   aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
-  return;
 }
 
 void
-SpeechRecognition::Start(const Optional<NonNull<DOMMediaStream>>& aStream, ErrorResult& aRv)
+SpeechRecognition::Start(const Optional<NonNull<DOMMediaStream>>& aStream,
+                         CallerType aCallerType,
+                         ErrorResult& aRv)
 {
   if (mCurrentState != STATE_IDLE) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
@@ -756,7 +747,8 @@ SpeechRecognition::Start(const Optional<NonNull<DOMMediaStream>>& aStream, Error
     manager->GetUserMedia(GetOwner(),
                           constraints,
                           new GetUserMediaSuccessCallback(this),
-                          new GetUserMediaErrorCallback(this));
+                          new GetUserMediaErrorCallback(this),
+                          aCallerType);
   }
 
   RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_START);
@@ -993,8 +985,6 @@ SpeechRecognition::FeedAudioData(already_AddRefed<SharedBuffer> aSamples,
   event->mProvider = aProvider;
   event->mTrackRate = aTrackRate;
   NS_DispatchToMainThread(event);
-
-  return;
 }
 
 const char*

@@ -4,7 +4,6 @@
 
 const LOGGER_NAME = "Toolkit.Telemetry";
 const LOGGER_PREFIX = "DataNotificationInfoBar::";
-
 /**
  * Represents an info bar that shows a data submission notification.
  */
@@ -64,7 +63,13 @@ var gDataNotificationInfoBar = {
       popup: null,
       callback: () => {
         this._actionTaken = true;
-        window.openAdvancedPreferences("dataChoicesTab");
+        // The advanced subpanes are only supported in the old organization, which will
+        // be removed by bug 1349689.
+        if (Services.prefs.getBoolPref("browser.preferences.useOldOrganization")) {
+          window.openAdvancedPreferences("dataChoicesTab", {origin: "dataReporting"});
+        } else {
+          window.openPreferences("privacy-reports", {origin: "dataReporting"});
+        }
       },
     }];
 
@@ -77,7 +82,7 @@ var gDataNotificationInfoBar = {
       buttons,
       event => {
         if (event == "removed") {
-          Services.obs.notifyObservers(null, "datareporting:notify-data-policy:close", null);
+          Services.obs.notifyObservers(null, "datareporting:notify-data-policy:close");
         }
       }
     );

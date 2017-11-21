@@ -9,13 +9,21 @@
 const TEST_URL = TEST_BASE_HTTP + "doc_uncached.html";
 
 add_task(function* () {
+  // Disable rcwn to make cache behavior deterministic.
+  yield pushPref("network.http.rcwn.enabled", false);
+
   info("Opening netmonitor");
   let tab = yield addTab("about:blank");
   let target = TargetFactory.forTab(tab);
   let toolbox = yield gDevTools.showToolbox(target, "netmonitor");
-  let netmonitor = toolbox.getPanel("netmonitor");
-  let { RequestsMenu } = netmonitor.panelWin.NetMonitorView;
-  RequestsMenu.lazyUpdate = false;
+  let monitor = toolbox.getPanel("netmonitor");
+  let { store, windowRequire } = monitor.panelWin;
+  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+  let {
+    getSortedRequests,
+  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
+
+  store.dispatch(Actions.batchEnable(false));
 
   info("Navigating to test page");
   yield navigateTo(TEST_URL);
@@ -28,7 +36,7 @@ add_task(function* () {
 
   info("Checking Netmonitor contents.");
   let items = [];
-  for (let item of RequestsMenu.items) {
+  for (let item of getSortedRequests(store.getState())) {
     if (item.url.endsWith("doc_uncached.css")) {
       items.push(item);
     }

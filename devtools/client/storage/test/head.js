@@ -22,6 +22,7 @@ const DEBUGGERLOG_PREF = "devtools.debugger.log";
 const CACHES_ON_HTTP_PREF = "dom.caches.testing.enabled";
 const PATH = "browser/devtools/client/storage/test/";
 const MAIN_DOMAIN = "http://test1.example.org/" + PATH;
+const MAIN_DOMAIN_WITH_PORT = "http://test1.example.org:8000/" + PATH;
 const ALT_DOMAIN = "http://sectest1.example.org/" + PATH;
 const ALT_DOMAIN_SECURED = "https://sectest1.example.org:443/" + PATH;
 
@@ -49,16 +50,15 @@ registerCleanupFunction(() => {
 
 /**
  * This generator function opens the given url in a new tab, then sets up the
- * page by waiting for all cookies, indexedDB items etc. to be created; Then
- * opens the storage inspector and waits for the storage tree and table to be
- * populated.
+ * page by waiting for all cookies, indexedDB items etc.
  *
  * @param url {String} The url to be opened in the new tab
+ * @param options {Object} The tab options for the new tab
  *
- * @return {Promise} A promise that resolves after storage inspector is ready
+ * @return {Promise} A promise that resolves after the tab is ready
  */
-function* openTabAndSetupStorage(url) {
-  let tab = yield addTab(url);
+function* openTab(url, options = {}) {
+  let tab = yield addTab(url, options);
   let content = tab.linkedBrowser.contentWindow;
 
   gWindow = content.wrappedJSObject;
@@ -107,6 +107,24 @@ function* openTabAndSetupStorage(url) {
       }
     }
   });
+
+  return tab;
+}
+
+/**
+ * This generator function opens the given url in a new tab, then sets up the
+ * page by waiting for all cookies, indexedDB items etc. to be created; Then
+ * opens the storage inspector and waits for the storage tree and table to be
+ * populated.
+ *
+ * @param url {String} The url to be opened in the new tab
+ * @param options {Object} The tab options for the new tab
+ *
+ * @return {Promise} A promise that resolves after storage inspector is ready
+ */
+function* openTabAndSetupStorage(url, options = {}) {
+  // open tab
+  yield openTab(url, options);
 
   // open storage inspector
   return yield openStoragePanel();
@@ -183,9 +201,10 @@ var openStoragePanel = Task.async(function* (cb) {
  */
 function waitForToolboxFrameFocus(toolbox) {
   info("Making sure that the toolbox's frame is focused");
-  let def = promise.defer();
-  waitForFocus(def.resolve, toolbox.win);
-  return def.promise;
+
+  return new Promise(resolve => {
+    waitForFocus(resolve, toolbox.win);
+  });
 }
 
 /**
@@ -204,46 +223,50 @@ function forceCollections() {
 function* finishTests() {
   // Bug 1233497 makes it so that we can no longer yield CPOWs from Tasks.
   // We work around this by calling clear() via a ContentTask instead.
-  yield ContentTask.spawn(gBrowser.selectedBrowser, null, function* () {
-    /**
-     * Get all windows including frames recursively.
-     *
-     * @param {Window} [baseWindow]
-     *        The base window at which to start looking for child windows
-     *        (optional).
-     * @return {Set}
-     *         A set of windows.
-     */
-    function getAllWindows(baseWindow) {
-      let windows = new Set();
+  while (gBrowser.tabs.length > 1) {
+    yield ContentTask.spawn(gBrowser.selectedBrowser, null, function* () {
+      /**
+       * Get all windows including frames recursively.
+       *
+       * @param {Window} [baseWindow]
+       *        The base window at which to start looking for child windows
+       *        (optional).
+       * @return {Set}
+       *         A set of windows.
+       */
+      function getAllWindows(baseWindow) {
+        let windows = new Set();
 
-      let _getAllWindows = function (win) {
-        windows.add(win.wrappedJSObject);
+        let _getAllWindows = function (win) {
+          windows.add(win.wrappedJSObject);
 
-        for (let i = 0; i < win.length; i++) {
-          _getAllWindows(win[i]);
+          for (let i = 0; i < win.length; i++) {
+            _getAllWindows(win[i]);
+          }
+        };
+        _getAllWindows(baseWindow);
+
+        return windows;
+      }
+
+      let windows = getAllWindows(content);
+      for (let win of windows) {
+        // Some windows (e.g., about: URLs) don't have storage available
+        try {
+          win.localStorage.clear();
+          win.sessionStorage.clear();
+        } catch (ex) {
+          // ignore
         }
-      };
-      _getAllWindows(baseWindow);
 
-      return windows;
-    }
-
-    let windows = getAllWindows(content);
-    for (let win of windows) {
-      // Some windows (e.g., about: URLs) don't have storage available
-      try {
-        win.localStorage.clear();
-        win.sessionStorage.clear();
-      } catch (ex) {
-        // ignore
+        if (win.clear) {
+          yield win.clear();
+        }
       }
+    });
 
-      if (win.clear) {
-        yield win.clear();
-      }
-    }
-  });
+    yield closeTabAndToolbox(gBrowser.selectedTab);
+  }
 
   Services.cookies.removeAll();
   forceCollections();
@@ -252,18 +275,16 @@ function* finishTests() {
 
 // Sends a click event on the passed DOM node in an async manner
 function* click(node) {
-  let def = promise.defer();
-
   node.scrollIntoView();
 
-  // We need setTimeout here to allow any scrolling to complete before clicking
-  // the node.
-  setTimeout(() => {
-    node.click();
-    def.resolve();
-  }, 200);
-
-  return def;
+  return new Promise(resolve => {
+    // We need setTimeout here to allow any scrolling to complete before clicking
+    // the node.
+    setTimeout(() => {
+      node.click();
+      resolve();
+    }, 200);
+  });
 }
 
 /**
@@ -284,35 +305,34 @@ function* click(node) {
 function variablesViewExpandTo(options) {
   let root = options.rootVariable;
   let expandTo = options.expandTo.split(".");
-  let lastDeferred = promise.defer();
 
-  function getNext(prop) {
-    let name = expandTo.shift();
-    let newProp = prop.get(name);
+  return new Promise((resolve, reject) => {
+    function getNext(prop) {
+      let name = expandTo.shift();
+      let newProp = prop.get(name);
 
-    if (expandTo.length > 0) {
-      ok(newProp, "found property " + name);
-      if (newProp && newProp.expand) {
-        newProp.expand();
-        getNext(newProp);
+      if (expandTo.length > 0) {
+        ok(newProp, "found property " + name);
+        if (newProp && newProp.expand) {
+          newProp.expand();
+          getNext(newProp);
+        } else {
+          reject(prop);
+        }
+      } else if (newProp) {
+        resolve(newProp);
       } else {
-        lastDeferred.reject(prop);
+        reject(prop);
       }
-    } else if (newProp) {
-      lastDeferred.resolve(newProp);
-    } else {
-      lastDeferred.reject(prop);
     }
-  }
 
-  if (root && root.expand) {
-    root.expand();
-    getNext(root);
-  } else {
-    lastDeferred.resolve(root);
-  }
-
-  return lastDeferred.promise;
+    if (root && root.expand) {
+      root.expand();
+      getNext(root);
+    } else {
+      resolve(root);
+    }
+  });
 }
 
 /**
@@ -390,33 +410,32 @@ function findVariableViewProperties(ruleArray, parsed) {
   }
 
   function processExpandRules(rules) {
-    let rule = rules.shift();
-    if (!rule) {
-      return promise.resolve(null);
-    }
+    return new Promise(resolve => {
+      let rule = rules.shift();
+      if (!rule) {
+        resolve(null);
+      }
 
-    let deferred = promise.defer();
-    let expandOptions = {
-      rootVariable: gUI.view.getScopeAtIndex(parsed ? 1 : 0),
-      expandTo: rule.name
-    };
+      let expandOptions = {
+        rootVariable: gUI.view.getScopeAtIndex(parsed ? 1 : 0),
+        expandTo: rule.name
+      };
 
-    variablesViewExpandTo(expandOptions).then(function onSuccess(prop) {
-      let name = rule.name;
-      let lastName = name.split(".").pop();
-      rule.name = lastName;
+      variablesViewExpandTo(expandOptions).then(function onSuccess(prop) {
+        let name = rule.name;
+        let lastName = name.split(".").pop();
+        rule.name = lastName;
 
-      let matched = matchVariablesViewProperty(prop, rule);
-      return matched.then(onMatch.bind(null, prop, rule)).then(function () {
-        rule.name = name;
+        let matched = matchVariablesViewProperty(prop, rule);
+        return matched.then(onMatch.bind(null, prop, rule)).then(function () {
+          rule.name = name;
+        });
+      }, function onFailure() {
+        resolve(null);
+      }).then(processExpandRules.bind(null, rules)).then(function () {
+        resolve(null);
       });
-    }, function onFailure() {
-      return promise.resolve(null);
-    }).then(processExpandRules.bind(null, rules)).then(function () {
-      deferred.resolve(null);
     });
-
-    return deferred.promise;
   }
 
   function onAllRulesMatched(rules) {
@@ -523,8 +542,10 @@ function* selectTableItem(id) {
     showAvailableIds();
   }
 
+  let updated = gUI.once("sidebar-updated");
+
   yield click(target);
-  yield gUI.once("sidebar-updated");
+  yield updated;
 }
 
 /**
@@ -532,29 +553,28 @@ function* selectTableItem(id) {
  * @param {Object} target An observable object that either supports on/off or
  * addEventListener/removeEventListener
  * @param {String} eventName
- * @param {Boolean} [useCapture] for addEventListener/removeEventListener
+ * @param {Boolean} useCapture Optional, for addEventListener/removeEventListener
  * @return A promise that resolves when the event has been handled
  */
 function once(target, eventName, useCapture = false) {
   info("Waiting for event: '" + eventName + "' on " + target + ".");
 
-  let deferred = promise.defer();
-
-  for (let [add, remove] of [
-    ["addEventListener", "removeEventListener"],
-    ["addListener", "removeListener"],
-    ["on", "off"]
-  ]) {
-    if ((add in target) && (remove in target)) {
-      target[add](eventName, function onEvent(...aArgs) {
-        target[remove](eventName, onEvent, useCapture);
-        deferred.resolve.apply(deferred, aArgs);
-      }, useCapture);
-      break;
+  return new Promise(resolve => {
+    for (let [add, remove] of [
+      ["addEventListener", "removeEventListener"],
+      ["addListener", "removeListener"],
+      ["on", "off"]
+    ]) {
+      if ((add in target) && (remove in target)) {
+        target[add](eventName, function onEvent(...aArgs) {
+          info("Got event: '" + eventName + "' on " + target + ".");
+          target[remove](eventName, onEvent, useCapture);
+          resolve(...aArgs);
+        }, useCapture);
+        break;
+      }
     }
-  }
-
-  return deferred.promise;
+  });
 }
 
 /**
@@ -599,9 +619,8 @@ function getRowCells(id, includeHidden = false) {
                                " .table-widget-cell[value='" + id + "']");
 
   if (!item) {
-    ok(false, "Row id '" + id + "' exists");
-
-    showAvailableIds();
+    ok(false, `The row id '${id}' that was passed to getRowCells() does not ` +
+              `exist. ${getAvailableIds()}`);
   }
 
   let index = table.columns.get(table.uniqueId).cellNodes.indexOf(item);
@@ -618,18 +637,27 @@ function getRowCells(id, includeHidden = false) {
 }
 
 /**
- * Show available ids.
+ * Get available ids... useful for error reporting.
  */
-function showAvailableIds() {
+function getAvailableIds() {
   let doc = gPanelWindow.document;
   let table = gUI.table;
 
-  info("Available ids:");
+  let out = "Available ids:\n";
   let cells = doc.querySelectorAll(".table-widget-column#" + table.uniqueId +
                                    " .table-widget-cell");
   for (let cell of cells) {
-    info("  - " + cell.getAttribute("value"));
+    out += `  - ${cell.getAttribute("value")}\n`;
   }
+
+  return out;
+}
+
+/**
+ * Show available ids.
+ */
+function showAvailableIds() {
+  info(getAvailableIds);
 }
 
 /**
@@ -645,6 +673,19 @@ function showAvailableIds() {
  */
 function getCellValue(id, column) {
   let row = getRowValues(id, true);
+
+  if (typeof row[column] === "undefined") {
+    let out = "";
+    for (let key in row) {
+      let value = row[key];
+
+      out += `  - ${key} = ${value}\n`;
+    }
+
+    ok(false, `The column name '${column}' that was passed to ` +
+              `getCellValue() does not exist. Current column names and row ` +
+              `values are:\n${out}`);
+  }
 
   return row[column];
 }
@@ -732,6 +773,20 @@ function showColumn(id, state) {
   } else {
     column.wrapper.setAttribute("hidden", true);
   }
+}
+
+/**
+ * Toggle sort direction on a column by clicking on the column header.
+ *
+ * @param  {String} id
+ *         The uniqueId of the given column.
+ */
+function clickColumnHeader(id) {
+  let columns = gUI.table.columns;
+  let column = columns.get(id);
+  let header = column.header;
+
+  header.click();
 }
 
 /**
@@ -897,4 +952,48 @@ function setPermission(url, permission) {
             .getService(nsIPermissionManager)
             .addFromPrincipal(principal, permission,
                               nsIPermissionManager.ALLOW_ACTION);
+}
+
+function toggleSidebar() {
+  gUI.sidebarToggleBtn.click();
+}
+
+function sidebarToggleVisible() {
+  return !gUI.sidebarToggleBtn.hidden;
+}
+
+/**
+ * Add an item.
+ * @param  {Array} store
+ *         An array containing the path to the store to which we wish to add an
+ *         item.
+ */
+function* performAdd(store) {
+  let storeName = store.join(" > ");
+  let toolbar = gPanelWindow.document.getElementById("storage-toolbar");
+  let type = store[0];
+
+  yield selectTreeItem(store);
+
+  let menuAdd = toolbar.querySelector(
+    "#add-button");
+
+  if (menuAdd.hidden) {
+    is(menuAdd.hidden, false,
+       `performAdd called for ${storeName} but it is not supported`);
+    return;
+  }
+
+  let eventEdit = gUI.table.once("row-edit");
+  let eventWait = gUI.once("store-objects-updated");
+
+  menuAdd.click();
+
+  let rowId = yield eventEdit;
+  yield eventWait;
+
+  let key = type === "cookies" ? "uniqueKey" : "name";
+  let value = getCellValue(rowId, key);
+
+  is(rowId, value, `Row '${rowId}' was successfully added.`);
 }

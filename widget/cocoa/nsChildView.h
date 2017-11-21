@@ -24,6 +24,7 @@
 #include "nsRegion.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 
 #include "nsString.h"
 #include "nsIDragService.h"
@@ -105,6 +106,8 @@ class WidgetRenderingContext;
 - (void)setTransparent:(BOOL)transparent; // Method of NSTitlebarView and
                                           // NSTitlebarContainerView
 
+// Available since 10.7.4:
+- (void)viewDidChangeBackingProperties;
 @end
 
 @interface ChildView : NSView<
@@ -260,6 +263,10 @@ class WidgetRenderingContext;
 - (void)setUsingOMTCompositor:(BOOL)aUseOMTC;
 
 - (NSEvent*)lastKeyDownEvent;
+
++ (uint32_t)sUniqueKeyEventId;
+
++ (NSMutableDictionary*)sNativeKeyEventsMap;
 @end
 
 class ChildViewMouseTracker {
@@ -290,7 +297,7 @@ public:
 //
 //-------------------------------------------------------------------------
 
-class nsChildView : public nsBaseWidget
+class nsChildView final : public nsBaseWidget
 {
 private:
   typedef nsBaseWidget Inherited;
@@ -373,6 +380,8 @@ public:
 
   virtual bool HasPendingInputEvent() override;
 
+  bool              SendEventToNativeMenuSystem(NSEvent* aEvent);
+  virtual void      PostHandleKeyEvent(mozilla::WidgetKeyboardEvent* aEvent) override;
   virtual nsresult  ActivateNativeMenuItemAt(const nsAString& indexString) override;
   virtual nsresult  ForceUpdateNativeMenuAt(const nsAString& indexString) override;
   virtual MOZ_MUST_USE nsresult
@@ -384,19 +393,15 @@ public:
   virtual TextEventDispatcherListener*
     GetNativeTextEventDispatcherListener() override;
   virtual MOZ_MUST_USE nsresult AttachNativeKeyEvent(mozilla::WidgetKeyboardEvent& aEvent) override;
-  virtual bool ExecuteNativeKeyBinding(
-                      NativeKeyBindingsType aType,
-                      const mozilla::WidgetKeyboardEvent& aEvent,
-                      DoCommandCallback aCallback,
-                      void* aCallbackData) override;
-  bool ExecuteNativeKeyBindingRemapped(
-                      NativeKeyBindingsType aType,
-                      const mozilla::WidgetKeyboardEvent& aEvent,
-                      DoCommandCallback aCallback,
-                      void* aCallbackData,
-                      uint32_t aGeckoKeyCode,
-                      uint32_t aCocoaKeyCode);
-  virtual nsIMEUpdatePreference GetIMEUpdatePreference() override;
+  virtual void GetEditCommands(
+                 NativeKeyBindingsType aType,
+                 const mozilla::WidgetKeyboardEvent& aEvent,
+                 nsTArray<mozilla::CommandInt>& aCommands) override;
+  void GetEditCommandsRemapped(NativeKeyBindingsType aType,
+                               const mozilla::WidgetKeyboardEvent& aEvent,
+                               nsTArray<mozilla::CommandInt>& aCommands,
+                               uint32_t aGeckoKeyCode,
+                               uint32_t aCocoaKeyCode);
 
   virtual nsTransparencyMode GetTransparencyMode() override;
   virtual void                SetTransparencyMode(nsTransparencyMode aMode) override;
@@ -447,6 +452,12 @@ public:
   virtual void CreateCompositor() override;
   virtual void PrepareWindowEffects() override;
   virtual void CleanupWindowEffects() override;
+
+  virtual void AddWindowOverlayWebRenderCommands(mozilla::layers::WebRenderBridgeChild* aWrBridge,
+                                                  mozilla::wr::DisplayListBuilder& aBuilder) override;
+
+  virtual void CleanupWebRenderWindowOverlay(mozilla::layers::WebRenderBridgeChild* aWrBridge) override;
+
   virtual bool PreRender(mozilla::widget::WidgetRenderingContext* aContext) override;
   virtual void PostRender(mozilla::widget::WidgetRenderingContext* aContext) override;
   virtual void DrawWindowOverlay(mozilla::widget::WidgetRenderingContext* aManager,
@@ -492,6 +503,9 @@ public:
   }
   LayoutDeviceIntPoint CocoaPointsToDevPixels(const NSPoint& aPt) const {
     return nsCocoaUtils::CocoaPointsToDevPixels(aPt, BackingScaleFactor());
+  }
+  LayoutDeviceIntPoint CocoaPointsToDevPixelsRoundDown(const NSPoint& aPt) const {
+    return nsCocoaUtils::CocoaPointsToDevPixelsRoundDown(aPt, BackingScaleFactor());
   }
   LayoutDeviceIntRect CocoaPointsToDevPixels(const NSRect& aRect) const {
     return nsCocoaUtils::CocoaPointsToDevPixels(aRect, BackingScaleFactor());
@@ -618,6 +632,10 @@ protected:
   mozilla::UniquePtr<mozilla::widget::RectTextureImage> mCornerMaskImage;
   mozilla::UniquePtr<mozilla::widget::RectTextureImage> mTitlebarImage;
   mozilla::UniquePtr<mozilla::widget::RectTextureImage> mBasicCompositorImage;
+
+  // Main thread + webrender only
+  mozilla::Maybe<mozilla::wr::ImageKey> mTitlebarImageKey;
+  mozilla::gfx::IntSize mTitlebarImageSize;
 
   // The area of mTitlebarCGContext that has changed and needs to be
   // uploaded to to mTitlebarImage. Main thread only.

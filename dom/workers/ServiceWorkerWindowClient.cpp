@@ -111,7 +111,8 @@ class ClientFocusRunnable final : public Runnable
 
 public:
   ClientFocusRunnable(uint64_t aWindowId, PromiseWorkerProxy* aPromiseProxy)
-    : mWindowId(aWindowId)
+    : mozilla::Runnable("ClientFocusRunnable")
+    , mWindowId(aWindowId)
     , mPromiseProxy(aPromiseProxy)
   {
     MOZ_ASSERT(mPromiseProxy);
@@ -338,10 +339,12 @@ class ClientNavigateRunnable final : public Runnable
   MOZ_INIT_OUTSIDE_CTOR WorkerPrivate* mWorkerPrivate;
 
 public:
-  ClientNavigateRunnable(uint64_t aWindowId, const nsAString& aUrl,
+  ClientNavigateRunnable(uint64_t aWindowId,
+                         const nsAString& aUrl,
                          const nsAString& aScope,
                          PromiseWorkerProxy* aPromiseProxy)
-    : mWindowId(aWindowId)
+    : mozilla::Runnable("ClientNavigateRunnable")
+    , mWindowId(aWindowId)
     , mUrl(aUrl)
     , mScope(aScope)
     , mPromiseProxy(aPromiseProxy)
@@ -378,11 +381,6 @@ public:
 
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return RejectPromise(NS_ERROR_TYPE_ERR);
-    }
-
-    rv = principal->CheckMayLoad(url, true, false);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return RejectPromise(rv);
     }
 
     nsGlobalWindow* window;
@@ -499,19 +497,18 @@ private:
     nsCOMPtr<nsIDocShellLoadInfo> loadInfo;
     nsresult rv = docShell->CreateLoadInfo(getter_AddRefs(loadInfo));
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
+      return NS_ERROR_TYPE_ERR;
     }
 
     loadInfo->SetTriggeringPrincipal(aPrincipal);
-    loadInfo->SetReferrer(doc->GetOriginalURI());
     loadInfo->SetReferrerPolicy(doc->GetReferrerPolicy());
-    loadInfo->SetLoadType(nsIDocShellLoadInfo::loadStopContentAndReplace);
+    loadInfo->SetLoadType(nsIDocShellLoadInfo::loadStopContent);
     loadInfo->SetSourceDocShell(docShell);
     rv =
       docShell->LoadURI(aUrl, loadInfo, nsIWebNavigation::LOAD_FLAGS_NONE, true);
 
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
+      return NS_ERROR_TYPE_ERR;
     }
 
     *aWindow = window;

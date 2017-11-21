@@ -44,6 +44,9 @@
 #include "nsINetworkInterceptController.h"
 #include "nsSandboxFlags.h"
 #include "nsIScriptElement.h"
+#include "nsIEventTarget.h"
+#include "mozilla/dom/DocGroup.h"
+#include "nsXULAppAPI.h"
 
 using namespace mozilla;
 
@@ -156,10 +159,13 @@ nsCSPContext::ShouldLoad(nsContentPolicyType aContentType,
   nsAutoString nonce;
   bool parserCreated = false;
   if (!isPreload) {
-    nsCOMPtr<nsIDOMHTMLElement> htmlElement = do_QueryInterface(aRequestContext);
-    if (htmlElement) {
-      rv = htmlElement->GetAttribute(NS_LITERAL_STRING("nonce"), nonce);
-      NS_ENSURE_SUCCESS(rv, rv);
+    if (aContentType == nsIContentPolicy::TYPE_SCRIPT ||
+        aContentType == nsIContentPolicy::TYPE_STYLESHEET) {
+      nsCOMPtr<nsIDOMHTMLElement> htmlElement = do_QueryInterface(aRequestContext);
+      if (htmlElement) {
+        rv = htmlElement->GetAttribute(NS_LITERAL_STRING("nonce"), nonce);
+        NS_ENSURE_SUCCESS(rv, rv);
+      }
     }
 
     nsCOMPtr<nsIScriptElement> script = do_QueryInterface(aRequestContext);
@@ -337,6 +343,20 @@ nsCSPContext::GetBlockAllMixedContent(bool *outBlockAllMixedContent)
      if (!mPolicies[i]->getReportOnlyFlag() &&
         mPolicies[i]->hasDirective(nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT)) {
       *outBlockAllMixedContent = true;
+      return NS_OK;
+    }
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsCSPContext::GetEnforcesFrameAncestors(bool *outEnforcesFrameAncestors)
+{
+  *outEnforcesFrameAncestors = false;
+  for (uint32_t i = 0; i < mPolicies.Length(); i++) {
+    if (!mPolicies[i]->getReportOnlyFlag() &&
+        mPolicies[i]->hasDirective(nsIContentSecurityPolicy::FRAME_ANCESTORS_DIRECTIVE)) {
+      *outEnforcesFrameAncestors = true;
       return NS_OK;
     }
   }
@@ -665,6 +685,7 @@ nsCSPContext::SetRequestContext(nsIDOMDocument* aDOMDocument,
 
     // set the flag on the document for CSP telemetry
     doc->SetHasCSP(true);
+    mEventTarget = doc->EventTargetFor(TaskCategory::Other);
   }
   else {
     CSPCONTEXTLOG(("No Document in SetRequestContext; can not query loadgroup; sending reports may fail."));
@@ -676,6 +697,20 @@ nsCSPContext::SetRequestContext(nsIDOMDocument* aDOMDocument,
   }
 
   NS_ASSERTION(mSelfURI, "mSelfURI not available, can not translate 'self' into actual URI");
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsCSPContext::EnsureEventTarget(nsIEventTarget* aEventTarget)
+{
+  NS_ENSURE_ARG(aEventTarget);
+  // Don't bother if we did have a valid event target (if the csp object is
+  // tied to a document in SetRequestContext)
+  if (mEventTarget) {
+    return NS_OK;
+  }
+
+  mEventTarget = aEventTarget;
   return NS_OK;
 }
 
@@ -708,7 +743,7 @@ nsCSPContext::flushConsoleMessages()
 }
 
 void
-nsCSPContext::logToConsole(const char16_t* aName,
+nsCSPContext::logToConsole(const char* aName,
                            const char16_t** aParams,
                            uint32_t aParamsLength,
                            const nsAString& aSourceName,
@@ -909,7 +944,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
       const char16_t* params[] = { reportURIs[r].get() };
       CSPCONTEXTLOG(("Could not create nsIURI for report URI %s",
                      reportURICstring.get()));
-      logToConsole(u"triedToSendReport", params, ArrayLength(params),
+      logToConsole("triedToSendReport", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
       continue; // don't return yet, there may be more URIs
     }
@@ -950,7 +985,7 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
 
     if (!isHttpScheme) {
       const char16_t* params[] = { reportURIs[r].get() };
-      logToConsole(u"reportURInotHttpsOrHttp2", params, ArrayLength(params),
+      logToConsole("reportURInotHttpsOrHttp2", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
       continue;
     }
@@ -1000,7 +1035,8 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
     // if this is an HTTP channel, set the request method to post
     nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(reportChannel));
     if (httpChannel) {
-      httpChannel->SetRequestMethod(NS_LITERAL_CSTRING("POST"));
+      rv = httpChannel->SetRequestMethod(NS_LITERAL_CSTRING("POST"));
+      MOZ_ASSERT(NS_SUCCEEDED(rv));
     }
 
     RefPtr<CSPViolationReportListener> listener = new CSPViolationReportListener();
@@ -1013,8 +1049,8 @@ nsCSPContext::SendReports(nsISupports* aBlockedContentSource,
 
     if (NS_FAILED(rv)) {
       const char16_t* params[] = { reportURIs[r].get() };
-      CSPCONTEXTLOG(("AsyncOpen failed for report URI %s", params[0]));
-      logToConsole(u"triedToSendReport", params, ArrayLength(params),
+      CSPCONTEXTLOG(("AsyncOpen failed for report URI %s", NS_ConvertUTF16toUTF8(params[0]).get()));
+      logToConsole("triedToSendReport", params, ArrayLength(params),
                    aSourceFile, aScriptSample, aLineNum, 0, nsIScriptError::errorFlag);
     } else {
       CSPCONTEXTLOG(("Sent violation report to URI %s", reportURICstring.get()));
@@ -1039,7 +1075,8 @@ class CSPReportSenderRunnable final : public Runnable
                             const nsAString& aScriptSample,
                             uint32_t aLineNum,
                             nsCSPContext* aCSPContext)
-      : mBlockedContentSource(aBlockedContentSource)
+      : mozilla::Runnable("CSPReportSenderRunnable")
+      , mBlockedContentSource(aBlockedContentSource)
       , mOriginalURI(aOriginalURI)
       , mViolatedPolicyIndex(aViolatedPolicyIndex)
       , mReportOnlyFlag(aReportOnlyFlag)
@@ -1105,8 +1142,8 @@ class CSPReportSenderRunnable final : public Runnable
         nsString blockedDataChar16 = NS_ConvertUTF8toUTF16(blockedDataStr);
         const char16_t* params[] = { mViolatedDirective.get(),
                                      blockedDataChar16.get() };
-        mCSPContext->logToConsole(mReportOnlyFlag ? u"CSPROViolationWithURI" :
-                                                    u"CSPViolationWithURI",
+        mCSPContext->logToConsole(mReportOnlyFlag ? "CSPROViolationWithURI" :
+                                                    "CSPViolationWithURI",
                                   params, ArrayLength(params), mSourceFile, mScriptSample,
                                   mLineNum, 0, nsIScriptError::errorFlag);
       }
@@ -1163,17 +1200,35 @@ nsCSPContext::AsyncReportViolation(nsISupports* aBlockedContentSource,
 {
   NS_ENSURE_ARG_MAX(aViolatedPolicyIndex, mPolicies.Length() - 1);
 
-  NS_DispatchToMainThread(new CSPReportSenderRunnable(aBlockedContentSource,
-                                                      aOriginalURI,
-                                                      aViolatedPolicyIndex,
-                                                      mPolicies[aViolatedPolicyIndex]->getReportOnlyFlag(),
-                                                      aViolatedDirective,
-                                                      aObserverSubject,
-                                                      aSourceFile,
-                                                      aScriptSample,
-                                                      aLineNum,
-                                                      this));
-   return NS_OK;
+  nsCOMPtr<nsIRunnable> task =
+    new CSPReportSenderRunnable(aBlockedContentSource,
+                                aOriginalURI,
+                                aViolatedPolicyIndex,
+                                mPolicies[aViolatedPolicyIndex]->getReportOnlyFlag(),
+                                aViolatedDirective,
+                                aObserverSubject,
+                                aSourceFile,
+                                aScriptSample,
+                                aLineNum,
+                                this);
+
+  // If the document is currently buffering up CSP violation reports, send the
+  // runnable to it instead of dispatching it immediately.
+  nsCOMPtr<nsIDocument> doc = do_QueryReferent(mLoadingContext);
+  if (doc && doc->ShouldBufferCSPViolations()) {
+    doc->BufferCSPViolation(task);
+    return NS_OK;
+  }
+
+  if (XRE_IsContentProcess()) {
+    if (mEventTarget) {
+      mEventTarget->Dispatch(task.forget(), NS_DISPATCH_NORMAL);
+      return NS_OK;
+    }
+  }
+
+  NS_DispatchToMainThread(task.forget());
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -1228,6 +1283,10 @@ nsCSPContext::PermitsAncestry(nsIDocShell* aDocShell, bool* outPermitsAncestry)
   // iterate through each docShell parent item
   while (NS_SUCCEEDED(treeItem->GetParent(getter_AddRefs(parentTreeItem))) &&
          parentTreeItem != nullptr) {
+    // stop when reaching chrome
+    if (parentTreeItem->ItemType() == nsIDocShellTreeItem::typeChrome) {
+      break;
+    }
 
     nsIDocument* doc = parentTreeItem->GetDocument();
     NS_ASSERTION(doc, "Could not get nsIDocument from nsIDocShellTreeItem in nsCSPContext::PermitsAncestry");
@@ -1236,12 +1295,6 @@ nsCSPContext::PermitsAncestry(nsIDocShell* aDocShell, bool* outPermitsAncestry)
     currentURI = doc->GetDocumentURI();
 
     if (currentURI) {
-      // stop when reaching chrome
-      bool isChrome = false;
-      rv = currentURI->SchemeIs("chrome", &isChrome);
-      NS_ENSURE_SUCCESS(rv, rv);
-      if (isChrome) { break; }
-
       // delete the userpass from the URI.
       rv = currentURI->CloneIgnoringRef(getter_AddRefs(uriClone));
       NS_ENSURE_SUCCESS(rv, rv);
@@ -1374,10 +1427,10 @@ nsCSPContext::GetCSPSandboxFlags(uint32_t* aOutSandboxFlags)
       mPolicies[i]->toString(policy);
 
       CSPCONTEXTLOG(("nsCSPContext::GetCSPSandboxFlags, report only policy, ignoring sandbox in: %s",
-                    policy.get()));
+                     NS_ConvertUTF16toUTF8(policy).get()));
 
       const char16_t* params[] = { policy.get() };
-      logToConsole(u"ignoringReportOnlyDirective", params, ArrayLength(params),
+      logToConsole("ignoringReportOnlyDirective", params, ArrayLength(params),
                    EmptyString(), EmptyString(), 0, 0, nsIScriptError::warningFlag);
     }
   }

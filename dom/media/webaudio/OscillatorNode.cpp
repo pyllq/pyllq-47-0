@@ -389,8 +389,9 @@ public:
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
 
-  AudioNodeStream* mSource;
-  AudioNodeStream* mDestination;
+  // mSource deletes this engine in its destructor
+  AudioNodeStream* MOZ_NON_OWNING_REF mSource;
+  RefPtr<AudioNodeStream> mDestination;
   StreamTime mStart;
   StreamTime mStop;
   AudioParamTimeline mFrequency;
@@ -580,7 +581,10 @@ OscillatorNode::NotifyMainThreadStreamFinished()
   {
   public:
     explicit EndedEventDispatcher(OscillatorNode* aNode)
-      : mNode(aNode) {}
+      : mozilla::Runnable("EndedEventDispatcher")
+      , mNode(aNode)
+    {
+    }
     NS_IMETHOD Run() override
     {
       // If it's not safe to run scripts right now, schedule this to run later
@@ -598,7 +602,7 @@ OscillatorNode::NotifyMainThreadStreamFinished()
     RefPtr<OscillatorNode> mNode;
   };
 
-  NS_DispatchToMainThread(new EndedEventDispatcher(this));
+  Context()->Dispatch(do_AddRef(new EndedEventDispatcher(this)));
 
   // Drop the playing reference
   // Warning: The below line might delete this.

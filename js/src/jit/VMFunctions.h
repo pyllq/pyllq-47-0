@@ -21,6 +21,7 @@ class NamedLambdaObject;
 class WithScope;
 class InlineTypedObject;
 class GeneratorObject;
+class RegExpObject;
 class TypedArrayObject;
 
 namespace jit {
@@ -227,11 +228,13 @@ struct VMFunction
         return count;
     }
 
+    constexpr
     VMFunction(void* wrapped, const char* name, uint32_t explicitArgs, uint32_t argumentProperties,
                uint32_t argumentPassedInFloatRegs, uint64_t argRootTypes,
                DataType outParam, RootType outParamRootType, DataType returnType,
                uint32_t extraValuesToPop = 0, MaybeTailCall expectTailCall = NonTailCall)
-      : wrapped(wrapped),
+      : next(nullptr),
+        wrapped(wrapped),
         name_(name),
         explicitArgs(explicitArgs),
         argumentProperties(argumentProperties),
@@ -242,15 +245,29 @@ struct VMFunction
         outParamRootType(outParamRootType),
         extraValuesToPop(extraValuesToPop),
         expectTailCall(expectTailCall)
+    { }
+
+    VMFunction(const VMFunction& o)
+      : next(nullptr),
+        wrapped(o.wrapped),
+        name_(o.name_),
+        explicitArgs(o.explicitArgs),
+        argumentProperties(o.argumentProperties),
+        argumentPassedInFloatRegs(o.argumentPassedInFloatRegs),
+        outParam(o.outParam),
+        returnType(o.returnType),
+        argumentRootTypes(o.argumentRootTypes),
+        outParamRootType(o.outParamRootType),
+        extraValuesToPop(o.extraValuesToPop),
+        expectTailCall(o.expectTailCall)
     {
         // Check for valid failure/return type.
-        MOZ_ASSERT_IF(outParam != Type_Void, returnType == Type_Bool);
-        MOZ_ASSERT(returnType == Type_Bool ||
+        MOZ_ASSERT_IF(outParam != Type_Void,
+                      returnType == Type_Void ||
+                      returnType == Type_Bool);
+        MOZ_ASSERT(returnType == Type_Void ||
+                   returnType == Type_Bool ||
                    returnType == Type_Object);
-    }
-
-    VMFunction(const VMFunction& o) {
-        *this = o;
         addToFunctions();
     }
 
@@ -260,14 +277,19 @@ struct VMFunction
 };
 
 template <class> struct TypeToDataType { /* Unexpected return type for a VMFunction. */ };
+template <> struct TypeToDataType<void> { static const DataType result = Type_Void; };
 template <> struct TypeToDataType<bool> { static const DataType result = Type_Bool; };
 template <> struct TypeToDataType<JSObject*> { static const DataType result = Type_Object; };
+template <> struct TypeToDataType<JSFunction*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<NativeObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<PlainObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<InlineTypedObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<NamedLambdaObject*> { static const DataType result = Type_Object; };
+template <> struct TypeToDataType<LexicalEnvironmentObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<ArrayObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<TypedArrayObject*> { static const DataType result = Type_Object; };
+template <> struct TypeToDataType<ArrayIteratorObject*> { static const DataType result = Type_Object; };
+template <> struct TypeToDataType<StringIteratorObject*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<JSString*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<JSFlatString*> { static const DataType result = Type_Object; };
 template <> struct TypeToDataType<HandleObject> { static const DataType result = Type_Handle; };
@@ -321,6 +343,9 @@ template <> struct TypeToArgProperties<Handle<GeneratorObject*> > {
 };
 template <> struct TypeToArgProperties<Handle<PlainObject*> > {
     static const uint32_t result = TypeToArgProperties<PlainObject*>::result | VMFunction::ByRef;
+};
+template <> struct TypeToArgProperties<Handle<RegExpObject*> > {
+    static const uint32_t result = TypeToArgProperties<RegExpObject*>::result | VMFunction::ByRef;
 };
 template <> struct TypeToArgProperties<Handle<WithScope*> > {
     static const uint32_t result = TypeToArgProperties<WithScope*>::result | VMFunction::ByRef;
@@ -408,6 +433,9 @@ template <> struct TypeToRootType<Handle<GeneratorObject*> > {
 template <> struct TypeToRootType<Handle<PlainObject*> > {
     static const uint32_t result = VMFunction::RootObject;
 };
+template <> struct TypeToRootType<Handle<RegExpObject*> > {
+    static const uint32_t result = VMFunction::RootObject;
+};
 template <> struct TypeToRootType<Handle<LexicalScope*> > {
     static const uint32_t result = VMFunction::RootCell;
 };
@@ -447,9 +475,6 @@ template <> struct OutParamToRootType<MutableHandleString> {
 
 template <class> struct MatchContext { };
 template <> struct MatchContext<JSContext*> {
-    static const bool valid = true;
-};
-template <> struct MatchContext<ExclusiveContext*> {
     static const bool valid = true;
 };
 
@@ -584,15 +609,19 @@ class AutoDetectInvalidation
         disabled_ = true;
     }
 
+    bool shouldSetReturnOverride() const {
+        return !disabled_ && ionScript_->invalidated();
+    }
+
     ~AutoDetectInvalidation() {
-        if (!disabled_ && ionScript_->invalidated())
+        if (MOZ_UNLIKELY(shouldSetReturnOverride()))
             setReturnOverride();
     }
 };
 
 MOZ_MUST_USE bool
-InvokeFunction(JSContext* cx, HandleObject obj0, bool constructing, uint32_t argc, Value* argv,
-               MutableHandleValue rval);
+InvokeFunction(JSContext* cx, HandleObject obj0, bool constructing, bool ignoresReturnValue,
+               uint32_t argc, Value* argv, MutableHandleValue rval);
 MOZ_MUST_USE bool
 InvokeFunctionShuffleNewTarget(JSContext* cx, HandleObject obj, uint32_t numActualArgs,
                                uint32_t numFormalArgs, Value* argv, MutableHandleValue rval);
@@ -628,10 +657,15 @@ bool GreaterThanOrEqual(JSContext* cx, MutableHandleValue lhs, MutableHandleValu
 template<bool Equal>
 bool StringsEqual(JSContext* cx, HandleString left, HandleString right, bool* res);
 
+MOZ_MUST_USE bool StringSplitHelper(JSContext* cx, HandleString str, HandleString sep,
+                                    HandleObjectGroup group, uint32_t limit,
+                                    MutableHandleValue result);
+
 MOZ_MUST_USE bool ArrayPopDense(JSContext* cx, HandleObject obj, MutableHandleValue rval);
 MOZ_MUST_USE bool ArrayPushDense(JSContext* cx, HandleObject obj, HandleValue v, uint32_t* length);
 MOZ_MUST_USE bool ArrayShiftDense(JSContext* cx, HandleObject obj, MutableHandleValue rval);
 JSString* ArrayJoin(JSContext* cx, HandleObject array, HandleString sep);
+MOZ_MUST_USE bool SetArrayLength(JSContext* cx, HandleObject obj, HandleValue value, bool strict);
 
 MOZ_MUST_USE bool
 CharCodeAt(JSContext* cx, HandleString str, int32_t index, uint32_t* code);
@@ -662,12 +696,18 @@ CreateThis(JSContext* cx, HandleObject callee, HandleObject newTarget, MutableHa
 void GetDynamicName(JSContext* cx, JSObject* scopeChain, JSString* str, Value* vp);
 
 void PostWriteBarrier(JSRuntime* rt, JSObject* obj);
-void PostWriteElementBarrier(JSRuntime* rt, JSObject* obj, int32_t index);
 void PostGlobalWriteBarrier(JSRuntime* rt, JSObject* obj);
+
+enum class IndexInBounds { Yes, Maybe };
+
+template <IndexInBounds InBounds>
+void PostWriteElementBarrier(JSRuntime* rt, JSObject* obj, int32_t index);
 
 // If |str| is an index in the range [0, INT32_MAX], return it. If the string
 // is not an index in this range, return -1.
 int32_t GetIndexFromString(JSString* str);
+
+JSObject* WrapObjectPure(JSContext* cx, JSObject* obj);
 
 MOZ_MUST_USE bool
 DebugPrologue(JSContext* cx, BaselineFrame* frame, jsbytecode* pc, bool* mustReturn);
@@ -702,6 +742,8 @@ InitFunctionEnvironmentObjects(JSContext* cx, BaselineFrame* frame);
 
 MOZ_MUST_USE bool
 NewArgumentsObject(JSContext* cx, BaselineFrame* frame, MutableHandleValue res);
+
+JSObject* CopyLexicalEnvironmentObject(JSContext* cx, HandleObject env, bool copySlots);
 
 JSObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest, HandleObject templateObj,
                             HandleObject res);
@@ -746,9 +788,6 @@ InitBaselineFrameForOsr(BaselineFrame* frame, InterpreterFrame* interpFrame,
 
 JSObject* CreateDerivedTypedObj(JSContext* cx, HandleObject descr,
                                 HandleObject owner, int32_t offset);
-
-MOZ_MUST_USE bool
-ArraySpliceDense(JSContext* cx, HandleObject obj, uint32_t start, uint32_t deleteCount);
 
 MOZ_MUST_USE bool
 Recompile(JSContext* cx);
@@ -804,6 +843,9 @@ MOZ_MUST_USE bool
 BaselineThrowUninitializedThis(JSContext* cx, BaselineFrame* frame);
 
 MOZ_MUST_USE bool
+BaselineThrowInitializedThis(JSContext* cx, BaselineFrame* frame);
+
+MOZ_MUST_USE bool
 ThrowBadDerivedReturn(JSContext* cx, HandleValue v);
 
 MOZ_MUST_USE bool
@@ -816,12 +858,39 @@ MOZ_MUST_USE bool
 CallNativeGetter(JSContext* cx, HandleFunction callee, HandleObject obj,
                  MutableHandleValue result);
 
+MOZ_MUST_USE bool
+CallNativeSetter(JSContext* cx, HandleFunction callee, HandleObject obj,
+                 HandleValue rhs);
 
 MOZ_MUST_USE bool
 EqualStringsHelper(JSString* str1, JSString* str2);
 
 MOZ_MUST_USE bool
 CheckIsCallable(JSContext* cx, HandleValue v, CheckIsCallableKind kind);
+
+template <bool HandleMissing>
+bool
+GetNativeDataProperty(JSContext* cx, JSObject* obj, PropertyName* name, Value* vp);
+
+template <bool HandleMissing>
+bool
+GetNativeDataPropertyByValue(JSContext* cx, JSObject* obj, Value* vp);
+
+bool
+HasOwnNativeDataProperty(JSContext* cx, JSObject* obj, Value* vp);
+
+template <bool NeedsTypeBarrier>
+bool
+SetNativeDataProperty(JSContext* cx, JSObject* obj, PropertyName* name, Value* val);
+
+bool
+ObjectHasGetterSetter(JSContext* cx, JSObject* obj, Shape* propShape);
+
+JSString*
+TypeOfObject(JSObject* obj, JSRuntime* rt);
+
+bool
+GetPrototypeOf(JSContext* cx, HandleObject target, MutableHandleValue rval);
 
 } // namespace jit
 } // namespace js

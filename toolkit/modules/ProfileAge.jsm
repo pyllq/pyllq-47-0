@@ -8,9 +8,7 @@ this.EXPORTED_SYMBOLS = ["ProfileAge"];
 
 const {classes: Cc, interfaces: Ci, results: Cr, utils: Cu} = Components;
 
-Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/osfile.jsm")
-Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-common/utils.js");
 
@@ -24,7 +22,10 @@ this.ProfileAge = function(profile, log) {
   if (!this.profilePath) {
     throw new Error("No profile directory.");
   }
-  this._log = log || {"debug": function(s) { dump(s + "\n"); }};
+  if (!log) {
+    log = Log.repository.getLogger("Toolkit.ProfileAge");
+  }
+  this._log = log;
 }
 this.ProfileAge.prototype = {
   /**

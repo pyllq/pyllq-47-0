@@ -23,7 +23,7 @@ DEFAULT_COMMON_PREFS = {
     'extensions.update.notifyUser' : False,
 
     # From:
-    # http://hg.mozilla.org/mozilla-central/file/1dd81c324ac7/build/automation.py.in#l372
+    # https://hg.mozilla.org/mozilla-central/file/1dd81c324ac7/build/automation.py.in#l372
     # Only load extensions from the application and user profile.
     # AddonManager.SCOPE_PROFILE + AddonManager.SCOPE_APPLICATION
     'extensions.enabledScopes' : 5,
@@ -55,13 +55,13 @@ DEFAULT_NO_CONNECTIONS_PREFS = {
     'browser.newtab.url' : 'about:blank',
     'browser.search.update': False,
     'browser.search.suggest.enabled' : False,
+    'browser.safebrowsing.downloads.remote.url': 'http://localhost/safebrowsing-dummy/downloads',
+    'browser.safebrowsing.malware.enabled' : False,
     'browser.safebrowsing.phishing.enabled' : False,
     'browser.safebrowsing.provider.google.updateURL': 'http://localhost/safebrowsing-dummy/update',
     'browser.safebrowsing.provider.google.gethashURL': 'http://localhost/safebrowsing-dummy/gethash',
     'browser.safebrowsing.provider.google4.updateURL': 'http://localhost/safebrowsing4-dummy/update',
     'browser.safebrowsing.provider.google4.gethashURL': 'http://localhost/safebrowsing4-dummy/gethash',
-    'browser.safebrowsing.malware.reportURL': 'http://localhost/safebrowsing-dummy/malwarereport',
-    'browser.selfsupport.url': 'https://localhost/selfsupport-dummy',
     'browser.safebrowsing.provider.mozilla.gethashURL': 'http://localhost/safebrowsing-dummy/gethash',
     'browser.safebrowsing.provider.mozilla.updateURL': 'http://localhost/safebrowsing-dummy/update',
 
@@ -69,9 +69,8 @@ DEFAULT_NO_CONNECTIONS_PREFS = {
     'app.update.enabled' : False,
     'app.update.staging.enabled': False,
 
-    # Disable about:newtab content fetch and ping
+    # Disable about:newtab content fetch
     'browser.newtabpage.directory.source': 'data:application/json,{"jetpack":1}',
-    'browser.newtabpage.directory.ping': '',
 
     # Point update checks to a nonexistent local URL for fast failures.
     'extensions.update.url' : 'http://localhost/extensions-dummy/updateURL',
@@ -114,11 +113,8 @@ DEFAULT_FIREFOX_PREFS = {
     'devtools.browsertoolbox.panel': 'jsdebugger',
     'devtools.chrome.enabled' : True,
 
-    # From:
-    # http://hg.mozilla.org/mozilla-central/file/1dd81c324ac7/build/automation.py.in#l388
-    # Make url-classifier updates so rare that they won't affect tests.
-    'urlclassifier.updateinterval' : 172800,
     # Point the url-classifier to a nonexistent local URL for fast failures.
+    'browser.safebrowsing.downloads.remote.url': 'http://localhost/safebrowsing-dummy/downloads',
     'browser.safebrowsing.provider.google.gethashURL' : 'http://localhost/safebrowsing-dummy/gethash',
     'browser.safebrowsing.provider.google.updateURL' : 'http://localhost/safebrowsing-dummy/update',
     'browser.safebrowsing.provider.google4.gethashURL' : 'http://localhost/safebrowsing4-dummy/gethash',
@@ -216,8 +212,6 @@ DEFAULT_TEST_PREFS = {
     'layout.css.report_errors': True,
     'layout.css.grid.enabled': True,
     'layout.spammy_warnings.enabled': False,
-    # Make sure the disk cache doesn't get auto disabled
-    'network.http.bypass-cachelock-threshold': 200000,
     # Always use network provider for geolocation tests
     # so we bypass the OSX dialog raised by the corelocation provider
     'geo.provider.testing': True,
@@ -233,8 +227,7 @@ DEFAULT_TEST_PREFS = {
     # Disable useragent updates.
     'general.useragent.updates.enabled': False,
     'media.eme.enabled': True,
-    'media.eme.apiVisible': True,
-    # Don't forceably kill content processes after a timeout
+    # Don't forcibly kill content processes after a timeout
     'dom.ipc.tabs.shutdownTimeoutSecs': 0,
     'general.useragent.locale': "en-US",
     'intl.locale.matchOS': "en-US",

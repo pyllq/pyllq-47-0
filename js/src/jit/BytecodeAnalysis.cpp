@@ -17,9 +17,7 @@ using namespace js::jit;
 BytecodeAnalysis::BytecodeAnalysis(TempAllocator& alloc, JSScript* script)
   : script_(script),
     infos_(alloc),
-    usesEnvironmentChain_(false),
-    hasTryFinally_(false),
-    hasSetArg_(false)
+    usesEnvironmentChain_(false)
 {
 }
 
@@ -139,6 +137,12 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
             jsbytecode* afterTry = endOfTry + GET_JUMP_OFFSET(endOfTry);
             MOZ_ASSERT(afterTry > endOfTry);
 
+            // Ensure the code following the try-block is always marked as
+            // reachable, to simplify Ion's ControlFlowGenerator.
+            uint32_t afterTryOffset = script_->pcToOffset(afterTry);
+            infos_[afterTryOffset].init(stackDepth);
+            infos_[afterTryOffset].jumpTarget = true;
+
             // Pop CatchFinallyRanges that are no longer needed.
             while (!catchFinallyRanges.empty() && catchFinallyRanges.back().end <= offset)
                 catchFinallyRanges.popBack();
@@ -168,6 +172,8 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
           case JSOP_LAMBDA_ARROW:
           case JSOP_DEFFUN:
           case JSOP_DEFVAR:
+          case JSOP_PUSHLEXICALENV:
+          case JSOP_POPLEXICALENV:
             usesEnvironmentChain_ = true;
             break;
 
@@ -176,14 +182,6 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
           case JSOP_STRICTSETGNAME:
             if (script_->hasNonSyntacticScope())
                 usesEnvironmentChain_ = true;
-            break;
-
-          case JSOP_FINALLY:
-            hasTryFinally_ = true;
-            break;
-
-          case JSOP_SETARG:
-            hasSetArg_ = true;
             break;
 
           default:

@@ -105,6 +105,7 @@ public:
     , mExtendedFilter(false)
     , mDelayAgnostic(false)
     , mFakeDeviceChangeEventOn(false)
+    , mChannels(0)
   {}
 
   int32_t mWidth;
@@ -123,6 +124,7 @@ public:
   bool mExtendedFilter;
   bool mDelayAgnostic;
   bool mFakeDeviceChangeEventOn;
+  int32_t mChannels;
 
   // mWidth and/or mHeight may be zero (=adaptive default), so use functions.
 
@@ -226,7 +228,7 @@ public:
     ~AllocationHandle() {}
   public:
     AllocationHandle(const dom::MediaTrackConstraints& aConstraints,
-                     const ipc::PrincipalInfo& aPrincipalInfo,
+                     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
                      const MediaEnginePrefs& aPrefs,
                      const nsString& aDeviceId)
 
@@ -236,7 +238,7 @@ public:
       mDeviceId(aDeviceId) {}
   public:
     NormalizedConstraints mConstraints;
-    ipc::PrincipalInfo mPrincipalInfo;
+    mozilla::ipc::PrincipalInfo mPrincipalInfo;
     MediaEnginePrefs mPrefs;
     nsString mDeviceId;
   };
@@ -327,7 +329,7 @@ public:
   virtual nsresult Allocate(const dom::MediaTrackConstraints &aConstraints,
                             const MediaEnginePrefs &aPrefs,
                             const nsString& aDeviceId,
-                            const ipc::PrincipalInfo& aPrincipalInfo,
+                            const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
                             AllocationHandle** aOutHandle,
                             const char** aOutBadConstraint)
   {
@@ -352,17 +354,15 @@ public:
   void GetSettings(dom::MediaTrackSettings& aOutSettings)
   {
     MOZ_ASSERT(NS_IsMainThread());
-    aOutSettings = mSettings;
+    aOutSettings = *mSettings;
   }
 
 protected:
   // Only class' own members can be initialized in constructor initializer list.
   explicit MediaEngineSource(MediaEngineState aState)
     : mState(aState)
-#ifdef DEBUG
-    , mOwningThread(PR_GetCurrentThread())
-#endif
     , mInShutdown(false)
+    , mSettings(MakeRefPtr<media::Refcountable<dom::MediaTrackSettings>>())
   {}
 
   /* UpdateSingleSource - Centralized abstract function to implement in those
@@ -439,18 +439,20 @@ protected:
 
   void AssertIsOnOwningThread()
   {
-    MOZ_ASSERT(PR_GetCurrentThread() == mOwningThread);
+    NS_ASSERT_OWNINGTHREAD(MediaEngineSource);
   }
 
   MediaEngineState mState;
-#ifdef DEBUG
-  PRThread* mOwningThread;
-#endif
+
+  NS_DECL_OWNINGTHREAD
+
   nsTArray<RefPtr<AllocationHandle>> mRegisteredHandles;
   bool mInShutdown;
 
-  // Main-thread only:
-  dom::MediaTrackSettings mSettings;
+  // The following is accessed on main-thread only. It has its own ref-count to
+  // avoid ref-counting MediaEngineSource itself in runnables.
+  // (MediaEngineSource subclasses balk on ref-counts too late during shutdown.)
+  RefPtr<media::Refcountable<dom::MediaTrackSettings>> mSettings;
 };
 
 class MediaEngineVideoSource : public MediaEngineSource

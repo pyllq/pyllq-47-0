@@ -11,7 +11,6 @@
 #include "nsIConsoleService.h"
 #include "nsICryptoHash.h"
 #include "nsIDataSignatureVerifier.h"
-#include "prprf.h"
 #include "mozilla/Omnijar.h"
 #include "mozilla/Unused.h"
 
@@ -114,7 +113,7 @@ MozExternalRefCountType nsJAR::Release(void)
     delete this;
     return 0;
   }
-  else if (1 == count && mCache) {
+  if (1 == count && mCache) {
 #ifdef DEBUG
     nsresult rv =
 #endif
@@ -326,10 +325,10 @@ nsJAR::GetInputStreamWithSpec(const nsACString& aJarDirSpec,
 
   // Watch out for the jar:foo.zip!/ (aDir is empty) top-level special case!
   nsZipItem *item = nullptr;
-  const char *entry = PromiseFlatCString(aEntryName).get();
-  if (*entry) {
+  const nsCString& entry = PromiseFlatCString(aEntryName);
+  if (*entry.get()) {
     // First check if item exists in jar
-    item = mZip->GetItem(entry);
+    item = mZip->GetItem(entry.get());
     if (!item) return NS_ERROR_FILE_TARGET_DOES_NOT_EXIST;
   }
   nsJARInputStream* jis = new nsJARInputStream();
@@ -338,7 +337,7 @@ nsJAR::GetInputStreamWithSpec(const nsACString& aJarDirSpec,
 
   nsresult rv = NS_OK;
   if (!item || item->IsDirectory()) {
-    rv = jis->InitDirectory(this, aJarDirSpec, entry);
+    rv = jis->InitDirectory(this, aJarDirSpec, entry.get());
   } else {
     rv = jis->InitFile(this, item);
   }
@@ -382,10 +381,9 @@ nsJAR::GetSigningCert(const nsACString& aFilename, nsIX509Cert** aSigningCert)
     if (!manItem->entryVerified)
     {
       nsXPIDLCString entryData;
-      uint32_t entryDataLen;
-      rv = LoadEntry(aFilename, getter_Copies(entryData), &entryDataLen);
+      rv = LoadEntry(aFilename, entryData);
       if (NS_FAILED(rv)) return rv;
-      rv = VerifyEntry(manItem, entryData, entryDataLen);
+      rv = VerifyEntry(manItem, entryData, entryData.Length());
       if (NS_FAILED(rv)) return rv;
     }
     requestedStatus = manItem->status;
@@ -441,7 +439,7 @@ nsJAR::GetNSPRFileDesc(PRFileDesc** aNSPRFileDesc)
 // nsJAR private implementation
 //----------------------------------------------
 nsresult
-nsJAR::LoadEntry(const nsACString &aFilename, char** aBuf, uint32_t* aBufLen)
+nsJAR::LoadEntry(const nsACString& aFilename, nsCString& aBuf)
 {
   //-- Get a stream for reading the file
   nsresult rv;
@@ -472,9 +470,7 @@ nsJAR::LoadEntry(const nsACString &aFilename, char** aBuf, uint32_t* aBufLen)
     return rv;
   }
   buf[len] = '\0'; //Null-terminate the buffer
-  *aBuf = buf;
-  if (aBufLen)
-    *aBufLen = len;
+  aBuf.Adopt(buf, len);
   return NS_OK;
 }
 
@@ -557,8 +553,7 @@ nsJAR::ParseManifest()
   }
 
   nsXPIDLCString manifestBuffer;
-  uint32_t manifestLen;
-  rv = LoadEntry(manifestFilename, getter_Copies(manifestBuffer), &manifestLen);
+  rv = LoadEntry(manifestFilename, manifestBuffer);
   if (NS_FAILED(rv)) return rv;
 
   //-- Parse it
@@ -582,7 +577,7 @@ nsJAR::ParseManifest()
   rv = files->GetNext(manifestFilename);
   if (NS_FAILED(rv)) return rv;
 
-  rv = LoadEntry(manifestFilename, getter_Copies(manifestBuffer), &manifestLen);
+  rv = LoadEntry(manifestFilename, manifestBuffer);
   if (NS_FAILED(rv)) return rv;
 
   //-- Get its corresponding signature file
@@ -591,15 +586,14 @@ nsJAR::ParseManifest()
   NS_ASSERTION(extension != 0, "Manifest Parser: Missing file extension.");
   (void)sigFilename.Cut(extension, 2);
   nsXPIDLCString sigBuffer;
-  uint32_t sigLen;
   {
     nsAutoCString tempFilename(sigFilename); tempFilename.Append("rsa", 3);
-    rv = LoadEntry(tempFilename, getter_Copies(sigBuffer), &sigLen);
+    rv = LoadEntry(tempFilename, sigBuffer);
   }
   if (NS_FAILED(rv))
   {
     nsAutoCString tempFilename(sigFilename); tempFilename.Append("RSA", 3);
-    rv = LoadEntry(tempFilename, getter_Copies(sigBuffer), &sigLen);
+    rv = LoadEntry(tempFilename, sigBuffer);
   }
   if (NS_FAILED(rv))
   {
@@ -620,7 +614,7 @@ nsJAR::ParseManifest()
 
   //-- Verify that the signature file is a valid signature of the SF file
   int32_t verifyError;
-  rv = verifier->VerifySignature(sigBuffer, sigLen, manifestBuffer, manifestLen,
+  rv = verifier->VerifySignature(sigBuffer, manifestBuffer,
                                  &verifyError, getter_AddRefs(mSigningCert));
   if (NS_FAILED(rv)) return rv;
   if (mSigningCert && verifyError == nsIDataSignatureVerifier::VERIFY_OK) {
@@ -1126,8 +1120,9 @@ nsZipReaderCache::IsCached(nsIFile* zipFile, bool* aResult)
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsZipReaderCache::GetZip(nsIFile* zipFile, nsIZipReader* *result)
+nsresult
+nsZipReaderCache::GetZip(nsIFile* zipFile, nsIZipReader* *result,
+                         bool failOnMiss)
 {
   NS_ENSURE_ARG_POINTER(zipFile);
   nsresult rv;
@@ -1151,6 +1146,10 @@ nsZipReaderCache::GetZip(nsIFile* zipFile, nsIZipReader* *result)
 #endif
     zip->ClearReleaseTime();
   } else {
+    if (failOnMiss) {
+      return NS_ERROR_CACHE_KEY_NOT_FOUND;
+    }
+
     zip = new nsJAR();
     zip->SetZipReaderCache(this);
     rv = zip->Open(zipFile);
@@ -1163,6 +1162,18 @@ nsZipReaderCache::GetZip(nsIFile* zipFile, nsIZipReader* *result)
   }
   zip.forget(result);
   return rv;
+}
+
+NS_IMETHODIMP
+nsZipReaderCache::GetZipIfCached(nsIFile* zipFile, nsIZipReader* *result)
+{
+  return GetZip(zipFile, result, true);
+}
+
+NS_IMETHODIMP
+nsZipReaderCache::GetZip(nsIFile* zipFile, nsIZipReader* *result)
+{
+  return GetZip(zipFile, result, false);
 }
 
 NS_IMETHODIMP

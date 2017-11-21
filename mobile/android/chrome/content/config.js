@@ -147,7 +147,7 @@ var NewPrefDialog = {
 
     switch(this.type) {
       case "boolean":
-        Services.prefs.setBoolPref(this._prefNameInputElt.value, (this._booleanValue.value == "true") ? true : false);
+        Services.prefs.setBoolPref(this._prefNameInputElt.value, !!(this._booleanValue.value == "true"));
         break;
       case "string":
         Services.prefs.setCharPref(this._prefNameInputElt.value, this._stringValue.value);
@@ -219,7 +219,7 @@ var AboutConfig = {
     this.bufferFilterInput();
 
     // Setup the prefs observers
-    Services.prefs.addObserver("", this, false);
+    Services.prefs.addObserver("", this);
   },
 
   // Uninit the main AboutConfig dialog
@@ -240,11 +240,11 @@ var AboutConfig = {
       clearTimeout(this._filterChangeTimer);
     }
 
-    this._filterChangeTimer = setTimeout((function() {
+    this._filterChangeTimer = setTimeout(() => {
       this._filterChangeTimer = null;
       // Display updated prefs list when filterInput value settles
       this._displayNewList();
-    }).bind(this), FILTER_CHANGE_TRIGGER);
+    }, FILTER_CHANGE_TRIGGER);
   },
 
   // Update displayed list when filterInput value changes
@@ -265,9 +265,9 @@ var AboutConfig = {
     window.onscroll = this.onScroll.bind(this);
 
     // Pause for screen to settle, then ensure at top
-    setTimeout((function() {
+    setTimeout(() => {
       window.scrollTo(0, 0);
-    }).bind(this), INITIAL_PAGE_DELAY);
+    }, INITIAL_PAGE_DELAY);
   },
 
   // Clear the displayed preferences list
@@ -597,6 +597,7 @@ Pref.prototype = {
       this.li.setAttribute("contextmenu", "prefs-context-menu");
 
       // Create list item outline, bind to object actions
+      // eslint-disable-next-line no-unsanitized/property
       this.li.innerHTML =
         "<div class='pref-name' " +
             "onclick='AboutConfig.selectOrToggleBoolPref(event);'>" +

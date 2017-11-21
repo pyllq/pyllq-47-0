@@ -96,6 +96,8 @@
 #include "xpcpublic.h"
 #include "mozilla/StyleSheet.h"
 #include "mozilla/StyleSheetInlines.h"
+#include "nsXULTemplateBuilder.h"
+#include "nsXULTreeBuilder.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -190,15 +192,28 @@ namespace dom {
 
 XULDocument::XULDocument(void)
     : XMLDocument("application/vnd.mozilla.xul+xml"),
+      mNextSrcLoadWaiter(nullptr),
+      mApplyingPersistedAttrs(false),
+      mIsWritingFastLoad(false),
+      mDocumentLoaded(false),
+      mStillWalking(false),
+      mRestrictPersistence(false),
+      mTemplateBuilderTable(nullptr),
+      mPendingSheets(0),
       mDocLWTheme(Doc_Theme_Uninitialized),
       mState(eState_Master),
-      mResolutionPhase(nsForwardReference::eStart)
+      mCurrentScriptProto(nullptr),
+      mOffThreadCompiling(false),
+      mOffThreadCompileStringBuf(nullptr),
+      mOffThreadCompileStringLength(0),
+      mResolutionPhase(nsForwardReference::eStart),
+      mBroadcasterMap(nullptr),
+      mInitialLayoutComplete(false),
+      mHandlingDelayedAttrChange(false),
+      mHandlingDelayedBroadcasters(false)
 {
-    // NOTE! nsDocument::operator new() zeroes out all members, so don't
-    // bother initializing members to 0.
-
     // Override the default in nsDocument
-    mCharacterSet.AssignLiteral("UTF-8");
+    mCharacterSet = UTF_8_ENCODING;
 
     mDefaultElementType = kNameSpaceID_XUL;
     mType = eXUL;
@@ -226,7 +241,7 @@ XULDocument::~XULDocument()
     delete mTemplateBuilderTable;
 
     Preferences::UnregisterCallback(XULDocument::DirectionChanged,
-                                    "intl.uidirection.", this);
+                                    "intl.uidirection", this);
 
     if (mOffThreadCompileStringBuf) {
       js_free(mOffThreadCompileStringBuf);
@@ -390,7 +405,15 @@ XULDocument::StartDocumentLoad(const char* aCommand, nsIChannel* aChannel,
     nsresult rv =
         NS_GetFinalChannelURI(aChannel, getter_AddRefs(mDocumentURI));
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
+    mOriginalURI = mDocumentURI;
+
+    // Get the document's principal
+    nsCOMPtr<nsIPrincipal> principal;
+    nsContentUtils::GetSecurityManager()->
+        GetChannelResultPrincipal(mChannel, getter_AddRefs(principal));
+    principal = MaybeDowngradePrincipal(principal);
+
     ResetStylesheetsToURI(mDocumentURI);
 
     RetrieveRelevantHeaders(aChannel);
@@ -447,8 +470,8 @@ XULDocument::StartDocumentLoad(const char* aCommand, nsIChannel* aChannel,
         // with the stream n' stuff.
 
         nsCOMPtr<nsIParser> parser;
-        rv = PrepareToLoad(aContainer, aCommand, aChannel, aLoadGroup,
-                           getter_AddRefs(parser));
+        rv = PrepareToLoadPrototype(mDocumentURI, aCommand, principal,
+                                    getter_AddRefs(parser));
         if (NS_FAILED(rv)) return rv;
 
         // Predicate mIsWritingFastLoad on the XUL cache being enabled,
@@ -1016,10 +1039,14 @@ XULDocument::AttributeChanged(nsIDocument* aDocument,
     if (ShouldPersistAttribute(aElement, aAttribute) && !persist.IsEmpty() &&
         // XXXldb This should check that it's a token, not just a substring.
         persist.Find(nsDependentAtomString(aAttribute)) >= 0) {
-        nsContentUtils::AddScriptRunner(NewRunnableMethod
-            <nsIContent*, int32_t, nsIAtom*>
-            (this, &XULDocument::DoPersist, aElement, kNameSpaceID_None,
-            aAttribute));
+      nsContentUtils::AddScriptRunner(
+        NewRunnableMethod<nsIContent*, int32_t, nsIAtom*>(
+          "dom::XULDocument::DoPersist",
+          this,
+          &XULDocument::DoPersist,
+          aElement,
+          kNameSpaceID_None,
+          aAttribute));
     }
 }
 
@@ -1030,7 +1057,7 @@ XULDocument::ContentAppended(nsIDocument* aDocument,
                              int32_t aNewIndexInContainer)
 {
     NS_ASSERTION(aDocument == this, "unexpected doc");
-    
+
     // Might not need this, but be safe for now.
     nsCOMPtr<nsIMutationObserver> kungFuDeathGrip(this);
 
@@ -1117,7 +1144,7 @@ XULDocument::ResolveForwardReferences()
 
     NS_ASSERTION(mResolutionPhase == nsForwardReference::eStart,
                  "nested ResolveForwardReferences()");
-        
+
     // Resolve each outstanding 'forward' reference. We iterate
     // through the list of forward references until no more forward
     // references can be resolved. This annealing process is
@@ -1195,7 +1222,7 @@ XULDocument::GetElementsByAttribute(const nsAString& aAttribute,
                                             true,
                                             attrAtom,
                                             kNameSpaceID_Unknown);
-    
+
     return list.forget();
 }
 
@@ -1851,7 +1878,8 @@ XULDocument::RemoveElementFromRefMap(Element* aElement)
 //
 
 nsresult
-XULDocument::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
+XULDocument::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult,
+                   bool aPreallocateChildren) const
 {
     // We don't allow cloning of a XUL document
     *aResult = nullptr;
@@ -1885,7 +1913,7 @@ XULDocument::Init()
     }
 
     Preferences::RegisterCallback(XULDocument::DirectionChanged,
-                                  "intl.uidirection.", this);
+                                  "intl.uidirection", this);
 
     return NS_OK;
 }
@@ -1919,26 +1947,26 @@ XULDocument::StartLayout(void)
 
 /* static */
 bool
-XULDocument::MatchAttribute(nsIContent* aContent,
+XULDocument::MatchAttribute(Element* aElement,
                             int32_t aNamespaceID,
                             nsIAtom* aAttrName,
                             void* aData)
 {
-    NS_PRECONDITION(aContent, "Must have content node to work with!");
+    NS_PRECONDITION(aElement, "Must have content node to work with!");
     nsString* attrValue = static_cast<nsString*>(aData);
     if (aNamespaceID != kNameSpaceID_Unknown &&
         aNamespaceID != kNameSpaceID_Wildcard) {
         return attrValue->EqualsLiteral("*") ?
-            aContent->HasAttr(aNamespaceID, aAttrName) :
-            aContent->AttrValueIs(aNamespaceID, aAttrName, *attrValue,
+            aElement->HasAttr(aNamespaceID, aAttrName) :
+            aElement->AttrValueIs(aNamespaceID, aAttrName, *attrValue,
                                   eCaseMatters);
     }
 
     // Qualified name match. This takes more work.
 
-    uint32_t count = aContent->GetAttrCount();
+    uint32_t count = aElement->GetAttrCount();
     for (uint32_t i = 0; i < count; ++i) {
-        const nsAttrName* name = aContent->GetAttrNameAt(i);
+        const nsAttrName* name = aElement->GetAttrNameAt(i);
         bool nameMatch;
         if (name->IsAtom()) {
             nameMatch = name->Atom() == aAttrName;
@@ -1950,28 +1978,13 @@ XULDocument::MatchAttribute(nsIContent* aContent,
 
         if (nameMatch) {
             return attrValue->EqualsLiteral("*") ||
-                aContent->AttrValueIs(name->NamespaceID(), name->LocalName(),
+                aElement->AttrValueIs(name->NamespaceID(), name->LocalName(),
                                       *attrValue, eCaseMatters);
         }
     }
 
     return false;
 }
-
-nsresult
-XULDocument::PrepareToLoad(nsISupports* aContainer,
-                           const char* aCommand,
-                           nsIChannel* aChannel,
-                           nsILoadGroup* aLoadGroup,
-                           nsIParser** aResult)
-{
-    // Get the document's principal
-    nsCOMPtr<nsIPrincipal> principal;
-    nsContentUtils::GetSecurityManager()->
-        GetChannelResultPrincipal(aChannel, getter_AddRefs(principal));
-    return PrepareToLoadPrototype(mDocumentURI, aCommand, principal, aResult);
-}
-
 
 nsresult
 XULDocument::PrepareToLoadPrototype(nsIURI* aURI, const char* aCommand,
@@ -1988,7 +2001,7 @@ XULDocument::PrepareToLoadPrototype(nsIURI* aURI, const char* aCommand,
     if (NS_FAILED(rv)) {
         mCurrentPrototype = nullptr;
         return rv;
-    }    
+    }
 
     // Bootstrap the master document prototype.
     if (! mMasterPrototype) {
@@ -2012,7 +2025,7 @@ XULDocument::PrepareToLoadPrototype(nsIURI* aURI, const char* aCommand,
     parser->SetCommand(nsCRT::strcmp(aCommand, "view-source") ? eViewNormal :
                        eViewSource);
 
-    parser->SetDocumentCharset(NS_LITERAL_CSTRING("UTF-8"),
+    parser->SetDocumentCharset(UTF_8_ENCODING,
                                kCharsetFromDocTypeDefault);
     parser->SetContentSink(sink); // grabs a reference to the parser
 
@@ -2313,7 +2326,7 @@ XULDocument::PrepareToWalk()
 
         rv = AppendChildTo(root, false);
         if (NS_FAILED(rv)) return rv;
-        
+
         rv = AddElementToRefMap(root);
         if (NS_FAILED(rv)) return rv;
 
@@ -2401,7 +2414,7 @@ XULDocument::InsertXMLStylesheetPI(const nsXULPrototypePI* aProtoPI,
     if (rv == NS_ERROR_OUT_OF_MEMORY) {
         return rv;
     }
-    
+
     return NS_OK;
 }
 
@@ -2759,7 +2772,7 @@ XULDocument::ResumeWalk()
             // we're in the master document -or- we're in an overlay, and far
             // enough down into the overlay's content that we can simply build
             // the delegates and attach them to the parent node.
-            bool processingOverlayHookupNodes = (mState == eState_Overlay) && 
+            bool processingOverlayHookupNodes = (mState == eState_Overlay) &&
                                                   (mContextStack.Depth() == 1);
 
             NS_ASSERTION(element || processingOverlayHookupNodes,
@@ -3070,14 +3083,14 @@ XULDocument::DoneWalking()
                 mOverlayLoadObservers->Remove(overlayURI);
             }
             else {
-                // If we have not yet displayed the document for the first time 
+                // If we have not yet displayed the document for the first time
                 // (i.e. we came in here as the result of a dynamic overlay load
-                // which was spawned by a binding-attached event caused by 
+                // which was spawned by a binding-attached event caused by
                 // StartLayout() on the master prototype - we must remember that
-                // this overlay has been merged and tell the listeners after 
-                // StartLayout() is completely finished rather than doing so 
+                // this overlay has been merged and tell the listeners after
+                // StartLayout() is completely finished rather than doing so
                 // immediately - otherwise we may be executing code that needs to
-                // access XBL Binding implementations on nodes for which frames 
+                // access XBL Binding implementations on nodes for which frames
                 // have not yet been constructed because their bindings have not
                 // yet been attached. This can be a race condition because dynamic
                 // overlay loading can take varying amounts of time depending on
@@ -3091,7 +3104,7 @@ XULDocument::DoneWalking()
                     mPendingOverlayLoadNotifications =
                         new nsInterfaceHashtable<nsURIHashKey,nsIObserver>;
                 }
-                
+
                 mPendingOverlayLoadNotifications->Get(overlayURI, getter_AddRefs(obs));
                 if (!obs) {
                     mOverlayLoadObservers->Get(overlayURI, getter_AddRefs(obs));
@@ -3135,8 +3148,10 @@ XULDocument::MaybeBroadcast()
          mDelayedBroadcasters.Length())) {
         if (!nsContentUtils::IsSafeToRunScript()) {
             if (!mInDestructor) {
-                nsContentUtils::AddScriptRunner(
-                    NewRunnableMethod(this, &XULDocument::MaybeBroadcast));
+              nsContentUtils::AddScriptRunner(
+                NewRunnableMethod("dom::XULDocument::MaybeBroadcast",
+                                  this,
+                                  &XULDocument::MaybeBroadcast));
             }
             return;
         }
@@ -3337,10 +3352,10 @@ XULDocument::OnStreamComplete(nsIStreamLoader* aLoader,
                                             !mOffThreadCompileStringBuf),
                    "XULDocument can't load multiple scripts at once");
 
-        rv = nsScriptLoader::ConvertToUTF16(channel, string, stringLen,
-                                            EmptyString(), this,
-                                            mOffThreadCompileStringBuf,
-                                            mOffThreadCompileStringLength);
+        rv = ScriptLoader::ConvertToUTF16(channel, string, stringLen,
+                                          EmptyString(), this,
+                                          mOffThreadCompileStringBuf,
+                                          mOffThreadCompileStringLength);
         if (NS_SUCCEEDED(rv)) {
             // Attempt to give ownership of the buffer to the JS engine.  If
             // we hit offthread compilation, however, we will have to take it
@@ -3634,10 +3649,9 @@ XULDocument::CheckTemplateBuilderHookup(nsIContent* aElement,
     // bad) if aElement is not a XUL element.
     //
     // XXXvarga Do we still want to support non XUL content?
-    nsCOMPtr<nsIDOMXULElement> xulElement = do_QueryInterface(aElement);
+    RefPtr<nsXULElement> xulElement = nsXULElement::FromContent(aElement);
     if (xulElement) {
-        nsCOMPtr<nsIRDFCompositeDataSource> ds;
-        xulElement->GetDatabase(getter_AddRefs(ds));
+        nsCOMPtr<nsIRDFCompositeDataSource> ds = xulElement->GetDatabase();
         if (ds) {
             *aNeedsHookup = false;
             return NS_OK;
@@ -3652,7 +3666,7 @@ XULDocument::CheckTemplateBuilderHookup(nsIContent* aElement,
 }
 
 /* static */ nsresult
-XULDocument::CreateTemplateBuilder(nsIContent* aElement)
+XULDocument::CreateTemplateBuilder(Element* aElement)
 {
     // Check if need to construct a tree builder or content builder.
     bool isTreeBuilder = false;
@@ -3681,13 +3695,9 @@ XULDocument::CreateTemplateBuilder(nsIContent* aElement)
 
     if (isTreeBuilder) {
         // Create and initialize a tree builder.
-        nsCOMPtr<nsIXULTemplateBuilder> builder =
-            do_CreateInstance("@mozilla.org/xul/xul-tree-builder;1");
-
-        if (! builder)
-            return NS_ERROR_FAILURE;
-
-        builder->Init(aElement);
+        RefPtr<nsXULTreeBuilder> builder = new nsXULTreeBuilder(aElement);
+        nsresult rv = builder->Init();
+        NS_ENSURE_SUCCESS(rv, rv);
 
         // Create a <treechildren> if one isn't there already.
         // XXXvarga what about attributes?
@@ -3706,13 +3716,10 @@ XULDocument::CreateTemplateBuilder(nsIContent* aElement)
     }
     else {
         // Create and initialize a content builder.
-        nsCOMPtr<nsIXULTemplateBuilder> builder
-            = do_CreateInstance("@mozilla.org/xul/xul-template-builder;1");
+        nsCOMPtr<nsIXULTemplateBuilder> builder;
+        nsresult rv = NS_NewXULContentBuilder(aElement, getter_AddRefs(builder));
+        NS_ENSURE_SUCCESS(rv, rv);
 
-        if (! builder)
-            return NS_ERROR_FAILURE;
-
-        builder->Init(aElement);
         builder->CreateContents(aElement, false);
     }
 
@@ -3807,7 +3814,7 @@ XULDocument::OverlayForwardReference::Resolve()
 
     if (MOZ_LOG_TEST(gXULLog, LogLevel::Debug)) {
         nsAutoCString idC;
-        idC.AssignWithConversion(id);
+        LossyCopyUTF16toASCII(id, idC);
         MOZ_LOG(gXULLog, LogLevel::Debug,
                ("xul: overlay resolved '%s'",
                 idC.get()));
@@ -3830,10 +3837,10 @@ XULDocument::OverlayForwardReference::Merge(nsIContent* aTargetNode,
     // aOverlayNode: the node in the overlay document that matches
     //               a node in the actual document.
     // aNotify:      whether or not content manipulation methods should
-    //               use the aNotify parameter. After the initial 
+    //               use the aNotify parameter. After the initial
     //               reflow (i.e. in the dynamic overlay merge case),
     //               we want all the content manipulation methods we
-    //               call to notify so that frames are constructed 
+    //               call to notify so that frames are constructed
     //               etc. Otherwise do not, since that's during initial
     //               document construction before StartLayout has been
     //               called which will do everything for us.
@@ -3979,7 +3986,7 @@ XULDocument::OverlayForwardReference::~OverlayForwardReference()
         mOverlay->GetAttr(kNameSpaceID_None, nsGkAtoms::id, id);
 
         nsAutoCString idC;
-        idC.AssignWithConversion(id);
+        LossyCopyUTF16toASCII(id, idC);
 
         nsIURI *protoURI = mDocument->mCurrentPrototype->GetURI();
 
@@ -4030,8 +4037,8 @@ XULDocument::BroadcasterHookup::~BroadcasterHookup()
         }
 
         nsAutoCString attributeC,broadcasteridC;
-        attributeC.AssignWithConversion(attribute);
-        broadcasteridC.AssignWithConversion(broadcasterID);
+        LossyCopyUTF16toASCII(attribute, attributeC);
+        LossyCopyUTF16toASCII(broadcasterID, broadcasteridC);
         MOZ_LOG(gXULLog, LogLevel::Warning,
                ("xul: broadcaster hookup failed <%s attribute='%s'> to %s",
                 nsAtomCString(mObservesElement->NodeInfo()->NameAtom()).get(),
@@ -4242,8 +4249,8 @@ XULDocument::CheckBroadcasterHookup(Element* aElement,
             return rv;
 
         nsAutoCString attributeC,broadcasteridC;
-        attributeC.AssignWithConversion(attribute);
-        broadcasteridC.AssignWithConversion(broadcasterID);
+        LossyCopyUTF16toASCII(attribute, attributeC);
+        LossyCopyUTF16toASCII(broadcasterID, broadcasteridC);
         MOZ_LOG(gXULLog, LogLevel::Debug,
                ("xul: broadcaster hookup <%s attribute='%s'> to %s",
                 nsAtomCString(content->NodeInfo()->NameAtom()).get(),
@@ -4426,6 +4433,7 @@ XULDocument::ParserObserver::OnStartRequest(nsIRequest *request,
             nsCOMPtr<nsIPrincipal> principal;
             secMan->GetChannelResultPrincipal(channel, getter_AddRefs(principal));
 
+            principal = mDocument->MaybeDowngradePrincipal(principal);
             // Failure there is ok -- it'll just set a (safe) null principal
             mPrototype->SetDocumentPrincipal(principal);
         }
@@ -4433,7 +4441,7 @@ XULDocument::ParserObserver::OnStartRequest(nsIRequest *request,
         // Make sure to avoid cycles
         mPrototype = nullptr;
     }
-        
+
     return NS_OK;
 }
 
@@ -4546,30 +4554,40 @@ XULDocument::DirectionChanged(const char* aPrefName, void* aData)
   }
 }
 
-int
+nsIDocument::DocumentTheme
 XULDocument::GetDocumentLWTheme()
 {
     if (mDocLWTheme == Doc_Theme_Uninitialized) {
-        mDocLWTheme = Doc_Theme_None; // No lightweight theme by default
-
-        Element* element = GetRootElement();
-        nsAutoString hasLWTheme;
-        if (element &&
-            element->GetAttr(kNameSpaceID_None, nsGkAtoms::lwtheme, hasLWTheme) &&
-            !(hasLWTheme.IsEmpty()) &&
-            hasLWTheme.EqualsLiteral("true")) {
-            mDocLWTheme = Doc_Theme_Neutral;
-            nsAutoString lwTheme;
-            element->GetAttr(kNameSpaceID_None, nsGkAtoms::lwthemetextcolor, lwTheme);
-            if (!(lwTheme.IsEmpty())) {
-                if (lwTheme.EqualsLiteral("dark"))
-                    mDocLWTheme = Doc_Theme_Dark;
-                else if (lwTheme.EqualsLiteral("bright"))
-                    mDocLWTheme = Doc_Theme_Bright;
-            }
-        }
+        mDocLWTheme = ThreadSafeGetDocumentLWTheme();
     }
     return mDocLWTheme;
+}
+
+nsIDocument::DocumentTheme
+XULDocument::ThreadSafeGetDocumentLWTheme() const
+{
+    if (mDocLWTheme != Doc_Theme_Uninitialized) {
+        return mDocLWTheme;
+    }
+
+    DocumentTheme theme = Doc_Theme_None; // No lightweight theme by default
+    Element* element = GetRootElement();
+    nsAutoString hasLWTheme;
+    if (element &&
+        element->GetAttr(kNameSpaceID_None, nsGkAtoms::lwtheme, hasLWTheme) &&
+        !(hasLWTheme.IsEmpty()) &&
+        hasLWTheme.EqualsLiteral("true")) {
+        theme = Doc_Theme_Neutral;
+        nsAutoString lwTheme;
+        element->GetAttr(kNameSpaceID_None, nsGkAtoms::lwthemetextcolor, lwTheme);
+        if (!(lwTheme.IsEmpty())) {
+            if (lwTheme.EqualsLiteral("dark"))
+                theme = Doc_Theme_Dark;
+            else if (lwTheme.EqualsLiteral("bright"))
+                theme = Doc_Theme_Bright;
+        }
+    }
+    return theme;
 }
 
 NS_IMETHODIMP

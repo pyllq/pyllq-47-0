@@ -48,6 +48,7 @@ class nsIEventTarget;
 class nsIPrincipal;
 class nsIScriptContext;
 class nsIScriptTimeoutHandler;
+class nsISerialEventTarget;
 class nsISerializable;
 class nsIThread;
 class nsIThreadInternal;
@@ -69,6 +70,7 @@ class PromiseNativeHandler;
 class StructuredCloneHolder;
 class WorkerDebuggerGlobalScope;
 class WorkerGlobalScope;
+struct WorkerOptions;
 } // namespace dom
 namespace ipc {
 class PrincipalInfo;
@@ -85,6 +87,7 @@ BEGIN_WORKERS_NAMESPACE
 class AutoSyncLoopHolder;
 class SharedWorker;
 class ServiceWorkerClientInfo;
+class WorkerEventTarget;
 class WorkerControlRunnable;
 class WorkerDebugger;
 class WorkerPrivate;
@@ -140,6 +143,45 @@ public:
   }
 };
 
+class WorkerErrorBase {
+public:
+  nsString mMessage;
+  nsString mFilename;
+  uint32_t mLineNumber;
+  uint32_t mColumnNumber;
+  uint32_t mErrorNumber;
+
+  WorkerErrorBase()
+  : mLineNumber(0),
+    mColumnNumber(0),
+    mErrorNumber(0)
+  { }
+
+  void AssignErrorBase(JSErrorBase* aReport);
+};
+
+class WorkerErrorNote : public WorkerErrorBase {
+public:
+  void AssignErrorNote(JSErrorNotes::Note* aNote);
+};
+
+class WorkerErrorReport : public WorkerErrorBase {
+public:
+  nsString mLine;
+  uint32_t mFlags;
+  JSExnType mExnType;
+  bool mMutedError;
+  nsTArray<WorkerErrorNote> mNotes;
+
+  WorkerErrorReport()
+  : mFlags(0),
+    mExnType(JSEXN_ERR),
+    mMutedError(false)
+  { }
+
+  void AssignErrorReport(JSErrorReport* aReport);
+};
+
 template <class Derived>
 class WorkerPrivateParent : public DOMEventTargetHelper
 {
@@ -170,15 +212,15 @@ protected:
   mozilla::CondVar mCondVar;
 
   // Protected by mMutex.
-  RefPtr<EventTarget> mEventTarget;
   nsTArray<RefPtr<WorkerRunnable>> mPreStartRunnables;
 
 private:
   WorkerPrivate* mParent;
   nsString mScriptURL;
-  // This is the worker name for shared workers or the worker scope
-  // for service workers.
-  nsCString mWorkerName;
+  // This is the worker name for shared workers and dedicated workers.
+  nsString mWorkerName;
+  // This is the worker scope for service workers.
+  nsCString mServiceWorkerScope;
   LocationInfo mLocationInfo;
   // The lifetime of these objects within LoadInfo is managed explicitly;
   // they do not need to be cycle collected.
@@ -226,7 +268,8 @@ protected:
   WorkerPrivateParent(WorkerPrivate* aParent,
                       const nsAString& aScriptURL, bool aIsChromeWorker,
                       WorkerType aWorkerType,
-                      const nsACString& aSharedWorkerName,
+                      const nsAString& aWorkerName,
+                      const nsACString& aServiceWorkerScope,
                       WorkerLoadInfo& aLoadInfo);
 
   ~WorkerPrivateParent();
@@ -249,7 +292,7 @@ private:
 
   void
   PostMessageInternal(JSContext* aCx, JS::Handle<JS::Value> aMessage,
-                      const Optional<Sequence<JS::Value>>& aTransferable,
+                      const Sequence<JSObject*>& aTransferable,
                       ErrorResult& aRv);
 
   nsresult
@@ -291,9 +334,6 @@ public:
 
   already_AddRefed<WorkerRunnable>
   MaybeWrapAsWorkerRunnable(already_AddRefed<nsIRunnable> aRunnable);
-
-  already_AddRefed<nsIEventTarget>
-  GetEventTarget();
 
   // May be called on any thread...
   bool
@@ -352,15 +392,12 @@ public:
   bool
   ModifyBusyCount(bool aIncrease);
 
-  void
-  ForgetOverridenLoadGroup(nsCOMPtr<nsILoadGroup>& aLoadGroupOut);
-
-  void
-  ForgetMainThreadObjects(nsTArray<nsCOMPtr<nsISupports> >& aDoomed);
+  bool
+  ProxyReleaseMainThreadObjects();
 
   void
   PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
-              const Optional<Sequence<JS::Value>>& aTransferable,
+              const Sequence<JSObject*>& aTransferable,
               ErrorResult& aRv);
 
   void
@@ -397,12 +434,8 @@ public:
 
   void
   BroadcastErrorToSharedWorkers(JSContext* aCx,
-                                const nsAString& aMessage,
-                                const nsAString& aFilename,
-                                const nsAString& aLine,
-                                uint32_t aLineNumber,
-                                uint32_t aColumnNumber,
-                                uint32_t aFlags);
+                                const WorkerErrorReport* aReport,
+                                bool aIsErrorEvent);
 
   void
   WorkerScriptLoaded();
@@ -491,6 +524,13 @@ public:
   ServiceWorkerID() const
   {
     return mLoadInfo.mServiceWorkerID;
+  }
+
+  const nsCString&
+  ServiceWorkerScope() const
+  {
+    MOZ_DIAGNOSTIC_ASSERT(IsServiceWorker());
+    return mServiceWorkerScope;
   }
 
   nsIURI*
@@ -592,6 +632,11 @@ public:
     return mLoadInfo.mPrincipal;
   }
 
+  const nsAString& Origin() const
+  {
+    return mLoadInfo.mOrigin;
+  }
+
   nsILoadGroup*
   GetLoadGroup() const
   {
@@ -608,8 +653,19 @@ public:
       return mLoadInfo.mPrincipal;
   }
 
-  void
-  SetPrincipal(nsIPrincipal* aPrincipal, nsILoadGroup* aLoadGroup);
+  nsresult
+  SetPrincipalOnMainThread(nsIPrincipal* aPrincipal, nsILoadGroup* aLoadGroup);
+
+  nsresult
+  SetPrincipalFromChannel(nsIChannel* aChannel);
+
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+  bool
+  FinalChannelPrincipalIsValid(nsIChannel* aChannel);
+
+  bool
+  PrincipalURIMatchesScriptURL();
+#endif
 
   bool
   UsesSystemPrincipal() const
@@ -647,11 +703,14 @@ public:
   }
 
   void
-  SetCSP(nsIContentSecurityPolicy* aCSP)
-  {
-    AssertIsOnMainThread();
-    mLoadInfo.mCSP = aCSP;
-  }
+  SetCSP(nsIContentSecurityPolicy* aCSP);
+
+  nsresult
+  SetCSPFromHeaderValues(const nsACString& aCSPHeaderValue,
+                         const nsACString& aCSPReportOnlyHeaderValue);
+
+  void
+  SetReferrerPolicyFromHeaderValue(const nsACString& aReferrerPolicyHeaderValue);
 
   net::ReferrerPolicy
   GetReferrerPolicy() const
@@ -776,10 +835,9 @@ public:
     }
   }
 
-  const nsCString&
+  const nsString&
   WorkerName() const
   {
-    MOZ_ASSERT(IsServiceWorker() || IsSharedWorker());
     return mWorkerName;
   }
 
@@ -850,6 +908,11 @@ public:
   void
   AssertInnerWindowIsCorrect() const
   { }
+#endif
+
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+  bool
+  PrincipalIsValid() const;
 #endif
 };
 
@@ -932,10 +995,13 @@ class WorkerPrivate : public WorkerPrivateParent<WorkerPrivate>
   RefPtr<WorkerDebuggerGlobalScope> mDebuggerScope;
   nsTArray<ParentType*> mChildWorkers;
   nsTObserverArray<WorkerHolder*> mHolders;
+  uint32_t mNumHoldersPreventingShutdownStart;
   nsTArray<nsAutoPtr<TimeoutInfo>> mTimeouts;
   uint32_t mDebuggerEventLoopLevel;
   RefPtr<ThrottledEventQueue> mMainThreadThrottledEventQueue;
   nsCOMPtr<nsIEventTarget> mMainThreadEventTarget;
+  RefPtr<WorkerEventTarget> mWorkerControlEventTarget;
+  RefPtr<WorkerEventTarget> mWorkerHybridEventTarget;
 
   struct SyncLoopInfo
   {
@@ -958,8 +1024,6 @@ class WorkerPrivate : public WorkerPrivateParent<WorkerPrivate>
   nsCOMPtr<nsITimerCallback> mTimerRunnable;
 
   nsCOMPtr<nsITimer> mGCTimer;
-  nsCOMPtr<nsIEventTarget> mPeriodicGCTimerTarget;
-  nsCOMPtr<nsIEventTarget> mIdleGCTimerTarget;
 
   RefPtr<MemoryReporter> mMemoryReporter;
 
@@ -989,17 +1053,19 @@ protected:
 public:
   static already_AddRefed<WorkerPrivate>
   Constructor(const GlobalObject& aGlobal, const nsAString& aScriptURL,
+              const WorkerOptions& aOptions,
               ErrorResult& aRv);
 
   static already_AddRefed<WorkerPrivate>
   Constructor(const GlobalObject& aGlobal, const nsAString& aScriptURL,
               bool aIsChromeWorker, WorkerType aWorkerType,
-              const nsACString& aSharedWorkerName,
+              const nsAString& aWorkerName,
               WorkerLoadInfo* aLoadInfo, ErrorResult& aRv);
 
   static already_AddRefed<WorkerPrivate>
   Constructor(JSContext* aCx, const nsAString& aScriptURL, bool aIsChromeWorker,
-              WorkerType aWorkerType, const nsACString& aSharedWorkerName,
+              WorkerType aWorkerType, const nsAString& aWorkerName,
+              const nsACString& aServiceWorkerScope,
               WorkerLoadInfo* aLoadInfo, ErrorResult& aRv);
 
   static bool
@@ -1090,8 +1156,8 @@ public:
   bool
   InterruptCallback(JSContext* aCx);
 
-  nsresult
-  IsOnCurrentThread(bool* aIsOnCurrentThread);
+  bool
+  IsOnCurrentThread();
 
   bool
   CloseInternal(JSContext* aCx)
@@ -1124,18 +1190,17 @@ public:
   void
   PostMessageToParent(JSContext* aCx,
                       JS::Handle<JS::Value> aMessage,
-                      const Optional<Sequence<JS::Value>>& aTransferable,
+                      const Sequence<JSObject*>& aTransferable,
                       ErrorResult& aRv)
   {
     PostMessageToParentInternal(aCx, aMessage, aTransferable, aRv);
   }
 
   void
-  PostMessageToParentMessagePort(
-                             JSContext* aCx,
-                             JS::Handle<JS::Value> aMessage,
-                             const Optional<Sequence<JS::Value>>& aTransferable,
-                             ErrorResult& aRv);
+  PostMessageToParentMessagePort(JSContext* aCx,
+                                 JS::Handle<JS::Value> aMessage,
+                                 const Sequence<JSObject*>& aTransferable,
+                                 ErrorResult& aRv);
 
   void
   EnterDebuggerEventLoop();
@@ -1390,10 +1455,22 @@ public:
   DispatchToMainThread(already_AddRefed<nsIRunnable> aRunnable,
                        uint32_t aFlags = NS_DISPATCH_NORMAL);
 
+  // Get an event target that will dispatch runnables as control runnables on
+  // the worker thread.  Implement nsICancelableRunnable if you wish to take
+  // action on cancelation.
+  nsISerialEventTarget*
+  ControlEventTarget();
+
+  // Get an event target that will attempt to dispatch a normal WorkerRunnable,
+  // but if that fails will then fall back to a control runnable.
+  nsISerialEventTarget*
+  HybridEventTarget();
+
 private:
   WorkerPrivate(WorkerPrivate* aParent,
                 const nsAString& aScriptURL, bool aIsChromeWorker,
-                WorkerType aWorkerType, const nsACString& aSharedWorkerName,
+                WorkerType aWorkerType, const nsAString& aWorkerName,
+                const nsACString& aServiceWorkerScope,
                 WorkerLoadInfo& aLoadInfo);
 
   bool
@@ -1450,7 +1527,7 @@ private:
   void
   PostMessageToParentInternal(JSContext* aCx,
                               JS::Handle<JS::Value> aMessage,
-                              const Optional<Sequence<JS::Value>>& aTransferable,
+                              const Sequence<JSObject*>& aTransferable,
                               ErrorResult& aRv);
 
   void
@@ -1575,33 +1652,6 @@ public:
     // This can be null if CreateNewSyncLoop() fails.
     return mTarget;
   }
-};
-
-class TimerThreadEventTarget final : public nsIEventTarget
-{
-  ~TimerThreadEventTarget();
-
-  WorkerPrivate* mWorkerPrivate;
-  RefPtr<WorkerRunnable> mWorkerRunnable;
-public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-
-  TimerThreadEventTarget(WorkerPrivate* aWorkerPrivate,
-                         WorkerRunnable* aWorkerRunnable);
-
-protected:
-  NS_IMETHOD
-  DispatchFromScript(nsIRunnable* aRunnable, uint32_t aFlags) override;
-
-
-  NS_IMETHOD
-  Dispatch(already_AddRefed<nsIRunnable> aRunnable, uint32_t aFlags) override;
-
-  NS_IMETHOD
-  DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t) override;
-
-  NS_IMETHOD
-  IsOnCurrentThread(bool* aIsOnCurrentThread) override;
 };
 
 END_WORKERS_NAMESPACE

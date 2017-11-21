@@ -14,6 +14,9 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/dom/MemoryReportRequest.h"
+#include "mozilla/dom/VideoDecoderManagerChild.h"
+#include "mozilla/dom/VideoDecoderManagerParent.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/ipc/CrashReporterClient.h"
@@ -21,12 +24,13 @@
 #include "mozilla/layers/APZThreadUtils.h"
 #include "mozilla/layers/APZCTreeManager.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
-#include "mozilla/dom/VideoDecoderManagerParent.h"
+#include "mozilla/layers/CompositorManagerParent.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/ImageBridgeParent.h"
-#include "mozilla/dom/VideoDecoderManagerChild.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
 #include "mozilla/layers/UiCompositorControllerParent.h"
+#include "mozilla/layers/MemoryReportingMLGPU.h"
+#include "mozilla/webrender/RenderThread.h"
 #include "nsDebugImpl.h"
 #include "nsExceptionHandler.h"
 #include "nsThreadManager.h"
@@ -36,11 +40,14 @@
 #include "VRManagerParent.h"
 #include "VsyncBridgeParent.h"
 #if defined(XP_WIN)
-# include "DeviceManagerD3D9.h"
 # include "mozilla/gfx/DeviceManagerDx.h"
+# include <process.h>
 #endif
 #ifdef MOZ_WIDGET_GTK
 # include <gtk/gtk.h>
+#endif
+#ifdef MOZ_GECKO_PROFILER
+#include "ChildProfilerController.h"
 #endif
 
 namespace mozilla {
@@ -98,9 +105,9 @@ GPUParent::Init(base::ProcessId aParentPid,
   gfxPlatform::InitNullMetadata();
   // Ensure our Factory is initialised, mainly for gfx logging to work.
   gfxPlatform::InitMoz2DLogging();
+  mlg::InitializeMemoryReporters();
 #if defined(XP_WIN)
   DeviceManagerDx::Init();
-  DeviceManagerD3D9::Init();
 #endif
 
   if (NS_FAILED(NS_InitMinimalXPCOM())) {
@@ -122,9 +129,10 @@ void
 GPUParent::NotifyDeviceReset()
 {
   if (!NS_IsMainThread()) {
-    NS_DispatchToMainThread(NS_NewRunnableFunction([] () -> void {
-      GPUParent::GetSingleton()->NotifyDeviceReset();
-    }));
+    NS_DispatchToMainThread(
+      NS_NewRunnableFunction("gfx::GPUParent::NotifyDeviceReset", []() -> void {
+        GPUParent::GetSingleton()->NotifyDeviceReset();
+      }));
     return;
   }
 
@@ -139,13 +147,16 @@ GPUParent::NotifyDeviceReset()
 
   // Notify the main process that there's been a device reset
   // and that they should reset their compositors and repaint
-  Unused << SendNotifyDeviceReset();
+  GPUDeviceData data;
+  RecvGetDeviceStatus(&data);
+  Unused << SendNotifyDeviceReset(data);
 }
 
 mozilla::ipc::IPCResult
 GPUParent::RecvInit(nsTArray<GfxPrefSetting>&& prefs,
                     nsTArray<GfxVarUpdate>&& vars,
-                    const DevicePrefs& devicePrefs)
+                    const DevicePrefs& devicePrefs,
+                    nsTArray<LayerTreeIdMapping>&& aMappings)
 {
   const nsTArray<gfxPrefs::Pref*>& globalPrefs = gfxPrefs::all();
   for (auto& setting : prefs) {
@@ -159,9 +170,13 @@ GPUParent::RecvInit(nsTArray<GfxPrefSetting>&& prefs,
   // Inherit device preferences.
   gfxConfig::Inherit(Feature::HW_COMPOSITING, devicePrefs.hwCompositing());
   gfxConfig::Inherit(Feature::D3D11_COMPOSITING, devicePrefs.d3d11Compositing());
-  gfxConfig::Inherit(Feature::D3D9_COMPOSITING, devicePrefs.d3d9Compositing());
   gfxConfig::Inherit(Feature::OPENGL_COMPOSITING, devicePrefs.oglCompositing());
+  gfxConfig::Inherit(Feature::ADVANCED_LAYERS, devicePrefs.advancedLayers());
   gfxConfig::Inherit(Feature::DIRECT2D, devicePrefs.useD2D1());
+
+  for (const LayerTreeIdMapping& map : aMappings) {
+    LayerTreeOwnerTracker::Get()->Map(map.layersId(), map.ownerId());
+  }
 
 #if defined(XP_WIN)
   if (gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
@@ -189,6 +204,11 @@ GPUParent::RecvInit(nsTArray<GfxPrefSetting>&& prefs,
   }
 #endif
 
+  // Make sure to do this *after* we update gfxVars above.
+  if (gfxVars::UseWebRender()) {
+    wr::RenderThread::Start();
+  }
+
   VRManager::ManagerInit();
   // Send a message to the UI process that we're done.
   GPUDeviceData data;
@@ -196,6 +216,13 @@ GPUParent::RecvInit(nsTArray<GfxPrefSetting>&& prefs,
   Unused << SendInitComplete(data);
 
   Telemetry::AccumulateTimeDelta(Telemetry::GPU_PROCESS_INITIALIZATION_TIME_MS, mLaunchTime);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+GPUParent::RecvInitCompositorManager(Endpoint<PCompositorManagerParent>&& aEndpoint)
+{
+  CompositorManagerParent::Create(Move(aEndpoint));
   return IPC_OK();
 }
 
@@ -221,9 +248,18 @@ GPUParent::RecvInitVRManager(Endpoint<PVRManagerParent>&& aEndpoint)
 }
 
 mozilla::ipc::IPCResult
-GPUParent::RecvInitUiCompositorController(Endpoint<PUiCompositorControllerParent>&& aEndpoint)
+GPUParent::RecvInitUiCompositorController(const uint64_t& aRootLayerTreeId, Endpoint<PUiCompositorControllerParent>&& aEndpoint)
 {
-  UiCompositorControllerParent::Start(Move(aEndpoint));
+  UiCompositorControllerParent::Start(aRootLayerTreeId, Move(aEndpoint));
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+GPUParent::RecvInitProfiler(Endpoint<PProfilerChild>&& aEndpoint)
+{
+#ifdef MOZ_GECKO_PROFILER
+  mProfilerController = ChildProfilerController::Create(Move(aEndpoint));
+#endif
   return IPC_OK();
 }
 
@@ -267,8 +303,8 @@ mozilla::ipc::IPCResult
 GPUParent::RecvGetDeviceStatus(GPUDeviceData* aOut)
 {
   CopyFeatureChange(Feature::D3D11_COMPOSITING, &aOut->d3d11Compositing());
-  CopyFeatureChange(Feature::D3D9_COMPOSITING, &aOut->d3d9Compositing());
   CopyFeatureChange(Feature::OPENGL_COMPOSITING, &aOut->oglCompositing());
+  CopyFeatureChange(Feature::ADVANCED_LAYERS, &aOut->advancedLayers());
 
 #if defined(XP_WIN)
   if (DeviceManagerDx* dm = DeviceManagerDx::Get()) {
@@ -283,37 +319,10 @@ GPUParent::RecvGetDeviceStatus(GPUDeviceData* aOut)
   return IPC_OK();
 }
 
-static void
-OpenParent(RefPtr<CompositorBridgeParent> aParent,
-           Endpoint<PCompositorBridgeParent>&& aEndpoint)
-{
-  if (!aParent->Bind(Move(aEndpoint))) {
-    MOZ_CRASH("Failed to bind compositor");
-  }
-}
-
 mozilla::ipc::IPCResult
-GPUParent::RecvNewWidgetCompositor(Endpoint<layers::PCompositorBridgeParent>&& aEndpoint,
-                                   const CSSToLayoutDeviceScale& aScale,
-                                   const TimeDuration& aVsyncRate,
-                                   const CompositorOptions& aOptions,
-                                   const bool& aUseExternalSurfaceSize,
-                                   const IntSize& aSurfaceSize)
+GPUParent::RecvNewContentCompositorManager(Endpoint<PCompositorManagerParent>&& aEndpoint)
 {
-  RefPtr<CompositorBridgeParent> cbp =
-    new CompositorBridgeParent(aScale, aVsyncRate, aOptions, aUseExternalSurfaceSize, aSurfaceSize);
-
-  MessageLoop* loop = CompositorThreadHolder::Loop();
-  loop->PostTask(NewRunnableFunction(OpenParent, cbp, Move(aEndpoint)));
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult
-GPUParent::RecvNewContentCompositorBridge(Endpoint<PCompositorBridgeParent>&& aEndpoint)
-{
-  if (!CompositorBridgeParent::CreateForContent(Move(aEndpoint))) {
-    return IPC_FAIL_NO_REASON(this);
-  }
+  CompositorManagerParent::Create(Move(aEndpoint));
   return IPC_OK();
 }
 
@@ -345,11 +354,9 @@ GPUParent::RecvNewContentVideoDecoderManager(Endpoint<PVideoDecoderManagerParent
 }
 
 mozilla::ipc::IPCResult
-GPUParent::RecvAddLayerTreeIdMapping(nsTArray<LayerTreeIdMapping>&& aMappings)
+GPUParent::RecvAddLayerTreeIdMapping(const LayerTreeIdMapping& aMapping)
 {
-  for (const LayerTreeIdMapping& map : aMappings) {
-    LayerTreeOwnerTracker::Get()->Map(map.layersId(), map.ownerId());
-  }
+  LayerTreeOwnerTracker::Get()->Map(aMapping.layersId(), aMapping.ownerId());
   return IPC_OK();
 }
 
@@ -372,6 +379,19 @@ GPUParent::RecvNotifyGpuObservers(const nsCString& aTopic)
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult
+GPUParent::RecvRequestMemoryReport(const uint32_t& aGeneration,
+                                   const bool& aAnonymize,
+                                   const bool& aMinimizeMemoryUsage,
+                                   const MaybeFileDesc& aDMDFile)
+{
+  nsPrintfCString processName("GPU (pid %u)", (unsigned)getpid());
+
+  mozilla::dom::MemoryReportRequestClient::Start(
+    aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile, processName);
+  return IPC_OK();
+}
+
 void
 GPUParent::ActorDestroy(ActorDestroyReason aWhy)
 {
@@ -390,16 +410,25 @@ GPUParent::ActorDestroy(ActorDestroyReason aWhy)
   ProcessChild::QuickExit();
 #endif
 
+#ifdef MOZ_GECKO_PROFILER
+  if (mProfilerController) {
+    mProfilerController->Shutdown();
+    mProfilerController = nullptr;
+  }
+#endif
+
   if (mVsyncBridge) {
     mVsyncBridge->Shutdown();
     mVsyncBridge = nullptr;
   }
   dom::VideoDecoderManagerParent::ShutdownVideoBridge();
   CompositorThreadHolder::Shutdown();
+  if (gfxVars::UseWebRender()) {
+    wr::RenderThread::ShutDown();
+  }
   Factory::ShutDown();
 #if defined(XP_WIN)
   DeviceManagerDx::Shutdown();
-  DeviceManagerD3D9::Shutdown();
 #endif
   LayerTreeOwnerTracker::Shutdown();
   gfxVars::Shutdown();

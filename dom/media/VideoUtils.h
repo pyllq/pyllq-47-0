@@ -7,25 +7,26 @@
 #ifndef VideoUtils_h
 #define VideoUtils_h
 
+#include "AudioSampleFormat.h"
 #include "MediaInfo.h"
+#include "TimeUnits.h"
+#include "VideoLimits.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/ReentrantMonitor.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-
 #include "nsAutoPtr.h"
+#include "nsCOMPtr.h"
+#include "nsINamed.h"
 #include "nsIThread.h"
-#include "nsSize.h"
+#include "nsITimer.h"
 #include "nsRect.h"
-
+#include "nsSize.h"
 #include "nsThreadUtils.h"
 #include "prtime.h"
-#include "AudioSampleFormat.h"
-#include "TimeUnits.h"
-#include "nsITimer.h"
-#include "nsCOMPtr.h"
 
 using mozilla::CheckedInt64;
 using mozilla::CheckedUint64;
@@ -90,7 +91,11 @@ private:
 class ShutdownThreadEvent : public Runnable
 {
 public:
-  explicit ShutdownThreadEvent(nsIThread* aThread) : mThread(aThread) {}
+  explicit ShutdownThreadEvent(nsIThread* aThread)
+    : Runnable("ShutdownThreadEvent")
+    , mThread(aThread)
+  {
+  }
   ~ShutdownThreadEvent() {}
   NS_IMETHOD Run() override {
     mThread->Shutdown();
@@ -100,27 +105,6 @@ public:
 private:
   nsCOMPtr<nsIThread> mThread;
 };
-
-template<class T>
-class DeleteObjectTask: public Runnable {
-public:
-  explicit DeleteObjectTask(nsAutoPtr<T>& aObject)
-    : mObject(aObject)
-  {
-  }
-  NS_IMETHOD Run() override {
-    NS_ASSERTION(NS_IsMainThread(), "Must be on main thread.");
-    mObject = nullptr;
-    return NS_OK;
-  }
-private:
-  nsAutoPtr<T> mObject;
-};
-
-template<class T>
-void DeleteOnMainThread(nsAutoPtr<T>& aObject) {
-  NS_DispatchToMainThread(new DeleteObjectTask<T>(aObject));
-}
 
 class MediaResource;
 
@@ -161,13 +145,6 @@ CheckedInt64 TimeUnitToFrames(const media::TimeUnit& aTime, uint32_t aRate);
 // Converts from seconds to microseconds. Returns failure if the resulting
 // integer is too big to fit in an int64_t.
 nsresult SecondsToUsecs(double aSeconds, int64_t& aOutUsecs);
-
-// The maximum height and width of the video. Used for
-// sanitizing the memory allocation of the RGB buffer.
-// The maximum resolution we anticipate encountering in the
-// wild is 2160p (UHD "4K") or 4320p - 7680x4320 pixels for VR.
-static const int32_t MAX_VIDEO_WIDTH = 8192;
-static const int32_t MAX_VIDEO_HEIGHT = 4608;
 
 // Scales the display rect aDisplay by aspect ratio aAspectRatio.
 // Note that aDisplay must be validated by IsValidVideoRegion()
@@ -217,7 +194,7 @@ class SharedThreadPool;
 // made async supported by MozPromise, making this unnecessary and
 // permitting unifying the pool.
 enum class MediaThreadType {
-  PLAYBACK, // MediaDecoderStateMachine and MediaDecoderReader
+  PLAYBACK, // MediaDecoderStateMachine and MediaFormatReader
   PLATFORM_DECODER
 };
 // Returns the thread pool that is shared amongst all decoder state machines
@@ -274,7 +251,7 @@ nsresult
 GenerateRandomPathName(nsCString& aOutSalt, uint32_t aLength);
 
 already_AddRefed<TaskQueue>
-CreateMediaDecodeTaskQueue();
+CreateMediaDecodeTaskQueue(const char* aName);
 
 // Iteratively invokes aWork until aCondition returns true, or aWork returns false.
 // Use this rather than a while loop to avoid bogarting the task queue.
@@ -293,8 +270,11 @@ RefPtr<GenericPromise> InvokeUntil(Work aWork, Condition aCondition) {
       } else if (aLocalCondition()) {
         aPromise->Resolve(true, __func__);
       } else {
-        nsCOMPtr<nsIRunnable> r =
-          NS_NewRunnableFunction([aPromise, aLocalWork, aLocalCondition] () { Iteration(aPromise, aLocalWork, aLocalCondition); });
+        nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+          "InvokeUntil::Helper::Iteration",
+          [aPromise, aLocalWork, aLocalCondition]() {
+            Iteration(aPromise, aLocalWork, aLocalCondition);
+          });
         AbstractThread::GetCurrent()->Dispatch(r.forget());
       }
     }
@@ -305,23 +285,24 @@ RefPtr<GenericPromise> InvokeUntil(Work aWork, Condition aCondition) {
 }
 
 // Simple timer to run a runnable after a timeout.
-class SimpleTimer : public nsITimerCallback
+class SimpleTimer : public nsITimerCallback, public nsINamed
 {
 public:
   NS_DECL_ISUPPORTS
+  NS_DECL_NSINAMED
 
   // Create a new timer to run aTask after aTimeoutMs milliseconds
   // on thread aTarget. If aTarget is null, task is run on the main thread.
   static already_AddRefed<SimpleTimer> Create(nsIRunnable* aTask,
                                               uint32_t aTimeoutMs,
-                                              nsIThread* aTarget = nullptr);
+                                              nsIEventTarget* aTarget = nullptr);
   void Cancel();
 
   NS_IMETHOD Notify(nsITimer *timer) override;
 
 private:
   virtual ~SimpleTimer() {}
-  nsresult Init(nsIRunnable* aTask, uint32_t aTimeoutMs, nsIThread* aTarget);
+  nsresult Init(nsIRunnable* aTask, uint32_t aTimeoutMs, nsIEventTarget* aTarget);
 
   RefPtr<nsIRunnable> mTask;
   nsCOMPtr<nsITimer> mTimer;

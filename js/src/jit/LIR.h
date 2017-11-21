@@ -1177,6 +1177,14 @@ class LVariadicInstruction : public details::LInstructionFixedDefsTempsHelper<De
     void setOperand(size_t index, const LAllocation& a) final override {
         operands_[index] = a;
     }
+    void setBoxOperand(size_t index, const LBoxAllocation& a) {
+#ifdef JS_NUNBOX32
+        operands_[index + TYPE_INDEX] = a.type();
+        operands_[index + PAYLOAD_INDEX] = a.payload();
+#else
+        operands_[index] = a.value();
+#endif
+    }
 };
 
 template <size_t Defs, size_t Operands, size_t Temps>
@@ -1185,6 +1193,18 @@ class LCallInstructionHelper : public LInstructionHelper<Defs, Operands, Temps>
   public:
     virtual bool isCall() const {
         return true;
+    }
+};
+
+template <size_t Defs, size_t Temps>
+class LBinaryCallInstructionHelper : public LCallInstructionHelper<Defs, 2, Temps>
+{
+  public:
+    const LAllocation* lhs() {
+        return this->getOperand(0);
+    }
+    const LAllocation* rhs() {
+        return this->getOperand(1);
     }
 };
 

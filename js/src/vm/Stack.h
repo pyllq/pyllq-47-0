@@ -8,6 +8,7 @@
 #define vm_Stack_h
 
 #include "mozilla/Atomics.h"
+#include "mozilla/HashFunctions.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Variant.h"
@@ -25,12 +26,22 @@
 #include "vm/ArgumentsObject.h"
 #include "vm/SavedFrame.h"
 #include "wasm/WasmFrameIterator.h"
+#include "wasm/WasmTypes.h"
 
 struct JSCompartment;
 
 namespace JS {
 namespace dbg {
-class AutoEntryMonitor;
+#ifdef JS_BROKEN_GCC_ATTRIBUTE_WARNING
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif // JS_BROKEN_GCC_ATTRIBUTE_WARNING
+
+class JS_PUBLIC_API(AutoEntryMonitor);
+
+#ifdef JS_BROKEN_GCC_ATTRIBUTE_WARNING
+#pragma GCC diagnostic pop
+#endif // JS_BROKEN_GCC_ATTRIBUTE_WARNING
 } // namespace dbg
 } // namespace JS
 
@@ -41,7 +52,7 @@ class CallObject;
 class FrameIter;
 class EnvironmentObject;
 class ScriptFrameIter;
-class SPSProfiler;
+class GeckoProfilerRuntime;
 class InterpreterFrame;
 class LexicalEnvironmentObject;
 class EnvironmentIter;
@@ -157,6 +168,7 @@ class AbstractFramePtr
     MOZ_IMPLICIT AbstractFramePtr(wasm::DebugFrame* fp)
       : ptr_(fp ? uintptr_t(fp) | Tag_WasmDebugFrame : 0)
     {
+        static_assert(wasm::DebugFrame::Alignment >= TagMask, "aligned");
         MOZ_ASSERT_IF(fp, asWasmDebugFrame() == fp);
     }
 
@@ -317,8 +329,8 @@ class InterpreterFrame
          */
         DEBUGGEE               =       0x40,  /* Execution is being observed by Debugger */
 
-        /* Used in tracking calls and profiling (see vm/SPSProfiler.cpp) */
-        HAS_PUSHED_SPS_FRAME   =       0x80,  /* SPS was notified of entry */
+        /* Used in tracking calls and profiling (see vm/GeckoProfiler.cpp) */
+        HAS_PUSHED_PROF_FRAME  =       0x80,  /* Gecko Profiler was notified of entry */
 
         /*
          * If set, we entered one of the JITs and ScriptFrameIter should skip
@@ -666,16 +678,16 @@ class InterpreterFrame
 
     /* Profiler flags */
 
-    bool hasPushedSPSFrame() {
-        return !!(flags_ & HAS_PUSHED_SPS_FRAME);
+    bool hasPushedGeckoProfilerFrame() {
+        return !!(flags_ & HAS_PUSHED_PROF_FRAME);
     }
 
-    void setPushedSPSFrame() {
-        flags_ |= HAS_PUSHED_SPS_FRAME;
+    void setPushedGeckoProfilerFrame() {
+        flags_ |= HAS_PUSHED_PROF_FRAME;
     }
 
-    void unsetPushedSPSFrame() {
-        flags_ &= ~HAS_PUSHED_SPS_FRAME;
+    void unsetPushedGeckoProfilerFrame() {
+        flags_ &= ~HAS_PUSHED_PROF_FRAME;
     }
 
     /* Return value */
@@ -705,7 +717,8 @@ class InterpreterFrame
     }
 
     void resumeGeneratorFrame(JSObject* envChain) {
-        MOZ_ASSERT(script()->isGenerator());
+        MOZ_ASSERT(script()->isStarGenerator() || script()->isLegacyGenerator() ||
+                   script()->isAsync());
         MOZ_ASSERT(isFunctionFrame());
         flags_ |= HAS_INITIAL_ENV;
         envChain_ = envChain;
@@ -936,7 +949,24 @@ class InterpreterStack
     }
 };
 
-void TraceInterpreterActivations(JSRuntime* rt, JSTracer* trc);
+// CooperatingContext is a wrapper for a JSContext that is participating in
+// cooperative scheduling and may be different from the current thread. It is
+// in place to make it clearer when we might be operating on another thread,
+// and harder to accidentally pass in another thread's context to an API that
+// expects the current thread's context.
+class CooperatingContext
+{
+    JSContext* cx;
+
+  public:
+    explicit CooperatingContext(JSContext* cx) : cx(cx) {}
+    JSContext* context() const { return cx; }
+
+    // For &cx. The address should not be taken for other CooperatingContexts.
+    friend class ZoneGroup;
+};
+
+void TraceInterpreterActivations(JSContext* cx, const CooperatingContext& target, JSTracer* trc);
 
 /*****************************************************************************/
 
@@ -1018,6 +1048,17 @@ class InvokeArgs : public detail::GenericArgsBase<NO_CONSTRUCT>
     explicit InvokeArgs(JSContext* cx) : Base(cx) {}
 };
 
+/** Function call args of statically-unknown count. */
+class InvokeArgsMaybeIgnoresReturnValue : public detail::GenericArgsBase<NO_CONSTRUCT>
+{
+    using Base = detail::GenericArgsBase<NO_CONSTRUCT>;
+
+  public:
+    explicit InvokeArgsMaybeIgnoresReturnValue(JSContext* cx, bool ignoresReturnValue) : Base(cx) {
+        this->ignoresReturnValue_ = ignoresReturnValue;
+    }
+};
+
 /** Function call args of statically-known count. */
 template <size_t N>
 class FixedInvokeArgs : public detail::FixedArgsBase<NO_CONSTRUCT, N>
@@ -1066,7 +1107,7 @@ struct DefaultHasher<AbstractFramePtr> {
     typedef AbstractFramePtr Lookup;
 
     static js::HashNumber hash(const Lookup& key) {
-        return size_t(key.raw());
+        return mozilla::HashGeneric(key.raw());
     }
 
     static bool match(const AbstractFramePtr& k, const Lookup& l) {
@@ -1320,6 +1361,9 @@ class Activation
         return hideScriptedCallerCount_ > 0;
     }
 
+    static size_t offsetOfPrev() {
+        return offsetof(Activation, prev_);
+    }
     static size_t offsetOfPrevProfiling() {
         return offsetof(Activation, prevProfiling_);
     }
@@ -1409,12 +1453,9 @@ class InterpreterActivation : public Activation
     }
 };
 
-// Iterates over a thread's activation list. If given a runtime, iterate over
-// the runtime's main thread's activation list.
+// Iterates over a thread's activation list.
 class ActivationIterator
 {
-    uint8_t* jitTop_;
-
   protected:
     Activation* activation_;
 
@@ -1422,7 +1463,12 @@ class ActivationIterator
     void settle();
 
   public:
-    explicit ActivationIterator(JSRuntime* rt);
+    explicit ActivationIterator(JSContext* cx);
+
+    // ActivationIterator can be used to iterate over a different thread's
+    // activations, for use by the GC, invalidation, and other operations that
+    // don't have a user-visible effect on the target thread's JS behavior.
+    ActivationIterator(JSContext* cx, const CooperatingContext& target);
 
     ActivationIterator& operator++();
 
@@ -1431,10 +1477,6 @@ class ActivationIterator
     }
     Activation* activation() const {
         return activation_;
-    }
-    uint8_t* jitTop() const {
-        MOZ_ASSERT(activation_->isJit());
-        return jitTop_;
     }
     bool done() const {
         return activation_ == nullptr;
@@ -1448,12 +1490,15 @@ class BailoutFrameInfo;
 // A JitActivation is used for frames running in Baseline or Ion.
 class JitActivation : public Activation
 {
-    uint8_t* prevJitTop_;
+    // If Baseline or Ion code is on the stack, and has called into C++, this
+    // will be aligned to an ExitFrame.
+    uint8_t* exitFP_;
+
     JitActivation* prevJitActivation_;
     bool active_;
 
     // Rematerialized Ion frames which has info copied out of snapshots. Maps
-    // frame pointers (i.e. jitTop) to a vector of rematerializations of all
+    // frame pointers (i.e. exitFP_) to a vector of rematerializations of all
     // inline frames associated with that frame.
     //
     // This table is lazily initialized by calling getRematerializedFrame.
@@ -1505,20 +1550,28 @@ class JitActivation : public Activation
     }
     void setActive(JSContext* cx, bool active = true);
 
-    bool isProfiling() const;
-
-    uint8_t* prevJitTop() const {
-        return prevJitTop_;
+    bool isProfiling() const {
+        // All JitActivations can be profiled.
+        return true;
     }
+
     JitActivation* prevJitActivation() const {
         return prevJitActivation_;
-    }
-    static size_t offsetOfPrevJitTop() {
-        return offsetof(JitActivation, prevJitTop_);
     }
     static size_t offsetOfPrevJitActivation() {
         return offsetof(JitActivation, prevJitActivation_);
     }
+
+    void setExitFP(uint8_t* fp) {
+        exitFP_ = fp;
+    }
+    uint8_t* exitFP() const {
+        return exitFP_;
+    }
+    static size_t offsetOfExitFP() {
+        return offsetof(JitActivation, exitFP_);
+    }
+
     static size_t offsetOfActiveUint8() {
         MOZ_ASSERT(sizeof(bool) == 1);
         return offsetof(JitActivation, active_);
@@ -1614,8 +1667,14 @@ class JitActivationIterator : public ActivationIterator
     }
 
   public:
-    explicit JitActivationIterator(JSRuntime* rt)
-      : ActivationIterator(rt)
+    explicit JitActivationIterator(JSContext* cx)
+      : ActivationIterator(cx)
+    {
+        settle();
+    }
+
+    JitActivationIterator(JSContext* cx, const CooperatingContext& target)
+      : ActivationIterator(cx, target)
     {
         settle();
     }
@@ -1624,6 +1683,11 @@ class JitActivationIterator : public ActivationIterator
         ActivationIterator::operator++();
         settle();
         return *this;
+    }
+
+    uint8_t* exitFP() const {
+        MOZ_ASSERT(activation_->isJit());
+        return activation_->asJit()->exitFP();
     }
 };
 
@@ -1671,58 +1735,43 @@ class InterpreterFrameIterator
     }
 };
 
-// A WasmActivation is part of two activation linked lists:
-//  - the normal Activation list used by FrameIter
-//  - a list of only WasmActivations that is signal-safe since it is accessed
-//    from the profiler at arbitrary points
-//
 // An eventual goal is to remove WasmActivation and to run asm code in a
 // JitActivation interleaved with Ion/Baseline jit code. This would allow
 // efficient calls back and forth but requires that we can walk the stack for
 // all kinds of jit code.
 class WasmActivation : public Activation
 {
-    WasmActivation* prevWasm_;
-    void* entrySP_;
-    void* resumePC_;
-    uint8_t* fp_;
-    wasm::ExitReason exitReason_;
+    wasm::Frame* exitFP_;
 
   public:
     explicit WasmActivation(JSContext* cx);
     ~WasmActivation();
 
-    WasmActivation* prevWasm() const { return prevWasm_; }
-
     bool isProfiling() const {
         return true;
     }
 
-    // Returns a pointer to the base of the innermost stack frame of wasm code
-    // in this activation.
-    uint8_t* fp() const { return fp_; }
-
-    // Returns the reason why wasm code called out of wasm code.
-    wasm::ExitReason exitReason() const { return exitReason_; }
-
-    // Read by JIT code:
-    static unsigned offsetOfContext() { return offsetof(WasmActivation, cx_); }
-    static unsigned offsetOfResumePC() { return offsetof(WasmActivation, resumePC_); }
+    // Returns null or the final wasm::Frame* when wasm exited this
+    // WasmActivation.
+    wasm::Frame* exitFP() const { return exitFP_; }
 
     // Written by JIT code:
-    static unsigned offsetOfEntrySP() { return offsetof(WasmActivation, entrySP_); }
-    static unsigned offsetOfFP() { return offsetof(WasmActivation, fp_); }
-    static unsigned offsetOfExitReason() { return offsetof(WasmActivation, exitReason_); }
+    static unsigned offsetOfExitFP() { return offsetof(WasmActivation, exitFP_); }
 
-    // Read/written from SIGSEGV handler:
-    void setResumePC(void* pc) { resumePC_ = pc; }
-    void* resumePC() const { return resumePC_; }
+    // Interrupts are started from the interrupt signal handler (or the ARM
+    // simulator) and cleared by WasmHandleExecutionInterrupt or WasmHandleThrow
+    // when the interrupt is handled.
+    void startInterrupt(const JS::ProfilingFrameIterator::RegisterState& state);
+    void finishInterrupt();
+    bool interrupted() const;
+    void* unwindPC() const;
+    void* resumePC() const;
 
     // Used by wasm::FrameIterator during stack unwinding.
-    void unwindFP(uint8_t* fp) { fp_ = fp; }
+    void unwindExitFP(wasm::Frame* exitFP);
 };
 
-// A FrameIter walks over the runtime's stack of JS script activations,
+// A FrameIter walks over a context's stack of JS script activations,
 // abstracting over whether the JS scripts were running in the interpreter or
 // different modes of compiled code.
 //
@@ -1766,11 +1815,13 @@ class FrameIter
         wasm::FrameIterator wasmFrames_;
 
         Data(JSContext* cx, DebuggerEvalOption debuggerEvalOption, JSPrincipals* principals);
+        Data(JSContext* cx, const CooperatingContext& target, DebuggerEvalOption debuggerEvalOption);
         Data(const Data& other);
     };
 
     explicit FrameIter(JSContext* cx,
                        DebuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK);
+    FrameIter(JSContext* cx, const CooperatingContext&, DebuggerEvalOption);
     FrameIter(JSContext* cx, DebuggerEvalOption, JSPrincipals*);
     FrameIter(const FrameIter& iter);
     MOZ_IMPLICIT FrameIter(const Data& data);
@@ -1817,6 +1868,8 @@ class FrameIter
 
     inline bool wasmDebugEnabled() const;
     inline wasm::Instance* wasmInstance() const;
+    inline unsigned wasmBytecodeOffset() const;
+    void wasmUpdateBytecodeOffset();
 
     // -----------------------------------------------------------
     // The following functions can only be called when hasScript()
@@ -1919,6 +1972,14 @@ class ScriptFrameIter : public FrameIter
     explicit ScriptFrameIter(JSContext* cx,
                              DebuggerEvalOption debuggerEvalOption = FOLLOW_DEBUGGER_EVAL_PREV_LINK)
       : FrameIter(cx, debuggerEvalOption)
+    {
+        settle();
+    }
+
+    ScriptFrameIter(JSContext* cx,
+                     const CooperatingContext& target,
+                     DebuggerEvalOption debuggerEvalOption)
+       : FrameIter(cx, target, debuggerEvalOption)
     {
         settle();
     }
@@ -2045,6 +2106,10 @@ class AllScriptFramesIter : public ScriptFrameIter
     explicit AllScriptFramesIter(JSContext* cx)
       : ScriptFrameIter(cx, ScriptFrameIter::IGNORE_DEBUGGER_EVAL_PREV_LINK)
     {}
+
+    explicit AllScriptFramesIter(JSContext* cx, const CooperatingContext& target)
+      : ScriptFrameIter(cx, target, ScriptFrameIter::IGNORE_DEBUGGER_EVAL_PREV_LINK)
+    {}
 };
 
 /* Popular inline definitions. */
@@ -2075,6 +2140,14 @@ FrameIter::wasmInstance() const
     MOZ_ASSERT(!done());
     MOZ_ASSERT(data_.state_ == WASM && wasmDebugEnabled());
     return data_.wasmFrames_.instance();
+}
+
+inline unsigned
+FrameIter::wasmBytecodeOffset() const
+{
+    MOZ_ASSERT(!done());
+    MOZ_ASSERT(data_.state_ == WASM);
+    return data_.wasmFrames_.lineOrBytecode();
 }
 
 inline bool

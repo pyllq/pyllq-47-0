@@ -238,7 +238,7 @@ public class GeckoPreferenceFragment extends PreferenceFragment {
             Log.e(LOGTAG, "Failed to find resource: " + resourceName + ". Displaying default settings.");
 
             boolean isMultiPane = ((GeckoPreferences) activity).isMultiPane();
-            resid = isMultiPane ? R.xml.preferences_general_tablet : R.xml.preferences;
+            resid = isMultiPane ? R.xml.preferences_search : R.xml.preferences;
         }
 
         return resid;

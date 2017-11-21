@@ -29,6 +29,8 @@ class unknown(object):
 
     def __str__(self):
         return 'UNKNOWN'
+
+
 unknown = unknown()  # singleton
 
 
@@ -55,6 +57,7 @@ def get_windows_version():
         raise OSError
 
     return os_version.dwMajorVersion, os_version.dwMinorVersion, os_version.dwBuildNumber
+
 
 # get system information
 info = {'os': unknown,
@@ -87,7 +90,7 @@ if system in ["Microsoft", "Windows"]:
         version = "%d.%d.%d" % (major, minor, build_number)
 
     os_version = "%d.%d" % (major, minor)
-elif system.startswith('MINGW'):
+elif system.startswith(('MINGW', 'MSYS_NT')):
     # windows/mingw python build (msys)
     info['os'] = 'win'
     os_version = version = unknown
@@ -218,6 +221,7 @@ def find_and_update_from_json(*dirs):
     # First, see if we're in an objdir
     try:
         from mozbuild.base import MozbuildObject, BuildEnvironmentNotFoundException
+        from mozbuild.mozconfig import MozconfigFindException
         build = MozbuildObject.from_environment()
         json_path = _os.path.join(build.topobjdir, "mozinfo.json")
         if _os.path.isfile(json_path):
@@ -225,7 +229,7 @@ def find_and_update_from_json(*dirs):
             return json_path
     except ImportError:
         pass
-    except BuildEnvironmentNotFoundException:
+    except (BuildEnvironmentNotFoundException, MozconfigFindException):
         pass
 
     for d in dirs:
@@ -242,6 +246,7 @@ def output_to_file(path):
     import json
     with open(path, 'w') as f:
         f.write(json.dumps(info))
+
 
 update({})
 
@@ -295,6 +300,7 @@ def main(args=None):
     # otherwise, print out all info
     for key, value in info.items():
         print '%s: %s' % (key, value)
+
 
 if __name__ == '__main__':
     main()

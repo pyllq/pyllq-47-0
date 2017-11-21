@@ -9,6 +9,7 @@
 
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/ErrorResult.h"
 #include "nsIDOMNavigator.h"
@@ -30,17 +31,18 @@ class nsIURI;
 
 namespace mozilla {
 namespace dom {
+class BodyExtractorBase;
 class Geolocation;
 class systemMessageCallback;
 class MediaDevices;
 struct MediaStreamConstraints;
 class WakeLock;
-class ArrayBufferViewOrBlobOrStringOrFormData;
+class ArrayBufferOrArrayBufferViewOrBlobOrFormDataOrUSVStringOrURLSearchParams;
 class ServiceWorkerContainer;
 class DOMRequest;
 struct FlyWebPublishOptions;
 struct FlyWebFilter;
-class WebAuthentication;
+class CredentialsContainer;
 } // namespace dom
 } // namespace mozilla
 
@@ -75,17 +77,12 @@ class PowerManager;
 class Presentation;
 class LegacyMozTCPSocket;
 class VRDisplay;
+class VRServiceTest;
 class StorageManager;
 
 namespace time {
 class TimeManager;
 } // namespace time
-
-namespace system {
-#ifdef MOZ_AUDIO_CHANNEL_MANAGER
-class AudioChannelManager;
-#endif
-} // namespace system
 
 class Navigator final : public nsIDOMNavigator
                       , public nsIMozNavigatorNetwork
@@ -155,7 +152,6 @@ public:
                                 bool aUsePrefOverriddenValue);
 
   static nsresult GetUserAgent(nsPIDOMWindowInner* aWindow,
-                               nsIURI* aURI,
                                bool aIsCallerChrome,
                                nsAString& aUserAgent);
 
@@ -201,22 +197,24 @@ public:
   GamepadServiceTest* RequestGamepadServiceTest();
   already_AddRefed<Promise> GetVRDisplays(ErrorResult& aRv);
   void GetActiveVRDisplays(nsTArray<RefPtr<VRDisplay>>& aDisplays) const;
+  VRServiceTest* RequestVRServiceTest();
+  bool IsWebVRContentDetected() const;
+  bool IsWebVRContentPresenting() const;
+  void RequestVRPresentation(VRDisplay& aDisplay);
 #ifdef MOZ_TIME_MANAGER
   time::TimeManager* GetMozTime(ErrorResult& aRv);
 #endif // MOZ_TIME_MANAGER
-#ifdef MOZ_AUDIO_CHANNEL_MANAGER
-  system::AudioChannelManager* GetMozAudioChannelManager(ErrorResult& aRv);
-#endif // MOZ_AUDIO_CHANNEL_MANAGER
 
   Presentation* GetPresentation(ErrorResult& aRv);
 
   bool SendBeacon(const nsAString& aUrl,
-                  const Nullable<ArrayBufferViewOrBlobOrStringOrFormData>& aData,
+                  const Nullable<fetch::BodyInit>& aData,
                   ErrorResult& aRv);
 
   void MozGetUserMedia(const MediaStreamConstraints& aConstraints,
                        NavigatorUserMediaSuccessCallback& aOnSuccess,
                        NavigatorUserMediaErrorCallback& aOnError,
+                       CallerType aCallerType,
                        ErrorResult& aRv);
   void MozGetUserMediaDevices(const MediaStreamConstraints& aConstraints,
                               MozGetUserMediaDevicesSuccessCallback& aOnSuccess,
@@ -227,7 +225,7 @@ public:
 
   already_AddRefed<ServiceWorkerContainer> ServiceWorker();
 
-  mozilla::dom::WebAuthentication* Authentication();
+  mozilla::dom::CredentialsContainer* Credentials();
 
   void GetLanguages(nsTArray<nsString>& aLanguages);
 
@@ -274,6 +272,19 @@ private:
   bool CheckPermission(const char* type);
   static bool CheckPermission(nsPIDOMWindowInner* aWindow, const char* aType);
 
+  // This enum helps SendBeaconInternal to apply different behaviors to body
+  // types.
+  enum BeaconType {
+    eBeaconTypeBlob,
+    eBeaconTypeArrayBuffer,
+    eBeaconTypeOther
+  };
+
+  bool SendBeaconInternal(const nsAString& aUrl,
+                          BodyExtractorBase* aBody,
+                          BeaconType aType,
+                          ErrorResult& aRv);
+
   RefPtr<nsMimeTypeArray> mMimeTypes;
   RefPtr<nsPluginArray> mPlugins;
   RefPtr<Permissions> mPermissions;
@@ -283,10 +294,7 @@ private:
   RefPtr<Promise> mBatteryPromise;
   RefPtr<PowerManager> mPowerManager;
   RefPtr<network::Connection> mConnection;
-  RefPtr<WebAuthentication> mAuthentication;
-#ifdef MOZ_AUDIO_CHANNEL_MANAGER
-  RefPtr<system::AudioChannelManager> mAudioChannelManager;
-#endif
+  RefPtr<CredentialsContainer> mCredentials;
   RefPtr<MediaDevices> mMediaDevices;
   RefPtr<time::TimeManager> mTimeManager;
   RefPtr<ServiceWorkerContainer> mServiceWorkerContainer;
@@ -294,6 +302,7 @@ private:
   RefPtr<Presentation> mPresentation;
   RefPtr<GamepadServiceTest> mGamepadServiceTest;
   nsTArray<RefPtr<Promise> > mVRGetDisplaysPromises;
+  RefPtr<VRServiceTest> mVRServiceTest;
   nsTArray<uint32_t> mRequestedVibrationPattern;
   RefPtr<StorageManager> mStorageManager;
 };

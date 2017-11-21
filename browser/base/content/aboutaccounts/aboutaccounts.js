@@ -6,6 +6,7 @@
 
 var {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/FxAccounts.jsm");
 
@@ -16,7 +17,6 @@ Cu.import("resource://gre/modules/FxAccountsCommon.js", fxAccountsCommon);
 Cu.import("resource://services-sync/util.js");
 
 const PREF_LAST_FXA_USER = "identity.fxaccounts.lastSignedInUserHash";
-const PREF_SYNC_SHOW_CUSTOMIZATION = "services.sync-setup.ui.showCustomizationDialog";
 
 const ACTION_URL_PARAM = "action";
 
@@ -31,17 +31,14 @@ function log(msg) {
 
 function getPreviousAccountNameHash() {
   try {
-    return Services.prefs.getComplexValue(PREF_LAST_FXA_USER, Ci.nsISupportsString).data;
+    return Services.prefs.getStringPref(PREF_LAST_FXA_USER);
   } catch (_) {
     return "";
   }
 }
 
 function setPreviousAccountNameHash(acctName) {
-  let string = Cc["@mozilla.org/supports-string;1"]
-               .createInstance(Ci.nsISupportsString);
-  string.data = sha256(acctName);
-  Services.prefs.setComplexValue(PREF_LAST_FXA_USER, Ci.nsISupportsString, string);
+  Services.prefs.setStringPref(PREF_LAST_FXA_USER, sha256(acctName));
 }
 
 function needRelinkWarning(acctName) {
@@ -113,7 +110,9 @@ var wrapper = {
     this.iframe.QueryInterface(Ci.nsIFrameLoaderOwner);
     let docShell = this.iframe.frameLoader.docShell;
     docShell.QueryInterface(Ci.nsIWebProgress);
-    docShell.addProgressListener(this.iframeListener, Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT);
+    docShell.addProgressListener(this.iframeListener,
+                                 Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT |
+                                 Ci.nsIWebProgress.NOTIFY_LOCATION);
     iframe.addEventListener("load", this);
 
     // Ideally we'd just merge urlParams with new URL(url).searchParams, but our
@@ -170,10 +169,6 @@ var wrapper = {
         setErrorPage("networkError");
       }
     },
-
-    onProgressChange() {},
-    onStatusChange() {},
-    onSecurityChange() {},
   },
 
   handleEvent(evt) {
@@ -197,9 +192,8 @@ var wrapper = {
   onLogin(accountData) {
     log("Received: 'login'. Data:" + JSON.stringify(accountData));
 
-    if (accountData.customizeSync) {
-      Services.prefs.setBoolPref(PREF_SYNC_SHOW_CUSTOMIZATION, true);
-    }
+    // We don't act on customizeSync anymore, it used to open a dialog inside
+    // the browser to selecte the engines to sync but we do it on the web now.
     delete accountData.customizeSync;
     // sessionTokenContext is erroneously sent by the content server.
     // https://github.com/mozilla/fxa-content-server/issues/2766
@@ -306,18 +300,6 @@ var wrapper = {
 
 
 // Button onclick handlers
-function handleOldSync() {
-  let chromeWin = window
-    .QueryInterface(Ci.nsIInterfaceRequestor)
-    .getInterface(Ci.nsIWebNavigation)
-    .QueryInterface(Ci.nsIDocShellTreeItem)
-    .rootTreeItem
-    .QueryInterface(Ci.nsIInterfaceRequestor)
-    .getInterface(Ci.nsIDOMWindow)
-    .QueryInterface(Ci.nsIDOMChromeWindow);
-  let url = Services.urlFormatter.formatURLPref("app.support.baseURL") + "old-sync";
-  chromeWin.switchToTabHavingURI(url, true);
-}
 
 function getStarted() {
   show("remote");
@@ -446,14 +428,9 @@ function migrateToDevEdition(urlParams) {
   try {
     defaultProfilePath = window.getDefaultProfilePath();
   } catch (e) {} // no default profile.
-  let migrateSyncCreds = false;
-  if (defaultProfilePath) {
-    try {
-      migrateSyncCreds = Services.prefs.getBoolPref("identity.fxaccounts.migrateToDevEdition");
-    } catch (e) {}
-  }
 
-  if (!migrateSyncCreds) {
+  if (!defaultProfilePath ||
+      !Services.prefs.getBoolPref("identity.fxaccounts.migrateToDevEdition", false)) {
     return Promise.resolve(false);
   }
 
@@ -468,7 +445,7 @@ function migrateToDevEdition(urlParams) {
       show("remote");
       wrapper.init(url, urlParams);
     });
-  }).then(null, error => {
+  }).catch(error => {
     log("Failed to migrate FX Account: " + error);
     show("stage", "intro");
     // load the remote frame in the background
@@ -482,7 +459,7 @@ function migrateToDevEdition(urlParams) {
     // Reset the pref after migration.
     Services.prefs.setBoolPref("identity.fxaccounts.migrateToDevEdition", false);
     return true;
-  }).then(null, err => {
+  }).catch(err => {
     Cu.reportError("Failed to reset the migrateToDevEdition pref: " + err);
     return false;
   });
@@ -497,8 +474,7 @@ function getDefaultProfilePath() {
   return defaultProfile.rootDir.path;
 }
 
-document.addEventListener("DOMContentLoaded", function onload() {
-  document.removeEventListener("DOMContentLoaded", onload, true);
+document.addEventListener("DOMContentLoaded", function() {
   init();
   var buttonGetStarted = document.getElementById("buttonGetStarted");
   buttonGetStarted.addEventListener("click", getStarted);
@@ -506,12 +482,9 @@ document.addEventListener("DOMContentLoaded", function onload() {
   var buttonRetry = document.getElementById("buttonRetry");
   buttonRetry.addEventListener("click", retry);
 
-  var oldsync = document.getElementById("oldsync");
-  oldsync.addEventListener("click", handleOldSync);
-
-  var buttonOpenPrefs = document.getElementById("buttonOpenPrefs")
+  var buttonOpenPrefs = document.getElementById("buttonOpenPrefs");
   buttonOpenPrefs.addEventListener("click", openPrefs);
-}, true);
+}, {capture: true, once: true});
 
 function initObservers() {
   function observe(subject, topic, data) {
@@ -527,7 +500,7 @@ function initObservers() {
   }
 
   for (let topic of OBSERVER_TOPICS) {
-    Services.obs.addObserver(observe, topic, false);
+    Services.obs.addObserver(observe, topic);
   }
   window.addEventListener("unload", function(event) {
     log("about:accounts unloading")

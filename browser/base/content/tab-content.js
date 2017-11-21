@@ -5,16 +5,19 @@
 
 /* This content script contains code that requires a tab browser. */
 
+/* eslint-env mozilla/frame-script */
+
 var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/ExtensionContent.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "E10SUtils",
   "resource:///modules/E10SUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "BrowserUtils",
   "resource://gre/modules/BrowserUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Utils",
+  "resource://gre/modules/sessionstore/Utils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AboutReader",
@@ -159,7 +162,7 @@ var AboutHomeListener = {
     addEventListener("click", this, true);
     addEventListener("pagehide", this, true);
 
-    sendAsyncMessage("AboutHome:MaybeShowAutoMigrationUndoNotification");
+    sendAsyncMessage("AboutHome:MaybeShowMigrateMessage");
     sendAsyncMessage("AboutHome:RequestUpdate");
   },
 
@@ -601,7 +604,7 @@ function gKeywordURIFixup(fixupInfo) {
 
   sendAsyncMessage("Browser:URIFixup", data);
 }
-Services.obs.addObserver(gKeywordURIFixup, "keyword-uri-fixup", false);
+Services.obs.addObserver(gKeywordURIFixup, "keyword-uri-fixup");
 addEventListener("unload", () => {
   Services.obs.removeObserver(gKeywordURIFixup, "keyword-uri-fixup");
 }, false);
@@ -656,7 +659,7 @@ let PrerenderContentHandler = {
     }
   },
 
-  startPrerenderingDocument(aHref, aReferrer) {
+  startPrerenderingDocument(aHref, aReferrer, aTriggeringPrincipal) {
     // XXX: Make this constant a pref
     if (this._pending.length >= 2) {
       return;
@@ -667,6 +670,7 @@ let PrerenderContentHandler = {
       href: aHref.spec,
       referrer: aReferrer ? aReferrer.spec : null,
       id,
+      triggeringPrincipal: Utils.serializePrincipal(aTriggeringPrincipal),
     });
 
     this._pending.push({
@@ -728,9 +732,9 @@ var WebBrowserChrome = {
     return true;
   },
 
-  startPrerenderingDocument(aHref, aReferrer) {
+  startPrerenderingDocument(aHref, aReferrer, aTriggeringPrincipal) {
     if (PrerenderContentHandler.initialized) {
-      PrerenderContentHandler.startPrerenderingDocument(aHref, aReferrer);
+      PrerenderContentHandler.startPrerenderingDocument(aHref, aReferrer, aTriggeringPrincipal);
     }
   },
 
@@ -882,7 +886,7 @@ var RefreshBlocker = {
       this.enable();
     }
 
-    Services.prefs.addObserver(this.PREF, this, false);
+    Services.prefs.addObserver(this.PREF, this);
   },
 
   uninit() {
@@ -907,6 +911,7 @@ var RefreshBlocker = {
     this._filter = Cc["@mozilla.org/appshell/component/browser-status-filter;1"]
                      .createInstance(Ci.nsIWebProgress);
     this._filter.addProgressListener(this, Ci.nsIWebProgress.NOTIFY_ALL);
+    this._filter.target = tabEventTarget;
 
     let webProgress = docShell.QueryInterface(Ci.nsIInterfaceRequestor)
                               .getInterface(Ci.nsIWebProgress);
@@ -1002,7 +1007,7 @@ var RefreshBlocker = {
                           .getInterface(Ci.nsIDocShell)
                           .QueryInterface(Ci.nsIRefreshURI);
 
-      let URI = BrowserUtils.makeURI(data.URI, data.originCharset, null);
+      let URI = Services.io.newURI(data.URI, data.originCharset);
 
       refreshURI.forceRefreshURI(URI, data.delay, true);
     }
@@ -1043,9 +1048,9 @@ var UserContextIdNotifier = {
 
 UserContextIdNotifier.init();
 
-ExtensionContent.init(this);
+Services.obs.notifyObservers(this, "tab-content-frameloader-created");
+
 addEventListener("unload", () => {
-  ExtensionContent.uninit(this);
   RefreshBlocker.uninit();
 });
 

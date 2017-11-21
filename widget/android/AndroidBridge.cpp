@@ -14,7 +14,6 @@
 #include "mozilla/Hal.h"
 #include "nsXULAppAPI.h"
 #include <prthread.h>
-#include "nsXPCOMStrings.h"
 #include "AndroidBridge.h"
 #include "AndroidJNIWrapper.h"
 #include "AndroidBridgeUtilities.h"
@@ -37,7 +36,6 @@
 #include "nsIDOMClientRect.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "nsPrintfCString.h"
-#include "NativeJSContainer.h"
 #include "nsContentUtils.h"
 #include "nsIScriptError.h"
 #include "nsIHttpChannel.h"
@@ -131,7 +129,7 @@ AndroidBridge::ConstructBridge()
      * to call dlclose() while we're already inside dlclose().
      * Conveniently, NSS has an env var that can prevent it from unloading.
      */
-    putenv("NSS_DISABLE_UNLOAD=1");
+    putenv(const_cast<char*>("NSS_DISABLE_UNLOAD=1"));
 
     MOZ_ASSERT(!sBridge);
     sBridge = new AndroidBridge();
@@ -155,7 +153,6 @@ AndroidBridge::~AndroidBridge()
 }
 
 AndroidBridge::AndroidBridge()
-  : mUiTaskQueueLock("UiTaskQueue")
 {
     ALOG_BRIDGE("AndroidBridge::Init");
 
@@ -175,9 +172,7 @@ AndroidBridge::AndroidBridge()
     AutoJNIClass string(jEnv, "java/lang/String");
     jStringClass = string.getGlobalRef();
 
-    if (!GetStaticIntField("android/os/Build$VERSION", "SDK_INT", &mAPIVersion, jEnv)) {
-        ALOG_BRIDGE("Failed to find API version");
-    }
+    mAPIVersion = jni::GetAPIVersion();
 
     AutoJNIClass channels(jEnv, "java/nio/channels/Channels");
     jChannels = channels.getGlobalRef();
@@ -568,7 +563,7 @@ AndroidBridge::GetStaticStringField(const char *className, const char *fieldName
 namespace mozilla {
     class TracerRunnable : public Runnable{
     public:
-        TracerRunnable() {
+        TracerRunnable() : Runnable("TracerRunnable") {
             mTracerLock = new Mutex("TracerRunnable");
             mTracerCondVar = new CondVar(*mTracerLock, "TracerRunnable");
             mMainThread = do_GetMainThread();
@@ -665,15 +660,6 @@ AndroidBridge::GetCurrentBatteryInformation(hal::BatteryInformation* aBatteryInf
 }
 
 void
-AndroidBridge::HandleGeckoMessage(JSContext* cx, JS::HandleObject object)
-{
-    ALOG_BRIDGE("%s", __PRETTY_FUNCTION__);
-
-    auto message = widget::CreateNativeJSContainer(cx, object);
-    GeckoAppShell::HandleGeckoMessage(message);
-}
-
-void
 AndroidBridge::GetCurrentNetworkInformation(hal::NetworkInformation* aNetworkInfo)
 {
     ALOG_BRIDGE("AndroidBridge::GetCurrentNetworkInformation");
@@ -703,32 +689,8 @@ AndroidBridge::GetGlobalContextRef() {
         return sGlobalContext;
     }
 
-    JNIEnv* const env = GetEnvForThread();
-    AutoLocalJNIFrame jniFrame(env, 4);
-
-    auto context = GeckoAppShell::GetContext();
-    if (!context) {
-        ALOG_BRIDGE("%s: Could not GetContext()", __FUNCTION__);
-        return 0;
-    }
-    jclass contextClass = env->FindClass("android/content/Context");
-    if (!contextClass) {
-        ALOG_BRIDGE("%s: Could not find Context class.", __FUNCTION__);
-        return 0;
-    }
-    jmethodID mid = env->GetMethodID(contextClass, "getApplicationContext",
-                                     "()Landroid/content/Context;");
-    if (!mid) {
-        ALOG_BRIDGE("%s: Could not find getApplicationContext.", __FUNCTION__);
-        return 0;
-    }
-    jobject appContext = env->CallObjectMethod(context.Get(), mid);
-    if (!appContext) {
-        ALOG_BRIDGE("%s: getApplicationContext failed.", __FUNCTION__);
-        return 0;
-    }
-
-    sGlobalContext = env->NewGlobalRef(appContext);
+    auto context = GeckoAppShell::GetApplicationContext();
+    sGlobalContext = Object::GlobalRef(context).Forget();
     MOZ_ASSERT(sGlobalContext);
     return sGlobalContext;
 }
@@ -739,7 +701,8 @@ NS_IMPL_ISUPPORTS(nsAndroidBridge,
                   nsIAndroidBridge,
                   nsIObserver)
 
-nsAndroidBridge::nsAndroidBridge()
+nsAndroidBridge::nsAndroidBridge() :
+    mAudibleWindowsNum(0)
 {
   if (jni::IsAvailable()) {
     RefPtr<widget::EventDispatcher> dispatcher = new widget::EventDispatcher();
@@ -758,34 +721,41 @@ nsAndroidBridge::~nsAndroidBridge()
 NS_IMETHODIMP nsAndroidBridge::HandleGeckoMessage(JS::HandleValue val,
                                                   JSContext *cx)
 {
-    if (val.isObject()) {
-        JS::RootedObject object(cx, &val.toObject());
-        AndroidBridge::Bridge()->HandleGeckoMessage(cx, object);
-        return NS_OK;
-    }
-
-    // Now handle legacy JSON messages.
-    if (!val.isString()) {
-        return NS_ERROR_INVALID_ARG;
-    }
-    JS::RootedString jsonStr(cx, val.toString());
-
-    JS::RootedValue jsonVal(cx);
-    if (!JS_ParseJSON(cx, jsonStr, &jsonVal) || !jsonVal.isObject()) {
-        return NS_ERROR_INVALID_ARG;
-    }
-
     // Spit out a warning before sending the message.
     nsContentUtils::ReportToConsoleNonLocalized(
-        NS_LITERAL_STRING("Use of JSON is deprecated. "
-            "Please pass Javascript objects directly to handleGeckoMessage."),
+        NS_LITERAL_STRING("Use of handleGeckoMessage is deprecated. "
+                          "Please use EventDispatcher from Messaging.jsm."),
         nsIScriptError::warningFlag,
         NS_LITERAL_CSTRING("nsIAndroidBridge"),
         nullptr);
 
-    JS::RootedObject object(cx, &jsonVal.toObject());
-    AndroidBridge::Bridge()->HandleGeckoMessage(cx, object);
-    return NS_OK;
+    JS::RootedValue jsonVal(cx);
+
+    if (val.isObject()) {
+        jsonVal = val;
+
+    } else {
+        // Handle legacy JSON messages.
+        if (!val.isString()) {
+            return NS_ERROR_INVALID_ARG;
+        }
+        JS::RootedString jsonStr(cx, val.toString());
+
+        if (!JS_ParseJSON(cx, jsonStr, &jsonVal) || !jsonVal.isObject()) {
+            JS_ClearPendingException(cx);
+            return NS_ERROR_INVALID_ARG;
+        }
+    }
+
+    JS::RootedObject jsonObj(cx, &jsonVal.toObject());
+    JS::RootedValue typeVal(cx);
+
+    if (!JS_GetProperty(cx, jsonObj, "type", &typeVal)) {
+        JS_ClearPendingException(cx);
+        return NS_ERROR_INVALID_ARG;
+    }
+
+    return Dispatch(typeVal, jsonVal, /* callback */ nullptr, cx);
 }
 
 NS_IMETHODIMP nsAndroidBridge::ContentDocumentChanged(mozIDOMWindowProxy* aWindow)
@@ -807,45 +777,28 @@ nsAndroidBridge::Observe(nsISupports* aSubject, const char* aTopic,
 {
   if (!strcmp(aTopic, "xpcom-shutdown")) {
     RemoveObservers();
-  } else if (!strcmp(aTopic, "media-playback")) {
-    ALOG_BRIDGE("nsAndroidBridge::Observe, get media-playback event.");
-
-    nsCOMPtr<nsISupportsPRUint64> wrapper = do_QueryInterface(aSubject);
-    if (!wrapper) {
-      return NS_OK;
-    }
-
-    uint64_t windowId = 0;
-    nsresult rv = wrapper->GetData(&windowId);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
+  } else if (!strcmp(aTopic, "audio-playback")) {
+    ALOG_BRIDGE("nsAndroidBridge::Observe, get audio-playback event.");
 
     nsAutoString activeStr(aData);
     bool isPlaying = activeStr.EqualsLiteral("active");
-    UpdateAudioPlayingWindows(windowId, isPlaying);
+    UpdateAudioPlayingWindows(isPlaying);
   }
   return NS_OK;
 }
 
 void
-nsAndroidBridge::UpdateAudioPlayingWindows(uint64_t aWindowId,
-                                           bool aPlaying)
+nsAndroidBridge::UpdateAudioPlayingWindows(bool aPlaying)
 {
   // Request audio focus for the first audio playing window and abandon focus
   // for the last audio playing window.
-  if (aPlaying && !mAudioPlayingWindows.Contains(aWindowId)) {
-    mAudioPlayingWindows.AppendElement(aWindowId);
-    if (mAudioPlayingWindows.Length() == 1) {
-      ALOG_BRIDGE("nsAndroidBridge, request audio focus.");
-      AudioFocusAgent::NotifyStartedPlaying();
-    }
-  } else if (!aPlaying && mAudioPlayingWindows.Contains(aWindowId)) {
-    mAudioPlayingWindows.RemoveElement(aWindowId);
-    if (mAudioPlayingWindows.Length() == 0) {
-      ALOG_BRIDGE("nsAndroidBridge, abandon audio focus.");
-      AudioFocusAgent::NotifyStoppedPlaying();
-    }
+  MOZ_ASSERT(mAudibleWindowsNum >= 0);
+  if (aPlaying && mAudibleWindowsNum++ == 0) {
+    ALOG_BRIDGE("nsAndroidBridge, request audio focus.");
+    AudioFocusAgent::NotifyStartedPlaying();
+  } else if (!aPlaying && --mAudibleWindowsNum == 0) {
+    ALOG_BRIDGE("nsAndroidBridge, abandon audio focus.");
+    AudioFocusAgent::NotifyStoppedPlaying();
   }
 }
 
@@ -856,7 +809,7 @@ nsAndroidBridge::AddObservers()
   if (obs) {
     obs->AddObserver(this, "xpcom-shutdown", false);
     if (jni::IsFennec()) { // No AudioFocusAgent in non-Fennec environment.
-        obs->AddObserver(this, "media-playback", false);
+        obs->AddObserver(this, "audio-playback", false);
     }
   }
 }
@@ -868,7 +821,7 @@ nsAndroidBridge::RemoveObservers()
   if (obs) {
     obs->RemoveObserver(this, "xpcom-shutdown");
     if (jni::IsFennec()) { // No AudioFocusAgent in non-Fennec environment.
-        obs->RemoveObserver(this, "media-playback");
+        obs->RemoveObserver(this, "audio-playback");
     }
   }
 }
@@ -991,109 +944,6 @@ AndroidBridge::IsContentDocumentDisplayed(mozIDOMWindowProxy* aWindow)
         return false;
     }
     return layerClient->IsContentDocumentDisplayed();
-}
-
-class AndroidBridge::DelayedTask
-{
-    using TimeStamp = mozilla::TimeStamp;
-    using TimeDuration = mozilla::TimeDuration;
-
-public:
-    DelayedTask(already_AddRefed<nsIRunnable> aTask)
-        : mTask(aTask)
-        , mRunTime() // Null timestamp representing no delay.
-    {}
-
-    DelayedTask(already_AddRefed<nsIRunnable> aTask, int aDelayMs)
-        : mTask(aTask)
-        , mRunTime(TimeStamp::Now() + TimeDuration::FromMilliseconds(aDelayMs))
-    {}
-
-    bool IsEarlierThan(const DelayedTask& aOther) const
-    {
-        if (mRunTime) {
-            return aOther.mRunTime ? mRunTime < aOther.mRunTime : false;
-        }
-        // In the case of no delay, we're earlier if aOther has a delay.
-        // Otherwise, we're not earlier, to maintain task order.
-        return !!aOther.mRunTime;
-    }
-
-    int64_t MillisecondsToRunTime() const
-    {
-        if (mRunTime) {
-            return int64_t((mRunTime - TimeStamp::Now()).ToMilliseconds());
-        }
-        return 0;
-    }
-
-    already_AddRefed<nsIRunnable> TakeTask()
-    {
-        return mTask.forget();
-    }
-
-private:
-    nsCOMPtr<nsIRunnable> mTask;
-    const TimeStamp mRunTime;
-};
-
-
-void
-AndroidBridge::PostTaskToUiThread(already_AddRefed<nsIRunnable> aTask, int aDelayMs)
-{
-    // add the new task into the mUiTaskQueue, sorted with
-    // the earliest task first in the queue
-    size_t i;
-    DelayedTask newTask(aDelayMs ? DelayedTask(mozilla::Move(aTask), aDelayMs)
-                                 : DelayedTask(mozilla::Move(aTask)));
-
-    {
-        MutexAutoLock lock(mUiTaskQueueLock);
-
-        for (i = 0; i < mUiTaskQueue.Length(); i++) {
-            if (newTask.IsEarlierThan(mUiTaskQueue[i])) {
-                mUiTaskQueue.InsertElementAt(i, mozilla::Move(newTask));
-                break;
-            }
-        }
-
-        if (i == mUiTaskQueue.Length()) {
-            // We didn't insert the task, which means we should append it.
-            mUiTaskQueue.AppendElement(mozilla::Move(newTask));
-        }
-    }
-
-    if (i == 0) {
-        // if we're inserting it at the head of the queue, notify Java because
-        // we need to get a callback at an earlier time than the last scheduled
-        // callback
-        GeckoThread::RequestUiThreadCallback(int64_t(aDelayMs));
-    }
-}
-
-int64_t
-AndroidBridge::RunDelayedUiThreadTasks()
-{
-    MutexAutoLock lock(mUiTaskQueueLock);
-
-    while (!mUiTaskQueue.IsEmpty()) {
-        const int64_t timeLeft = mUiTaskQueue[0].MillisecondsToRunTime();
-        if (timeLeft > 0) {
-            // this task (and therefore all remaining tasks)
-            // have not yet reached their runtime. return the
-            // time left until we should be called again
-            return timeLeft;
-        }
-
-        // Retrieve task before unlocking/running.
-        nsCOMPtr<nsIRunnable> nextTask(mUiTaskQueue[0].TakeTask());
-        mUiTaskQueue.RemoveElementAt(0);
-
-        // Unlock to allow posting new tasks reentrantly.
-        MutexAutoUnlock unlock(mUiTaskQueueLock);
-        nextTask->Run();
-    }
-    return -1;
 }
 
 Object::LocalRef AndroidBridge::ChannelCreate(Object::Param stream) {

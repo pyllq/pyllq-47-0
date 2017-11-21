@@ -237,6 +237,50 @@ add_task(function this_test_will_fail() {
 });
 '''
 
+ADD_TASK_SKIP = '''
+add_task(async function skipMeNot1() {
+  Assert.ok(true, "Well well well.");
+});
+
+add_task(async function skipMe1() {
+  Assert.ok(false, "Not skipped after all.");
+}).skip();
+
+add_task(async function skipMeNot2() {
+  Assert.ok(true, "Well well well.");
+});
+
+add_task(async function skipMeNot3() {
+  Assert.ok(true, "Well well well.");
+});
+
+add_task(async function skipMe2() {
+  Assert.ok(false, "Not skipped after all.");
+}).skip();
+'''
+
+ADD_TASK_SKIPALL = '''
+add_task(async function skipMe1() {
+  Assert.ok(false, "Not skipped after all.");
+});
+
+add_task(async function skipMe2() {
+  Assert.ok(false, "Not skipped after all.");
+}).skip();
+
+add_task(async function skipMe3() {
+  Assert.ok(false, "Not skipped after all.");
+}).only();
+
+add_task(async function skipMeNot() {
+  Assert.ok(true, "Well well well.");
+}).only();
+
+add_task(async function skipMe4() {
+  Assert.ok(false, "Not skipped after all.");
+});
+'''
+
 ADD_TEST_THROW_STRING = '''
 function run_test() {do_throw("Passing a string to do_throw")};
 '''
@@ -301,12 +345,22 @@ function run_test() {
 
   // Cleanup tasks, in reverse order
   do_register_cleanup(function cleanup_checkout() {
-    do_check_eq(checkpoints.join(""), "1234");
+    do_check_eq(checkpoints.join(""), "123456");
     do_print("At this stage, the test has succeeded");
     do_throw("Throwing an error to force displaying the log");
   });
 
   do_register_cleanup(function sync_cleanup_2() {
+    checkpoints.push(6);
+  });
+
+  do_register_cleanup(async function async_cleanup_4() {
+    await undefined;
+    checkpoints.push(5);
+  });
+
+  do_register_cleanup(function* async_cleanup_3() {
+    yield undefined;
     checkpoints.push(4);
   });
 
@@ -573,7 +627,6 @@ tail =
         self.assertInLog("CHILD-TEST-STARTED")
         self.assertInLog("CHILD-TEST-COMPLETED")
         self.assertNotInLog(TEST_FAIL_STRING)
-
 
     def testChildFail(self):
         """
@@ -1029,6 +1082,24 @@ add_test({
         self.assertInLog("run_test")
         self.assertNotInLog("Task.jsm")
 
+    def testAddTaskSkip(self):
+        self.writeFile("test_tasks_skip.js", ADD_TASK_SKIP)
+        self.writeManifest(["test_tasks_skip.js"])
+
+        self.assertTestResult(True)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(1, self.x.passCount)
+        self.assertEquals(0, self.x.failCount)
+
+    def testAddTaskSkipAll(self):
+        self.writeFile("test_tasks_skipall.js", ADD_TASK_SKIPALL)
+        self.writeManifest(["test_tasks_skipall.js"])
+
+        self.assertTestResult(True)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(1, self.x.passCount)
+        self.assertEquals(0, self.x.failCount)
+
     def testMissingHeadFile(self):
         """
         Ensure that missing head file results in fatal error.
@@ -1184,13 +1255,12 @@ add_test({
 
     def testAsyncCleanup(self):
         """
-        Check that do_register_cleanup handles nicely cleanup tasks that
-        return a promise
+        Check that do_register_cleanup handles nicely async cleanup tasks
         """
         self.writeFile("test_asyncCleanup.js", ASYNC_CLEANUP)
         self.writeManifest(["test_asyncCleanup.js"])
         self.assertTestResult(False)
-        self.assertInLog("\"1234\" == \"1234\"")
+        self.assertInLog("\"123456\" == \"123456\"")
         self.assertInLog("At this stage, the test has succeeded")
         self.assertInLog("Throwing an error to force displaying the log")
 

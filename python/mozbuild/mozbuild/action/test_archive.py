@@ -20,7 +20,10 @@ from manifestparser import TestManifest
 from reftest import ReftestManifest
 
 from mozbuild.util import ensureParentDir
-from mozpack.files import FileFinder
+from mozpack.archive import create_tar_gz_from_files
+from mozpack.copier import FileRegistry
+from mozpack.files import ExistingFile, FileFinder
+from mozpack.manifests import InstallManifest
 from mozpack.mozjar import JarWriter
 import mozpack.path as mozpath
 
@@ -36,6 +39,7 @@ TEST_HARNESS_BINS = [
     'certutil',
     'crashinject',
     'fileid',
+    'geckodriver',
     'minidumpwriter',
     'pk12util',
     'screenshot',
@@ -72,6 +76,22 @@ GMP_TEST_PLUGIN_DIRS = [
     'gmp-fakeopenh264/**',
 ]
 
+# These entries will be used by artifact builds to re-construct an
+# objdir with the appropriate generated support files.
+OBJDIR_TEST_FILES = {
+    'xpcshell': {
+        'source': buildconfig.topobjdir,
+        'base': '_tests/xpcshell',
+        'pattern': '**',
+        'dest': 'xpcshell/tests',
+    },
+    'mochitest': {
+        'source': buildconfig.topobjdir,
+        'base': '_tests/testing',
+        'pattern': 'mochitest/**',
+    },
+}
+
 
 ARCHIVE_FILES = {
     'common': [
@@ -85,6 +105,7 @@ ARCHIVE_FILES = {
                 'mochitest/**',
                 'reftest/**',
                 'talos/**',
+                'awsy/**',
                 'web-platform/**',
                 'xpcshell/**',
             ],
@@ -130,12 +151,6 @@ ARCHIVE_FILES = {
             'source': buildconfig.topsrcdir,
             'base': 'testing',
             'pattern': 'firefox-ui/**',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'dom/media/test/external',
-            'pattern': '**',
-            'dest': 'external-media-tests',
         },
         {
             'source': buildconfig.topsrcdir,
@@ -302,6 +317,7 @@ ARCHIVE_FILES = {
         },
     ],
     'mochitest': [
+        OBJDIR_TEST_FILES['mochitest'],
         {
             'source': buildconfig.topobjdir,
             'base': '_tests/testing',
@@ -355,6 +371,13 @@ ARCHIVE_FILES = {
             'pattern': 'talos/**',
         },
     ],
+    'awsy': [
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing',
+            'pattern': 'awsy/**',
+        },
+    ],
     'web-platform': [
         {
             'source': buildconfig.topsrcdir,
@@ -384,12 +407,7 @@ ARCHIVE_FILES = {
         },
     ],
     'xpcshell': [
-        {
-            'source': buildconfig.topobjdir,
-            'base': '_tests/xpcshell',
-            'pattern': '**',
-            'dest': 'xpcshell/tests',
-        },
+        OBJDIR_TEST_FILES['xpcshell'],
         {
             'source': buildconfig.topsrcdir,
             'base': 'testing/xpcshell',
@@ -401,7 +419,6 @@ ARCHIVE_FILES = {
                 'node-http2/**',
                 'node-spdy/**',
                 'remotexpcshelltests.py',
-                'runtestsb2g.py',
                 'runxpcshelltests.py',
                 'xpcshellcommandline.py',
             ],
@@ -428,6 +445,16 @@ ARCHIVE_FILES = {
 }
 
 
+if buildconfig.substs.get('MOZ_ASAN') and buildconfig.substs.get('CLANG_CL'):
+    asan_dll = {
+        'source': buildconfig.topobjdir,
+        'base': 'dist/bin',
+        'pattern': os.path.basename(buildconfig.substs['MOZ_CLANG_RT_ASAN_LIB_PATH']),
+        'dest': 'bin'
+    }
+    ARCHIVE_FILES['common'].append(asan_dll)
+
+
 # "common" is our catch all archive and it ignores things from other archives.
 # Verify nothing sneaks into ARCHIVE_FILES without a corresponding exclusion
 # rule in the "common" archive.
@@ -443,8 +470,51 @@ for k, v in ARCHIVE_FILES.items():
         raise Exception('"common" ignore list probably should contain %s' % k)
 
 
+def find_generated_harness_files():
+    # TEST_HARNESS_FILES end up in an install manifest at
+    # $topsrcdir/_build_manifests/install/_tests.
+    manifest = InstallManifest(mozpath.join(buildconfig.topobjdir,
+                                            '_build_manifests',
+                                            'install',
+                                            '_tests'))
+    registry = FileRegistry()
+    manifest.populate_registry(registry)
+    # Conveniently, the generated files we care about will already
+    # exist in the objdir, so we can identify relevant files if
+    # they're an `ExistingFile` instance.
+    return [mozpath.join('_tests', p) for p in registry.paths()
+            if isinstance(registry[p], ExistingFile)]
+
+
 def find_files(archive):
-    for entry in ARCHIVE_FILES[archive]:
+    extra_entries = []
+    generated_harness_files = find_generated_harness_files()
+
+    if archive == 'common':
+        # Construct entries ensuring all our generated harness files are
+        # packaged in the common tests zip.
+        packaged_paths = set()
+        for entry in OBJDIR_TEST_FILES.values():
+            pat = mozpath.join(entry['base'], entry['pattern'])
+            del entry['pattern']
+            patterns = []
+            for path in generated_harness_files:
+                if mozpath.match(path, pat):
+                    patterns.append(path[len(entry['base']) + 1:])
+                    packaged_paths.add(path)
+            if patterns:
+                entry['patterns'] = patterns
+                extra_entries.append(entry)
+        entry = {
+            'source': buildconfig.topobjdir,
+            'base': '_tests',
+            'patterns': [],
+        }
+        for path in set(generated_harness_files) - packaged_paths:
+            entry['patterns'].append(path[len('_tests') + 1:])
+        extra_entries.append(entry)
+
+    for entry in ARCHIVE_FILES[archive] + extra_entries:
         source = entry['source']
         dest = entry.get('dest')
         base = entry.get('base', '')
@@ -469,8 +539,13 @@ def find_files(archive):
             '**/*.pyc',
         ])
 
+        if archive != 'common' and base.startswith('_tests'):
+            # We may have generated_harness_files to exclude from this entry.
+            for path in generated_harness_files:
+                if path.startswith(base):
+                    ignore.append(path[len(base) + 1:])
+
         common_kwargs = {
-            'find_executables': False,
             'find_dotfiles': True,
             'ignore': ignore,
         }
@@ -535,22 +610,31 @@ def main(argv):
 
     args = parser.parse_args(argv)
 
-    if not args.outputfile.endswith('.zip'):
-        raise Exception('expected zip output file')
+    out_file = args.outputfile
+    if not out_file.endswith(('.tar.gz', '.zip')):
+        raise Exception('expected tar.gz or zip output file')
 
     file_count = 0
     t_start = time.time()
-    ensureParentDir(args.outputfile)
-    with open(args.outputfile, 'wb') as fh:
+    ensureParentDir(out_file)
+    res = find_files(args.archive)
+    with open(out_file, 'wb') as fh:
         # Experimentation revealed that level 5 is significantly faster and has
         # marginally larger sizes than higher values and is the sweet spot
         # for optimal compression. Read the detailed commit message that
         # introduced this for raw numbers.
-        with JarWriter(fileobj=fh, optimize=False, compress_level=5) as writer:
-            res = find_files(args.archive)
-            for p, f in res:
-                writer.add(p.encode('utf-8'), f.read(), mode=f.mode, skip_duplicates=True)
-                file_count += 1
+        if out_file.endswith('.tar.gz'):
+            files = dict(res)
+            create_tar_gz_from_files(fh, files, compresslevel=5)
+            file_count = len(files)
+        elif out_file.endswith('.zip'):
+            with JarWriter(fileobj=fh, optimize=False, compress_level=5) as writer:
+                for p, f in res:
+                    writer.add(p.encode('utf-8'), f.read(), mode=f.mode,
+                               skip_duplicates=True)
+                    file_count += 1
+        else:
+            raise Exception('unhandled file extension: %s' % out_file)
 
     duration = time.time() - t_start
     zip_size = os.path.getsize(args.outputfile)

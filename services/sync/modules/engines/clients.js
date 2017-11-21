@@ -27,23 +27,29 @@ this.EXPORTED_SYMBOLS = [
 
 var {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://services-common/async.js");
-Cu.import("resource://services-common/stringbundle.js");
 Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/engines.js");
 Cu.import("resource://services-sync/record.js");
 Cu.import("resource://services-sync/resource.js");
 Cu.import("resource://services-sync/util.js");
-Cu.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "fxAccounts",
   "resource://gre/modules/FxAccounts.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "getRepairRequestor",
+  "resource://services-sync/collection_repair.js");
+
+XPCOMUtils.defineLazyModuleGetter(this, "getRepairResponder",
+  "resource://services-sync/collection_repair.js");
 
 const CLIENTS_TTL = 1814400; // 21 days
 const CLIENTS_TTL_REFRESH = 604800; // 7 days
 const STALE_CLIENT_REMOTE_AGE = 604800; // 7 days
 
-const SUPPORTED_PROTOCOL_VERSIONS = ["1.1", "1.5"];
+const SUPPORTED_PROTOCOL_VERSIONS = [SYNC_API_VERSION];
 
 function hasDupeCommand(commands, action) {
   if (!commands) {
@@ -75,6 +81,8 @@ this.ClientEngine = function ClientEngine(service) {
 
   // Reset the last sync timestamp on every startup so that we fetch all clients
   this.resetLastSync();
+  this.fxAccounts = fxAccounts;
+  this.addClientCommandQueue = Promise.resolve();
 }
 ClientEngine.prototype = {
   __proto__: SyncEngine.prototype,
@@ -82,6 +90,7 @@ ClientEngine.prototype = {
   _recordObj: ClientsRec,
   _trackerObj: ClientsTracker,
   allowSkippedRecord: false,
+  _knownStaleFxADeviceIds: null,
 
   // Always sync client data as it controls other sync behavior
   get enabled() {
@@ -100,9 +109,13 @@ ClientEngine.prototype = {
     return Object.values(this._store._remoteClients).filter(v => !v.stale);
   },
 
-  remoteClientExists(id) {
+  remoteClient(id) {
     let client = this._store._remoteClients[id];
-    return !!(client && !client.stale);
+    return client && !client.stale ? client : null;
+  },
+
+  remoteClientExists(id) {
+    return !!this.remoteClient(id);
   },
 
   // Aggregate some stats on the composition of clients on this account
@@ -128,12 +141,15 @@ ClientEngine.prototype = {
   /**
    * Obtain information about device types.
    *
-   * Returns a Map of device types to integer counts.
+   * Returns a Map of device types to integer counts. Guaranteed to include
+   * "desktop" (which will have at least 1 - this device) and "mobile" (which
+   * may have zero) counts. It almost certainly will include only these 2.
    */
   get deviceTypes() {
     let counts = new Map();
 
-    counts.set(this.localType, 1);
+    counts.set(this.localType, 1); // currently this must be DEVICE_TYPE_DESKTOP
+    counts.set(DEVICE_TYPE_MOBILE, 0);
 
     for (let id in this._store._remoteClients) {
       let record = this._store._remoteClients[id];
@@ -161,8 +177,9 @@ ClientEngine.prototype = {
   },
 
   get brandName() {
-    let brand = new StringBundle("chrome://branding/locale/brand.properties");
-    return brand.get("brandShortName");
+    let brand = Services.strings.createBundle(
+      "chrome://branding/locale/brand.properties");
+    return brand.GetStringFromName("brandShortName");
   },
 
   get localName() {
@@ -176,7 +193,7 @@ ClientEngine.prototype = {
   set localName(value) {
     Svc.Prefs.set("client.name", value);
     // Update the registration in the background.
-    fxAccounts.updateDeviceRegistration().catch(error => {
+    this.fxAccounts.updateDeviceRegistration().catch(error => {
       this._log.warn("failed to update fxa device registration", error);
     });
   },
@@ -209,70 +226,138 @@ ClientEngine.prototype = {
     return false;
   },
 
-  _readCommands() {
-    let cb = Async.makeSpinningCallback();
-    Utils.jsonLoad("commands", this, commands => cb(null, commands));
-    return cb.wait() || {};
+  async _readCommands() {
+    let commands = await Utils.jsonLoad("commands", this);
+    return commands || {};
   },
 
   /**
    * Low level function, do not use directly (use _addClientCommand instead).
    */
-  _saveCommands(commands) {
-    let cb = Async.makeSpinningCallback();
-    Utils.jsonSave("commands", this, commands, error => {
-      if (error) {
-        this._log.error("Failed to save JSON outgoing commands", error);
-      }
-      cb();
-    });
-    cb.wait();
-  },
-
-  _prepareCommandsForUpload() {
-    let cb = Async.makeSpinningCallback();
-    Utils.jsonMove("commands", "commands-syncing", this).catch(() => {}) // Ignore errors
-      .then(() => {
-        Utils.jsonLoad("commands-syncing", this, commands => cb(null, commands));
-      });
-    return cb.wait() || {};
-  },
-
-  _deleteUploadedCommands() {
-    delete this._currentlySyncingCommands;
-    Async.promiseSpinningly(
-      Utils.jsonRemove("commands-syncing", this).catch(err => {
-        this._log.error("Failed to delete syncing-commands file", err);
-      })
-    );
-  },
-
-  _addClientCommand(clientId, command) {
-    const allCommands = this._readCommands();
-    const clientCommands = allCommands[clientId] || [];
-    if (hasDupeCommand(clientCommands, command)) {
-      return false;
+  async _saveCommands(commands) {
+    try {
+      await Utils.jsonSave("commands", this, commands);
+    } catch (error) {
+      this._log.error("Failed to save JSON outgoing commands", error);
     }
-    allCommands[clientId] = clientCommands.concat(command);
-    this._saveCommands(allCommands);
-    return true;
   },
 
-  _syncStartup: function _syncStartup() {
+  async _prepareCommandsForUpload() {
+    try {
+      await Utils.jsonMove("commands", "commands-syncing", this)
+    } catch (e) {
+      // Ignore errors
+    }
+    let commands = await Utils.jsonLoad("commands-syncing", this);
+    return commands || {};
+  },
+
+  async _deleteUploadedCommands() {
+    delete this._currentlySyncingCommands;
+    try {
+      await Utils.jsonRemove("commands-syncing", this);
+    } catch (err) {
+      this._log.error("Failed to delete syncing-commands file", err);
+    }
+  },
+
+  // Gets commands for a client we are yet to write to the server. Doesn't
+  // include commands for that client which are already on the server.
+  // We should rename this!
+  async getClientCommands(clientId) {
+    const allCommands = await this._readCommands();
+    return allCommands[clientId] || [];
+  },
+
+  async removeLocalCommand(command) {
+    // the implementation of this engine is such that adding a command to
+    // the local client is how commands are deleted! ¯\_(ツ)_/¯
+    await this._addClientCommand(this.localID, command);
+  },
+
+  async _addClientCommand(clientId, command) {
+    return this.addClientCommandQueue = (async () => {
+      await this.addClientCommandQueue;
+      try {
+        const localCommands = await this._readCommands();
+        const localClientCommands = localCommands[clientId] || [];
+        const remoteClient = this._store._remoteClients[clientId];
+        let remoteClientCommands = []
+        if (remoteClient && remoteClient.commands) {
+          remoteClientCommands = remoteClient.commands;
+        }
+        const clientCommands = localClientCommands.concat(remoteClientCommands);
+        if (hasDupeCommand(clientCommands, command)) {
+          return false;
+        }
+        localCommands[clientId] = localClientCommands.concat(command);
+        await this._saveCommands(localCommands);
+        return true;
+      } catch (e) {
+        // Failing to save a command should not "break the queue" of pending operations.
+        this._log.error(e);
+        return false;
+      }
+    })();
+  },
+
+  async _removeClientCommands(clientId) {
+    const allCommands = await this._readCommands();
+    delete allCommands[clientId];
+    await this._saveCommands(allCommands);
+  },
+
+  async updateKnownStaleClients() {
+    this._log.debug("Updating the known stale clients");
+    await this._refreshKnownStaleClients();
+    for (let client of Object.values(this._store._remoteClients)) {
+      if (client.fxaDeviceId && this._knownStaleFxADeviceIds.includes(client.fxaDeviceId)) {
+        this._log.info(`Hiding stale client ${client.id} - in known stale clients list`);
+        client.stale = true;
+      }
+    }
+  },
+
+  // We assume that clients not present in the FxA Device Manager list have been
+  // disconnected and so are stale
+  async _refreshKnownStaleClients() {
+    this._log.debug("Refreshing the known stale clients list");
+    let localClients = Object.values(this._store._remoteClients)
+                             .filter(client => client.fxaDeviceId) // iOS client records don't have fxaDeviceId
+                             .map(client => client.fxaDeviceId);
+    let fxaClients;
+    try {
+      let deviceList = await this.fxAccounts.getDeviceList();
+      fxaClients = deviceList.map(device => device.id);
+    } catch (ex) {
+      this._log.error("Could not retrieve the FxA device list", ex);
+      this._knownStaleFxADeviceIds = [];
+      return;
+    }
+    this._knownStaleFxADeviceIds = Utils.arraySub(localClients, fxaClients);
+  },
+
+  async _syncStartup() {
+    this.isFirstSync = !this.lastRecordUpload;
     // Reupload new client record periodically.
     if (Date.now() / 1000 - this.lastRecordUpload > CLIENTS_TTL_REFRESH) {
       this._tracker.addChangedID(this.localID);
       this.lastRecordUpload = Date.now() / 1000;
     }
-    SyncEngine.prototype._syncStartup.call(this);
+    return SyncEngine.prototype._syncStartup.call(this);
   },
 
-  _processIncoming() {
+  async _processIncoming() {
     // Fetch all records from the server.
     this.lastSync = 0;
     this._incomingClients = {};
     try {
-      SyncEngine.prototype._processIncoming.call(this);
+      await SyncEngine.prototype._processIncoming.call(this);
+      // Refresh the known stale clients list at startup and when we receive
+      // "device connected/disconnected" push notifications.
+      if (!this._knownStaleFxADeviceIds) {
+        await this._refreshKnownStaleClients();
+      }
       // Since clients are synced unconditionally, any records in the local store
       // that don't exist on the server must be for disconnected clients. Remove
       // them, so that we don't upload records with commands for clients that will
@@ -281,7 +366,7 @@ ClientEngine.prototype = {
       for (let id in this._store._remoteClients) {
         if (!this._incomingClients[id]) {
           this._log.info(`Removing local state for deleted client ${id}`);
-          this._removeRemoteClient(id);
+          await this._removeRemoteClient(id);
         }
       }
       // Bug 1264498: Mobile clients don't remove themselves from the clients
@@ -291,8 +376,14 @@ ClientEngine.prototype = {
       // bug 1287687)
       delete this._incomingClients[this.localID];
       let names = new Set([this.localName]);
-      for (let id in this._incomingClients) {
+      for (let [id, serverLastModified] of Object.entries(this._incomingClients)) {
         let record = this._store._remoteClients[id];
+        // stash the server last-modified time on the record.
+        record.serverLastModified = serverLastModified;
+        if (record.fxaDeviceId && this._knownStaleFxADeviceIds.includes(record.fxaDeviceId)) {
+          this._log.info(`Hiding stale client ${id} - in known stale clients list`);
+          record.stale = true;
+        }
         if (!names.has(record.name)) {
           names.add(record.name);
           continue;
@@ -308,23 +399,34 @@ ClientEngine.prototype = {
     }
   },
 
-  _uploadOutgoing() {
-    this._currentlySyncingCommands = this._prepareCommandsForUpload();
+  async _uploadOutgoing() {
+    this._currentlySyncingCommands = await this._prepareCommandsForUpload();
     const clientWithPendingCommands = Object.keys(this._currentlySyncingCommands);
     for (let clientId of clientWithPendingCommands) {
       if (this._store._remoteClients[clientId] || this.localID == clientId) {
         this._modified.set(clientId, 0);
       }
     }
-    SyncEngine.prototype._uploadOutgoing.call(this);
+    let updatedIDs = this._modified.ids();
+    await SyncEngine.prototype._uploadOutgoing.call(this);
+    // Record the response time as the server time for each item we uploaded.
+    for (let id of updatedIDs) {
+      if (id != this.localID) {
+        this._store._remoteClients[id].serverLastModified = this.lastSync;
+      }
+    }
   },
 
-  _onRecordsWritten(succeeded, failed) {
+  async _onRecordsWritten(succeeded, failed) {
     // Reconcile the status of the local records with what we just wrote on the
     // server
     for (let id of succeeded) {
       const commandChanges = this._currentlySyncingCommands[id];
       if (id == this.localID) {
+        if (this.isFirstSync) {
+          this._log.info("Uploaded our client record for the first time, notifying other clients.");
+          this._notifyCollectionChanged();
+        }
         if (this.localCommands) {
           this.localCommands = this.localCommands.filter(command => !hasDupeCommand(commandChanges, command));
         }
@@ -336,7 +438,7 @@ ClientEngine.prototype = {
           continue;
         }
         // fixup the client record, so our copy of _remoteClients matches what we uploaded.
-        clientRecord.commands = this._store.createRecord(id);
+        this._store._remoteClients[id] = await this._store.createRecord(id);
         // we could do better and pass the reference to the record we just uploaded,
         // but this will do for now
       }
@@ -348,10 +450,10 @@ ClientEngine.prototype = {
       if (!commandChanges) {
         continue;
       }
-      this._addClientCommand(id, commandChanges);
+      await this._addClientCommand(id, commandChanges);
     }
 
-    this._deleteUploadedCommands();
+    await this._deleteUploadedCommands();
 
     // Notify other devices that their own client collection changed
     const idsToNotify = succeeded.reduce((acc, id) => {
@@ -362,11 +464,11 @@ ClientEngine.prototype = {
       return fxaDeviceId ? acc.concat(fxaDeviceId) : acc;
     }, []);
     if (idsToNotify.length > 0) {
-      this._notifyCollectionChanged(idsToNotify);
+      this._notifyCollectionChanged(idsToNotify, NOTIFY_TAB_SENT_TTL_SECS);
     }
   },
 
-  _notifyCollectionChanged(ids) {
+  async _notifyCollectionChanged(ids = null, ttl = 0) {
     const message = {
       version: 1,
       command: "sync:collection_changed",
@@ -374,21 +476,32 @@ ClientEngine.prototype = {
         collections: ["clients"]
       }
     };
-    fxAccounts.notifyDevices(ids, message, NOTIFY_TAB_SENT_TTL_SECS);
+    let excludedIds = null;
+    if (!ids) {
+      const localFxADeviceId = await fxAccounts.getDeviceId();
+      excludedIds = [localFxADeviceId];
+    }
+    try {
+      await this.fxAccounts.notifyDevices(ids, excludedIds, message, ttl);
+    } catch (e) {
+      this._log.error("Could not notify of changes in the collection", e);
+    }
   },
 
-  _syncFinish() {
+  async _syncFinish() {
     // Record histograms for our device types, and also write them to a pref
-    // so non-histogram telemetry (eg, UITelemetry) has easy access to them.
+    // so non-histogram telemetry (eg, UITelemetry) and the sync scheduler
+    // has easy access to them, and so they are accurate even before we've
+    // successfully synced the first time after startup.
     for (let [deviceType, count] of this.deviceTypes) {
       let hid;
       let prefName = this.name + ".devices.";
       switch (deviceType) {
-        case "desktop":
+        case DEVICE_TYPE_DESKTOP:
           hid = "WEAVE_DEVICE_COUNT_DESKTOP";
           prefName += "desktop";
           break;
-        case "mobile":
+        case DEVICE_TYPE_MOBILE:
           hid = "WEAVE_DEVICE_COUNT_MOBILE";
           prefName += "mobile";
           break;
@@ -399,15 +512,15 @@ ClientEngine.prototype = {
       Services.telemetry.getHistogramById(hid).add(count);
       Svc.Prefs.set(prefName, count);
     }
-    SyncEngine.prototype._syncFinish.call(this);
+    return SyncEngine.prototype._syncFinish.call(this);
   },
 
-  _reconcile: function _reconcile(item) {
+  async _reconcile(item) {
     // Every incoming record is reconciled, so we use this to track the
     // contents of the collection on the server.
     this._incomingClients[item.id] = item.modified;
 
-    if (!this._store.itemExists(item.id)) {
+    if (!(await this._store.itemExists(item.id))) {
       return true;
     }
     // Clients are synced unconditionally, so we'll always have new records.
@@ -416,36 +529,42 @@ ClientEngine.prototype = {
     // work around this by updating the record during reconciliation, and
     // returning false to indicate that the record doesn't need to be applied
     // later.
-    this._store.update(item);
+    await this._store.update(item);
     return false;
   },
 
   // Treat reset the same as wiping for locally cached clients
-  _resetClient() {
-    this._wipeClient();
+  async _resetClient() {
+    await this._wipeClient();
   },
 
-  _wipeClient: function _wipeClient() {
-    SyncEngine.prototype._resetClient.call(this);
+  async _wipeClient() {
+    await SyncEngine.prototype._resetClient.call(this);
+    this._knownStaleFxADeviceIds = null;
     delete this.localCommands;
-    this._store.wipe();
-    const logRemoveError = err => this._log.warn("Could not delete json file", err);
-    Async.promiseSpinningly(
-      Utils.jsonRemove("commands", this).catch(logRemoveError)
-        .then(Utils.jsonRemove("commands-syncing", this).catch(logRemoveError))
-    );
+    await this._store.wipe();
+    try {
+      await Utils.jsonRemove("commands", this);
+    } catch (err) {
+      this._log.warn("Could not delete commands.json", err);
+    }
+    try {
+      await Utils.jsonRemove("commands-syncing", this)
+    } catch (err) {
+      this._log.warn("Could not delete commands-syncing.json", err);
+    }
   },
 
-  removeClientData: function removeClientData() {
+  async removeClientData() {
     let res = this.service.resource(this.engineURL + "/" + this.localID);
-    res.delete();
+    await res.delete();
   },
 
   // Override the default behavior to delete bad records from the server.
-  handleHMACMismatch: function handleHMACMismatch(item, mayRetry) {
+  async handleHMACMismatch(item, mayRetry) {
     this._log.debug("Handling HMAC mismatch for " + item.id);
 
-    let base = SyncEngine.prototype.handleHMACMismatch.call(this, item, mayRetry);
+    let base = await SyncEngine.prototype.handleHMACMismatch.call(this, item, mayRetry);
     if (base != SyncEngine.kRecoveryStrategy.error)
       return base;
 
@@ -469,6 +588,8 @@ ClientEngine.prototype = {
     wipeEngine:  { args: 1, desc: "Delete all client data for engine" },
     logout:      { args: 0, desc: "Log out client" },
     displayURI:  { args: 3, desc: "Instruct a client to display a URI" },
+    repairRequest:  {args: 1, desc: "Instruct a client to initiate a repair"},
+    repairResponse: {args: 1, desc: "Instruct a client a repair request is complete"},
   },
 
   /**
@@ -478,7 +599,7 @@ ClientEngine.prototype = {
    * @param args Array of arguments/data for command
    * @param clientId Client to send command to
    */
-  _sendCommandToClient(command, args, clientId, telemetryExtra) {
+  async _sendCommandToClient(command, args, clientId, telemetryExtra) {
     this._log.trace("Sending " + command + " to " + clientId);
 
     let client = this._store._remoteClients[clientId];
@@ -497,7 +618,7 @@ ClientEngine.prototype = {
       flowID: telemetryExtra.flowID,
     };
 
-    if (this._addClientCommand(clientId, action)) {
+    if ((await this._addClientCommand(clientId, action))) {
       this._log.trace(`Client ${clientId} got a new action`, [command, args]);
       this._tracker.addChangedID(clientId);
       try {
@@ -515,20 +636,21 @@ ClientEngine.prototype = {
    *
    * @return false to abort sync
    */
-  processIncomingCommands: function processIncomingCommands() {
-    return this._notify("clients:process-commands", "", function() {
+  async processIncomingCommands() {
+    return this._notify("clients:process-commands", "", async function() {
       if (!this.localCommands) {
         return true;
       }
 
-      const clearedCommands = this._readCommands()[this.localID];
+      const clearedCommands = await this._readCommands()[this.localID];
       const commands = this.localCommands.filter(command => !hasDupeCommand(clearedCommands, command));
-
+      let didRemoveCommand = false;
       let URIsToDisplay = [];
       // Process each command in order.
       for (let rawCommand of commands) {
+        let shouldRemoveCommand = true; // most commands are auto-removed.
         let {command, args, flowID} = rawCommand;
-        this._log.debug("Processing command: " + command + "(" + args + ")");
+        this._log.debug("Processing command " + command, args);
 
         this.service.recordTelemetryEvent("processcommand", command, undefined,
                                           { flowID });
@@ -539,13 +661,13 @@ ClientEngine.prototype = {
             engines = null;
             // Fallthrough
           case "resetEngine":
-            this.service.resetClient(engines);
+            await this.service.resetClient(engines);
             break;
           case "wipeAll":
             engines = null;
             // Fallthrough
           case "wipeEngine":
-            this.service.wipeClient(engines);
+            await this.service.wipeClient(engines);
             break;
           case "logout":
             this.service.logout();
@@ -554,14 +676,65 @@ ClientEngine.prototype = {
             let [uri, clientId, title] = args;
             URIsToDisplay.push({ uri, clientId, title });
             break;
+          case "repairResponse": {
+            // When we send a repair request to another device that understands
+            // it, that device will send a response indicating what it did.
+            let response = args[0];
+            let requestor = getRepairRequestor(response.collection);
+            if (!requestor) {
+              this._log.warn("repairResponse for unknown collection", response);
+              break;
+            }
+            if (!(await requestor.continueRepairs(response))) {
+              this._log.warn("repairResponse couldn't continue the repair", response);
+            }
+            break;
+          }
+          case "repairRequest": {
+            // Another device has sent us a request to make some repair.
+            let request = args[0];
+            let responder = getRepairResponder(request.collection);
+            if (!responder) {
+              this._log.warn("repairRequest for unknown collection", request);
+              break;
+            }
+            try {
+              if ((await responder.repair(request, rawCommand))) {
+                // We've started a repair - once that collection has synced it
+                // will write a "response" command and arrange for this repair
+                // request to be removed from the local command list - if we
+                // removed it now we might fail to write a response in cases of
+                // premature shutdown etc.
+                shouldRemoveCommand = false;
+              }
+            } catch (ex) {
+              if (Async.isShutdownException(ex)) {
+                // Let's assume this error was caused by the shutdown, so let
+                // it try again next time.
+                throw ex;
+              }
+              // otherwise there are no second chances - the command is removed
+              // and will not be tried again.
+              // (Note that this shouldn't be hit in the normal case - it's
+              // expected the responder will handle all reasonable failures and
+              // write a response indicating that it couldn't do what was asked.)
+              this._log.error("Failed to handle a repair request", ex);
+            }
+            break;
+          }
           default:
-            this._log.debug("Received an unknown command: " + command);
+            this._log.warn("Received an unknown command: " + command);
             break;
         }
         // Add the command to the "cleared" commands list
-        this._addClientCommand(this.localID, rawCommand)
+        if (shouldRemoveCommand) {
+          await this.removeLocalCommand(rawCommand);
+          didRemoveCommand = true;
+        }
       }
-      this._tracker.addChangedID(this.localID);
+      if (didRemoveCommand) {
+        this._tracker.addChangedID(this.localID);
+      }
 
       if (URIsToDisplay.length) {
         this._handleDisplayURIs(URIsToDisplay);
@@ -577,6 +750,7 @@ ClientEngine.prototype = {
    * Calling this does not actually sync the command data to the server. If the
    * client already has the command/args pair, it won't receive a duplicate
    * command.
+   * This method is async since it writes the command to a file.
    *
    * @param command
    *        Command to invoke on remote clients
@@ -589,7 +763,7 @@ ClientEngine.prototype = {
    *        A unique identifier used to track success for this operation across
    *        devices.
    */
-  sendCommand(command, args, clientId = null, telemetryExtra = {}) {
+  async sendCommand(command, args, clientId = null, telemetryExtra = {}) {
     let commandData = this._commands[command];
     // Don't send commands that we don't know about.
     if (!commandData) {
@@ -609,11 +783,11 @@ ClientEngine.prototype = {
     }
 
     if (clientId) {
-      this._sendCommandToClient(command, args, clientId, telemetryExtra);
+      await this._sendCommandToClient(command, args, clientId, telemetryExtra);
     } else {
       for (let [id, record] of Object.entries(this._store._remoteClients)) {
         if (!record.stale) {
-          this._sendCommandToClient(command, args, id, telemetryExtra);
+          await this._sendCommandToClient(command, args, id, telemetryExtra);
         }
       }
     }
@@ -636,10 +810,10 @@ ClientEngine.prototype = {
    * @param title
    *        Title of the page being sent.
    */
-  sendURIToClientForDisplay: function sendURIToClientForDisplay(uri, clientId, title) {
+  async sendURIToClientForDisplay(uri, clientId, title) {
     this._log.info("Sending URI to client: " + uri + " -> " +
                    clientId + " (" + title + ")");
-    this.sendCommand("displayURI", [uri, this.localID, title], clientId);
+    await this.sendCommand("displayURI", [uri, this.localID, title], clientId);
 
     this._tracker.score += SCORE_INCREMENT_XLARGE;
   },
@@ -671,9 +845,11 @@ ClientEngine.prototype = {
     Svc.Obs.notify("weave:engine:clients:display-uris", uris);
   },
 
-  _removeRemoteClient(id) {
+  async _removeRemoteClient(id) {
     delete this._store._remoteClients[id];
     this._tracker.removeChangedID(id);
+    await this._removeClientCommands(id);
+    this._modified.delete(id);
   },
 };
 
@@ -685,11 +861,11 @@ ClientStore.prototype = {
 
   _remoteClients: {},
 
-  create(record) {
-    this.update(record);
+  async create(record) {
+    await this.update(record);
   },
 
-  update: function update(record) {
+  async update(record) {
     if (record.id == this.engine.localID) {
       // Only grab commands from the server; local name/type always wins
       this.engine.localCommands = record.commands;
@@ -698,7 +874,7 @@ ClientStore.prototype = {
     }
   },
 
-  createRecord: function createRecord(id, collection) {
+  async createRecord(id, collection) {
     let record = new ClientsRec(collection, id);
 
     const commandsChanges = this.engine._currentlySyncingCommands ?
@@ -707,10 +883,8 @@ ClientStore.prototype = {
 
     // Package the individual components into a record for the local client
     if (id == this.engine.localID) {
-      let cb = Async.makeSpinningCallback();
-      fxAccounts.getDeviceId().then(id => cb(null, id), cb);
       try {
-        record.fxaDeviceId = cb.wait();
+        record.fxaDeviceId = await this.engine.fxAccounts.getDeviceId();
       } catch (error) {
         this._log.warn("failed to get fxa device id", error);
       }
@@ -734,7 +908,8 @@ ClientStore.prototype = {
       // record.device = "";            // Bug 1100723
       // record.formfactor = "";        // Bug 1100722
     } else {
-      record.cleartext = this._remoteClients[id];
+      record.cleartext = Object.assign({}, this._remoteClients[id]);
+      delete record.cleartext.serverLastModified; // serverLastModified is a local only attribute.
 
       // Add the commands we have to send
       if (commandsChanges && commandsChanges.length) {
@@ -754,11 +929,11 @@ ClientStore.prototype = {
     return record;
   },
 
-  itemExists(id) {
-    return id in this.getAllIDs();
+  async itemExists(id) {
+    return id in (await this.getAllIDs());
   },
 
-  getAllIDs: function getAllIDs() {
+  async getAllIDs() {
     let ids = {};
     ids[this.engine.localID] = true;
     for (let id in this._remoteClients)
@@ -766,7 +941,7 @@ ClientStore.prototype = {
     return ids;
   },
 
-  wipe: function wipe() {
+  async wipe() {
     this._remoteClients = {};
   },
 };

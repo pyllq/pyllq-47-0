@@ -12,6 +12,7 @@
 
 #include "nsCOMPtr.h"
 #include "nsComponentManagerUtils.h"
+#include "nsIAsyncInputStream.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsIMIMEInputStream.h"
 #include "nsISeekableStream.h"
@@ -28,7 +29,8 @@ using mozilla::Move;
 
 class nsMIMEInputStream : public nsIMIMEInputStream,
                           public nsISeekableStream,
-                          public nsIIPCSerializableInputStream
+                          public nsIIPCSerializableInputStream,
+                          public nsIAsyncInputStream
 {
     virtual ~nsMIMEInputStream();
 
@@ -40,6 +42,7 @@ public:
     NS_DECL_NSIMIMEINPUTSTREAM
     NS_DECL_NSISEEKABLESTREAM
     NS_DECL_NSIIPCSERIALIZABLEINPUTSTREAM
+    NS_DECL_NSIASYNCINPUTSTREAM
 
 private:
 
@@ -54,6 +57,9 @@ private:
                               const char* aFromRawSegment, uint32_t aToOffset,
                               uint32_t aCount, uint32_t *aWriteCount);
 
+    bool IsAsyncInputStream() const;
+    bool IsIPCSerializable() const;
+
     nsTArray<HeaderEntry> mHeaders;
 
     nsCOMPtr<nsIInputStream> mStream;
@@ -66,13 +72,21 @@ NS_IMPL_RELEASE(nsMIMEInputStream)
 NS_IMPL_CLASSINFO(nsMIMEInputStream, nullptr, nsIClassInfo::THREADSAFE,
                   NS_MIMEINPUTSTREAM_CID)
 
-NS_IMPL_QUERY_INTERFACE_CI(nsMIMEInputStream,
-                           nsIMIMEInputStream,
-                           nsIInputStream,
-                           nsISeekableStream,
-                           nsIIPCSerializableInputStream)
+NS_INTERFACE_MAP_BEGIN(nsMIMEInputStream)
+  NS_INTERFACE_MAP_ENTRY(nsIMIMEInputStream)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsIInputStream, nsIMIMEInputStream)
+  NS_INTERFACE_MAP_ENTRY(nsISeekableStream)
+  NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIIPCSerializableInputStream,
+                                     IsIPCSerializable())
+  NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIAsyncInputStream,
+                                     IsAsyncInputStream())
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIMIMEInputStream)
+  NS_IMPL_QUERY_CLASSINFO(nsMIMEInputStream)
+NS_INTERFACE_MAP_END
+
 NS_IMPL_CI_INTERFACE_GETTER(nsMIMEInputStream,
                             nsIMIMEInputStream,
+                            nsIAsyncInputStream,
                             nsIInputStream,
                             nsISeekableStream)
 
@@ -197,7 +211,9 @@ NS_IMETHODIMP nsMIMEInputStream::ReadSegments(nsWriteSegmentFun aWriter,
 {
     INITSTREAMS;
     ReadSegmentsState state;
-    state.mThisStream = this;
+    // Disambiguate ambiguous nsIInputStream.
+    state.mThisStream = static_cast<nsIInputStream*>(
+                          static_cast<nsIMIMEInputStream*>(this));
     state.mWriter = aWriter;
     state.mClosure = aClosure;
     return mStream->ReadSegments(ReadSegCb, &state, aCount, _retval);
@@ -227,6 +243,26 @@ NS_IMETHODIMP nsMIMEInputStream::Close(void) { INITSTREAMS; return mStream->Clos
 NS_IMETHODIMP nsMIMEInputStream::Available(uint64_t *_retval) { INITSTREAMS; return mStream->Available(_retval); }
 NS_IMETHODIMP nsMIMEInputStream::Read(char * buf, uint32_t count, uint32_t *_retval) { INITSTREAMS; return mStream->Read(buf, count, _retval); }
 NS_IMETHODIMP nsMIMEInputStream::IsNonBlocking(bool *aNonBlocking) { INITSTREAMS; return mStream->IsNonBlocking(aNonBlocking); }
+
+// nsIAsyncInputStream
+NS_IMETHODIMP
+nsMIMEInputStream::CloseWithStatus(nsresult aStatus)
+{
+    INITSTREAMS;
+    nsCOMPtr<nsIAsyncInputStream> asyncStream = do_QueryInterface(mStream);
+    return asyncStream->CloseWithStatus(aStatus);
+}
+
+NS_IMETHODIMP
+nsMIMEInputStream::AsyncWait(nsIInputStreamCallback* aCallback,
+                             uint32_t aFlags, uint32_t aRequestedCount,
+                             nsIEventTarget* aEventTarget)
+{
+    INITSTREAMS;
+    nsCOMPtr<nsIAsyncInputStream> asyncStream = do_QueryInterface(mStream);
+    return asyncStream->AsyncWait(
+        aCallback, aFlags, aRequestedCount, aEventTarget);
+}
 
 // nsISeekableStream
 NS_IMETHODIMP nsMIMEInputStream::Tell(int64_t *_retval)
@@ -269,7 +305,8 @@ nsMIMEInputStream::Serialize(InputStreamParams& aParams,
 
     if (mStream) {
         InputStreamParams wrappedParams;
-        SerializeInputStream(mStream, wrappedParams, aFileDescriptors);
+        InputStreamHelper::SerializeInputStream(mStream, wrappedParams,
+                                                aFileDescriptors);
 
         NS_ASSERTION(wrappedParams.type() != InputStreamParams::T__None,
                      "Wrapped stream failed to serialize!");
@@ -304,8 +341,9 @@ nsMIMEInputStream::Deserialize(const InputStreamParams& aParams,
 
     if (wrappedParams.type() == OptionalInputStreamParams::TInputStreamParams) {
         nsCOMPtr<nsIInputStream> stream;
-        stream = DeserializeInputStream(wrappedParams.get_InputStreamParams(),
-                                        aFileDescriptors);
+        stream =
+            InputStreamHelper::DeserializeInputStream(wrappedParams.get_InputStreamParams(),
+                                                      aFileDescriptors);
         if (!stream) {
             NS_WARNING("Failed to deserialize wrapped stream!");
             return false;
@@ -328,3 +366,21 @@ nsMIMEInputStream::ExpectedSerializedLength()
     return serializable ? serializable->ExpectedSerializedLength() : Nothing();
 }
 
+bool
+nsMIMEInputStream::IsAsyncInputStream() const
+{
+    nsCOMPtr<nsIAsyncInputStream> asyncStream = do_QueryInterface(mStream);
+    return !!asyncStream;
+}
+
+bool
+nsMIMEInputStream::IsIPCSerializable() const
+{
+    // If SetData() or Deserialize() has not be called yet, mStream is null.
+    if (!mStream) {
+      return true;
+    }
+
+    nsCOMPtr<nsIIPCSerializableInputStream> serializable = do_QueryInterface(mStream);
+    return !!serializable;
+}

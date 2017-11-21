@@ -27,9 +27,11 @@ txApplyDefaultElementTemplate::execute(txExecutionState& aEs)
     txExecutionState::TemplateRule* rule = aEs.getCurrentTemplateRule();
     txExpandedName mode(rule->mModeNsId, rule->mModeLocalName);
     txStylesheet::ImportFrame* frame = 0;
-    txInstruction* templ =
+    txInstruction* templ;
+    nsresult rv =
         aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
-                                      mode, &aEs, nullptr, &frame);
+                                      mode, &aEs, nullptr, &templ, &frame);
+    NS_ENSURE_SUCCESS(rv, rv);
 
     aEs.pushTemplateRule(frame, mode, aEs.mTemplateParams);
 
@@ -53,9 +55,11 @@ txApplyImports::execute(txExecutionState& aEs)
 
     txStylesheet::ImportFrame* frame = 0;
     txExpandedName mode(rule->mModeNsId, rule->mModeLocalName);
-    txInstruction* templ =
-        aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
-                                      mode, &aEs, rule->mFrame, &frame);
+    txInstruction* templ;
+    rv = aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
+                                       mode, &aEs, rule->mFrame, &templ,
+                                       &frame);
+    NS_ENSURE_SUCCESS(rv, rv);
 
     aEs.pushTemplateRule(frame, mode, rule->mParams);
 
@@ -76,9 +80,11 @@ nsresult
 txApplyTemplates::execute(txExecutionState& aEs)
 {
     txStylesheet::ImportFrame* frame = 0;
-    txInstruction* templ =
+    txInstruction* templ;
+    nsresult rv =
         aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
-                                      mMode, &aEs, nullptr, &frame);
+                                      mMode, &aEs, nullptr, &templ, &frame);
+    NS_ENSURE_SUCCESS(rv, rv);
 
     aEs.pushTemplateRule(frame, mMode, aEs.mTemplateParams);
 
@@ -149,7 +155,7 @@ txCallTemplate::execute(txExecutionState& aEs)
 
     nsresult rv = aEs.runTemplate(instr);
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
     return NS_OK;
 }
 
@@ -172,7 +178,7 @@ txCheckParam::execute(txExecutionState& aEs)
             aEs.gotoInstruction(mBailTarget);
         }
     }
-    
+
     return NS_OK;
 }
 
@@ -302,7 +308,7 @@ txCopyBase::copyNode(const txXPathNode& aNode, txExecutionState& aEs)
             return aEs.mResultHandler->characters(nodeValue, false);
         }
     }
-    
+
     return NS_OK;
 }
 
@@ -321,7 +327,7 @@ txCopy::execute(txExecutionState& aEs)
         case txXPathNodeType::DOCUMENT_NODE:
         case txXPathNodeType::DOCUMENT_FRAGMENT_NODE:
         {
-            const nsAFlatString& empty = EmptyString();
+            const nsString& empty = EmptyString();
 
             // "close" current element to ensure that no attributes are added
             rv = aEs.mResultHandler->characters(empty, false);
@@ -404,7 +410,7 @@ txCopyOf::execute(txExecutionState& aEs)
             break;
         }
     }
-    
+
     return NS_OK;
 }
 
@@ -454,7 +460,7 @@ txInsertAttrSet::execute(txExecutionState& aEs)
 
     nsresult rv = aEs.runTemplate(instr);
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
     return NS_OK;
 }
 
@@ -470,14 +476,14 @@ txLoopNodeSet::execute(txExecutionState& aEs)
     txNodeSetContext* context =
         static_cast<txNodeSetContext*>(aEs.getEvalContext());
     if (!context->hasNext()) {
-        aEs.popAndDeleteEvalContext();
+        delete aEs.popEvalContext();
 
         return NS_OK;
     }
 
     context->next();
     aEs.gotoInstruction(mTarget);
-    
+
     return NS_OK;
 }
 
@@ -526,7 +532,7 @@ txMessage::execute(txExecutionState& aEs)
     nsAutoPtr<txTextHandler> handler(
         static_cast<txTextHandler*>(aEs.popResultHandler()));
 
-    nsCOMPtr<nsIConsoleService> consoleSvc = 
+    nsCOMPtr<nsIConsoleService> consoleSvc =
       do_GetService("@mozilla.org/consoleservice;1");
     if (consoleSvc) {
         nsAutoString logString(NS_LITERAL_STRING("xsl:message - "));
@@ -560,7 +566,7 @@ txNumber::execute(txExecutionState& aEs)
                                    mGroupingSeparator, mFormat,
                                    aEs.getEvalContext(), res);
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
     return aEs.mResultHandler->characters(res, false);
 }
 
@@ -620,14 +626,14 @@ txPushNewContext::execute(txExecutionState& aEs)
         // XXX ErrorReport: nodeset expected
         return NS_ERROR_XSLT_NODESET_EXPECTED;
     }
-    
+
     txNodeSet* nodes = static_cast<txNodeSet*>
                                   (static_cast<txAExprResult*>
                                               (exprRes));
-    
+
     if (nodes->isEmpty()) {
         aEs.gotoInstruction(mBailTarget);
-        
+
         return NS_OK;
     }
 
@@ -644,7 +650,7 @@ txPushNewContext::execute(txExecutionState& aEs)
     RefPtr<txNodeSet> sortedNodes;
     rv = sorter.sortNodeSet(nodes, &aEs, getter_AddRefs(sortedNodes));
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
     txNodeSetContext* context = new txNodeSetContext(sortedNodes, &aEs);
     NS_ENSURE_TRUE(context, NS_ERROR_OUT_OF_MEMORY);
 
@@ -655,7 +661,7 @@ txPushNewContext::execute(txExecutionState& aEs)
         delete context;
         return rv;
     }
-    
+
     return NS_OK;
 }
 
@@ -731,7 +737,7 @@ nsresult
 txRemoveVariable::execute(txExecutionState& aEs)
 {
     aEs.removeVariable(mName);
-    
+
     return NS_OK;
 }
 
@@ -770,10 +776,10 @@ txSetParam::execute(txExecutionState& aEs)
         rv = rtfHandler->getAsRTF(getter_AddRefs(exprRes));
         NS_ENSURE_SUCCESS(rv, rv);
     }
-    
+
     rv = aEs.mTemplateParams->bindVariable(mName, exprRes);
     NS_ENSURE_SUCCESS(rv, rv);
-    
+
     return NS_OK;
 }
 
@@ -798,7 +804,7 @@ txSetVariable::execute(txExecutionState& aEs)
         rv = rtfHandler->getAsRTF(getter_AddRefs(exprRes));
         NS_ENSURE_SUCCESS(rv, rv);
     }
-    
+
     return aEs.bindVariable(mName, exprRes);
 }
 

@@ -31,6 +31,7 @@
 #include "jsobjinlines.h"
 #include "jsscriptinlines.h"
 
+#include "gc/Nursery-inl.h"
 #include "vm/EnvironmentObject-inl.h"
 #include "vm/NativeObject-inl.h"
 
@@ -39,10 +40,12 @@ using namespace js;
 using mozilla::Move;
 using mozilla::PodArrayZero;
 
-js::ContextFriendFields::ContextFriendFields(bool isJSContext)
-  : JS::RootingContext(isJSContext),
-    compartment_(nullptr), zone_(nullptr)
+JS::RootingContext::RootingContext()
+  : autoGCRooters_(nullptr), compartment_(nullptr), zone_(nullptr)
 {
+    for (auto& stackRootPtr : stackRoots_)
+        stackRootPtr = nullptr;
+
     PodArrayZero(nativeStackLimit);
 #if JS_STACK_GROWTH_DIRECTION > 0
     for (int i=0; i<StackKindCount; i++)
@@ -53,19 +56,19 @@ js::ContextFriendFields::ContextFriendFields(bool isJSContext)
 JS_FRIEND_API(void)
 js::SetSourceHook(JSContext* cx, mozilla::UniquePtr<SourceHook> hook)
 {
-    cx->sourceHook = Move(hook);
+    cx->runtime()->sourceHook.ref() = Move(hook);
 }
 
 JS_FRIEND_API(mozilla::UniquePtr<SourceHook>)
 js::ForgetSourceHook(JSContext* cx)
 {
-    return Move(cx->sourceHook);
+    return Move(cx->runtime()->sourceHook.ref());
 }
 
 JS_FRIEND_API(void)
 JS_SetGrayGCRootsTracer(JSContext* cx, JSTraceDataOp traceOp, void* data)
 {
-    cx->gc.setGrayRootsTracer(traceOp, data);
+    cx->runtime()->gc.setGrayRootsTracer(traceOp, data);
 }
 
 JS_FRIEND_API(JSObject*)
@@ -167,12 +170,12 @@ JS_SetCompartmentPrincipals(JSCompartment* compartment, JSPrincipals* principals
 
     // Any compartment with the trusted principals -- and there can be
     // multiple -- is a system compartment.
-    const JSPrincipals* trusted = compartment->runtimeFromMainThread()->trustedPrincipals();
+    const JSPrincipals* trusted = compartment->runtimeFromActiveCooperatingThread()->trustedPrincipals();
     bool isSystem = principals && principals == trusted;
 
     // Clear out the old principals, if any.
     if (compartment->principals()) {
-        JS_DropPrincipals(compartment->contextFromMainThread(), compartment->principals());
+        JS_DropPrincipals(TlsContext.get(), compartment->principals());
         compartment->setPrincipals(nullptr);
         // We'd like to assert that our new principals is always same-origin
         // with the old one, but JSPrincipals doesn't give us a way to do that.
@@ -247,7 +250,8 @@ JS_DefineFunctionsWithHelp(JSContext* cx, HandleObject obj, const JSFunctionSpec
             return false;
 
         Rooted<jsid> id(cx, AtomToId(atom));
-        RootedFunction fun(cx, DefineFunction(cx, obj, id, fs->call, fs->nargs, fs->flags));
+        RootedFunction fun(cx, DefineFunction(cx, obj, id, fs->call, fs->nargs,
+                                              fs->flags | JSPROP_RESOLVING));
         if (!fun)
             return false;
 
@@ -374,6 +378,12 @@ js::AssertSameCompartment(JSContext* cx, JSObject* obj)
     assertSameCompartment(cx, obj);
 }
 
+JS_FRIEND_API(void)
+js::AssertSameCompartment(JSContext* cx, JS::HandleValue v)
+{
+    assertSameCompartment(cx, v);
+}
+
 #ifdef DEBUG
 JS_FRIEND_API(void)
 js::AssertSameCompartment(JSObject* objA, JSObject* objB)
@@ -387,7 +397,7 @@ js::NotifyAnimationActivity(JSObject* obj)
 {
     int64_t timeNow = PRMJ_Now();
     obj->compartment()->lastAnimationTime = timeNow;
-    obj->runtimeFromMainThread()->lastAnimationTime = timeNow;
+    obj->runtimeFromActiveCooperatingThread()->lastAnimationTime = timeNow;
 }
 
 JS_FRIEND_API(uint32_t)
@@ -406,34 +416,6 @@ JS_FRIEND_API(bool)
 js::RunningWithTrustedPrincipals(JSContext* cx)
 {
     return cx->runningWithTrustedPrincipals();
-}
-
-JS_FRIEND_API(JSFunction*)
-js::GetOutermostEnclosingFunctionOfScriptedCaller(JSContext* cx)
-{
-    ScriptFrameIter iter(cx);
-
-    // Skip eval frames.
-    while (!iter.done() && iter.isEvalFrame())
-        ++iter;
-
-    if (iter.done())
-        return nullptr;
-
-    if (!iter.isFunctionFrame())
-        return nullptr;
-
-    if (iter.compartment() != cx->compartment())
-        return nullptr;
-
-    RootedFunction curr(cx, iter.callee(cx));
-    for (ScopeIter si(curr->nonLazyScript()); si; si++) {
-        if (si.kind() == ScopeKind::Function)
-            curr = si.scope()->as<FunctionScope>().canonicalFunction();
-    }
-
-    assertSameCompartment(cx, curr);
-    return curr;
 }
 
 JS_FRIEND_API(JSFunction*)
@@ -478,6 +460,7 @@ js::NewFunctionByIdWithReserved(JSContext* cx, JSNative native, unsigned nargs, 
     MOZ_ASSERT(JSID_IS_STRING(id));
     MOZ_ASSERT(!cx->runtime()->isAtomsCompartment(cx->compartment()));
     CHECK_REQUEST(cx);
+    assertSameCompartment(cx, id);
 
     RootedAtom atom(cx, JSID_TO_ATOM(id));
     return (flags & JSFUN_CONSTRUCTOR) ?
@@ -535,20 +518,18 @@ js::GetOriginalEval(JSContext* cx, HandleObject scope, MutableHandleObject eval)
 }
 
 JS_FRIEND_API(void)
-js::SetReservedOrProxyPrivateSlotWithBarrier(JSObject* obj, size_t slot, const js::Value& value)
+js::SetReservedSlotWithBarrier(JSObject* obj, size_t slot, const js::Value& value)
 {
-    if (IsProxy(obj)) {
-        MOZ_ASSERT(slot == 0);
-        obj->as<ProxyObject>().setSameCompartmentPrivate(value);
-    } else {
+    if (IsProxy(obj))
+        obj->as<ProxyObject>().setReservedSlot(slot, value);
+    else
         obj->as<NativeObject>().setSlot(slot, value);
-    }
 }
 
 void
 js::SetPreserveWrapperCallback(JSContext* cx, PreserveWrapperCallback callback)
 {
-    cx->preserveWrapperCallback = callback;
+    cx->runtime()->preserveWrapperCallback = callback;
 }
 
 /*
@@ -588,6 +569,18 @@ JS_IsDeadWrapper(JSObject* obj)
     return IsDeadProxyObject(obj);
 }
 
+JS_FRIEND_API(JSObject*)
+JS_NewDeadWrapper(JSContext* cx, JSObject* origObj)
+{
+    return NewDeadProxyObject(cx, origObj);
+}
+
+JS_FRIEND_API(bool)
+JS_IsScriptSourceObject(JSObject* obj)
+{
+    return obj->is<ScriptSourceObject>();
+}
+
 void
 js::TraceWeakMaps(WeakMapTracer* trc)
 {
@@ -596,9 +589,9 @@ js::TraceWeakMaps(WeakMapTracer* trc)
 }
 
 extern JS_FRIEND_API(bool)
-js::AreGCGrayBitsValid(JSContext* cx)
+js::AreGCGrayBitsValid(JSRuntime* rt)
 {
-    return cx->areGCGrayBitsValid();
+    return rt->gc.areGrayBitsValid();
 }
 
 JS_FRIEND_API(bool)
@@ -612,6 +605,13 @@ js::ZoneGlobalsAreAllGray(JS::Zone* zone)
     return true;
 }
 
+JS_FRIEND_API(bool)
+js::IsObjectZoneSweepingOrCompacting(JSObject* obj)
+{
+    MOZ_ASSERT(obj);
+    return MaybeForwarded(obj)->zone()->isGCSweepingOrCompacting();
+}
+
 namespace {
 struct VisitGrayCallbackFunctor {
     GCThingCallback callback_;
@@ -622,7 +622,7 @@ struct VisitGrayCallbackFunctor {
 
     template <class T>
     void operator()(T tp) const {
-        if ((*tp)->isTenured() && (*tp)->asTenured().isMarked(gc::GRAY))
+        if ((*tp)->isMarkedGray())
             callback_(closure_, JS::GCCellPtr(*tp));
     }
 };
@@ -654,7 +654,7 @@ js::StringToLinearStringSlow(JSContext* cx, JSString* str)
 JS_FRIEND_API(void)
 JS_SetAccumulateTelemetryCallback(JSContext* cx, JSAccumulateTelemetryDataCallback callback)
 {
-    cx->setTelemetryCallback(cx, callback);
+    cx->runtime()->setTelemetryCallback(cx->runtime(), callback);
 }
 
 JS_FRIEND_API(JSObject*)
@@ -773,14 +773,14 @@ FormatValue(JSContext* cx, const Value& vArg, JSAutoByteString& bytes)
 
 // Wrapper for JS_sprintf_append() that reports allocation failure to the
 // context.
-static char*
+static JS::UniqueChars
 MOZ_FORMAT_PRINTF(3, 4)
-sprintf_append(JSContext* cx, char* buf, const char* fmt, ...)
+sprintf_append(JSContext* cx, JS::UniqueChars&& buf, const char* fmt, ...)
 {
     va_list ap;
 
     va_start(ap, fmt);
-    char* result = JS_vsprintf_append(buf, fmt, ap);
+    JS::UniqueChars result = JS_vsprintf_append(Move(buf), fmt, ap);
     va_end(ap);
 
     if (!result) {
@@ -791,8 +791,8 @@ sprintf_append(JSContext* cx, char* buf, const char* fmt, ...)
     return result;
 }
 
-static char*
-FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
+static JS::UniqueChars
+FormatFrame(JSContext* cx, const FrameIter& iter, JS::UniqueChars&& inBuf, int num,
             bool showArgs, bool showLocals, bool showThisProps)
 {
     MOZ_ASSERT(!cx->isExceptionPending());
@@ -820,16 +820,17 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
     }
 
     // print the frame number and function name
+    JS::UniqueChars buf(Move(inBuf));
     if (funname) {
         JSAutoByteString funbytes;
         char* str = funbytes.encodeLatin1(cx, funname);
         if (!str)
             return nullptr;
-        buf = sprintf_append(cx, buf, "%d %s(", num, str);
+        buf = sprintf_append(cx, Move(buf), "%d %s(", num, str);
     } else if (fun) {
-        buf = sprintf_append(cx, buf, "%d anonymous(", num);
+        buf = sprintf_append(cx, Move(buf), "%d anonymous(", num);
     } else {
-        buf = sprintf_append(cx, buf, "%d <TOP LEVEL>", num);
+        buf = sprintf_append(cx, Move(buf), "%d <TOP LEVEL>", num);
     }
     if (!buf)
         return nullptr;
@@ -878,7 +879,7 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
             }
 
             if (value) {
-                buf = sprintf_append(cx, buf, "%s%s%s%s%s%s",
+                buf = sprintf_append(cx, Move(buf), "%s%s%s%s%s%s",
                                      !first ? ", " : "",
                                      name ? name :"",
                                      name ? " = " : "",
@@ -890,7 +891,7 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
 
                 first = false;
             } else {
-                buf = sprintf_append(cx, buf,
+                buf = sprintf_append(cx, Move(buf),
                                      "    <Failed to get argument while inspecting stack frame>\n");
                 if (!buf)
                     return nullptr;
@@ -900,7 +901,7 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
     }
 
     // print filename and line number
-    buf = sprintf_append(cx, buf, "%s [\"%s\":%d]\n",
+    buf = sprintf_append(cx, Move(buf), "%s [\"%s\":%d]\n",
                          fun ? ")" : "",
                          filename ? filename : "<unknown>",
                          lineno);
@@ -925,9 +926,9 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
                 const char* str = thisValBytes.encodeLatin1(cx, thisValStr);
                 if (!str)
                     return nullptr;
-                buf = sprintf_append(cx, buf, "    this = %s\n", str);
+                buf = sprintf_append(cx, Move(buf), "    this = %s\n", str);
             } else {
-                buf = sprintf_append(cx, buf, "    <failed to get 'this' value>\n");
+                buf = sprintf_append(cx, Move(buf), "    <failed to get 'this' value>\n");
             }
             if (!buf)
                 return nullptr;
@@ -954,7 +955,7 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
                 if (cx->isThrowingOutOfMemory())
                     return nullptr;
                 cx->clearPendingException();
-                buf = sprintf_append(cx, buf,
+                buf = sprintf_append(cx, Move(buf),
                                      "    <Failed to fetch property while inspecting stack frame>\n");
                 if (!buf)
                     return nullptr;
@@ -978,13 +979,13 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
             }
 
             if (name && value) {
-                buf = sprintf_append(cx, buf, "    this.%s = %s%s%s\n",
+                buf = sprintf_append(cx, Move(buf), "    this.%s = %s%s%s\n",
                                      name,
                                      v.isString() ? "\"" : "",
                                      value,
                                      v.isString() ? "\"" : "");
             } else {
-                buf = sprintf_append(cx, buf,
+                buf = sprintf_append(cx, Move(buf),
                                      "    <Failed to format values while inspecting stack frame>\n");
             }
             if (!buf)
@@ -996,22 +997,23 @@ FormatFrame(JSContext* cx, const FrameIter& iter, char* buf, int num,
     return buf;
 }
 
-static char*
-FormatWasmFrame(JSContext* cx, const FrameIter& iter, char* buf, int num, bool showArgs)
+static JS::UniqueChars
+FormatWasmFrame(JSContext* cx, const FrameIter& iter, JS::UniqueChars&& inBuf, int num,
+                bool showArgs)
 {
     JSAtom* functionDisplayAtom = iter.functionDisplayAtom();
     UniqueChars nameStr;
     if (functionDisplayAtom)
         nameStr = StringToNewUTF8CharsZ(cx, *functionDisplayAtom);
 
-    buf = sprintf_append(cx, buf, "%d %s()",
-                         num,
-                         nameStr ? nameStr.get() : "<wasm-function>");
+    JS::UniqueChars buf = sprintf_append(cx, Move(inBuf), "%d %s()",
+                                         num,
+                                         nameStr ? nameStr.get() : "<wasm-function>");
     if (!buf)
         return nullptr;
     const char* filename = iter.filename();
     uint32_t lineno = iter.computeLine();
-    buf = sprintf_append(cx, buf, " [\"%s\":%d]\n",
+    buf = sprintf_append(cx, Move(buf), " [\"%s\":%d]\n",
                          filename ? filename : "<unknown>",
                          lineno);
 
@@ -1019,23 +1021,25 @@ FormatWasmFrame(JSContext* cx, const FrameIter& iter, char* buf, int num, bool s
     return buf;
 }
 
-JS_FRIEND_API(char*)
-JS::FormatStackDump(JSContext* cx, char* buf, bool showArgs, bool showLocals, bool showThisProps)
+JS_FRIEND_API(JS::UniqueChars)
+JS::FormatStackDump(JSContext* cx, JS::UniqueChars&& inBuf, bool showArgs, bool showLocals,
+                    bool showThisProps)
 {
     int num = 0;
 
+    JS::UniqueChars buf(Move(inBuf));
     for (AllFramesIter i(cx); !i.done(); ++i) {
         if (i.hasScript())
-            buf = FormatFrame(cx, i, buf, num, showArgs, showLocals, showThisProps);
+            buf = FormatFrame(cx, i, Move(buf), num, showArgs, showLocals, showThisProps);
         else
-            buf = FormatWasmFrame(cx, i, buf, num, showArgs);
+            buf = FormatWasmFrame(cx, i, Move(buf), num, showArgs);
         if (!buf)
             return nullptr;
         num++;
     }
 
     if (!num)
-        buf = JS_sprintf_append(buf, "JavaScript stack is empty\n");
+        buf = JS_sprintf_append(Move(buf), "JavaScript stack is empty\n");
 
     return buf;
 }
@@ -1043,7 +1047,7 @@ JS::FormatStackDump(JSContext* cx, char* buf, bool showArgs, bool showLocals, bo
 extern JS_FRIEND_API(bool)
 JS::ForceLexicalInitialization(JSContext *cx, HandleObject obj)
 {
-    AssertHeapIsIdle(cx);
+    AssertHeapIsIdle();
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj);
 
@@ -1080,7 +1084,7 @@ struct DumpHeapTracer : public JS::CallbackTracer, public WeakMapTracer
 
     DumpHeapTracer(FILE* fp, JSContext* cx)
       : JS::CallbackTracer(cx, DoNotTraceWeakMaps),
-        js::WeakMapTracer(cx), prefix(""), output(fp)
+        js::WeakMapTracer(cx->runtime()), prefix(""), output(fp)
     {}
 
   private:
@@ -1100,10 +1104,13 @@ static char
 MarkDescriptor(void* thing)
 {
     gc::TenuredCell* cell = gc::TenuredCell::fromPointer(thing);
-    if (cell->isMarked(gc::BLACK))
-        return cell->isMarked(gc::GRAY) ? 'G' : 'B';
-    else
-        return cell->isMarked(gc::GRAY) ? 'X' : 'W';
+    if (cell->isMarkedBlack())
+        return 'B';
+    if (cell->isMarkedGray())
+        return 'G';
+    if (cell->isMarkedAny())
+        return 'X';
+    return 'W';
 }
 
 static void
@@ -1117,8 +1124,8 @@ static void
 DumpHeapVisitCompartment(JSContext* cx, void* data, JSCompartment* comp)
 {
     char name[1024];
-    if (cx->compartmentNameCallback)
-        (*cx->compartmentNameCallback)(cx, comp, name, sizeof(name));
+    if (cx->runtime()->compartmentNameCallback)
+        (*cx->runtime()->compartmentNameCallback)(cx, comp, name, sizeof(name));
     else
         strcpy(name, "<unknown>");
 
@@ -1161,7 +1168,7 @@ void
 js::DumpHeap(JSContext* cx, FILE* fp, js::DumpHeapNurseryBehaviour nurseryBehaviour)
 {
     if (nurseryBehaviour == js::CollectNurseryBeforeDump)
-        cx->gc.evictNursery(JS::gcreason::API);
+        EvictAllNurseries(cx->runtime(), JS::gcreason::API);
 
     DumpHeapTracer dtrc(fp, cx);
 
@@ -1169,7 +1176,7 @@ js::DumpHeap(JSContext* cx, FILE* fp, js::DumpHeapNurseryBehaviour nurseryBehavi
     {
         JSRuntime* rt = cx->runtime();
         js::gc::AutoPrepareForTracing prep(cx, WithAtoms);
-        gcstats::AutoPhase ap(rt->gc.stats, gcstats::PHASE_TRACE_HEAP);
+        gcstats::AutoPhase ap(rt->gc.stats(), gcstats::PhaseKind::TRACE_HEAP);
         rt->gc.traceRuntime(&dtrc, prep.session().lock);
     }
 
@@ -1179,11 +1186,11 @@ js::DumpHeap(JSContext* cx, FILE* fp, js::DumpHeapNurseryBehaviour nurseryBehavi
     fprintf(dtrc.output, "==========\n");
 
     dtrc.prefix = "> ";
-    IterateZonesCompartmentsArenasCells(cx, &dtrc,
-                                        DumpHeapVisitZone,
-                                        DumpHeapVisitCompartment,
-                                        DumpHeapVisitArena,
-                                        DumpHeapVisitCell);
+    IterateHeapUnbarriered(cx, &dtrc,
+                                                   DumpHeapVisitZone,
+                                                   DumpHeapVisitCompartment,
+                                                   DumpHeapVisitArena,
+                                                   DumpHeapVisitCell);
 
     fflush(dtrc.output);
 }
@@ -1198,13 +1205,13 @@ js::SetActivityCallback(JSContext* cx, ActivityCallback cb, void* arg)
 JS_FRIEND_API(void)
 JS::NotifyDidPaint(JSContext* cx)
 {
-    cx->gc.notifyDidPaint();
+    cx->runtime()->gc.notifyDidPaint();
 }
 
 JS_FRIEND_API(void)
-JS::PokeGC(JSContext* cx)
+JS::NotifyGCRootsRemoved(JSContext* cx)
 {
-    cx->gc.poke();
+    cx->runtime()->gc.notifyRootsRemoved();
 }
 
 JS_FRIEND_API(JSCompartment*)
@@ -1218,8 +1225,8 @@ js::GetAnyCompartmentInZone(JS::Zone* zone)
 void
 JS::ObjectPtr::finalize(JSRuntime* rt)
 {
-    if (IsIncrementalBarrierNeeded(rt->contextFromMainThread()))
-        IncrementalObjectBarrier(value);
+    if (IsIncrementalBarrierNeeded(rt->activeContextFromOwnThread()))
+        IncrementalPreWriteBarrier(value);
     value = nullptr;
 }
 
@@ -1266,25 +1273,23 @@ js::GetEnterCompartmentDepth(JSContext* cx)
 JS_FRIEND_API(void)
 js::SetDOMCallbacks(JSContext* cx, const DOMCallbacks* callbacks)
 {
-    cx->DOMcallbacks = callbacks;
+    cx->runtime()->DOMcallbacks = callbacks;
 }
 
 JS_FRIEND_API(const DOMCallbacks*)
 js::GetDOMCallbacks(JSContext* cx)
 {
-    return cx->DOMcallbacks;
+    return cx->runtime()->DOMcallbacks;
 }
 
 static const void* gDOMProxyHandlerFamily = nullptr;
-static uint32_t gDOMProxyExpandoSlot = 0;
 static DOMProxyShadowsCheck gDOMProxyShadowsCheck;
 
 JS_FRIEND_API(void)
-js::SetDOMProxyInformation(const void* domProxyHandlerFamily, uint32_t domProxyExpandoSlot,
+js::SetDOMProxyInformation(const void* domProxyHandlerFamily,
                            DOMProxyShadowsCheck domProxyShadowsCheck)
 {
     gDOMProxyHandlerFamily = domProxyHandlerFamily;
-    gDOMProxyExpandoSlot = domProxyExpandoSlot;
     gDOMProxyShadowsCheck = domProxyShadowsCheck;
 }
 
@@ -1294,20 +1299,34 @@ js::GetDOMProxyHandlerFamily()
     return gDOMProxyHandlerFamily;
 }
 
-uint32_t
-js::GetDOMProxyExpandoSlot()
-{
-    return gDOMProxyExpandoSlot;
-}
-
 DOMProxyShadowsCheck
 js::GetDOMProxyShadowsCheck()
 {
     return gDOMProxyShadowsCheck;
 }
 
+static XrayJitInfo* gXrayJitInfo = nullptr;
+
+JS_FRIEND_API(void)
+js::SetXrayJitInfo(XrayJitInfo* info)
+{
+    gXrayJitInfo = info;
+}
+
+XrayJitInfo*
+js::GetXrayJitInfo()
+{
+    return gXrayJitInfo;
+}
+
 bool
 js::detail::IdMatchesAtom(jsid id, JSAtom* atom)
+{
+    return id == INTERNED_STRING_TO_JSID(nullptr, atom);
+}
+
+bool
+js::detail::IdMatchesAtom(jsid id, JSString* atom)
 {
     return id == INTERNED_STRING_TO_JSID(nullptr, atom);
 }
@@ -1326,13 +1345,13 @@ js::PrepareScriptEnvironmentAndInvoke(JSContext* cx, HandleObject scope, ScriptE
 JS_FRIEND_API(void)
 js::SetScriptEnvironmentPreparer(JSContext* cx, ScriptEnvironmentPreparer* preparer)
 {
-    cx->scriptEnvironmentPreparer = preparer;
+    cx->runtime()->scriptEnvironmentPreparer = preparer;
 }
 
 JS_FRIEND_API(void)
 js::SetCTypesActivityCallback(JSContext* cx, CTypesActivityCallback cb)
 {
-    cx->ctypesActivityCallback = cb;
+    cx->runtime()->ctypesActivityCallback = cb;
 }
 
 js::AutoCTypesActivityCallback::AutoCTypesActivityCallback(JSContext* cx,
@@ -1400,14 +1419,14 @@ js::GetPropertyNameFromPC(JSScript* script, jsbytecode* pc)
 JS_FRIEND_API(void)
 js::SetWindowProxyClass(JSContext* cx, const js::Class* clasp)
 {
-    MOZ_ASSERT(!cx->maybeWindowProxyClass());
-    cx->setWindowProxyClass(clasp);
+    MOZ_ASSERT(!cx->runtime()->maybeWindowProxyClass());
+    cx->runtime()->setWindowProxyClass(clasp);
 }
 
 JS_FRIEND_API(void)
 js::SetWindowProxy(JSContext* cx, HandleObject global, HandleObject windowProxy)
 {
-    AssertHeapIsIdle(cx);
+    AssertHeapIsIdle();
     CHECK_REQUEST(cx);
 
     assertSameCompartment(cx, global, windowProxy);
@@ -1425,10 +1444,10 @@ js::ToWindowIfWindowProxy(JSObject* obj)
 }
 
 JS_FRIEND_API(JSObject*)
-js::ToWindowProxyIfWindow(JSObject* obj)
+js::detail::ToWindowProxyIfWindowSlow(JSObject* obj)
 {
-    if (IsWindow(obj))
-        return obj->as<GlobalObject>().windowProxy();
+    if (JSObject* windowProxy = obj->as<GlobalObject>().maybeWindowProxy())
+        return windowProxy;
     return obj;
 }
 
@@ -1457,4 +1476,29 @@ AutoAssertNoContentJS::AutoAssertNoContentJS(JSContext* cx)
 AutoAssertNoContentJS::~AutoAssertNoContentJS()
 {
     context_->runtime()->allowContentJS_ = prevAllowContentJS_;
+}
+
+JS_FRIEND_API(void)
+js::EnableAccessValidation(JSContext* cx, bool enabled)
+{
+    cx->enableAccessValidation = enabled;
+}
+
+JS_FRIEND_API(void)
+js::SetCompartmentValidAccessPtr(JSContext* cx, JS::HandleObject global, bool* accessp)
+{
+    global->compartment()->setValidAccessPtr(accessp);
+}
+
+JS_FRIEND_API(void)
+js::SetCooperativeYieldCallback(JSContext* cx, YieldCallback callback)
+{
+    cx->setYieldCallback(callback);
+}
+
+JS_FRIEND_API(bool)
+js::SystemZoneAvailable(JSContext* cx)
+{
+    CooperatingContext& owner = cx->runtime()->gc.systemZoneGroup->ownerContext();
+    return owner.context() == nullptr;
 }

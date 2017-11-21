@@ -132,6 +132,39 @@ public:
   NS_DECL_NSIATOM
 };
 
+#if defined(NS_BUILD_REFCNT_LOGGING)
+// nsFakeStringBuffers don't really use the refcounting system, but we
+// have to give a coherent series of addrefs and releases to the
+// refcount logging system, or we'll hit assertions when running with
+// XPCOM_MEM_LOG_CLASSES=nsStringBuffer.
+class FakeBufferRefcountHelper
+{
+public:
+  explicit FakeBufferRefcountHelper(nsStringBuffer* aBuffer)
+    : mBuffer(aBuffer)
+  {
+    // Account for the initial static refcount of 1, so that we don't
+    // hit a refcount logging assertion when this object first appears
+    // with a refcount of 2.
+    NS_LOG_ADDREF(aBuffer, 1, "nsStringBuffer", sizeof(nsStringBuffer));
+  }
+
+  ~FakeBufferRefcountHelper()
+  {
+    // We told the refcount logging system in the ctor that this
+    // object was created, so now we have to tell it that it was
+    // destroyed, to avoid leak reports. This may cause odd the
+    // refcount isn't actually 0.
+    NS_LOG_RELEASE(mBuffer, 0, "nsStringBuffer");
+  }
+
+private:
+  nsStringBuffer* mBuffer;
+};
+
+UniquePtr<nsTArray<FakeBufferRefcountHelper>> gFakeBuffers;
+#endif
+
 class StaticAtom final : public nsIAtom
 {
 public:
@@ -140,6 +173,15 @@ public:
     mLength = aLength;
     mIsStatic = true;
     mString = static_cast<char16_t*>(aStringBuffer->Data());
+
+#if defined(NS_BUILD_REFCNT_LOGGING)
+    MOZ_ASSERT(NS_IsMainThread());
+    if (!gFakeBuffers) {
+      gFakeBuffers = MakeUnique<nsTArray<FakeBufferRefcountHelper>>();
+    }
+    gFakeBuffers->AppendElement(aStringBuffer);
+#endif
+
     // Technically we could currently avoid doing this addref by instead making
     // the static atom buffers have an initial refcount of 2.
     aStringBuffer->AddRef();
@@ -325,13 +367,7 @@ AtomTableMatchKey(const PLDHashEntryHdr* aEntry, const void* aKey)
                          nsDependentAtomString(he->mAtom)) == 0;
   }
 
-  uint32_t length = he->mAtom->GetLength();
-  if (length != k->mLength) {
-    return false;
-  }
-
-  return memcmp(he->mAtom->GetUTF16String(),
-                k->mUTF16String, length * sizeof(char16_t)) == 0;
+  return he->mAtom->Equals(k->mUTF16String, k->mLength);
 }
 
 static void
@@ -364,17 +400,28 @@ static const PLDHashTableOps AtomTableOps = {
 
 //----------------------------------------------------------------------
 
+#define RECENTLY_USED_MAIN_THREAD_ATOM_CACHE_SIZE 31
+static nsIAtom*
+  sRecentlyUsedMainThreadAtoms[RECENTLY_USED_MAIN_THREAD_ATOM_CACHE_SIZE] = {};
+
 void
 DynamicAtom::GCAtomTable()
 {
-  MutexAutoLock lock(*gAtomTableLock);
-  GCAtomTableLocked(lock, GCKind::RegularOperation);
+  if (NS_IsMainThread()) {
+    MutexAutoLock lock(*gAtomTableLock);
+    GCAtomTableLocked(lock, GCKind::RegularOperation);
+  }
 }
 
 void
 DynamicAtom::GCAtomTableLocked(const MutexAutoLock& aProofOfLock,
                                GCKind aKind)
 {
+  MOZ_ASSERT(NS_IsMainThread());
+  for (uint32_t i = 0; i < RECENTLY_USED_MAIN_THREAD_ATOM_CACHE_SIZE; ++i) {
+    sRecentlyUsedMainThreadAtoms[i] = nullptr;
+  }
+
   uint32_t removedCount = 0; // Use a non-atomic temporary for cheaper increments.
   nsAutoCString nonZeroRefcountAtoms;
   uint32_t nonZeroRefcountAtomsCount = 0;
@@ -416,21 +463,21 @@ DynamicAtom::GCAtomTableLocked(const MutexAutoLock& aProofOfLock,
     NS_ASSERTION(nonZeroRefcountAtomsCount == 0, msg.get());
   }
 
-  // During the course of this function, the atom table is locked. This means
-  // that, barring refcounting bugs in consumers, an atom can never go from
-  // refcount == 0 to refcount != 0 during a GC. However, an atom _can_ go from
-  // refcount != 0 to refcount == 0 if a Release() occurs in parallel with GC.
-  // This means that we cannot assert that gUnusedAtomCount == removedCount, and
-  // thus that there are no unused atoms at the end of a GC. We can and do,
-  // however, assert this after the last GC at shutdown.
-  if (aKind == GCKind::RegularOperation) {
-    MOZ_ASSERT(removedCount <= gUnusedAtomCount);
-  } else {
-    // Complain if somebody adds new GCKind enums.
-    MOZ_ASSERT(aKind == GCKind::Shutdown);
-    // Our unused atom count should be accurate.
-    MOZ_ASSERT(removedCount == gUnusedAtomCount);
-  }
+  // We would like to assert that gUnusedAtomCount matches the number of atoms
+  // we found in the table which we removed. During the course of this function,
+  // the atom table is locked, but this lock is not acquired for AddRef() and
+  // Release() calls. This means we might see a gUnusedAtomCount value in
+  // between, say, AddRef() incrementing mRefCnt and it decrementing
+  // gUnusedAtomCount. So, we don't bother asserting that there are no unused
+  // atoms at the end of a regular GC. But we can (and do) assert thist just
+  // after the last GC at shutdown.
+  //
+  // Note that, barring refcounting bugs, an atom can only go from a zero
+  // refcount to a non-zero refcount while the atom table lock is held, so
+  // so we won't try to resurrect a zero refcount atom while trying to delete
+  // it.
+
+  MOZ_ASSERT_IF(aKind == GCKind::Shutdown, removedCount == gUnusedAtomCount);
 
   gUnusedAtomCount -= removedCount;
 }
@@ -442,7 +489,6 @@ DynamicAtom::AddRef(void)
 {
   nsrefcnt count = ++mRefCnt;
   if (count == 1) {
-    MOZ_ASSERT(gUnusedAtomCount > 0);
     gUnusedAtomCount--;
   }
   return count;
@@ -541,11 +587,28 @@ NS_InitAtomTable()
   gAtomTable = new PLDHashTable(&AtomTableOps, sizeof(AtomTableEntry),
                                 ATOM_HASHTABLE_INITIAL_LENGTH);
   gAtomTableLock = new Mutex("Atom Table Lock");
+
+  // Bug 1340710 has caused us to generate an empty atom at arbitrary times
+  // after startup.  If we end up creating one before nsGkAtoms::_empty is
+  // registered, we get an assertion about transmuting a dynamic atom into a
+  // static atom.  In order to avoid that, we register an empty string static
+  // atom as soon as we initialize the atom table to guarantee that the empty
+  // string atom will always be static.
+  NS_STATIC_ATOM_BUFFER(empty, "");
+  static nsIAtom* empty_atom = nullptr;
+  static const nsStaticAtom default_atoms[] = {
+    NS_STATIC_ATOM(empty, &empty_atom)
+  };
+  NS_RegisterStaticAtoms(default_atoms);
 }
 
 void
 NS_ShutdownAtomTable()
 {
+#if defined(NS_BUILD_REFCNT_LOGGING)
+  gFakeBuffers = nullptr;
+#endif
+
   delete gStaticAtomTable;
   gStaticAtomTable = nullptr;
 
@@ -634,13 +697,8 @@ RegisterStaticAtoms(const nsStaticAtom* aAtoms, uint32_t aAtomCount)
       if (!atom->IsStaticAtom()) {
         nsAutoCString name;
         atom->ToUTF8String(name);
-
-        static char sCrashReason[1024];
-        SprintfLiteral(sCrashReason,
-                       "static atom registration for %s should be pushed back",
-                       name.get());
-        MOZ_CRASH_ANNOTATE(sCrashReason);
-        MOZ_REALLY_CRASH();
+        MOZ_CRASH_UNSAFE_PRINTF(
+          "Static atom registration for %s should be pushed back", name.get());
       }
     } else {
       atom = new StaticAtom(stringBuffer, stringLen, hash);
@@ -715,6 +773,40 @@ NS_Atomize(const nsAString& aUTF16String)
   he->mAtom = atom;
 
   return atom.forget();
+}
+
+already_AddRefed<nsIAtom>
+NS_AtomizeMainThread(const nsAString& aUTF16String)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  nsCOMPtr<nsIAtom> retVal;
+  uint32_t hash;
+  AtomTableKey key(aUTF16String.Data(), aUTF16String.Length(), &hash);
+  uint32_t index = hash % RECENTLY_USED_MAIN_THREAD_ATOM_CACHE_SIZE;
+  nsIAtom* atom =
+    sRecentlyUsedMainThreadAtoms[index];
+  if (atom) {
+    uint32_t length = atom->GetLength();
+    if (length == key.mLength &&
+        (memcmp(atom->GetUTF16String(),
+                key.mUTF16String, length * sizeof(char16_t)) == 0)) {
+      retVal = atom;
+      return retVal.forget();
+    }
+  }
+
+  MutexAutoLock lock(*gAtomTableLock);
+  AtomTableEntry* he = static_cast<AtomTableEntry*>(gAtomTable->Add(&key));
+
+  if (he->mAtom) {
+    retVal = he->mAtom;
+  } else {
+    retVal = DynamicAtom::Create(aUTF16String, hash);
+    he->mAtom = retVal;
+  }
+
+  sRecentlyUsedMainThreadAtoms[index] = retVal;
+  return retVal.forget();
 }
 
 nsrefcnt

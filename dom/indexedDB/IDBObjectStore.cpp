@@ -34,12 +34,10 @@
 #include "mozilla/dom/IDBMutableFileBinding.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/IDBObjectStoreBinding.h"
+#include "mozilla/dom/MemoryBlobImpl.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/StructuredCloneTags.h"
 #include "mozilla/dom/indexedDB/PBackgroundIDBSharedTypes.h"
-#include "mozilla/dom/ipc/BlobChild.h"
-#include "mozilla/dom/ipc/BlobParent.h"
-#include "mozilla/dom/ipc/nsIRemoteBlob.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsCOMPtr.h"
@@ -55,6 +53,7 @@
 namespace mozilla {
 namespace dom {
 
+using namespace mozilla::dom::indexedDB;
 using namespace mozilla::dom::quota;
 using namespace mozilla::dom::workers;
 using namespace mozilla::ipc;
@@ -212,8 +211,11 @@ StructuredCloneWriteCallback(JSContext* aCx,
     return JS_WriteBytes(aWriter, &value, sizeof(value));
   }
 
+  // UNWRAP_OBJECT calls might mutate this.
+  JS::Rooted<JSObject*> obj(aCx, aObj);
+
   IDBMutableFile* mutableFile;
-  if (NS_SUCCEEDED(UNWRAP_OBJECT(IDBMutableFile, aObj, mutableFile))) {
+  if (NS_SUCCEEDED(UNWRAP_OBJECT(IDBMutableFile, &obj, mutableFile))) {
     if (cloneWriteInfo->mDatabase->IsFileHandleDisabled()) {
       return false;
     }
@@ -282,7 +284,7 @@ StructuredCloneWriteCallback(JSContext* aCx,
 
   {
     Blob* blob = nullptr;
-    if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, aObj, blob))) {
+    if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, &obj, blob))) {
       ErrorResult rv;
       uint64_t size = blob->GetSize(rv);
       MOZ_ASSERT(!rv.Failed());
@@ -347,27 +349,22 @@ StructuredCloneWriteCallback(JSContext* aCx,
     RefPtr<JS::WasmModule> module = JS::GetWasmModule(aObj);
     MOZ_ASSERT(module);
 
-    size_t bytecodeSize;
-    size_t compiledSize;
-    module->serializedSize(&bytecodeSize, &compiledSize);
-
+    size_t bytecodeSize = module->bytecodeSerializedSize();
     UniquePtr<uint8_t[]> bytecode(new uint8_t[bytecodeSize]);
     MOZ_ASSERT(bytecode);
-
-    UniquePtr<uint8_t[]> compiled(new uint8_t[compiledSize]);
-    MOZ_ASSERT(compiled);
-
-    module->serialize(bytecode.get(),
-                      bytecodeSize,
-                      compiled.get(),
-                      compiledSize);
+    module->bytecodeSerialize(bytecode.get(), bytecodeSize);
 
     RefPtr<BlobImpl> blobImpl =
-      new BlobImplMemory(bytecode.release(), bytecodeSize, EmptyString());
+      new MemoryBlobImpl(bytecode.release(), bytecodeSize, EmptyString());
     RefPtr<Blob> bytecodeBlob = Blob::Create(nullptr, blobImpl);
 
+    size_t compiledSize = module->compiledSerializedSize();
+    UniquePtr<uint8_t[]> compiled(new uint8_t[compiledSize]);
+    MOZ_ASSERT(compiled);
+    module->compiledSerialize(compiled.get(), compiledSize);
+
     blobImpl =
-      new BlobImplMemory(compiled.release(), compiledSize, EmptyString());
+      new MemoryBlobImpl(compiled.release(), compiledSize, EmptyString());
     RefPtr<Blob> compiledBlob = Blob::Create(nullptr, blobImpl);
 
     if (cloneWriteInfo->mFiles.Length() + 1 > size_t(UINT32_MAX)) {
@@ -428,32 +425,6 @@ GetAddInfoCallback(JSContext* aCx, void* aClosure)
   return NS_OK;
 }
 
-BlobChild*
-ActorFromRemoteBlobImpl(BlobImpl* aImpl)
-{
-  MOZ_ASSERT(aImpl);
-
-  nsCOMPtr<nsIRemoteBlob> remoteBlob = do_QueryInterface(aImpl);
-  if (remoteBlob) {
-    BlobChild* actor = remoteBlob->GetBlobChild();
-    MOZ_ASSERT(actor);
-
-    if (actor->GetContentManager()) {
-      return nullptr;
-    }
-
-    MOZ_ASSERT(actor->GetBackgroundManager());
-    MOZ_ASSERT(BackgroundChild::GetForCurrentThread());
-    MOZ_ASSERT(actor->GetBackgroundManager() ==
-                 BackgroundChild::GetForCurrentThread(),
-               "Blob actor is not bound to this thread!");
-
-    return actor;
-  }
-
-  return nullptr;
-}
-
 bool
 ResolveMysteryMutableFile(IDBMutableFile* aMutableFile,
                           const nsString& aName,
@@ -461,33 +432,6 @@ ResolveMysteryMutableFile(IDBMutableFile* aMutableFile,
 {
   MOZ_ASSERT(aMutableFile);
   aMutableFile->SetLazyData(aName, aType);
-  return true;
-}
-
-bool
-ResolveMysteryFile(BlobImpl* aImpl,
-                   const nsString& aName,
-                   const nsString& aContentType,
-                   uint64_t aSize,
-                   uint64_t aLastModifiedDate)
-{
-  BlobChild* actor = ActorFromRemoteBlobImpl(aImpl);
-  if (actor) {
-    return actor->SetMysteryBlobInfo(aName, aContentType,
-                                     aSize, aLastModifiedDate);
-  }
-  return true;
-}
-
-bool
-ResolveMysteryBlob(BlobImpl* aImpl,
-                   const nsString& aContentType,
-                   uint64_t aSize)
-{
-  BlobChild* actor = ActorFromRemoteBlobImpl(aImpl);
-  if (actor) {
-    return actor->SetMysteryBlobInfo(aContentType, aSize);
-  }
   return true;
 }
 
@@ -689,16 +633,22 @@ public:
     MOZ_ASSERT(parent);
 
     if (aData.tag == SCTAG_DOM_BLOB) {
-      if (NS_WARN_IF(!ResolveMysteryBlob(aFile.mBlob->Impl(),
-                                         aData.type,
-                                         aData.size))) {
-        return false;
-      }
-
+      aFile.mBlob->Impl()->SetLazyData(
+        NullString(), aData.type, aData.size, INT64_MAX);
       MOZ_ASSERT(!aFile.mBlob->IsFile());
 
+      // ActorsParent sends here a kind of half blob and half file wrapped into
+      // a DOM File object. DOM File and DOM Blob are a WebIDL wrapper around a
+      // BlobImpl object. SetLazyData() has just changed the BlobImpl to be a
+      // Blob (see the previous assert), but 'aFile.mBlob' still has the WebIDL
+      // DOM File wrapping.
+      // Before exposing it to content, we must recreate a DOM Blob object.
+
+      RefPtr<Blob> blob =
+        Blob::Create(aFile.mBlob->GetParentObject(), aFile.mBlob->Impl());
+      MOZ_ASSERT(blob);
       JS::Rooted<JS::Value> wrappedBlob(aCx);
-      if (!ToJSValue(aCx, aFile.mBlob, &wrappedBlob)) {
+      if (!ToJSValue(aCx, blob, &wrappedBlob)) {
         return false;
       }
 
@@ -706,13 +656,9 @@ public:
       return true;
     }
 
-    if (NS_WARN_IF(!ResolveMysteryFile(aFile.mBlob->Impl(),
-                                       aData.name,
-                                       aData.type,
-                                       aData.size,
-                                       aData.lastModifiedDate))) {
-      return false;
-    }
+    aFile.mBlob->Impl()->SetLazyData(
+      aData.name, aData.type, aData.size,
+      aData.lastModifiedDate * PR_USEC_PER_MSEC);
 
     MOZ_ASSERT(aFile.mBlob->IsFile());
     RefPtr<File> file = aFile.mBlob->ToFile();

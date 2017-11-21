@@ -15,7 +15,7 @@ using namespace js;
 using JS::IsArrayAnswer;
 
 bool
-BaseProxyHandler::enter(JSContext* cx, HandleObject wrapper, HandleId id, Action act,
+BaseProxyHandler::enter(JSContext* cx, HandleObject wrapper, HandleId id, Action act, bool mayThrow,
                         bool* bp) const
 {
     *bp = true;
@@ -283,8 +283,8 @@ BaseProxyHandler::getOwnEnumerablePropertyKeys(JSContext* cx, HandleObject proxy
     return true;
 }
 
-bool
-BaseProxyHandler::enumerate(JSContext* cx, HandleObject proxy, MutableHandleObject objp) const
+JSObject*
+BaseProxyHandler::enumerate(JSContext* cx, HandleObject proxy) const
 {
     assertEnteredPolicy(cx, proxy, JSID_VOID, ENUMERATE);
 
@@ -292,9 +292,9 @@ BaseProxyHandler::enumerate(JSContext* cx, HandleObject proxy, MutableHandleObje
     // chain for us.
     AutoIdVector props(cx);
     if (!GetPropertyKeys(cx, proxy, 0, &props))
-        return false;
+        return nullptr;
 
-    return EnumeratedIdVectorToIterator(cx, proxy, 0, props, objp);
+    return EnumeratedIdVectorToIterator(cx, proxy, 0, props);
 }
 
 bool
@@ -316,7 +316,7 @@ BaseProxyHandler::className(JSContext* cx, HandleObject proxy) const
 }
 
 JSString*
-BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy, unsigned indent) const
+BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy, bool isToSource) const
 {
     if (proxy->isCallable())
         return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
@@ -325,9 +325,8 @@ BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy, unsigned inden
     return nullptr;
 }
 
-bool
-BaseProxyHandler::regexp_toShared(JSContext* cx, HandleObject proxy,
-                                  RegExpGuard* g) const
+RegExpShared*
+BaseProxyHandler::regexp_toShared(JSContext* cx, HandleObject proxy) const
 {
     MOZ_CRASH("This should have been a wrapped regexp");
 }

@@ -33,7 +33,7 @@
 #include "GeckoProfiler.h"
 #include "nsPluginInstanceOwner.h"
 #include "nsDataHashtable.h"
-#include "nsNullPrincipal.h"
+#include "NullPrincipal.h"
 
 #define BYTERANGE_REQUEST_CONTEXT 0x01020304
 
@@ -428,8 +428,7 @@ nsPluginStreamListenerPeer::OnStartRequest(nsIRequest *request,
                                            nsISupports* aContext)
 {
   nsresult rv = NS_OK;
-  PROFILER_LABEL("nsPluginStreamListenerPeer", "OnStartRequest",
-    js::ProfileEntry::Category::OTHER);
+  AUTO_PROFILER_LABEL("nsPluginStreamListenerPeer::OnStartRequest", OTHER);
 
   nsCOMPtr<nsIRequest> baseRequest = GetBaseRequest(request);
   if (mRequests.IndexOfObject(baseRequest) == -1) {
@@ -659,7 +658,6 @@ nsPluginStreamListenerPeer::MakeByteRangeString(NPByteRange* aRangeList, nsACStr
 
   rangeRequest = string;
   *numRequests  = requestCnt;
-  return;
 }
 
 // XXX: Converting the channel within nsPluginStreamListenerPeer
@@ -777,7 +775,8 @@ nsPluginStreamListenerPeer::RequestRead(NPByteRange* rangeList)
   if (!httpChannel)
     return NS_ERROR_FAILURE;
 
-  httpChannel->SetRequestHeader(NS_LITERAL_CSTRING("Range"), rangeString, false);
+  rv = httpChannel->SetRequestHeader(NS_LITERAL_CSTRING("Range"), rangeString, false);
+  MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   mAbort = true; // instruct old stream listener to cancel
   // the request on the next ODA.
@@ -920,7 +919,7 @@ NS_IMETHODIMP nsPluginStreamListenerPeer::OnDataAvailable(nsIRequest *request,
   GetURL(&url);
 
   PLUGIN_LOG(PLUGIN_LOG_NOISY,
-             ("nsPluginStreamListenerPeer::OnDataAvailable this=%p request=%p, offset=%llu, length=%u, url=%s\n",
+             ("nsPluginStreamListenerPeer::OnDataAvailable this=%p request=%p, offset=%" PRIu64 ", length=%u, url=%s\n",
               this, request, sourceOffset, aLength, url ? url : "no url set"));
 
   // if the plugin has requested an AsFileOnly stream, then don't
@@ -1005,8 +1004,8 @@ NS_IMETHODIMP nsPluginStreamListenerPeer::OnStopRequest(nsIRequest *request,
   }
 
   PLUGIN_LOG(PLUGIN_LOG_NOISY,
-             ("nsPluginStreamListenerPeer::OnStopRequest this=%p aStatus=%d request=%p\n",
-              this, aStatus, request));
+             ("nsPluginStreamListenerPeer::OnStopRequest this=%p aStatus=%" PRIu32 " request=%p\n",
+              this, static_cast<uint32_t>(aStatus), request));
 
   // for ByteRangeRequest we're just updating the mDataForwardToRequest hash and return.
   nsCOMPtr<nsIByteRangeRequest> brr = do_QueryInterface(request);
@@ -1157,7 +1156,7 @@ nsresult nsPluginStreamListenerPeer::SetUpStreamListener(nsIRequest *request,
         uint32_t major, minor;
         if (NS_SUCCEEDED(httpChannelInternal->GetResponseVersion(&major,
                                                                  &minor))) {
-          ver = nsPrintfCString("/%lu.%lu", major, minor);
+          ver = nsPrintfCString("/%" PRIu32 ".%" PRIu32, major, minor);
         }
       }
 
@@ -1168,13 +1167,14 @@ nsresult nsPluginStreamListenerPeer::SetUpStreamListener(nsIRequest *request,
       }
 
       // Assemble everything and pass to listener.
-      nsPrintfCString status("HTTP%s %lu %s", ver.get(), statusNum,
+      nsPrintfCString status("HTTP%s %" PRIu32 " %s", ver.get(), statusNum,
                              statusText.get());
       static_cast<nsIHTTPHeaderListener*>(mPStreamListener)->StatusLine(status.get());
     }
 
     // Also provide all HTTP response headers to our listener.
-    httpChannel->VisitResponseHeaders(this);
+    rv = httpChannel->VisitResponseHeaders(this);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     mSeekable = false;
     // first we look for a content-encoding header. If we find one, we tell the

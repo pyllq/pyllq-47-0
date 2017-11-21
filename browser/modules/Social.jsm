@@ -27,8 +27,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "PageMetadata",
   "resource://gre/modules/PageMetadata.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
   "resource://gre/modules/PlacesUtils.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "Promise",
-  "resource://gre/modules/Promise.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PromiseUtils",
+  "resource://gre/modules/PromiseUtils.jsm");
 
 
 this.Social = {
@@ -39,7 +39,7 @@ this.Social = {
 
   init: function Social_init() {
     this._disabledForSafeMode = Services.appinfo.inSafeMode && this.enabled;
-    let deferred = Promise.defer();
+    let deferred = PromiseUtils.defer();
 
     if (this.initialized) {
       deferred.resolve(true);
@@ -101,7 +101,7 @@ this.Social = {
   // Called to update our cache of providers and set the current provider
   _updateProviderCache(providers) {
     this.providers = providers;
-    Services.obs.notifyObservers(null, "social:providers-changed", null);
+    Services.obs.notifyObservers(null, "social:providers-changed");
   },
 
   get enabled() {

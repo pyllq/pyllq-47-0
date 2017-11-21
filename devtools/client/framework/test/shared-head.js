@@ -19,6 +19,24 @@ function scopedCuImport(path) {
   return scope;
 }
 
+// There are shutdown issues for which multiple rejections are left uncaught.
+// This bug should be fixed, but for the moment devtools are whitelisted.
+//
+// NOTE: Entire directory whitelisting should be kept to a minimum. Normally you
+//       should use "expectUncaughtRejection" to flag individual failures.
+const {PromiseTestUtils} = scopedCuImport("resource://testing-common/PromiseTestUtils.jsm");
+PromiseTestUtils.whitelistRejectionsGlobally(/Component not initialized/);
+PromiseTestUtils.whitelistRejectionsGlobally(/Connection closed/);
+PromiseTestUtils.whitelistRejectionsGlobally(/destroy/);
+PromiseTestUtils.whitelistRejectionsGlobally(/File closed/);
+PromiseTestUtils.whitelistRejectionsGlobally(/is no longer, usable/);
+PromiseTestUtils.whitelistRejectionsGlobally(/NS_ERROR_FAILURE/);
+PromiseTestUtils.whitelistRejectionsGlobally(/this\._urls is null/);
+PromiseTestUtils.whitelistRejectionsGlobally(/this\.tabTarget is null/);
+PromiseTestUtils.whitelistRejectionsGlobally(/this\.toolbox is null/);
+PromiseTestUtils.whitelistRejectionsGlobally(/this\.webConsoleClient is null/);
+PromiseTestUtils.whitelistRejectionsGlobally(/this\.worker is null/);
+
 const {console} = scopedCuImport("resource://gre/modules/Console.jsm");
 const {ScratchpadManager} = scopedCuImport("resource://devtools/client/scratchpad/scratchpad-manager.jsm");
 const {loader, require} = scopedCuImport("resource://devtools/shared/Loader.jsm");
@@ -73,7 +91,7 @@ const ConsoleObserver = {
   }
 };
 
-Services.obs.addObserver(ConsoleObserver, "console-api-log-event", false);
+Services.obs.addObserver(ConsoleObserver, "console-api-log-event");
 registerCleanupFunction(() => {
   Services.obs.removeObserver(ConsoleObserver, "console-api-log-event");
 });
@@ -111,6 +129,7 @@ registerCleanupFunction(function* cleanup() {
  * @param {Object} options Object with various optional fields:
  *   - {Boolean} background If true, open the tab in background
  *   - {ChromeWindow} window Firefox top level window we should use to open the tab
+ *   - {Number} userContextId The userContextId of the tab.
  *   - {String} preferredRemoteType
  * @return a promise that resolves to the tab object when the url is loaded
  */
@@ -119,8 +138,10 @@ var addTab = Task.async(function* (url, options = { background: false, window: w
 
   let { background } = options;
   let { gBrowser } = options.window ? options.window : window;
+  let { userContextId } = options;
 
-  let tab = gBrowser.addTab(url, {preferredRemoteType: options.preferredRemoteType});
+  let tab = BrowserTestUtils.addTab(gBrowser, url,
+    {userContextId, preferredRemoteType: options.preferredRemoteType});
   if (!background) {
     gBrowser.selectedTab = tab;
   }
@@ -581,6 +602,8 @@ function loadTelemetryAndRecordLogs() {
       this.telemetryInfo[histogramId].push(value);
     }
   };
+  Telemetry.prototype._oldlogScalar = Telemetry.prototype.logScalar;
+  Telemetry.prototype.logScalar = Telemetry.prototype.log;
   Telemetry.prototype._oldlogKeyed = Telemetry.prototype.logKeyed;
   Telemetry.prototype.logKeyed = function (histogramId, key, value) {
     this.log(`${histogramId}|${key}`, value);
@@ -597,8 +620,10 @@ function loadTelemetryAndRecordLogs() {
 function stopRecordingTelemetryLogs(Telemetry) {
   info("Stopping Telemetry");
   Telemetry.prototype.log = Telemetry.prototype._oldlog;
+  Telemetry.prototype.logScalar = Telemetry.prototype._oldlogScalar;
   Telemetry.prototype.logKeyed = Telemetry.prototype._oldlogKeyed;
   delete Telemetry.prototype._oldlog;
+  delete Telemetry.prototype._oldlogScalar;
   delete Telemetry.prototype._oldlogKeyed;
   delete Telemetry.prototype.telemetryInfo;
 }

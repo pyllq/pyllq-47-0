@@ -17,6 +17,8 @@ from .generator import TaskGraphGenerator
 from .create import create_tasks
 from .parameters import Parameters
 from .taskgraph import TaskGraph
+from .actions import render_actions_json
+from . import GECKO
 
 from taskgraph.util.templates import Templates
 from taskgraph.util.time import (
@@ -27,20 +29,19 @@ from taskgraph.util.time import (
 logger = logging.getLogger(__name__)
 
 ARTIFACTS_DIR = 'artifacts'
-GECKO = os.path.realpath(os.path.join(__file__, '..', '..', '..'))
 
 # For each project, this gives a set of parameters specific to the project.
 # See `taskcluster/docs/parameters.rst` for information on parameters.
 PER_PROJECT_PARAMETERS = {
     'try': {
-        'target_tasks_method': 'try_option_syntax',
+        'target_tasks_method': 'try_tasks',
         # Always perform optimization.  This makes it difficult to use try
         # pushes to run a task that would otherwise be optimized, but is a
         # compromise to avoid essentially disabling optimization in try.
         'optimize_target_tasks': True,
         # By default, the `try_option_syntax` `target_task_method` ignores this
         # parameter, and enables/disables nightlies depending whether
-        # `--include-nightly` is specified in the commmit message.
+        # `--include-nightly` is specified in the commit message.
         # We're setting the `include_nightly` parameter to True here for when
         # we submit decision tasks against Try that use other
         # `target_task_method`s, like `nightly_fennec` or `mozilla_beta_tasks`,
@@ -71,10 +72,17 @@ PER_PROJECT_PARAMETERS = {
         'optimize_target_tasks': False,
         'include_nightly': True,
     },
+
     'mozilla-release': {
         'target_tasks_method': 'mozilla_release_tasks',
         'optimize_target_tasks': False,
         'include_nightly': True,
+    },
+
+    'pine': {
+        'target_tasks_method': 'pine_tasks',
+        'optimize_target_tasks': True,
+        'include_nightly': False,
     },
 
     # the default parameters are used for projects that do not match above.
@@ -110,6 +118,9 @@ def taskgraph_decision(options):
     # write out the yml file for action tasks
     write_artifact('action.yml', get_action_yml(parameters))
 
+    # write out the public/actions.json file
+    write_artifact('actions.json', render_actions_json(parameters))
+
     # write out the full graph for reference
     full_task_json = tgg.full_task_graph.to_json()
     write_artifact('full-task-graph.json', full_task_json)
@@ -122,11 +133,11 @@ def taskgraph_decision(options):
 
     # write out the optimized task graph to describe what will actually happen,
     # and the map of labels to taskids
-    write_artifact('task-graph.json', tgg.optimized_task_graph.to_json())
+    write_artifact('task-graph.json', tgg.morphed_task_graph.to_json())
     write_artifact('label-to-taskid.json', tgg.label_to_taskid)
 
     # actually create the graph
-    create_tasks(tgg.optimized_task_graph, tgg.label_to_taskid, parameters)
+    create_tasks(tgg.morphed_task_graph, tgg.label_to_taskid, parameters)
 
 
 def get_decision_parameters(options):
@@ -146,7 +157,6 @@ def get_decision_parameters(options):
         'pushdate',
         'owner',
         'level',
-        'triggered_by',
         'target_tasks_method',
     ] if n in options}
 

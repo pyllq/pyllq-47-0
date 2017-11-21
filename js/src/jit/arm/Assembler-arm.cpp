@@ -790,16 +790,16 @@ uintptr_t
 Assembler::GetPointer(uint8_t* instPtr)
 {
     InstructionIterator iter((Instruction*)instPtr);
-    uintptr_t ret = (uintptr_t)GetPtr32Target(&iter, nullptr, nullptr);
+    uintptr_t ret = (uintptr_t)GetPtr32Target(iter, nullptr, nullptr);
     return ret;
 }
 
 template<class Iter>
 const uint32_t*
-Assembler::GetPtr32Target(Iter* start, Register* dest, RelocStyle* style)
+Assembler::GetPtr32Target(Iter start, Register* dest, RelocStyle* style)
 {
-    Instruction* load1 = start->cur();
-    Instruction* load2 = start->next();
+    Instruction* load1 = start.cur();
+    Instruction* load2 = start.next();
 
     if (load1->is<InstMovW>() && load2->is<InstMovT>()) {
         if (style)
@@ -863,9 +863,8 @@ Assembler::TraceJumpRelocations(JSTracer* trc, JitCode* code, CompactBufferReade
 
 template <class Iter>
 static void
-TraceOneDataRelocation(JSTracer* trc, Iter* iter)
+TraceOneDataRelocation(JSTracer* trc, Iter iter)
 {
-    Instruction* ins = iter->cur();
     Register dest;
     Assembler::RelocStyle rs;
     const void* prior = Assembler::GetPtr32Target(iter, &dest, &rs);
@@ -876,12 +875,12 @@ TraceOneDataRelocation(JSTracer* trc, Iter* iter)
                                              "ion-masm-ptr");
 
     if (ptr != prior) {
-        MacroAssemblerARM::ma_mov_patch(Imm32(int32_t(ptr)), dest, Assembler::Always, rs, ins);
+        MacroAssemblerARM::ma_mov_patch(Imm32(int32_t(ptr)), dest, Assembler::Always, rs, iter);
 
         // L_LDR won't cause any instructions to be updated.
         if (rs != Assembler::L_LDR) {
-            AutoFlushICache::flush(uintptr_t(ins), 4);
-            AutoFlushICache::flush(uintptr_t(ins->next()), 4);
+            AutoFlushICache::flush(uintptr_t(iter.cur()), 4);
+            AutoFlushICache::flush(uintptr_t(iter.next()), 4);
         }
     }
 }
@@ -892,7 +891,7 @@ TraceDataRelocations(JSTracer* trc, uint8_t* buffer, CompactBufferReader& reader
     while (reader.more()) {
         size_t offset = reader.readUnsigned();
         InstructionIterator iter((Instruction*)(buffer + offset));
-        TraceOneDataRelocation(trc, &iter);
+        TraceOneDataRelocation(trc, iter);
     }
 }
 
@@ -901,8 +900,8 @@ TraceDataRelocations(JSTracer* trc, ARMBuffer* buffer, CompactBufferReader& read
 {
     while (reader.more()) {
         BufferOffset offset(reader.readUnsigned());
-        ARMBuffer::AssemblerBufferInstIterator iter(offset, buffer);
-        TraceOneDataRelocation(trc, &iter);
+        BufferInstructionIterator iter(offset, buffer);
+        TraceOneDataRelocation(trc, iter);
     }
 }
 
@@ -924,13 +923,6 @@ Assembler::copyDataRelocationTable(uint8_t* dest)
 {
     if (dataRelocations_.length())
         memcpy(dest, dataRelocations_.buffer(), dataRelocations_.length());
-}
-
-void
-Assembler::copyPreBarrierTable(uint8_t* dest)
-{
-    if (preBarriers_.length())
-        memcpy(dest, preBarriers_.buffer(), preBarriers_.length());
 }
 
 void
@@ -1399,8 +1391,7 @@ Assembler::oom() const
     return AssemblerShared::oom() ||
            m_buffer.oom() ||
            jumpRelocations_.oom() ||
-           dataRelocations_.oom() ||
-           preBarriers_.oom();
+           dataRelocations_.oom();
 }
 
 // Size of the instruction stream, in bytes. Including pools. This function
@@ -1423,20 +1414,13 @@ Assembler::dataRelocationTableBytes() const
     return dataRelocations_.length();
 }
 
-size_t
-Assembler::preBarrierTableBytes() const
-{
-    return preBarriers_.length();
-}
-
 // Size of the data table, in bytes.
 size_t
 Assembler::bytesNeeded() const
 {
     return size() +
         jumpRelocationTableBytes() +
-        dataRelocationTableBytes() +
-        preBarrierTableBytes();
+        dataRelocationTableBytes();
 }
 
 #ifdef JS_DISASM_ARM
@@ -1674,34 +1658,13 @@ Assembler::SpewNodes::remove(uint32_t key)
 
 #endif // JS_DISASM_ARM
 
-// Write a blob of binary into the instruction stream.
-BufferOffset
-Assembler::writeInst(uint32_t x)
-{
-    BufferOffset offs = m_buffer.putInt(x);
-#ifdef JS_DISASM_ARM
-    spew(m_buffer.getInstOrNull(offs));
-#endif
-    return offs;
-}
-
-BufferOffset
-Assembler::writeBranchInst(uint32_t x, Label* documentation)
-{
-    BufferOffset offs = m_buffer.putInt(x, /* markAsBranch = */ true);
-#ifdef JS_DISASM_ARM
-    spewBranch(m_buffer.getInstOrNull(offs), documentation);
-#endif
-    return offs;
-}
-
 // Allocate memory for a branch instruction, it will be overwritten
 // subsequently and should not be disassembled.
 
 BufferOffset
 Assembler::allocBranchInst()
 {
-    return m_buffer.putInt(Always | InstNOP::NopInst, /* markAsBranch = */ true);
+    return m_buffer.putInt(Always | InstNOP::NopInst);
 }
 
 void
@@ -1846,7 +1809,7 @@ Assembler::as_tst(Register src1, Operand2 op2, Condition c)
     return as_alu(InvalidReg, src1, op2, OpTst, SetCC, c);
 }
 
-static constexpr Register NoAddend = { Registers::pc };
+static constexpr Register NoAddend { Registers::pc };
 
 static const int SignExtend = 0x06000070;
 
@@ -2155,17 +2118,12 @@ Assembler::as_dtm(LoadStore ls, Register rn, uint32_t mask,
     return writeInst(0x08000000 | RN(rn) | ls | mode | mask | c | wb);
 }
 
-// Note, it's possible for markAsBranch and loadToPC to disagree,
-// because some loads to the PC are not necessarily encoding
-// instructions that should be marked as branches: only patchable
-// near branch instructions should be marked.
-
 BufferOffset
 Assembler::allocEntry(size_t numInst, unsigned numPoolEntries,
                       uint8_t* inst, uint8_t* data, ARMBuffer::PoolEntry* pe,
-                      bool markAsBranch, bool loadToPC)
+                      bool loadToPC)
 {
-    BufferOffset offs = m_buffer.allocEntry(numInst, numPoolEntries, inst, data, pe, markAsBranch);
+    BufferOffset offs = m_buffer.allocEntry(numInst, numPoolEntries, inst, data, pe);
     propagateOOM(offs.assigned());
 #ifdef JS_DISASM_ARM
     spewData(offs, numInst, loadToPC);
@@ -2181,8 +2139,7 @@ Assembler::as_Imm32Pool(Register dest, uint32_t value, Condition c)
 {
     PoolHintPun php;
     php.phd.init(0, c, PoolHintData::PoolDTR, dest);
-    BufferOffset offs = allocEntry(1, 1, (uint8_t*)&php.raw, (uint8_t*)&value, nullptr, false,
-                                   dest == pc);
+    BufferOffset offs = allocEntry(1, 1, (uint8_t*)&php.raw, (uint8_t*)&value, nullptr, dest == pc);
     return offs;
 }
 
@@ -2201,7 +2158,7 @@ Assembler::as_BranchPool(uint32_t value, RepatchLabel* label, ARMBuffer::PoolEnt
     PoolHintPun php;
     php.phd.init(0, c, PoolHintData::PoolBranch, pc);
     BufferOffset ret = allocEntry(1, 1, (uint8_t*)&php.raw, (uint8_t*)&value, pe,
-                                  /* markAsBranch = */ true, /* loadToPC = */ true);
+                                  /* loadToPC = */ true);
     // If this label is already bound, then immediately replace the stub load
     // with a correct branch.
     if (label->bound()) {
@@ -3166,14 +3123,14 @@ Assembler::PatchDataWithValueCheck(CodeLocationLabel label, PatchedImmPtr newVal
                                    PatchedImmPtr expectedValue)
 {
     Instruction* ptr = reinterpret_cast<Instruction*>(label.raw());
-    InstructionIterator iter(ptr);
+
     Register dest;
     Assembler::RelocStyle rs;
-
-    DebugOnly<const uint32_t*> val = GetPtr32Target(&iter, &dest, &rs);
+    DebugOnly<const uint32_t*> val = GetPtr32Target(InstructionIterator(ptr), &dest, &rs);
     MOZ_ASSERT(uint32_t((const uint32_t*)val) == uint32_t(expectedValue.value));
 
-    MacroAssembler::ma_mov_patch(Imm32(int32_t(newValue.value)), dest, Always, rs, ptr);
+    MacroAssembler::ma_mov_patch(Imm32(int32_t(newValue.value)), dest, Always, rs,
+                                 InstructionIterator(ptr));
 
     // L_LDR won't cause any instructions to be updated.
     if (rs != L_LDR) {
@@ -3227,6 +3184,20 @@ InstIsGuard(Instruction* inst, const PoolHeader** ph)
 }
 
 static bool
+InstIsGuard(BufferInstructionIterator& iter, const PoolHeader** ph)
+{
+    Instruction* inst = iter.cur();
+    Assembler::Condition c = inst->extractCond();
+    if (c != Assembler::Always)
+        return false;
+    if (!(inst->is<InstBXReg>() || inst->is<InstBImm>()))
+        return false;
+    // See if the next instruction is a pool header.
+    *ph = iter.peek()->as<const PoolHeader>();
+    return *ph != nullptr;
+}
+
+static bool
 InstIsBNop(Instruction* inst)
 {
     // In some special situations, it is necessary to insert a NOP into the
@@ -3269,6 +3240,28 @@ Instruction::skipPool()
     if (InstIsBNop(this))
         return (this + 1)->skipPool();
     return this;
+}
+
+void
+BufferInstructionIterator::skipPool()
+{
+    // If this is a guard, and the next instruction is a header, always work
+    // around the pool. If it isn't a guard, then start looking ahead.
+
+    const PoolHeader* ph;
+    if (InstIsGuard(*this, &ph)) {
+        // Don't skip a natural guard.
+        if (ph->isNatural())
+            return;
+        advance(sizeof(Instruction) * (1 + ph->size()));
+        skipPool();
+        return;
+    }
+
+    if (InstIsBNop(cur())) {
+        next();
+        skipPool();
+    }
 }
 
 // Cases to be handled:
@@ -3412,13 +3405,6 @@ Assembler::BailoutTableStart(uint8_t* code)
     inst = inst->skipPool();
     MOZ_ASSERT(inst->is<InstBLImm>());
     return (uint8_t*) inst;
-}
-
-InstructionIterator::InstructionIterator(Instruction* i_)
-  : i(i_)
-{
-    // Work around pools with an artificial pool guard and around nop-fill.
-    i = i->skipPool();
 }
 
 uint32_t Assembler::NopFill = 0;

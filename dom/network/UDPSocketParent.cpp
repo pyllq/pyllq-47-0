@@ -141,7 +141,8 @@ UDPSocketParent::BindInternal(const nsCString& aHost, const uint16_t& aPort,
 {
   nsresult rv;
 
-  UDPSOCKET_LOG(("%s: [this=%p] %s:%u addressReuse: %d loopback: %d recvBufferSize: %lu, sendBufferSize: %lu",
+  UDPSOCKET_LOG(("%s: [this=%p] %s:%u addressReuse: %d loopback: %d recvBufferSize: %"
+                 PRIu32 ", sendBufferSize: %" PRIu32,
                 __FUNCTION__, this, nsCString(aHost).get(), aPort,
                 aAddressReuse, aLoopback, recvBufferSize, sendBufferSize));
 
@@ -193,13 +194,13 @@ UDPSocketParent::BindInternal(const nsCString& aHost, const uint16_t& aPort,
   if (recvBufferSize != 0) {
     rv = sock->SetRecvBufferSize(recvBufferSize);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      UDPSOCKET_LOG(("%s: [this=%p] %s:%u failed to set recv buffer size to: %lu", __FUNCTION__, this, nsCString(aHost).get(), aPort, recvBufferSize));
+      UDPSOCKET_LOG(("%s: [this=%p] %s:%u failed to set recv buffer size to: %" PRIu32, __FUNCTION__, this, nsCString(aHost).get(), aPort, recvBufferSize));
     }
   }
   if (sendBufferSize != 0) {
     rv = sock->SetSendBufferSize(sendBufferSize);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      UDPSOCKET_LOG(("%s: [this=%p] %s:%u failed to set send buffer size to: %lu", __FUNCTION__, this, nsCString(aHost).get(), aPort, sendBufferSize));
+      UDPSOCKET_LOG(("%s: [this=%p] %s:%u failed to set send buffer size to: %" PRIu32, __FUNCTION__, this, nsCString(aHost).get(), aPort, sendBufferSize));
     }
   }
 
@@ -240,13 +241,13 @@ static void CheckSTSThread()
 mozilla::ipc::IPCResult
 UDPSocketParent::RecvConnect(const UDPAddressInfo& aAddressInfo)
 {
-  nsCOMPtr<nsIEventTarget> thread(NS_GetCurrentThread());
+  nsCOMPtr<nsIEventTarget> target = GetCurrentThreadEventTarget();
   Unused <<
     NS_WARN_IF(NS_FAILED(GetSTSThread()->Dispatch(WrapRunnable(
                                                     RefPtr<UDPSocketParent>(this),
                                                     &UDPSocketParent::DoConnect,
                                                     mSocket,
-                                                    thread,
+                                                    target,
                                                     aAddressInfo),
                                                   NS_DISPATCH_NORMAL)));
   return IPC_OK();
@@ -315,6 +316,7 @@ UDPSocketParent::ConnectInternal(const nsCString& aHost, const uint16_t& aPort)
   }
 
   PRNetAddr prAddr;
+  memset(&prAddr, 0, sizeof(prAddr));
   PR_InitializeNetAddr(PR_IpAddrAny, aPort, &prAddr);
   PRStatus status = PR_StringToNetAddr(aHost.BeginReading(), &prAddr);
   if (status != PR_SUCCESS) {
@@ -369,8 +371,8 @@ UDPSocketParent::RecvOutgoingData(const UDPData& aData,
     case UDPData::TArrayOfuint8_t:
       Send(aData.get_ArrayOfuint8_t(), aAddr);
       break;
-    case UDPData::TInputStreamParams:
-      Send(aData.get_InputStreamParams(), aAddr);
+    case UDPData::TIPCStream:
+      Send(aData.get_IPCStream(), aAddr);
       break;
     default:
       MOZ_ASSERT(false, "Invalid data type!");
@@ -410,11 +412,10 @@ UDPSocketParent::Send(const InfallibleTArray<uint8_t>& aData,
 }
 
 void
-UDPSocketParent::Send(const InputStreamParams& aStream,
+UDPSocketParent::Send(const IPCStream& aStream,
                       const UDPSocketAddr& aAddr)
 {
-  nsTArray<mozilla::ipc::FileDescriptor> fds;
-  nsCOMPtr<nsIInputStream> stream = DeserializeInputStream(aStream, fds);
+  nsCOMPtr<nsIInputStream> stream = DeserializeIPCStream(aStream);
 
   if (NS_WARN_IF(!stream)) {
     return;

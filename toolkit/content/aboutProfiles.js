@@ -54,7 +54,7 @@ function findCurrentProfile() {
 function refreshUI() {
   let parent = document.getElementById("profiles");
   while (parent.firstChild) {
-    parent.removeChild(parent.firstChild);
+    parent.firstChild.remove();
   }
 
   let defaultProfile;
@@ -249,7 +249,7 @@ function removeProfile(profile) {
                           bundle.GetStringFromName("dontDeleteFiles"),
                           null,
                           bundle.GetStringFromName("deleteFiles"),
-                          null, {value:0});
+                          null, {value: 0});
     if (buttonPressed == 1) {
       return;
     }
@@ -333,7 +333,6 @@ function restart(safeMode) {
   }
 }
 
-window.addEventListener("DOMContentLoaded", function load() {
-  window.removeEventListener("DOMContentLoaded", load);
+window.addEventListener("DOMContentLoaded", function() {
   refreshUI();
-});
+}, {once: true});

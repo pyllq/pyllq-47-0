@@ -33,7 +33,6 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "ds/PageProtectingVector.h"
 #include "jit/ExecutableAllocator.h"
 #include "jit/JitSpewer.h"
 
@@ -126,44 +125,16 @@ namespace jit {
             return m_oom;
         }
 
-#ifndef RELEASE_OR_BETA
-        const unsigned char* acquireBuffer() const
-        {
-            MOZ_RELEASE_ASSERT(!m_oom);
-            return m_buffer.acquire();
-        }
-        void releaseBuffer() const { m_buffer.release(); }
-        unsigned char* acquireData() { return m_buffer.acquire(); }
-        void releaseData() const { m_buffer.release(); }
-        void disableProtection() { m_buffer.disableProtection(); }
-        void enableProtection() { m_buffer.enableProtection(); }
-        void setLowerBoundForProtection(size_t size)
-        {
-            m_buffer.setLowerBoundForProtection(size);
-        }
-        void unprotectRegion(unsigned char* first, size_t size)
-        {
-            m_buffer.unprotectRegion(first, size);
-        }
-        void reprotectRegion(unsigned char* first, size_t size)
-        {
-            m_buffer.reprotectRegion(first, size);
-        }
-#else
-        const unsigned char* acquireBuffer() const
+        const unsigned char* buffer() const
         {
             MOZ_RELEASE_ASSERT(!m_oom);
             return m_buffer.begin();
         }
-        void releaseBuffer() const {}
-        unsigned char* acquireData() { return m_buffer.begin(); }
-        void releaseData() const {}
-        void disableProtection() {}
-        void enableProtection() {}
-        void setLowerBoundForProtection(size_t) {}
-        void unprotectRegion(unsigned char*, size_t) {}
-        void reprotectRegion(unsigned char*, size_t) {}
-#endif
+
+        unsigned char* data()
+        {
+            return m_buffer.begin();
+        }
 
     protected:
         /*
@@ -180,37 +151,38 @@ namespace jit {
          *
          * See also the |buffer| method.
          */
-        void oomDetected() {
+        void oomDetected()
+        {
             m_oom = true;
             m_buffer.clear();
         }
 
-#ifndef RELEASE_OR_BETA
-        PageProtectingVector<unsigned char, 256, ProtectedReallocPolicy,
-                             /* ProtectUsed = */ false, /* ProtectUnused = */ false,
-                             /* GuardAgainstReentrancy = */ true, /* DetectPoison = */ true,
-                             /* InitialLowerBound = */ 32 * 1024> m_buffer;
-#else
         mozilla::Vector<unsigned char, 256, SystemAllocPolicy> m_buffer;
-#endif
         bool m_oom;
     };
 
     class GenericAssembler
     {
+#ifdef JS_JITSPEW
         Sprinter* printer;
-
+#endif
       public:
 
         GenericAssembler()
-          : printer(NULL)
+#ifdef JS_JITSPEW
+          : printer(nullptr)
+#endif
         {}
 
-        void setPrinter(Sprinter* sp) {
+        void setPrinter(Sprinter* sp)
+        {
+#ifdef JS_JITSPEW
             printer = sp;
+#endif
         }
 
-        void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3)
+#ifdef JS_JITSPEW
+        inline void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3)
         {
             if (MOZ_UNLIKELY(printer || JitSpewEnabled(JitSpew_Codegen))) {
                 va_list va;
@@ -219,8 +191,14 @@ namespace jit {
                 va_end(va);
             }
         }
+#else
+        MOZ_ALWAYS_INLINE void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3)
+        { }
+#endif
 
-        MOZ_COLD void spew(const char* fmt, va_list va);
+#ifdef JS_JITSPEW
+        MOZ_COLD void spew(const char* fmt, va_list va) MOZ_FORMAT_PRINTF(2, 0);
+#endif
     };
 
 } // namespace jit

@@ -166,7 +166,9 @@ textarea > scrollbar {
 textarea > .anonymous-div,
 input > .anonymous-div,
 input::placeholder,
-textarea::placeholder {
+textarea::placeholder,
+input > .preview-div
+textarea > .preview-div {
   overflow: auto;
   border: 0px !important;
   padding: inherit !important;
@@ -182,7 +184,8 @@ textarea::placeholder {
 }
 
 input > .anonymous-div,
-input::placeholder {
+input::placeholder,
+input > .preview-div {
   white-space: pre;
 }
 
@@ -199,7 +202,9 @@ input > .anonymous-div.inherit-scroll-behavior {
 }
 
 input::placeholder,
-textarea::placeholder {
+textarea::placeholder,
+input > .preview-div,
+textarea > .preview-div {
   /*
    * Changing display to inline can leads to broken behaviour and will assert.
    */
@@ -213,15 +218,19 @@ textarea::placeholder {
   overflow: hidden !important;
 
   /*
-   * The placeholder should be ignored by pointer otherwise, we might have some
+   * The placeholder or preview should be ignored by pointer otherwise, we might have some
    * unexpected behavior like the resize handle not being selectable.
    */
   pointer-events: none !important;
+}
 
+input::placeholder,
+textarea::placeholder {
   opacity: 0.54;
 }
 
-textarea::placeholder {
+textarea::placeholder,
+textarea > .preview-div {
   white-space: pre-wrap !important;
 }
 
@@ -546,25 +555,62 @@ input[type="file"]:dir(rtl) > xul|label {
 
 /* radio buttons */
 input[type="radio"] {
+  display: inline-block;
   -moz-appearance: radio;
   margin-block-start: 3px;
   margin-block-end: 0px;
   margin-inline-start: 5px;
   margin-inline-end: 3px;
-  border-radius: 100% !important;
 }
 
 /* check boxes */
 input[type="checkbox"] {
+  display: inline-block;
   -moz-appearance: checkbox;
   margin-block-start: 3px;
   margin-block-end: 3px;
   margin-inline-start: 4px;
   margin-inline-end: 3px;
-  border-radius: 0 !important;
 }
 
 /* common features of radio buttons and check boxes */
+
+input[type="radio"],
+input[type="checkbox"] {
+  box-sizing: border-box;
+  cursor: default;
+  /* unset some values from the general 'input' rule above: */
+  padding: unset;
+  -moz-binding: unset;
+  border: unset;
+  background-color: unset;
+  color: unset;
+}
+
+input[type="radio"]:disabled,
+input[type="radio"]:disabled:active,
+input[type="radio"]:disabled:hover,
+input[type="radio"]:disabled:hover:active,
+input[type="checkbox"]:disabled,
+input[type="checkbox"]:disabled:active,
+input[type="checkbox"]:disabled:hover,
+input[type="checkbox"]:disabled:hover:active {
+  cursor: inherit;
+}
+
+%if defined(MOZ_WIDGET_ANDROID)
+/*
+ * These platforms doesn't have any theming support and thus -moz-appearance:none
+ * is the same as any other appearance value.
+ * XXX This is not web-compatible and should be fixed.
+ */
+input[type="radio"] {
+  border-radius: 100%;
+}
+
+input[type="checkbox"] {
+  border-radius: 0;
+}
 
 /* NOTE: The width, height, border-width, and padding here must all
    add up the way nsFormControlFrame::GetIntrinsic(Width|Height)
@@ -573,16 +619,12 @@ input[type="checkbox"] {
    (Should we maybe set !important on width and height, then?)  */
 input[type="radio"],
 input[type="checkbox"] {
-  box-sizing: border-box;
   inline-size: 13px;
   block-size: 13px;
-  cursor: default;
-  padding: 0 !important;
-  -moz-binding: none;
-  /* same colors as |input| rule, but |!important| this time. */
-  background-color: -moz-Field ! important;
-  color: -moz-FieldText ! important;
-  border: 2px inset ThreeDLightShadow ! important;
+  color: -moz-FieldText;
+  border: 2px inset ThreeDLightShadow;
+  background-repeat: no-repeat;
+  background-position: center;
 }
 
 input[type="radio"]:disabled,
@@ -594,12 +636,16 @@ input[type="checkbox"]:disabled:active,
 input[type="checkbox"]:disabled:hover,
 input[type="checkbox"]:disabled:hover:active {
   padding: 1px;
-  border: 1px inset ThreeDShadow ! important;
-  /* same as above, but !important */
-  color: GrayText ! important;
-  background-color: ThreeDFace ! important;
-  cursor: inherit;
+  border: 1px inset ThreeDShadow;
 }
+
+input[type="checkbox"]:hover:active,
+input[type="radio"]:hover:active {
+  background-color: ThreeDFace ! important;
+  border-style: inset !important;
+}
+
+%endif /* defined(MOZ_WIDGET_ANDROID) */
 
 % On Mac, the native theme takes care of this.
 % See nsNativeThemeCocoa::ThemeDrawsFocusForWidget.
@@ -610,12 +656,6 @@ input[type="radio"]:-moz-focusring {
   outline: 1px dotted;
 }
 %endif
-
-input[type="checkbox"]:hover:active,
-input[type="radio"]:hover:active {
-  background-color: ThreeDFace ! important;
-  border-style: inset !important;
-}
 
 input[type="search"] {
   box-sizing: border-box;
@@ -1109,6 +1149,7 @@ input[type=number]::-moz-number-spin-box {
 }
 
 input[type=number]::-moz-number-spin-up {
+  writing-mode: horizontal-tb;
   -moz-appearance: spinner-upbutton;
   display: block; /* bug 926670 */
   flex: none;
@@ -1126,6 +1167,7 @@ input[type=number]::-moz-number-spin-up {
 }
 
 input[type=number]::-moz-number-spin-down {
+  writing-mode: horizontal-tb;
   -moz-appearance: spinner-downbutton;
   display: block; /* bug 926670 */
   flex: none;
@@ -1143,4 +1185,16 @@ input[type=number]::-moz-number-spin-down {
 input[type="number"] > div > div > div:hover {
   /* give some indication of hover state for the up/down buttons */
   background-color: lightblue;
+}
+
+input[type="date"],
+input[type="time"] {
+  overflow: hidden !important;
+}
+
+:-moz-autofill, :-moz-autofill-preview {
+  filter: grayscale(21%) brightness(88%) contrast(161%) invert(10%) sepia(40%) saturate(206%);
+}
+:-moz-autofill-preview {
+  color: GrayText;
 }

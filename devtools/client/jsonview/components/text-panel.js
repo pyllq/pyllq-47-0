@@ -9,8 +9,7 @@
 define(function (require, exports, module) {
   const { DOM: dom, createFactory, createClass, PropTypes } = require("devtools/client/shared/vendor/react");
 
-  // we'll need to make load-reps define friendly aka UMD
-  const { createFactories } = require("devtools/client/shared/components/reps/load-reps");
+  const { createFactories } = require("devtools/client/shared/react-utils");
   const { Toolbar, ToolbarButton } = createFactories(require("./reps/toolbar"));
   const { div, pre } = dom;
 
@@ -32,7 +31,7 @@ define(function (require, exports, module) {
 
     render: function () {
       return (
-        div({className: "textPanelBox"},
+        div({className: "textPanelBox tab-panel-inner"},
           TextToolbar({actions: this.props.actions}),
           div({className: "panelContent"},
             pre({className: "data"},
@@ -75,17 +74,17 @@ define(function (require, exports, module) {
           ToolbarButton({
             className: "btn save",
             onClick: this.onSave},
-            Locale.$STR("jsonViewer.Save")
+            JSONView.Locale.$STR("jsonViewer.Save")
           ),
           ToolbarButton({
             className: "btn copy",
             onClick: this.onCopy},
-            Locale.$STR("jsonViewer.Copy")
+            JSONView.Locale.$STR("jsonViewer.Copy")
           ),
           ToolbarButton({
             className: "btn prettyprint",
             onClick: this.onPrettify},
-            Locale.$STR("jsonViewer.PrettyPrint")
+            JSONView.Locale.$STR("jsonViewer.PrettyPrint")
           )
         )
       );

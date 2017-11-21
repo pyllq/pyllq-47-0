@@ -7,6 +7,9 @@ package org.mozilla.gecko.home;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
+import android.support.annotation.DrawableRes;
+import android.support.v4.content.ContextCompat;
 import android.support.v4.widget.TextViewCompat;
 import android.text.TextUtils;
 import android.util.AttributeSet;
@@ -22,6 +25,7 @@ import org.mozilla.gecko.db.BrowserContract.TopSites;
 import org.mozilla.gecko.icons.IconCallback;
 import org.mozilla.gecko.icons.IconResponse;
 import org.mozilla.gecko.icons.Icons;
+import org.mozilla.gecko.util.DrawableUtil;
 
 import java.util.concurrent.Future;
 
@@ -145,8 +149,7 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
         updateTitleView();
         cancelIconLoading();
         ImageLoader.with(getContext()).cancelRequest(mThumbnailView);
-        displayThumbnail(R.drawable.top_site_add);
-
+        displayThumbnail(R.drawable.top_site_add, ContextCompat.getColor(getContext(), R.color.about_page_header_grey));
     }
 
     public void markAsDirty() {
@@ -161,7 +164,6 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
      * Returns true if any fields changed.
      */
     public boolean updateState(final String title, final String url, final int type, final TopSitesPanel.ThumbnailInfo thumbnail) {
-        Log.v(LOGTAG,"updateState:"+url);
         boolean changed = false;
         if (mUrl == null || !mUrl.equals(url)) {
             mUrl = url;
@@ -225,11 +227,13 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
      * Display the thumbnail from a resource.
      *
      * @param resId Resource ID of the drawable to show.
+     * @param bgColor background color
      */
-    public void displayThumbnail(int resId) {
+    public void displayThumbnail(@DrawableRes int resId, int bgColor) {
         mThumbnailView.setScaleType(SCALE_TYPE_RESOURCE);
         mThumbnailView.setImageResource(resId);
-        mThumbnailView.setBackgroundColor(0x0);
+        mThumbnailView.setBackgroundColor(bgColor);
+        mThumbnailView.setDrawDefaultBorder(true);
         mThumbnailSet = false;
     }
 
@@ -239,10 +243,7 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
      * @param thumbnail The bitmap to show as thumbnail.
      */
     public void displayThumbnail(Bitmap thumbnail) {
-        Log.v(LOGTAG,"displayThumbnail(bitmap)");
         if (thumbnail == null) {
-            // Show a favicon based view instead.
-            //displayThumbnail(THUMBNAIL_DEFAULT_FAVICON_ID);
             return;
         }
 
@@ -254,6 +255,7 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
         mThumbnailView.setScaleType(SCALE_TYPE_THUMBNAIL);
         mThumbnailView.setImageBitmap(thumbnail, true);
         mThumbnailView.setBackgroundDrawable(null);
+        mThumbnailView.setDrawDefaultBorder(true);
     }
 
     /**
@@ -265,6 +267,7 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
     public void displayThumbnail(final String imageUrl, final int bgColor) {
         mThumbnailView.setScaleType(SCALE_TYPE_URL);
         mThumbnailView.setBackgroundColor(bgColor);
+        mThumbnailView.setDrawDefaultBorder(false);
         mThumbnailSet = true;
 
         ImageLoader.with(getContext())
@@ -286,8 +289,13 @@ public class TopSitesGridItemView extends RelativeLayout implements IconCallback
         mType = type;
         refreshDrawableState();
 
-        int pinResourceId = (type == TopSites.TYPE_PINNED ? R.drawable.pin : 0);
-        TextViewCompat.setCompoundDrawablesRelativeWithIntrinsicBounds(mTitleView, pinResourceId, 0, 0, 0);
+        final Drawable pinDrawable;
+        if (type == TopSites.TYPE_PINNED) {
+            pinDrawable = DrawableUtil.tintDrawable(getContext(), R.drawable.as_pin, getResources().getColor(R.color.placeholder_grey));
+        } else {
+            pinDrawable = null;
+        }
+        TextViewCompat.setCompoundDrawablesRelativeWithIntrinsicBounds(mTitleView, pinDrawable, null, null, null);
 
         return true;
     }

@@ -122,12 +122,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             "default": False,
             "help": "Run tests with multiple processes."}
          ],
-        [['--strict-content-sandbox', ], {
-            "action": "store_true",
-            "dest": "strict_content_sandbox",
-            "default": False,
-            "help": "Run tests with a more strict content sandbox (Windows only)."}
-         ],
         [['--no-random', ], {
             "action": "store_true",
             "dest": "no_random",
@@ -149,6 +143,24 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             "dest": "allow_software_gl_layers",
             "default": False,
             "help": "Permits a software GL implementation (such as LLVMPipe) to use the GL compositor."}
+         ],
+        [["--single-stylo-traversal"], {
+            "action": "store_true",
+            "dest": "single_stylo_traversal",
+            "default": False,
+            "help": "Forcibly enable single thread traversal in Stylo with STYLO_THREADS=1"}
+         ],
+        [["--enable-stylo"], {
+            "action": "store_true",
+            "dest": "enable_stylo",
+            "default": False,
+            "help": "Run tests with Stylo enabled"}
+         ],
+        [["--enable-webrender"], {
+            "action": "store_true",
+            "dest": "enable_webrender",
+            "default": False,
+            "help": "Tries to enable the WebRender compositor."}
          ],
     ] + copy.deepcopy(testing_config_options) + \
         copy.deepcopy(blobupload_config_options) + \
@@ -210,6 +222,9 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
         if c['e10s']:
             perfherder_options.append('e10s')
 
+        if c['enable_stylo']:
+            perfherder_options.append('stylo')
+
         self.resource_monitor_perfherder_id = ('.'.join(perfherder_parts),
                                                perfherder_options)
 
@@ -235,6 +250,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
 
         c = self.config
         dirs = {}
+        dirs['abs_work_dir'] = abs_dirs['abs_work_dir']
         dirs['abs_app_install_dir'] = os.path.join(abs_dirs['abs_work_dir'], 'application')
         dirs['abs_test_install_dir'] = os.path.join(abs_dirs['abs_work_dir'], 'tests')
         dirs['abs_test_extensions_dir'] = os.path.join(dirs['abs_test_install_dir'], 'extensions')
@@ -307,7 +323,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
                     'config',
                     'marionette_requirements.txt')]
 
-        if os.path.isdir(dirs['abs_mochitest_dir']):
+        if self._query_specified_suites('mochitest') is not None:
             # mochitest is the only thing that needs this
             requirements_files.append(
                 os.path.join(dirs['abs_mochitest_dir'],
@@ -358,6 +374,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             str_format_values = {
                 'binary_path': self.binary_path,
                 'symbols_path': self._query_symbols_url(),
+                'abs_work_dir' : dirs['abs_work_dir'],
                 'abs_app_dir': abs_app_dir,
                 'abs_res_dir': abs_res_dir,
                 'raw_log_file': raw_log_file,
@@ -376,12 +393,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             elif suite_category not in SUITE_DEFAULT_E10S and c['e10s']:
                 base_cmd.append('--e10s')
 
-            if c.get('strict_content_sandbox'):
-                if suite_category == "mochitest":
-                    base_cmd.append('--strict-content-sandbox')
-                else:
-                    self.fatal("--strict-content-sandbox only works with mochitest suites.")
-
             if c.get('total_chunks') and c.get('this_chunk'):
                 base_cmd.extend(['--total-chunks', c['total_chunks'],
                                  '--this-chunk', c['this_chunk']])
@@ -399,7 +410,8 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             if suite_category not in c["suite_definitions"]:
                 self.fatal("'%s' not defined in the config!")
 
-            if suite in ('browser-chrome-coverage', 'xpcshell-coverage', 'mochitest-devtools-chrome-coverage'):
+            if suite in ('browser-chrome-coverage', 'xpcshell-coverage',
+                         'mochitest-devtools-chrome-coverage', 'plain-chunked-coverage'):
                 base_cmd.append('--jscov-dir-prefix=%s' %
                                 dirs['abs_blob_upload_dir'])
 
@@ -697,11 +709,21 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
                     env['MOZ_NODE_PATH'] = self.nodejs_path
                 env['MOZ_UPLOAD_DIR'] = self.query_abs_dirs()['abs_blob_upload_dir']
                 env['MINIDUMP_SAVE_PATH'] = self.query_abs_dirs()['abs_blob_upload_dir']
+                env['RUST_BACKTRACE'] = '1'
                 if not os.path.isdir(env['MOZ_UPLOAD_DIR']):
                     self.mkdir_p(env['MOZ_UPLOAD_DIR'])
 
                 if self.config['allow_software_gl_layers']:
                     env['MOZ_LAYERS_ALLOW_SOFTWARE_GL'] = '1'
+                if self.config['enable_webrender']:
+                    env['MOZ_WEBRENDER'] = '1'
+
+                if self.config['single_stylo_traversal']:
+                    env['STYLO_THREADS'] = '1'
+                else:
+                    env['STYLO_THREADS'] = '4'
+                if self.config['enable_stylo']:
+                    env['STYLO_FORCE_ENABLED'] = '1'
 
                 env = self.query_env(partial_env=env, log_level=INFO)
                 cmd_timeout = self.get_timeout_for_category(suite_category)

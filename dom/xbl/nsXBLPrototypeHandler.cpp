@@ -12,6 +12,7 @@
 #include "nsXBLPrototypeBinding.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindow.h"
+#include "nsGlobalWindowCommands.h"
 #include "nsIContent.h"
 #include "nsIAtom.h"
 #include "nsIDOMKeyEvent.h"
@@ -20,7 +21,7 @@
 #include "nsIDocument.h"
 #include "nsIController.h"
 #include "nsIControllers.h"
-#include "nsIDOMXULElement.h"
+#include "nsXULElement.h"
 #include "nsIURI.h"
 #include "nsIDOMHTMLTextAreaElement.h"
 #include "nsIDOMHTMLInputElement.h"
@@ -46,13 +47,16 @@
 #include "mozilla/BasicEvents.h"
 #include "mozilla/JSEventHandler.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/TextEvents.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/EventHandlerBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/layers/KeyboardMap.h"
 #include "xpcpublic.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::layers;
 
 uint32_t nsXBLPrototypeHandler::gRefCnt = 0;
 
@@ -136,6 +140,66 @@ nsXBLPrototypeHandler::~nsXBLPrototypeHandler()
   NS_CONTENT_DELETE_LIST_MEMBER(nsXBLPrototypeHandler, this, mNextHandler);
 }
 
+bool
+nsXBLPrototypeHandler::TryConvertToKeyboardShortcut(
+                          KeyboardShortcut* aOut) const
+{
+  // Convert the event type
+  KeyboardInput::KeyboardEventType eventType;
+
+  if (mEventName == nsGkAtoms::keydown) {
+    eventType = KeyboardInput::KEY_DOWN;
+  } else if (mEventName == nsGkAtoms::keypress) {
+    eventType = KeyboardInput::KEY_PRESS;
+  } else if (mEventName == nsGkAtoms::keyup) {
+    eventType = KeyboardInput::KEY_UP;
+  } else {
+    return false;
+  }
+
+  // Convert the modifiers
+  Modifiers modifiersMask = GetModifiersMask();
+  Modifiers modifiers = GetModifiers();
+
+  // Mask away any bits that won't be compared
+  modifiers &= modifiersMask;
+
+  // Convert the keyCode or charCode
+  uint32_t keyCode;
+  uint32_t charCode;
+
+  if (mMisc) {
+    keyCode = 0;
+    charCode = static_cast<uint32_t>(mDetail);
+  } else {
+    keyCode = static_cast<uint32_t>(mDetail);
+    charCode = 0;
+  }
+
+  NS_LossyConvertUTF16toASCII commandText(mHandlerText);
+  KeyboardScrollAction action;
+  if (!nsGlobalWindowCommands::FindScrollCommand(commandText.get(), &action)) {
+    // This action doesn't represent a scroll so we need to create a dispatch
+    // to content keyboard shortcut so APZ handles this command correctly
+    *aOut = KeyboardShortcut(eventType,
+                             keyCode,
+                             charCode,
+                             modifiers,
+                             modifiersMask);
+    return true;
+  }
+
+  // This prototype is a command which represents a scroll action, so create
+  // a keyboard shortcut to handle it
+  *aOut = KeyboardShortcut(eventType,
+                           keyCode,
+                           charCode,
+                           modifiers,
+                           modifiersMask,
+                           action);
+  return true;
+}
+
 already_AddRefed<nsIContent>
 nsXBLPrototypeHandler::GetHandlerElement()
 {
@@ -148,7 +212,7 @@ nsXBLPrototypeHandler::GetHandlerElement()
 }
 
 void
-nsXBLPrototypeHandler::AppendHandlerText(const nsAString& aText) 
+nsXBLPrototypeHandler::AppendHandlerText(const nsAString& aText)
 {
   if (mHandlerText) {
     // Append our text to the existing text.
@@ -216,7 +280,7 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
     if (!trustedEvent)
       return NS_OK;
   }
-    
+
   if (isXBLCommand) {
     return DispatchXBLCommand(aTarget, aEvent);
   }
@@ -228,7 +292,7 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
     return DispatchXULKeyCommand(aEvent);
   }
 
-  // Look for a compiled handler on the element. 
+  // Look for a compiled handler on the element.
   // Should be compiled and bound with "on" in front of the name.
   nsCOMPtr<nsIAtom> onEventAtom = NS_Atomize(NS_LITERAL_STRING("onxbl") +
                                              nsDependentAtomString(mEventName));
@@ -493,7 +557,7 @@ nsXBLPrototypeHandler::DispatchXBLCommand(EventTarget* aTarget, nsIDOMEvent* aEv
       }
     }
   }
-  
+
   if (controller)
     controller->DoCommand(command.get());
 
@@ -539,6 +603,54 @@ nsXBLPrototypeHandler::DispatchXULKeyCommand(nsIDOMEvent* aEvent)
   return NS_OK;
 }
 
+Modifiers
+nsXBLPrototypeHandler::GetModifiers() const
+{
+  Modifiers modifiers = 0;
+
+  if (mKeyMask & cMeta) {
+    modifiers |= MODIFIER_META;
+  }
+  if (mKeyMask & cOS) {
+    modifiers |= MODIFIER_OS;
+  }
+  if (mKeyMask & cShift) {
+    modifiers |= MODIFIER_SHIFT;
+  }
+  if (mKeyMask & cAlt) {
+    modifiers |= MODIFIER_ALT;
+  }
+  if (mKeyMask & cControl) {
+    modifiers |= MODIFIER_CONTROL;
+  }
+
+  return modifiers;
+}
+
+Modifiers
+nsXBLPrototypeHandler::GetModifiersMask() const
+{
+  Modifiers modifiersMask = 0;
+
+  if (mKeyMask & cMetaMask) {
+    modifiersMask |= MODIFIER_META;
+  }
+  if (mKeyMask & cOSMask) {
+    modifiersMask |= MODIFIER_OS;
+  }
+  if (mKeyMask & cShiftMask) {
+    modifiersMask |= MODIFIER_SHIFT;
+  }
+  if (mKeyMask & cAltMask) {
+    modifiersMask |= MODIFIER_ALT;
+  }
+  if (mKeyMask & cControlMask) {
+    modifiersMask |= MODIFIER_CONTROL;
+  }
+
+  return modifiersMask;
+}
+
 already_AddRefed<nsIAtom>
 nsXBLPrototypeHandler::GetEventName()
 {
@@ -553,9 +665,13 @@ nsXBLPrototypeHandler::GetController(EventTarget* aTarget)
   // This code should have no special knowledge of what objects might have controllers.
   nsCOMPtr<nsIControllers> controllers;
 
-  nsCOMPtr<nsIDOMXULElement> xulElement(do_QueryInterface(aTarget));
-  if (xulElement)
-    xulElement->GetControllers(getter_AddRefs(controllers));
+  nsCOMPtr<nsIContent> targetContent(do_QueryInterface(aTarget));
+  RefPtr<nsXULElement> xulElement =
+    nsXULElement::FromContentOrNull(targetContent);
+  if (xulElement) {
+    IgnoredErrorResult rv;
+    controllers = xulElement->GetControllers(rv);
+  }
 
   if (!controllers) {
     nsCOMPtr<nsIDOMHTMLTextAreaElement> htmlTextArea(do_QueryInterface(aTarget));
@@ -656,7 +772,7 @@ static const keyCodeData gKeyCodes[] = {
 int32_t nsXBLPrototypeHandler::GetMatchingKeyCode(const nsAString& aKeyName)
 {
   nsAutoCString keyName;
-  keyName.AssignWithConversion(aKeyName);
+  LossyCopyUTF16toASCII(aKeyName, keyName);
   ToUpperCase(keyName); // We want case-insensitive comparison with data
                         // stored as uppercase.
 
@@ -720,14 +836,14 @@ nsXBLPrototypeHandler::GetEventType(nsAString& aEvent)
     return;
   }
   handlerElement->GetAttr(kNameSpaceID_None, nsGkAtoms::event, aEvent);
-  
+
   if (aEvent.IsEmpty() && (mType & NS_HANDLER_TYPE_XUL))
     // If no type is specified for a XUL <key> element, let's assume that we're "keypress".
     aEvent.AssignLiteral("keypress");
 }
 
 void
-nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement, 
+nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
                                           const char16_t* aEvent,
                                           const char16_t* aPhase,
                                           const char16_t* aAction,
@@ -786,18 +902,18 @@ nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
   }
 
   // Button and clickcount apply only to XBL handlers and don't apply to XUL key
-  // handlers.  
+  // handlers.
   if (aButton && *aButton)
     mDetail = *aButton - '0';
 
   if (aClickCount && *aClickCount)
     mMisc = *aClickCount - '0';
 
-  // Modifiers are supported by both types of handlers (XUL and XBL).  
+  // Modifiers are supported by both types of handlers (XUL and XBL).
   nsAutoString modifiers(aModifiers);
   if (mType & NS_HANDLER_TYPE_XUL)
     aKeyElement->GetAttr(kNameSpaceID_None, nsGkAtoms::modifiers, modifiers);
-  
+
   if (!modifiers.IsEmpty()) {
     mKeyMask = cAllModifiers;
     char* str = ToNewCString(modifiers);
@@ -820,7 +936,7 @@ nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
         mKeyMask |= KeyToMask(kMenuAccessKey);
       else if (PL_strcmp(token, "any") == 0)
         mKeyMask &= ~(mKeyMask << 5);
-    
+
       token = nsCRT::strtok( newStr, ", \t", &newStr );
     }
 
@@ -831,7 +947,7 @@ nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
   if (key.IsEmpty()) {
     if (mType & NS_HANDLER_TYPE_XUL) {
       aKeyElement->GetAttr(kNameSpaceID_None, nsGkAtoms::key, key);
-      if (key.IsEmpty()) 
+      if (key.IsEmpty())
         aKeyElement->GetAttr(kNameSpaceID_None, nsGkAtoms::charcode, key);
     }
   }
@@ -862,7 +978,7 @@ nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
     key.Assign(aKeyCode);
     if (mType & NS_HANDLER_TYPE_XUL)
       aKeyElement->GetAttr(kNameSpaceID_None, nsGkAtoms::keycode, key);
-    
+
     if (!key.IsEmpty()) {
       if (mKeyMask == 0)
         mKeyMask = cAllModifiers;
@@ -965,7 +1081,7 @@ nsXBLPrototypeHandler::Read(nsIObjectInputStream* aStream)
 
   rv = aStream->Read32(reinterpret_cast<uint32_t*>(&mKeyMask));
   NS_ENSURE_SUCCESS(rv, rv);
-  uint32_t detail; 
+  uint32_t detail;
   rv = aStream->Read32(&detail);
   NS_ENSURE_SUCCESS(rv, rv);
   mDetail = detail;

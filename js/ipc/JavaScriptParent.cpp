@@ -9,6 +9,7 @@
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "nsJSUtils.h"
+#include "nsIScriptError.h"
 #include "jsfriendapi.h"
 #include "jswrapper.h"
 #include "js/Proxy.h"
@@ -72,9 +73,11 @@ ForbidCPOWsInCompatibleAddon(const nsACString& aAddonId)
         return false;
     }
 
-    nsCString allow;
+    nsAutoCString allow;
     allow.Assign(',');
-    allow.Append(Preferences::GetCString("dom.ipc.cpows.allow-cpows-in-compat-addons"));
+    nsAutoCString pref;
+    Preferences::GetCString("dom.ipc.cpows.allow-cpows-in-compat-addons", pref);
+    allow.Append(pref);
     allow.Append(',');
 
     nsCString searchString(",");

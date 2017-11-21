@@ -39,7 +39,7 @@ using namespace mozilla::psm;
 
 extern LazyLogModule gPIPNSSLog;
 
-static void AccumulateCipherSuite(Telemetry::ID probe,
+static void AccumulateCipherSuite(Telemetry::HistogramID probe,
                                   const SSLChannelInfo& channelInfo);
 
 namespace {
@@ -61,14 +61,15 @@ public:
   NS_IMETHOD Run();
 
   RefPtr<nsNSSHttpRequestSession> mRequestSession;
-  
+
   RefPtr<nsHTTPListener> mListener;
   bool mResponsibleForDoneSignal;
   TimeStamp mStartTime;
 };
 
 nsHTTPDownloadEvent::nsHTTPDownloadEvent()
-:mResponsibleForDoneSignal(true)
+  : mozilla::Runnable("nsHTTPDownloadEvent")
+  , mResponsibleForDoneSignal(true)
 {
 }
 
@@ -141,7 +142,7 @@ nsHTTPDownloadEvent::Run()
     nsCOMPtr<nsIUploadChannel> uploadChannel(do_QueryInterface(chan));
     NS_ENSURE_STATE(uploadChannel);
 
-    rv = uploadChannel->SetUploadStream(uploadStream, 
+    rv = uploadChannel->SetUploadStream(uploadStream,
                                         mRequestSession->mPostContentType,
                                         -1);
     NS_ENSURE_SUCCESS(rv, rv);
@@ -173,7 +174,7 @@ nsHTTPDownloadEvent::Run()
   NS_ADDREF(mListener->mLoadGroup);
   mListener->mLoadGroupOwnerThread = PR_GetCurrentThread();
 
-  rv = NS_NewStreamLoader(getter_AddRefs(mListener->mLoader), 
+  rv = NS_NewStreamLoader(getter_AddRefs(mListener->mLoader),
                           mListener);
 
   if (NS_SUCCEEDED(rv)) {
@@ -196,6 +197,7 @@ nsHTTPDownloadEvent::Run()
 struct nsCancelHTTPDownloadEvent : Runnable {
   RefPtr<nsHTTPListener> mListener;
 
+  nsCancelHTTPDownloadEvent() : Runnable("nsCancelHTTPDownloadEvent") {}
   NS_IMETHOD Run() override {
     mListener->FreeLoadGroup(true);
     mListener = nullptr;
@@ -275,7 +277,6 @@ nsNSSHttpRequestSession::setPostDataFcn(const char* http_data,
 mozilla::pkix::Result
 nsNSSHttpRequestSession::trySendAndReceiveFcn(PRPollDesc** pPollDesc,
                                               uint16_t* http_response_code,
-                                              const char** http_response_content_type,
                                               const char** http_response_headers,
                                               const char** http_response_data,
                                               uint32_t* http_response_data_len)
@@ -328,7 +329,7 @@ nsNSSHttpRequestSession::trySendAndReceiveFcn(PRPollDesc** pPollDesc,
 
     rv =
       internal_send_receive_attempt(retryable_error, pPollDesc, http_response_code,
-                                    http_response_content_type, http_response_headers,
+                                    http_response_headers,
                                     http_response_data, http_response_data_len);
   }
   while (retryable_error &&
@@ -367,14 +368,12 @@ mozilla::pkix::Result
 nsNSSHttpRequestSession::internal_send_receive_attempt(bool &retryable_error,
                                                        PRPollDesc **pPollDesc,
                                                        uint16_t *http_response_code,
-                                                       const char **http_response_content_type,
                                                        const char **http_response_headers,
                                                        const char **http_response_data,
                                                        uint32_t *http_response_data_len)
 {
   if (pPollDesc) *pPollDesc = nullptr;
   if (http_response_code) *http_response_code = 0;
-  if (http_response_content_type) *http_response_content_type = 0;
   if (http_response_headers) *http_response_headers = 0;
   if (http_response_data) *http_response_data = 0;
 
@@ -431,7 +430,7 @@ nsNSSHttpRequestSession::internal_send_receive_attempt(bool &retryable_error,
       wait_interval = PR_MicrosecondsToInterval(50);
     }
     else
-    { 
+    {
       // On a secondary thread, it's fine to wait some more for
       // for the condition variable.
       wait_interval = PR_MillisecondsToInterval(250);
@@ -442,8 +441,8 @@ nsNSSHttpRequestSession::internal_send_receive_attempt(bool &retryable_error,
       if (running_on_main_thread)
       {
         // Networking runs on the main thread, which we happen to block here.
-        // Processing events will allow the OCSP networking to run while we 
-        // are waiting. Thanks a lot to Darin Fisher for rewriting the 
+        // Processing events will allow the OCSP networking to run while we
+        // are waiting. Thanks a lot to Darin Fisher for rewriting the
         // thread manager. Thanks a lot to Christian Biesinger who
         // made me aware of this possibility. (kaie)
 
@@ -531,12 +530,6 @@ nsNSSHttpRequestSession::internal_send_receive_attempt(bool &retryable_error,
     *http_response_data = (const char*)mListener->mResultData;
   }
 
-  if (mListener->mHttpRequestSucceeded && http_response_content_type) {
-    if (mListener->mHttpResponseContentType.Length()) {
-      *http_response_content_type = mListener->mHttpResponseContentType.get();
-    }
-  }
-
   return Success;
 }
 
@@ -574,7 +567,8 @@ nsHTTPListener::~nsHTTPListener()
   }
 
   if (mLoader) {
-    NS_ReleaseOnMainThread(mLoader.forget());
+    NS_ReleaseOnMainThreadSystemGroup("nsHTTPListener::mLoader",
+                                      mLoader.forget());
   }
 }
 
@@ -621,11 +615,12 @@ nsHTTPListener::OnStreamComplete(nsIStreamLoader* aLoader,
   nsCOMPtr<nsIHttpChannel> hchan;
 
   nsresult rv = aLoader->GetRequest(getter_AddRefs(req));
-  
+
   if (NS_FAILED(aStatus))
   {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-           ("nsHTTPListener::OnStreamComplete status failed %d", aStatus));
+           ("nsHTTPListener::OnStreamComplete status failed %" PRIu32,
+            static_cast<uint32_t>(aStatus)));
   }
 
   if (NS_SUCCEEDED(rv))
@@ -647,14 +642,11 @@ nsHTTPListener::OnStreamComplete(nsIStreamLoader* aLoader,
       mHttpResponseCode = 500;
     else
       mHttpResponseCode = rcode;
-
-    hchan->GetResponseHeader(NS_LITERAL_CSTRING("Content-Type"), 
-                                    mHttpResponseContentType);
   }
 
   if (mResponsibleForDoneSignal)
     send_done_signal();
-  
+
   return aStatus;
 }
 
@@ -692,16 +684,16 @@ ShowProtectedAuthPrompt(PK11SlotInfo* slot, nsIInterfaceRequestor *ir)
       NS_ADDREF(protectedAuthRunnable);
 
       protectedAuthRunnable->SetParams(slot);
-      
+
       nsCOMPtr<nsIProtectedAuthThread> runnable = do_QueryInterface(protectedAuthRunnable);
       if (runnable)
       {
         nsrv = dialogs->DisplayProtectedAuth(ir, runnable);
-              
+
         // We call join on the thread,
         // so we can be sure that no simultaneous access will happen.
         protectedAuthRunnable->Join();
-              
+
         if (NS_SUCCEEDED(nsrv))
         {
           SECStatus rv = protectedAuthRunnable->GetResult();
@@ -731,7 +723,7 @@ class PK11PasswordPromptRunnable : public SyncRunnableBase
                                  , public nsNSSShutDownObject
 {
 public:
-  PK11PasswordPromptRunnable(PK11SlotInfo* slot, 
+  PK11PasswordPromptRunnable(PK11SlotInfo* slot,
                              nsIInterfaceRequestor* ir)
     : mResult(nullptr),
       mSlot(slot),
@@ -981,7 +973,7 @@ CanFalseStartCallback(PRFileDesc* fd, void* client_data, PRBool *canFalseStart)
 }
 
 static void
-AccumulateNonECCKeySize(Telemetry::ID probe, uint32_t bits)
+AccumulateNonECCKeySize(Telemetry::HistogramID probe, uint32_t bits)
 {
   unsigned int value = bits <   512 ?  1 : bits ==   512 ?  2
                      : bits <   768 ?  3 : bits ==   768 ?  4
@@ -1004,7 +996,7 @@ AccumulateNonECCKeySize(Telemetry::ID probe, uint32_t bits)
 // named curves for a given size (e.g. secp256k1 vs. secp256r1). We punt on
 // that for now. See also NSS bug 323674.
 static void
-AccumulateECCCurve(Telemetry::ID probe, uint32_t bits)
+AccumulateECCCurve(Telemetry::HistogramID probe, uint32_t bits)
 {
   unsigned int value = bits == 256 ? 23 // P-256
                      : bits == 384 ? 24 // P-384
@@ -1014,7 +1006,7 @@ AccumulateECCCurve(Telemetry::ID probe, uint32_t bits)
 }
 
 static void
-AccumulateCipherSuite(Telemetry::ID probe, const SSLChannelInfo& channelInfo)
+AccumulateCipherSuite(Telemetry::HistogramID probe, const SSLChannelInfo& channelInfo)
 {
   uint32_t value;
   switch (channelInfo.cipherSuite) {
@@ -1078,9 +1070,10 @@ AccumulateCipherSuite(Telemetry::ID probe, const SSLChannelInfo& channelInfo)
 // possible (e.g. stapled OCSP responses, SCTs, the hostname, the first party
 // domain, etc.). Note that because we are on the socket thread, this must not
 // cause any network requests, hence the use of FLAG_LOCAL_ONLY.
+// Similarly, we need to determine the certificate's CT status.
 static void
-DetermineEVStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus, PRFileDesc* fd,
-                               nsNSSSocketInfo* infoObject)
+DetermineEVAndCTStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus,
+                                    PRFileDesc* fd, nsNSSSocketInfo* infoObject)
 {
   MOZ_ASSERT(sslStatus);
   MOZ_ASSERT(fd);
@@ -1093,6 +1086,13 @@ DetermineEVStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus, PRFileDesc* fd,
   UniqueCERTCertificate cert(SSL_PeerCertificate(fd));
   MOZ_ASSERT(cert, "SSL_PeerCertificate failed in TLS handshake callback?");
   if (!cert) {
+    return;
+  }
+
+  UniqueCERTCertList peerCertChain(SSL_PeerCertificateChain(fd));
+  MOZ_ASSERT(peerCertChain,
+             "SSL_PeerCertificateChain failed in TLS handshake callback?");
+  if (!peerCertChain) {
     return;
   }
 
@@ -1126,6 +1126,7 @@ DetermineEVStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus, PRFileDesc* fd,
   }
 
   SECOidTag evOidPolicy;
+  CertificateTransparencyInfo certificateTransparencyInfo;
   UniqueCERTCertList unusedBuiltChain;
   const bool saveIntermediates = false;
   mozilla::pkix::Result rv = certVerifier->VerifySSLServerCert(
@@ -1134,15 +1135,22 @@ DetermineEVStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus, PRFileDesc* fd,
     sctsFromTLSExtension,
     mozilla::pkix::Now(),
     infoObject,
-    infoObject->GetHostNameRaw(),
+    infoObject->GetHostName(),
     unusedBuiltChain,
+    &peerCertChain,
     saveIntermediates,
     flags,
     infoObject->GetOriginAttributes(),
-    &evOidPolicy);
+    &evOidPolicy,
+    nullptr, // OCSP stapling telemetry
+    nullptr, // key size telemetry
+    nullptr, // SHA-1 telemetry
+    nullptr, // pinning telemetry
+    &certificateTransparencyInfo);
 
   RefPtr<nsNSSCertificate> nssc(nsNSSCertificate::Create(cert.get()));
   if (rv == Success && evOidPolicy != SEC_OID_UNKNOWN) {
+    sslStatus->SetCertificateTransparencyInfo(certificateTransparencyInfo);
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
             ("HandshakeCallback using NEW cert %p (is EV)", nssc.get()));
     sslStatus->SetServerCert(nssc, EVStatus::EV);
@@ -1150,6 +1158,10 @@ DetermineEVStatusAndSetNewCert(RefPtr<nsSSLStatus> sslStatus, PRFileDesc* fd,
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
             ("HandshakeCallback using NEW cert %p (is not EV)", nssc.get()));
     sslStatus->SetServerCert(nssc, EVStatus::NotEV);
+  }
+
+  if (rv == Success) {
+    sslStatus->SetCertificateTransparencyInfo(certificateTransparencyInfo);
   }
 }
 
@@ -1301,7 +1313,7 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
            ("HandshakeCallback KEEPING existing cert\n"));
   } else {
-    DetermineEVStatusAndSetNewCert(status, fd, infoObject);
+    DetermineEVAndCTStatusAndSetNewCert(status, fd, infoObject);
   }
 
   bool domainMismatch;
@@ -1325,11 +1337,7 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
   // console instead of to the error console. Also, the warning is not
   // localized.
   if (!siteSupportsSafeRenego) {
-    nsXPIDLCString hostName;
-    infoObject->GetHostName(getter_Copies(hostName));
-
-    nsAutoString msg;
-    msg.Append(NS_ConvertASCIItoUTF16(hostName));
+    NS_ConvertASCIItoUTF16 msg(infoObject->GetHostName());
     msg.AppendLiteral(" : server does not support RFC 5746, see CVE-2009-3555");
 
     nsContentUtils::LogSimpleConsoleError(msg, "SSL");

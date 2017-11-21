@@ -12,7 +12,6 @@ this.EXPORTED_SYMBOLS = ["FxAccountsOAuthGrantClient", "FxAccountsOAuthGrantClie
 
 const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
-Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
 Cu.import("resource://services-common/rest.js");
@@ -142,28 +141,31 @@ this.FxAccountsOAuthGrantClient.prototype = {
 
       request.onComplete = function(error) {
         if (error) {
-          return reject(new FxAccountsOAuthGrantClientError({
+          reject(new FxAccountsOAuthGrantClientError({
             error: ERROR_NETWORK,
             errno: ERRNO_NETWORK,
             message: error.toString(),
           }));
+          return;
         }
 
         let body = null;
         try {
           body = JSON.parse(request.response.body);
         } catch (e) {
-          return reject(new FxAccountsOAuthGrantClientError({
+          reject(new FxAccountsOAuthGrantClientError({
             error: ERROR_PARSE,
             errno: ERRNO_PARSE,
             code: request.response.status,
             message: request.response.body,
           }));
+          return;
         }
 
         // "response.success" means status code is 200
         if (request.response.success) {
-          return resolve(body);
+          resolve(body);
+          return;
         }
 
         if (typeof body.errno === "number") {
@@ -172,14 +174,14 @@ this.FxAccountsOAuthGrantClient.prototype = {
         } else if (body.errno) {
           body.errno = ERRNO_UNKNOWN_ERROR;
         }
-        return reject(new FxAccountsOAuthGrantClientError(body));
+        reject(new FxAccountsOAuthGrantClientError(body));
       };
 
       if (method === "POST") {
         request.post(params);
       } else {
         // method not supported
-        return reject(new FxAccountsOAuthGrantClientError({
+        reject(new FxAccountsOAuthGrantClientError({
           error: ERROR_NETWORK,
           errno: ERRNO_NETWORK,
           code: ERROR_CODE_METHOD_NOT_ALLOWED,

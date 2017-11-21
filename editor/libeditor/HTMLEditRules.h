@@ -94,6 +94,7 @@ public:
                           bool* aCancel, bool* aHandled) override;
   NS_IMETHOD DidDoAction(Selection* aSelection, RulesInfo* aInfo,
                          nsresult aResult) override;
+  NS_IMETHOD_(bool) DocumentIsEmpty() override;
   NS_IMETHOD DocumentModified() override;
 
   nsresult GetListState(bool* aMixed, bool* aOL, bool* aUL, bool* aDL);
@@ -101,7 +102,7 @@ public:
   nsresult GetIndentState(bool* aCanIndent, bool* aCanOutdent);
   nsresult GetAlignment(bool* aMixed, nsIHTMLEditor::EAlignment* aAlign);
   nsresult GetParagraphState(bool* aMixed, nsAString& outFormat);
-  nsresult MakeSureElemStartsOrEndsOnCR(nsIDOMNode* aNode);
+  nsresult MakeSureElemStartsOrEndsOnCR(nsINode& aNode);
 
   // nsIEditActionListener methods
 
@@ -257,6 +258,7 @@ protected:
   nsresult WillMakeBasicBlock(Selection& aSelection,
                               const nsAString& aBlockType,
                               bool* aCancel, bool* aHandled);
+  nsresult MakeBasicBlock(Selection& aSelection, nsIAtom& aBlockType);
   nsresult DidMakeBasicBlock(Selection* aSelection, RulesInfo* aInfo,
                              nsresult aResult);
   nsresult DidAbsolutePosition();
@@ -272,6 +274,7 @@ protected:
                        int32_t* aIndex, Lists aLists = Lists::yes,
                        Tables aTables = Tables::yes);
   Element* IsInListItem(nsINode* aNode);
+  nsIAtom& DefaultParagraphSeparator();
   nsresult ReturnInHeader(Selection& aSelection, Element& aHeader,
                           nsINode& aNode, int32_t aOffset);
   nsresult ReturnInParagraph(Selection* aSelection, nsIDOMNode* aHeader,
@@ -318,9 +321,8 @@ protected:
   bool IsFirstNode(nsIDOMNode* aNode);
   bool IsLastNode(nsIDOMNode* aNode);
   nsresult NormalizeSelection(Selection* aSelection);
-  void GetPromotedPoint(RulesEndpoint aWhere, nsIDOMNode* aNode,
-                        int32_t aOffset, EditAction actionID,
-                        nsCOMPtr<nsIDOMNode>* outNode, int32_t* outOffset);
+  EditorDOMPoint GetPromotedPoint(RulesEndpoint aWhere, nsINode& aNode,
+                                  int32_t aOffset, EditAction actionID);
   void GetPromotedRanges(Selection& aSelection,
                          nsTArray<RefPtr<nsRange>>& outArrayOfRanges,
                          EditAction inOperationType);
@@ -403,9 +405,9 @@ protected:
   nsresult InsertMozBRIfNeeded(nsINode& aNode);
   bool IsEmptyInline(nsINode& aNode);
   bool ListIsEmptyLine(nsTArray<OwningNonNull<nsINode>>& arrayOfNodes);
-  nsresult RemoveAlignment(nsIDOMNode* aNode, const nsAString& aAlignType,
+  nsresult RemoveAlignment(nsINode& aNode, const nsAString& aAlignType,
                            bool aChildrenOnly);
-  nsresult MakeSureElemStartsOrEndsOnCR(nsIDOMNode* aNode, bool aStarts);
+  nsresult MakeSureElemStartsOrEndsOnCR(nsINode& aNode, bool aStarts);
   enum class ContentsOnly { no, yes };
   nsresult AlignBlock(Element& aElement,
                       const nsAString& aAlignType, ContentsOnly aContentsOnly);

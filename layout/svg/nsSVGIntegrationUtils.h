@@ -40,7 +40,7 @@ class nsSVGIntegrationUtils final
 {
   typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::IntRect IntRect;
-  typedef mozilla::image::DrawResult DrawResult;
+  typedef mozilla::image::imgDrawingParams imgDrawingParams;
 
 public:
   /**
@@ -78,12 +78,13 @@ public:
    * "bbox" for the element they're being applied to in order to make decisions
    * about positioning, and to resolve various lengths against. This method
    * provides the "bbox" for non-SVG frames. The bbox returned is in CSS px
-   * units, and is the union of all aNonSVGFrame's continuations' overflow
-   * areas, relative to the top-left of the union of all aNonSVGFrame's
+   * units, and aUnionContinuations decide whether bbox contains the area of
+   * current frame only or the union of all aNonSVGFrame's continuations'
+   * overflow areas, relative to the top-left of the union of all aNonSVGFrame's
    * continuations' border box rects.
    */
   static gfxRect
-  GetSVGBBoxForNonSVGFrame(nsIFrame* aNonSVGFrame);
+  GetSVGBBoxForNonSVGFrame(nsIFrame* aNonSVGFrame, bool aUnionContinuations);
 
   /**
    * Used to adjust a frame's pre-effects visual overflow rect to take account
@@ -132,7 +133,7 @@ public:
   static bool
   HitTestFrameForEffects(nsIFrame* aFrame, const nsPoint& aPt);
 
-  struct PaintFramesParams {
+  struct MOZ_STACK_CLASS PaintFramesParams {
     gfxContext& ctx;
     nsIFrame* frame;
     const nsRect& dirtyRect;
@@ -142,30 +143,33 @@ public:
     bool handleOpacity; // If true, PaintMaskAndClipPath/ PaintFilter should
                         // apply css opacity.
     IntRect maskRect;
+    imgDrawingParams& imgParams;
 
     explicit PaintFramesParams(gfxContext& aCtx, nsIFrame* aFrame,
                                const nsRect& aDirtyRect,
                                const nsRect& aBorderArea,
                                nsDisplayListBuilder* aBuilder,
                                mozilla::layers::LayerManager* aLayerManager,
-                               bool aHandleOpacity)
+                               bool aHandleOpacity,
+                               imgDrawingParams& aImgParams)
       : ctx(aCtx), frame(aFrame), dirtyRect(aDirtyRect),
         borderArea(aBorderArea), builder(aBuilder),
-        layerManager(aLayerManager), handleOpacity(aHandleOpacity)
+        layerManager(aLayerManager), handleOpacity(aHandleOpacity),
+        imgParams(aImgParams)
     { }
   };
 
   /**
    * Paint non-SVG frame with mask, clipPath and opacity effect.
    */
-  static DrawResult
+  static void
   PaintMaskAndClipPath(const PaintFramesParams& aParams);
 
   /**
    * Paint mask of non-SVG frame onto a given context, aParams.ctx.
    * aParams.ctx must contain an A8 surface.
    */
-  static DrawResult
+  static void
   PaintMask(const PaintFramesParams& aParams);
 
   /**
@@ -177,17 +181,8 @@ public:
   /**
    * Paint non-SVG frame with filter and opacity effect.
    */
-  static DrawResult
+  static void
   PaintFilter(const PaintFramesParams& aParams);
-
-  /**
-   * SVG frames expect to paint in SVG user units, which are equal to CSS px
-   * units. This method provides a transform matrix to multiply onto a
-   * gfxContext's current transform to convert the context's current units from
-   * its usual dev pixels to SVG user units/CSS px to keep the SVG code happy.
-   */
-  static gfxMatrix
-  GetCSSPxToDevPxMatrix(nsIFrame* aNonSVGFrame);
 
   /**
    * @param aRenderingContext the target rendering context in which the paint

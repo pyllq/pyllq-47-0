@@ -50,7 +50,7 @@ public:
     MozillaRegisterDebugFILE(mFile);
   }
 
-  void Printf(const char* aFormat, ...)
+  void Printf(const char* aFormat, ...) MOZ_FORMAT_PRINTF(2, 3)
   {
     MOZ_ASSERT(mFile);
     va_list list;
@@ -158,6 +158,9 @@ LateWriteObserver::Observe(IOInterposeObserver::Observation& aOb)
   stream = _fdopen(fd, "w");
 #else
   int fd = mkstemp(name);
+  if (fd == -1) {
+    MOZ_CRASH("mkstemp failed");
+  }
   stream = fdopen(fd, "w");
 #endif
 
@@ -168,7 +171,7 @@ LateWriteObserver::Observe(IOInterposeObserver::Observation& aOb)
   for (size_t i = 0; i < numModules; ++i) {
     Telemetry::ProcessedStack::Module module = stack.GetModule(i);
     sha1Stream.Printf("%s %s\n", module.mBreakpadId.c_str(),
-                      module.mName.c_str());
+                      NS_ConvertUTF16toUTF8(module.mName).get());
   }
 
   size_t numFrames = stack.GetStackSize();

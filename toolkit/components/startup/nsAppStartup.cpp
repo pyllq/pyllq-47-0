@@ -93,7 +93,7 @@ static NS_DEFINE_CID(kPlacesInitCompleteCID,
 static NS_DEFINE_CID(kSessionStoreWindowRestoredCID,
   NS_SESSION_STORE_WINDOW_RESTORED_EVENT_CID);
 static NS_DEFINE_CID(kXPCOMShutdownCID,
-  NS_XPCOM_SHUTDOWN_EVENT_CID);  
+  NS_XPCOM_SHUTDOWN_EVENT_CID);
 #endif //defined(XP_WIN)
 
 using namespace mozilla;
@@ -103,7 +103,11 @@ private:
   RefPtr<nsAppStartup> mService;
 
 public:
-  explicit nsAppExitEvent(nsAppStartup *service) : mService(service) {}
+  explicit nsAppExitEvent(nsAppStartup* service)
+    : mozilla::Runnable("nsAppExitEvent")
+    , mService(service)
+  {
+  }
 
   NS_IMETHOD Run() override {
     // Tell the appshell to exit
@@ -237,7 +241,7 @@ NS_IMPL_ISUPPORTS(nsAppStartup,
 NS_IMETHODIMP
 nsAppStartup::CreateHiddenWindow()
 {
-#if defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_UIKIT)
+#if defined(MOZ_WIDGET_UIKIT)
   return NS_OK;
 #else
   nsCOMPtr<nsIAppShellService> appShellService
@@ -252,7 +256,7 @@ nsAppStartup::CreateHiddenWindow()
 NS_IMETHODIMP
 nsAppStartup::DestroyHiddenWindow()
 {
-#if defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_UIKIT)
+#if defined(MOZ_WIDGET_UIKIT)
   return NS_OK;
 #else
   nsCOMPtr<nsIAppShellService> appShellService
@@ -382,7 +386,7 @@ nsAppStartup::Quit(uint32_t aMode)
       }
     }
 
-    PROFILER_MARKER("Shutdown start");
+    profiler_add_marker("Shutdown start");
     mozilla::RecordShutdownStartTimeStamp();
     mShuttingDown = true;
     if (!mRestart) {
@@ -433,7 +437,8 @@ nsAppStartup::Quit(uint32_t aMode)
         mediator->GetEnumerator(nullptr, getter_AddRefs(windowEnumerator));
         if (windowEnumerator) {
           bool more;
-          while (windowEnumerator->HasMoreElements(&more), more) {
+          while (NS_SUCCEEDED(windowEnumerator->HasMoreElements(&more)) &&
+                 more) {
             /* we can't quit immediately. we'll try again as the last window
                finally closes. */
             ferocity = eAttemptQuit;
@@ -458,11 +463,8 @@ nsAppStartup::Quit(uint32_t aMode)
     // No chance of the shutdown being cancelled from here on; tell people
     // we're shutting down for sure while all services are still available.
     if (obsService) {
-      NS_NAMED_LITERAL_STRING(shutdownStr, "shutdown");
-      NS_NAMED_LITERAL_STRING(restartStr, "restart");
       obsService->NotifyObservers(nullptr, "quit-application",
-        (mRestart || mRestartNotSameProfile) ?
-         restartStr.get() : shutdownStr.get());
+        (mRestart || mRestartNotSameProfile) ? u"restart" : u"shutdown");
     }
 
     if (!mRunning) {
@@ -611,7 +613,7 @@ nsAppStartup::CreateChromeWindow(nsIWebBrowserChrome *aParent,
                                  nsIWebBrowserChrome **_retval)
 {
   bool cancel;
-  return CreateChromeWindow2(aParent, aChromeFlags, nullptr, nullptr, &cancel, _retval);
+  return CreateChromeWindow2(aParent, aChromeFlags, nullptr, nullptr, 0, &cancel, _retval);
 }
 
 
@@ -635,6 +637,7 @@ nsAppStartup::CreateChromeWindow2(nsIWebBrowserChrome *aParent,
                                   uint32_t aChromeFlags,
                                   nsITabParent *aOpeningTab,
                                   mozIDOMWindowProxy* aOpener,
+                                  uint64_t aNextTabParentId,
                                   bool *aCancel,
                                   nsIWebBrowserChrome **_retval)
 {
@@ -654,10 +657,15 @@ nsAppStartup::CreateChromeWindow2(nsIWebBrowserChrome *aParent,
     NS_ASSERTION(xulParent, "window created using non-XUL parent. that's unexpected, but may work.");
 
     if (xulParent)
-      xulParent->CreateNewWindow(aChromeFlags, aOpeningTab, aOpener, getter_AddRefs(newWindow));
+      xulParent->CreateNewWindow(aChromeFlags, aOpeningTab, aOpener,
+                                 aNextTabParentId,
+                                 getter_AddRefs(newWindow));
     // And if it fails, don't try again without a parent. It could fail
     // intentionally (bug 115969).
   } else { // try using basic methods:
+    MOZ_RELEASE_ASSERT(aNextTabParentId == 0,
+                       "Unexpected aNextTabParentId, we shouldn't ever have a next actor ID without a parent");
+
     /* You really shouldn't be making dependent windows without a parent.
       But unparented modal (and therefore dependent) windows happen
       in our codebase, so we allow it after some bellyaching: */
@@ -754,7 +762,7 @@ nsAppStartup::GetStartupInfo(JSContext* aCx, JS::MutableHandle<JS::Value> aRetva
   if (procTime.IsNull()) {
     bool error = false;
 
-    procTime = TimeStamp::ProcessCreation(error);
+    procTime = TimeStamp::ProcessCreation(&error);
 
     if (error) {
       Telemetry::Accumulate(Telemetry::STARTUP_MEASUREMENT_ERRORS,
@@ -910,7 +918,7 @@ nsAppStartup::TrackStartupCrashBegin(bool *aIsSafeModeNecessary)
   mIsSafeModeNecessary = (recentCrashes > maxResumedCrashes && maxResumedCrashes != -1);
 
   nsCOMPtr<nsIPrefService> prefs = Preferences::GetService();
-  rv = prefs->SavePrefFile(nullptr); // flush prefs to disk since we are tracking crashes
+  rv = static_cast<Preferences *>(prefs.get())->SavePrefFileBlocking(); // flush prefs to disk since we are tracking crashes
   NS_ENSURE_SUCCESS(rv, rv);
 
   GetAutomaticSafeModeNecessary(aIsSafeModeNecessary);
@@ -970,7 +978,10 @@ nsAppStartup::TrackStartupCrashEnd()
     if (NS_FAILED(rv)) NS_WARNING("Could not clear startup crash count.");
   }
   nsCOMPtr<nsIPrefService> prefs = Preferences::GetService();
-  rv = prefs->SavePrefFile(nullptr); // flush prefs to disk since we are tracking crashes
+  // save prefs to disk since we are tracking crashes.  This may be
+  // asynchronous, so a crash could sneak in that we would mistake for
+  // a start up crash. See bug 789945 and bug 1361262.
+  rv = prefs->SavePrefFile(nullptr);
 
   return rv;
 }
@@ -996,8 +1007,8 @@ nsAppStartup::CreateInstanceWithProfile(nsIToolkitProfile* aProfile)
   }
 
   nsCOMPtr<nsIFile> execPath;
-  nsresult rv = NS_NewNativeLocalFile(NS_ConvertUTF16toUTF8(gAbsoluteArgv0Path),
-                                      true, getter_AddRefs(execPath));
+  nsresult rv = NS_NewLocalFile(gAbsoluteArgv0Path,
+                                true, getter_AddRefs(execPath));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }

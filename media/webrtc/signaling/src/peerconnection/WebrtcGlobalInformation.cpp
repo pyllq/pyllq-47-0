@@ -420,7 +420,8 @@ RunStatsQuery(
 
   if (NS_FAILED(rv)) {
     return rv;
-  } else if (!stsThread) {
+  }
+  if (!stsThread) {
     return NS_ERROR_FAILURE;
   }
 
@@ -481,7 +482,8 @@ WebrtcGlobalInformation::GetAllStats(
   // CallbackObject does not support threadsafe refcounting, and must be
   // used and destroyed on main.
   StatsRequestCallback callbackHandle(
-    new nsMainThreadPtrHolder<WebrtcGlobalStatisticsCallback>(&aStatsCallback));
+    new nsMainThreadPtrHolder<WebrtcGlobalStatisticsCallback>(
+      "WebrtcGlobalStatisticsCallback", &aStatsCallback));
 
   nsString filter;
   if (pcIdFilter.WasPassed()) {
@@ -528,7 +530,6 @@ WebrtcGlobalInformation::GetAllStats(
   }
 
   aRv = rv;
-  return;
 }
 
 static nsresult
@@ -542,7 +543,8 @@ RunLogQuery(const nsCString& aPattern,
 
   if (NS_FAILED(rv)) {
     return rv;
-  } else if (!stsThread) {
+  }
+  if (!stsThread) {
     return NS_ERROR_FAILURE;
   }
 
@@ -622,7 +624,8 @@ WebrtcGlobalInformation::GetLogging(
   // CallbackObject does not support threadsafe refcounting, and must be
   // destroyed on main.
   LogRequestCallback callbackHandle(
-    new nsMainThreadPtrHolder<WebrtcGlobalLoggingCallback>(&aLoggingCallback));
+    new nsMainThreadPtrHolder<WebrtcGlobalLoggingCallback>(
+      "WebrtcGlobalLoggingCallback", &aLoggingCallback));
 
   nsAutoCString pattern;
   CopyUTF16toUTF8(aPattern, pattern);
@@ -655,7 +658,6 @@ WebrtcGlobalInformation::GetLogging(
   }
 
   aRv = rv;
-  return;
 }
 
 static int32_t sLastSetLevel = 0;
@@ -802,7 +804,6 @@ void
 WebrtcGlobalParent::ActorDestroy(ActorDestroyReason aWhy)
 {
   mShutdown = true;
-  return;
 }
 
 mozilla::ipc::IPCResult
@@ -871,6 +872,8 @@ WebrtcGlobalChild::RecvGetLogRequest(const int& aRequestId,
     do_GetService(NS_SOCKETTRANSPORTSERVICE_CONTRACTID, &rv);
 
   if (NS_SUCCEEDED(rv) && stsThread) {
+    // this is a singleton, so we shouldn't need to hold a ref for the
+    // request (and can't just add a ref here anyways)
     rv = RUN_ON_THREAD(stsThread,
                        WrapRunnableNM(&GetLogging_s, this, aRequestId, aPattern.get()),
                        NS_DISPATCH_NORMAL);
@@ -1014,16 +1017,15 @@ static void StoreLongTermICEStatisticsImpl_m(
     const RTCIceCandidatePairStats &pair =
       query->report->mIceCandidatePairStats.Value()[i];
 
-    if (!pair.mState.WasPassed() || !pair.mComponentId.WasPassed()) {
+    if (!pair.mState.WasPassed() || !pair.mTransportId.WasPassed()) {
       MOZ_CRASH();
       continue;
     }
 
-    // Note: this is not a "component" in the ICE definition, this is really a
-    // stream ID. This is just the way the stats API is standardized right now.
-    // Very confusing.
+    // Note: we use NrIceMediaStream's name for the
+    // RTCIceCandidatePairStats tranportId
     std::string streamId(
-      NS_ConvertUTF16toUTF8(pair.mComponentId.Value()).get());
+      NS_ConvertUTF16toUTF8(pair.mTransportId.Value()).get());
 
     streamResults[streamId].streamSucceeded |=
       pair.mState.Value() == RTCStatsIceCandidatePairState::Succeeded;
@@ -1102,9 +1104,9 @@ static void StoreLongTermICEStatisticsImpl_m(
     streamResults[streamId].candidateTypeBitpattern |= candBitmask;
   }
 
-  for (auto i = streamResults.begin(); i != streamResults.end(); ++i) {
-    Telemetry::RecordWebrtcIceCandidates(i->second.candidateTypeBitpattern,
-                                         i->second.streamSucceeded);
+  for (auto& streamResult : streamResults) {
+    Telemetry::RecordWebrtcIceCandidates(streamResult.second.candidateTypeBitpattern,
+                                         streamResult.second.streamSucceeded);
   }
 
   // Beyond ICE, accumulate telemetry for various PER_CALL settings here.

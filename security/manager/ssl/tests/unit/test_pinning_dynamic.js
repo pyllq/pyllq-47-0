@@ -6,10 +6,6 @@
 // The purpose of this test is to create a site security service state file
 // and see that the site security service reads it properly.
 
-function writeLine(aLine, aOutputStream) {
-  aOutputStream.write(aLine, aLine.length);
-}
-
 var gSSService = null;
 var gSSSStateSeen = false;
 var gPreloadStateSeen = false;
@@ -50,11 +46,12 @@ function run_test() {
   ok(!stateFile.exists(),
      "State file should not exist when working with a clean slate");
   let outputStream = FileUtils.openFileOutputStream(stateFile);
-  let now = (new Date()).getTime();
-  writeLine(`a.pinning2.example.com:HPKP\t0\t0\t${now + 100000},1,0,${PINNING_ROOT_KEY_HASH}\n`, outputStream);
-  writeLine(`b.pinning2.example.com:HPKP\t0\t0\t${now + 100000},1,1,${PINNING_ROOT_KEY_HASH}\n`, outputStream);
-
-  outputStream.close();
+  let expiryTime = Date.now() + 100000;
+  let lines = [
+    `a.pinning2.example.com:HPKP\t0\t0\t${expiryTime},1,0,${PINNING_ROOT_KEY_HASH}`,
+    `b.pinning2.example.com:HPKP\t0\t0\t${expiryTime},1,1,${PINNING_ROOT_KEY_HASH}`,
+  ];
+  writeLinesAndClose(lines, outputStream);
 
   let preloadFile = profileDir.clone();
   preloadFile.append(PRELOAD_STATE_FILE_NAME);
@@ -62,10 +59,12 @@ function run_test() {
      "Preload file should not exist when working with a clean slate");
 
   outputStream = FileUtils.openFileOutputStream(preloadFile);
-  writeLine(`a.preload.example.com:HPKP\t0\t0\t${now + 100000},1,1,${PINNING_ROOT_KEY_HASH}\n`, outputStream);
-  outputStream.close();
+  lines = [
+    `a.preload.example.com:HPKP\t0\t0\t${expiryTime},1,1,${PINNING_ROOT_KEY_HASH}`,
+  ];
+  writeLinesAndClose(lines, outputStream);
 
-  Services.obs.addObserver(checkStateRead, "data-storage-ready", false);
+  Services.obs.addObserver(checkStateRead, "data-storage-ready");
   do_test_pending();
   gSSService = Cc["@mozilla.org/ssservice;1"]
                  .getService(Ci.nsISiteSecurityService);
@@ -75,17 +74,21 @@ function run_test() {
 }
 
 function checkDefaultSiteHPKPStatus() {
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "a.pinning2.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://a.pinning2.example.com"), 0),
      "a.pinning2.example.com should have HPKP status");
-  ok(!gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                              "x.a.pinning2.example.com", 0),
+  ok(!gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://x.a.pinning2.example.com"), 0),
      "x.a.pinning2.example.com should not have HPKP status");
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "b.pinning2.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://b.pinning2.example.com"), 0),
      "b.pinning2.example.com should have HPKP status");
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "x.b.pinning2.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://x.b.pinning2.example.com"), 0),
      "x.b.pinning2.example.com should have HPKP status");
 }
 
@@ -159,12 +162,14 @@ function checkStateRead(aSubject, aTopic, aData) {
   checkOK(certFromFile("x.b.pinning2.example.com-pinningroot"),
           "x.b.pinning2.example.com");
 
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "a.pinning2.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://a.pinning2.example.com"), 0),
      "a.pinning2.example.com should still have HPKP status after adding" +
      " includeSubdomains to a.pinning2.example.com");
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "x.a.pinning2.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://x.a.pinning2.example.com"), 0),
      "x.a.pinning2.example.com should now have HPKP status after adding" +
      " includeSubdomains to a.pinning2.example.com");
 
@@ -225,11 +230,13 @@ function checkStateRead(aSubject, aTopic, aData) {
      "Attempting to set a pin with an incorrect size should fail");
 
   // Ensure built-in pins work as expected
-  ok(!gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                              "nonexistent.example.com", 0),
+  ok(!gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://nonexistent.example.com"), 0),
      "Not built-in nonexistent.example.com should not have HPKP status");
-  ok(gSSService.isSecureHost(Ci.nsISiteSecurityService.HEADER_HPKP,
-                             "include-subdomains.pinning.example.com", 0),
+  ok(gSSService.isSecureURI(
+       Ci.nsISiteSecurityService.HEADER_HPKP,
+       Services.io.newURI("https://include-subdomains.pinning.example.com"), 0),
      "Built-in include-subdomains.pinning.example.com should have HPKP status");
 
   gSSService.setKeyPins("a.pinning2.example.com", false, new Date().getTime(),

@@ -2,7 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-__all__ = [ 'gencxx', 'genipdl', 'parse', 'typecheck', 'writeifmodified' ]
+__all__ = [ 'gencxx', 'genipdl', 'parse', 'typecheck', 'writeifmodified',
+            'checkSyncMessage', 'checkFixedSyncMessages' ]
 
 import os, sys
 from cStringIO import StringIO
@@ -11,6 +12,7 @@ from ipdl.cgen import IPDLCodeGen
 from ipdl.lower import LowerToCxx, msgenums
 from ipdl.parser import Parser, ParseError
 from ipdl.type import TypeCheck
+from ipdl.checker import checkSyncMessage, checkFixedSyncMessages
 
 from ipdl.cxx.cgen import CxxCodeGen
 
@@ -39,8 +41,8 @@ def typecheck(ast, errout=sys.stderr):
     return TypeCheck().check(ast, errout)
 
 
-def gencxx(ipdlfilename, ast, outheadersdir, outcppdir):
-    headers, cpps = LowerToCxx().lower(ast)
+def gencxx(ipdlfilename, ast, outheadersdir, outcppdir, segmentcapacitydict):
+    headers, cpps = LowerToCxx().lower(ast, segmentcapacitydict)
 
     def resolveHeader(hdr):
         return [

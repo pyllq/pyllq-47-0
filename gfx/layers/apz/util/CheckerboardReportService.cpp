@@ -42,9 +42,10 @@ void
 CheckerboardEventStorage::Report(uint32_t aSeverity, const std::string& aLog)
 {
   if (!NS_IsMainThread()) {
-    RefPtr<Runnable> task = NS_NewRunnableFunction([aSeverity, aLog] () -> void {
-      CheckerboardEventStorage::Report(aSeverity, aLog);
-    });
+    RefPtr<Runnable> task = NS_NewRunnableFunction(
+      "layers::CheckerboardEventStorage::Report", [aSeverity, aLog]() -> void {
+        CheckerboardEventStorage::Report(aSeverity, aLog);
+      });
     NS_DispatchToMainThread(task.forget());
     return;
   }
@@ -159,7 +160,7 @@ CheckerboardReportService::IsEnabled(JSContext* aCtx, JSObject* aGlobal)
     return false;
   }
   // Allow privileged code or about:checkerboard (unprivileged) to access this.
-  return nsContentUtils::IsCallerChrome()
+  return nsContentUtils::IsSystemCaller(aCtx)
       || nsContentUtils::IsSpecificAboutPage(aGlobal, "about:checkerboard");
 }
 

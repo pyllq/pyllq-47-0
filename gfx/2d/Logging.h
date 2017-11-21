@@ -131,6 +131,7 @@ enum class LogReason : int {
   ProcessingError,
   InvalidDrawTarget,
   NativeFontResourceNotFound,
+  UnscaledFontNotFound,
   // End
   MustBeLessThanThis = 101,
 };
@@ -180,7 +181,7 @@ struct BasicLogger
 #else
 #if defined(MOZ_LOGGING)
       if (MOZ_LOG_TEST(GetGFX2DLog(), PRLogLevelForLevel(aLevel))) {
-        PR_LogPrint("%s%s", aString.c_str(), aNoNewline ? "" : "\n");
+        MOZ_LOG(GetGFX2DLog(), PRLogLevelForLevel(aLevel), ("%s%s", aString.c_str(), aNoNewline ? "" : "\n"));
       } else
 #endif
       if ((LoggingPrefs::sGfxLogLevel >= LOG_DEBUG_PRLOG) ||
@@ -465,6 +466,9 @@ public:
         case SurfaceType::TILED:
           mMessage << "SurfaceType::TILED";
           break;
+        case SurfaceType::DATA_SHARED:
+          mMessage << "SurfaceType::DATA_SHARED";
+          break;
         default:
           mMessage << "Invalid SurfaceType (" << (int)aType << ")";
           break;
@@ -688,7 +692,7 @@ public:
   }
 
   TreeAutoIndent(const TreeAutoIndent& aTreeAutoIndent) :
-      TreeAutoIndent(aTreeAutoIndent.mTreeLog) {
+      mTreeLog(aTreeAutoIndent.mTreeLog) {
     mTreeLog.IncreaseIndent();
   }
 

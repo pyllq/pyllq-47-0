@@ -8,7 +8,7 @@ var Cc = Components.classes, Ci = Components.interfaces, Cu = Components.utils;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
-Cu.import("resource://gre/modules/Promise.jsm");
+Cu.import("resource://gre/modules/PromiseUtils.jsm");
 
 const NOTIFICATION_EVENT_DISMISSED = "dismissed";
 const NOTIFICATION_EVENT_REMOVED = "removed";
@@ -88,7 +88,7 @@ function Notification(id, message, anchorID, mainAction, secondaryActions,
   this.wasDismissed = false;
   this.recordedTelemetryStats = new Set();
   this.isPrivate = PrivateBrowsingUtils.isWindowPrivate(
-                                        this.browser.ownerDocument.defaultView);
+                                        this.browser.ownerGlobal);
   this.timeCreated = this.owner.window.performance.now();
 }
 
@@ -223,7 +223,7 @@ this.PopupNotifications = function PopupNotifications(tabbrowser, panel,
   this._shouldSuppress = options.shouldSuppress || (() => false);
   this._suppress = this._shouldSuppress();
 
-  this.window = tabbrowser.ownerDocument.defaultView;
+  this.window = tabbrowser.ownerGlobal;
   this.panel = panel;
   this.tabbrowser = tabbrowser;
   this.iconBox = iconBox;
@@ -246,18 +246,24 @@ this.PopupNotifications = function PopupNotifications(tabbrowser, panel,
     }
 
     let doc = this.window.document;
-    let activeElement = doc.activeElement;
+    let focusedElement = Services.focus.focusedElement;
 
     // If the chrome window has a focused element, let it handle the ESC key instead.
-    if (!activeElement ||
-        activeElement == doc.body ||
-        activeElement == this.tabbrowser.selectedBrowser ||
+    if (!focusedElement ||
+        focusedElement == doc.body ||
+        focusedElement == this.tabbrowser.selectedBrowser ||
         // Ignore focused elements inside the notification.
-        getNotificationFromElement(activeElement) == notification ||
-        notification.contains(activeElement)) {
+        getNotificationFromElement(focusedElement) == notification ||
+        notification.contains(focusedElement)) {
       this._onButtonEvent(aEvent, "secondarybuttoncommand", notification);
     }
   };
+
+  let documentElement = this.window.document.documentElement;
+  let locationBarHidden = documentElement.getAttribute("chromehidden").includes("location");
+  let isFullscreen = !!this.window.document.fullscreenElement;
+
+  this.panel.setAttribute("followanchor", !locationBarHidden && !isFullscreen);
 
   // There are no anchor icons in DOM fullscreen mode, but we would
   // still like to show the popup notification. To avoid an infinite
@@ -267,7 +273,7 @@ this.PopupNotifications = function PopupNotifications(tabbrowser, panel,
     this.panel.setAttribute("followanchor", "false");
   }, true);
   this.window.addEventListener("MozDOMFullscreen:Exited", () => {
-    this.panel.setAttribute("followanchor", "true");
+    this.panel.setAttribute("followanchor", !locationBarHidden);
   }, true);
 
   this.window.addEventListener("activate", this, true);
@@ -340,6 +346,8 @@ PopupNotifications.prototype = {
    *              - checkboxChecked: (boolean) If the optional checkbox is checked.
    *          - [optional] dismiss (boolean): If this is true, the notification
    *            will be dismissed instead of removed after running the callback.
+   *          - [optional] disableHighlight (boolean): If this is true, the button
+   *            will not apply the default highlight style.
    *        If null, the notification will have a default "OK" action button
    *        that can be used to dismiss the popup and secondaryActions will be ignored.
    * @param secondaryActions
@@ -365,6 +373,8 @@ PopupNotifications.prototype = {
    *        dismissed:   Whether the notification should be added as a dismissed
    *                     notification. Dismissed notifications can be activated
    *                     by clicking on their anchorElement.
+   *        autofocus:   Whether the notification should be autofocused on
+   *                     showing, stealing focus from any other focused element.
    *        eventCallback:
    *                     Callback to be invoked when the notification changes
    *                     state. The callback's first argument is a string
@@ -476,6 +486,14 @@ PopupNotifications.prototype = {
 
     if (isActiveBrowser) {
       if (isActiveWindow) {
+
+        // Autofocus if the notification requests focus.
+        if (options && !options.dismissed && options.autofocus) {
+          this.panel.removeAttribute("noautofocus");
+        } else {
+          this.panel.setAttribute("noautofocus", "true");
+        }
+
         // show panel now
         this._update(notifications, new Set([notification.anchorElement]), true);
       } else {
@@ -690,7 +708,7 @@ PopupNotifications.prototype = {
     if (this._ignoreDismissal) {
       return this._ignoreDismissal.promise;
     }
-    let deferred = Promise.defer();
+    let deferred = PromiseUtils.defer();
     this._ignoreDismissal = deferred;
     this.panel.hidePopup();
     return deferred.promise;
@@ -761,6 +779,7 @@ PopupNotifications.prototype = {
       if (n.mainAction) {
         popupnotification.setAttribute("buttonlabel", n.mainAction.label);
         popupnotification.setAttribute("buttonaccesskey", n.mainAction.accessKey);
+        popupnotification.setAttribute("buttonhighlight", !n.mainAction.disableHighlight);
         popupnotification.setAttribute("buttoncommand", "PopupNotifications._onButtonEvent(event, 'buttoncommand');");
         popupnotification.setAttribute("dropmarkerpopupshown", "PopupNotifications._onButtonEvent(event, 'dropmarkerpopupshown');");
         popupnotification.setAttribute("learnmoreclick", "PopupNotifications._onButtonEvent(event, 'learnmoreclick');");
@@ -768,6 +787,7 @@ PopupNotifications.prototype = {
       } else {
         // Enable the default button to let the user close the popup if the close button is hidden
         popupnotification.setAttribute("buttoncommand", "PopupNotifications._onButtonEvent(event, 'buttoncommand');");
+        popupnotification.setAttribute("buttonhighlight", "true");
         popupnotification.removeAttribute("buttonlabel");
         popupnotification.removeAttribute("buttonaccesskey");
         popupnotification.removeAttribute("dropmarkerpopupshown");
@@ -859,6 +879,7 @@ PopupNotifications.prototype = {
         }
       } else {
         popupnotification.setAttribute("checkboxhidden", "true");
+        popupnotification.setAttribute("warninghidden", "true");
       }
 
       this.panel.appendChild(popupnotification);
@@ -929,6 +950,13 @@ PopupNotifications.prototype = {
       if (!anchorElement || (anchorElement.boxObject.height == 0 &&
                              anchorElement.boxObject.width == 0)) {
         anchorElement = this.tabbrowser.selectedTab;
+
+        // If we're in an entirely chromeless environment, set the anchorElement
+        // to null and let openPopup show the notification at (0,0) later.
+        if (!anchorElement || (anchorElement.boxObject.height == 0 &&
+                               anchorElement.boxObject.width == 0)) {
+          anchorElement = null;
+        }
       }
     }
 
@@ -1012,7 +1040,7 @@ PopupNotifications.prototype = {
       this._popupshownListener = this._popupshownListener.bind(this);
       target.addEventListener("popupshown", this._popupshownListener, true);
 
-      this.panel.openPopup(anchorElement, "bottomcenter topleft");
+      this.panel.openPopup(anchorElement, "bottomcenter topleft", 0, 0);
     });
   },
 
@@ -1150,6 +1178,11 @@ PopupNotifications.prototype = {
       let anchorElm = notification.anchorElement;
       if (anchorElm) {
         anchorElm.setAttribute(ICON_ATTRIBUTE_SHOWING, "true");
+
+        if (notification.options.extraAttr) {
+          anchorElm.setAttribute("extraAttr", notification.options.extraAttr);
+        }
+
       }
     }
   },
@@ -1239,17 +1272,17 @@ PopupNotifications.prototype = {
       this._dismissOrRemoveCurrentNotifications();
     }
 
-    // Ensure we move focus into the panel because it's opened through user interaction:
-    this.panel.removeAttribute("noautofocus");
-
     // Avoid reshowing notifications that are already shown and have not been dismissed.
     if (this.panel.state == "closed" || anchor != this._currentAnchorElement) {
-      this._reshowNotifications(anchor);
-    }
+      // As soon as the panel is shown, focus the first element in the selected notification.
+      this.panel.addEventListener("popupshown",
+        () => this.window.document.commandDispatcher.advanceFocusIntoSubtree(this.panel),
+        {once: true});
 
-    // If the user re-selects the current notification, focus it.
-    if (anchor == this._currentAnchorElement && this.panel.firstChild) {
-      this.panel.firstChild.button.focus();
+      this._reshowNotifications(anchor);
+    } else {
+      // Focus the first element in the selected notification.
+      this.window.document.commandDispatcher.advanceFocusIntoSubtree(this.panel);
     }
   },
 
@@ -1273,7 +1306,7 @@ PopupNotifications.prototype = {
     // to update our notification map.
 
     let ourNotifications = this._getNotificationsForBrowser(ourBrowser);
-    let other = otherBrowser.ownerDocument.defaultView.PopupNotifications;
+    let other = otherBrowser.ownerGlobal.PopupNotifications;
     if (!other) {
       if (ourNotifications.length > 0)
         Cu.reportError("unable to swap notifications: otherBrowser doesn't support notifications");
@@ -1330,9 +1363,9 @@ PopupNotifications.prototype = {
     }
 
     // We may have removed the "noautofocus" attribute before showing the panel
-    // if it was opened with user interaction. When the panel is closed, we have
-    // to restore the attribute to its default value, so we don't autofocus it
-    // if it is subsequently opened from a different code path.
+    // if the notification specified it wants to autofocus on first show.
+    // When the panel is closed, we have to restore the attribute to its default
+    // value, so we don't autofocus it if it's subsequently opened from a different code path.
     this.panel.setAttribute("noautofocus", "true");
 
     // Handle the case where the panel was closed programmatically.
@@ -1419,6 +1452,13 @@ PopupNotifications.prototype = {
     }
 
     if (type == "buttoncommand" || type == "secondarybuttoncommand") {
+      if (Services.focus.activeWindow != this.window) {
+        Services.console.logStringMessage("PopupNotifications._onButtonEvent: " +
+                                          "Button click happened before the window was focused");
+        this.window.focus();
+        return;
+      }
+
       let timeSinceShown = this.window.performance.now() - notification.timeShown;
       if (timeSinceShown < this.buttonDelay) {
         Services.console.logStringMessage("PopupNotifications._onButtonEvent: " +
@@ -1485,6 +1525,6 @@ PopupNotifications.prototype = {
   },
 
   _notify: function PopupNotifications_notify(topic) {
-    Services.obs.notifyObservers(null, "PopupNotifications-" + topic, "");
+    Services.obs.notifyObservers(null, "PopupNotifications-" + topic);
   },
 };

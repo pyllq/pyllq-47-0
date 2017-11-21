@@ -8,20 +8,24 @@
  */
 
 add_task(function* () {
+  const {
+    getFormattedSize,
+    getFormattedTime
+  } = require("devtools/client/netmonitor/src/utils/format-utils");
+
   requestLongerTimeout(2);
 
   let { tab, monitor } = yield initNetMonitor(FILTERING_URL);
   info("Starting test... ");
 
-  let { $, NetMonitorView, gStore, windowRequire } = monitor.panelWin;
-  let { RequestsMenu } = NetMonitorView;
-
+  let { document, store, windowRequire } = monitor.panelWin;
+  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
   let { getDisplayedRequestsSummary } =
-    windowRequire("devtools/client/netmonitor/selectors/index");
-  let { L10N } = windowRequire("devtools/client/netmonitor/l10n");
+    windowRequire("devtools/client/netmonitor/src/selectors/index");
+  let { L10N } = windowRequire("devtools/client/netmonitor/src/utils/l10n");
   let { PluralForm } = windowRequire("devtools/shared/plural-form");
 
-  RequestsMenu.lazyUpdate = false;
+  store.dispatch(Actions.batchEnable(false));
   testStatus();
 
   for (let i = 0; i < 2; i++) {
@@ -36,7 +40,7 @@ add_task(function* () {
 
     let buttons = ["html", "css", "js", "xhr", "fonts", "images", "media", "flash"];
     for (let button of buttons) {
-      let buttonEl = $(`#requests-menu-filter-${button}-button`);
+      let buttonEl = document.querySelector(`.requests-list-filter-${button}-button`);
       EventUtils.sendMouseEvent({ type: "click" }, buttonEl);
       testStatus();
     }
@@ -45,27 +49,42 @@ add_task(function* () {
   yield teardown(monitor);
 
   function testStatus() {
-    let value = $("#requests-menu-network-summary-button").textContent;
-    info("Current summary: " + value);
-
-    let state = gStore.getState();
+    let state = store.getState();
     let totalRequestsCount = state.requests.requests.size;
     let requestsSummary = getDisplayedRequestsSummary(state);
     info(`Current requests: ${requestsSummary.count} of ${totalRequestsCount}.`);
 
+    let valueCount = document.querySelector(".requests-list-network-summary-count")
+                        .textContent;
+    info("Current summary count: " + valueCount);
+    let expectedCount = PluralForm.get(requestsSummary.count,
+      L10N.getFormatStrWithNumbers("networkMenu.summary.requestsCount",
+        requestsSummary.count));
+
     if (!totalRequestsCount || !requestsSummary.count) {
-      is(value, L10N.getStr("networkMenu.empty"),
+      is(valueCount, L10N.getStr("networkMenu.summary.requestsCountEmpty"),
         "The current summary text is incorrect, expected an 'empty' label.");
       return;
     }
 
+    let valueTransfer = document.querySelector(".requests-list-network-summary-transfer")
+                        .textContent;
+    info("Current summary transfer: " + valueTransfer);
+    let expectedTransfer = L10N.getFormatStrWithNumbers("networkMenu.summary.transferred",
+      getFormattedSize(requestsSummary.contentSize),
+      getFormattedSize(requestsSummary.transferredSize));
+
+    let valueFinish = document.querySelector(".requests-list-network-summary-finish")
+                        .textContent;
+    info("Current summary finish: " + valueFinish);
+    let expectedFinish = L10N.getFormatStrWithNumbers("networkMenu.summary.finish",
+      getFormattedTime(requestsSummary.millis));
+
     info(`Computed total bytes: ${requestsSummary.bytes}`);
     info(`Computed total millis: ${requestsSummary.millis}`);
 
-    is(value, PluralForm.get(requestsSummary.count, L10N.getStr("networkMenu.summary"))
-      .replace("#1", requestsSummary.count)
-      .replace("#2", L10N.numberWithDecimals(requestsSummary.bytes / 1024, 2))
-      .replace("#3", L10N.numberWithDecimals(requestsSummary.millis / 1000, 2))
-    , "The current summary text is correct.");
+    is(valueCount, expectedCount, "The current summary count is correct.");
+    is(valueTransfer, expectedTransfer, "The current summary transfer is correct.");
+    is(valueFinish, expectedFinish, "The current summary finish is correct.");
   }
 });

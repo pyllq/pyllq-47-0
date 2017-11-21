@@ -8,7 +8,6 @@
 #define MOZ_UNITS_H_
 
 #include "mozilla/gfx/Coord.h"
-#include "mozilla/gfx/Matrix.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/gfx/Rect.h"
 #include "mozilla/gfx/ScaleFactor.h"
@@ -186,6 +185,7 @@ typedef gfx::Matrix4x4Typed<ScreenPixel, ParentLayerPixel> ScreenToParentLayerMa
 typedef gfx::Matrix4x4Typed<ParentLayerPixel, LayerPixel> ParentLayerToLayerMatrix4x4;
 typedef gfx::Matrix4x4Typed<ParentLayerPixel, ScreenPixel> ParentLayerToScreenMatrix4x4;
 typedef gfx::Matrix4x4Typed<ParentLayerPixel, ParentLayerPixel> ParentLayerToParentLayerMatrix4x4;
+typedef gfx::Matrix4x4Typed<ParentLayerPixel, RenderTargetPixel> ParentLayerToRenderTargetMatrix4x4;
 
 /*
  * The pixels that content authors use to specify sizes in.
@@ -238,6 +238,10 @@ struct CSSPixel {
                       NSAppUnitsToIntPixels(aRect.y, float(AppUnitsPerCSSPixel())),
                       NSAppUnitsToIntPixels(aRect.width, float(AppUnitsPerCSSPixel())),
                       NSAppUnitsToIntPixels(aRect.height, float(AppUnitsPerCSSPixel())));
+  }
+
+  static CSSIntRect FromAppUnitsToNearest(const nsRect& aRect) {
+    return CSSIntRect::FromUnknownRect(aRect.ToNearestPixels(AppUnitsPerCSSPixel()));
   }
 
   // Conversions to app units
@@ -295,6 +299,12 @@ struct LayoutDevicePixel {
                             NSAppUnitsToFloatPixels(aRect.y, float(aAppUnitsPerDevPixel)),
                             NSAppUnitsToFloatPixels(aRect.width, float(aAppUnitsPerDevPixel)),
                             NSAppUnitsToFloatPixels(aRect.height, float(aAppUnitsPerDevPixel)));
+  }
+
+  static LayoutDeviceSize FromAppUnits(const nsSize& aSize, nscoord aAppUnitsPerDevPixel) {
+    return LayoutDeviceSize(
+      NSAppUnitsToFloatPixels(aSize.width, aAppUnitsPerDevPixel),
+      NSAppUnitsToFloatPixels(aSize.height, aAppUnitsPerDevPixel));
   }
 
   static LayoutDevicePoint FromAppUnits(const nsPoint& aPoint, nscoord aAppUnitsPerDevPixel) {
@@ -660,6 +670,32 @@ gfx::ScaleFactor<src, dst> MinScaleRatio(const gfx::SizeTyped<dst>& aDestSize, c
   return gfx::ScaleFactor<src, dst>(std::min(aDestSize.width / aSrcSize.width,
                                              aDestSize.height / aSrcSize.height));
 }
+
+template <typename T>
+struct CoordOfImpl;
+
+template <typename Units>
+struct CoordOfImpl<gfx::PointTyped<Units>> {
+  typedef gfx::CoordTyped<Units> Type;
+};
+
+template <typename Units>
+struct CoordOfImpl<gfx::IntPointTyped<Units>> {
+  typedef gfx::IntCoordTyped<Units> Type;
+};
+
+template <typename Units>
+struct CoordOfImpl<gfx::RectTyped<Units>> {
+  typedef gfx::CoordTyped<Units> Type;
+};
+
+template <typename Units>
+struct CoordOfImpl<gfx::IntRectTyped<Units>> {
+  typedef gfx::IntCoordTyped<Units> Type;
+};
+
+template <typename T>
+using CoordOf = typename CoordOfImpl<T>::Type;
 
 } // namespace mozilla
 

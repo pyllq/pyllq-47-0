@@ -15,9 +15,9 @@ var WebcompatReporter = {
   menuItem: null,
   menuItemEnabled: null,
   init: function() {
-    Services.obs.addObserver(this, "DesktopMode:Change", false);
-    Services.obs.addObserver(this, "chrome-document-global-created", false);
-    Services.obs.addObserver(this, "content-document-global-created", false);
+    GlobalEventDispatcher.registerListener(this, "DesktopMode:Change");
+    Services.obs.addObserver(this, "chrome-document-global-created");
+    Services.obs.addObserver(this, "content-document-global-created");
 
     let visible = true;
     if ("@mozilla.org/parental-controls-service;1" in Cc) {
@@ -26,6 +26,16 @@ var WebcompatReporter = {
     }
 
     this.addMenuItem(visible);
+  },
+
+  onEvent: function(event, data, callback) {
+    if (event === "DesktopMode:Change") {
+      let tab = BrowserApp.getTabForId(data.tabId);
+      let currentURI = tab.browser.currentURI.spec;
+      if (data.desktopMode && this.isReportableUrl(currentURI)) {
+        this.reportDesktopModePrompt(tab);
+      }
+    }
   },
 
   observe: function(subject, topic, data) {
@@ -44,13 +54,6 @@ var WebcompatReporter = {
       } else if (this.menuItemEnabled && !this.isReportableUrl(currentURI)) {
         NativeWindow.menu.update(this.menuItem, {enabled: false});
         this.menuItemEnabled = false;
-      }
-    } else if (topic === "DesktopMode:Change") {
-      let args = JSON.parse(data);
-      let tab = BrowserApp.getTabForId(args.tabId);
-      let currentURI = tab.browser.currentURI.spec;
-      if (args.desktopMode && this.isReportableUrl(currentURI)) {
-        this.reportDesktopModePrompt(tab);
       }
     }
   },
@@ -121,15 +124,13 @@ var WebcompatReporter = {
       let webcompatURL = `${WEBCOMPAT_ORIGIN}/issues/new?url=${url}&src=mobile-reporter`;
 
       if (tabData.data && typeof tabData.data === "string") {
-        BrowserApp.deck.addEventListener("DOMContentLoaded", function sendDataToTab(event) {
-          BrowserApp.deck.removeEventListener("DOMContentLoaded", sendDataToTab);
-
+        BrowserApp.deck.addEventListener("DOMContentLoaded", function(event) {
           if (event.target.defaultView.location.origin === WEBCOMPAT_ORIGIN) {
             // Waive Xray vision so event.origin is not chrome://browser on the other side.
             let win = Cu.waiveXrays(event.target.defaultView);
             win.postMessage(tabData.data, WEBCOMPAT_ORIGIN);
           }
-        });
+        }, {once: true});
       }
 
       let isPrivateTab = PrivateBrowsingUtils.isBrowserPrivate(tabData.tab.browser);

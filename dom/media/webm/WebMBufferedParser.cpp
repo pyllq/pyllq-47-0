@@ -205,7 +205,7 @@ bool WebMBufferedParser::Append(const unsigned char* aBuffer, uint32_t aLength,
                                          mClusterOffset, mClusterEndOffset);
                 aMapping.InsertElementAt(idx, entry);
               } else {
-                WEBM_DEBUG("Out of order timecode %llu in Cluster at %lld ignored",
+                WEBM_DEBUG("Out of order timecode %" PRIu64 " in Cluster at %" PRId64 " ignored",
                            absTimecode, mClusterOffset);
               }
             }
@@ -449,7 +449,7 @@ void WebMBufferedState::UpdateIndex(const MediaByteRangeSet& aRanges, MediaResou
     while (length > 0) {
       static const uint32_t BLOCK_SIZE = 1048576;
       uint32_t block = std::min(length, BLOCK_SIZE);
-      RefPtr<MediaByteBuffer> bytes = aResource->MediaReadAt(offset, block);
+      RefPtr<MediaByteBuffer> bytes = aResource->CachedReadAt(offset, block);
       if (!bytes) {
         break;
       }

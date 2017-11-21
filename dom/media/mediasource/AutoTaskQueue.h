@@ -9,6 +9,7 @@
 
 #include "mozilla/RefPtr.h"
 #include "mozilla/SharedThreadPool.h"
+#include "mozilla/SystemGroup.h"
 #include "mozilla/TaskQueue.h"
 
 namespace mozilla {
@@ -18,11 +19,16 @@ class AutoTaskQueue : public AbstractThread
 {
 public:
   explicit AutoTaskQueue(already_AddRefed<SharedThreadPool> aPool,
-                         AbstractThread* aAbstractMainThread,
                          bool aSupportsTailDispatch = false)
   : AbstractThread(aSupportsTailDispatch)
   , mTaskQueue(new TaskQueue(Move(aPool), aSupportsTailDispatch))
-  , mAbstractMainThread(aAbstractMainThread)
+  {}
+
+  AutoTaskQueue(already_AddRefed<SharedThreadPool> aPool,
+                const char* aName,
+                bool aSupportsTailDispatch = false)
+  : AbstractThread(aSupportsTailDispatch)
+  , mTaskQueue(new TaskQueue(Move(aPool), aName, aSupportsTailDispatch))
   {}
 
   TaskDispatcher& TailDispatcher() override
@@ -36,6 +42,9 @@ public:
   {
     mTaskQueue->Dispatch(Move(aRunnable), aFailureHandling, aReason);
   }
+
+  // Prevent a GCC warning about the other overload of Dispatch being hidden.
+  using AbstractThread::Dispatch;
 
   // Blocks until all tasks finish executing.
   void AwaitIdle() { mTaskQueue->AwaitIdle(); }
@@ -51,11 +60,11 @@ private:
   {
     RefPtr<TaskQueue> taskqueue = mTaskQueue;
     nsCOMPtr<nsIRunnable> task =
-      NS_NewRunnableFunction([taskqueue]() { taskqueue->BeginShutdown(); });
-    mAbstractMainThread->Dispatch(task.forget());
+      NS_NewRunnableFunction("AutoTaskQueue::~AutoTaskQueue",
+                             [taskqueue]() { taskqueue->BeginShutdown(); });
+    SystemGroup::Dispatch(TaskCategory::Other, task.forget());
   }
   RefPtr<TaskQueue> mTaskQueue;
-  const RefPtr<AbstractThread> mAbstractMainThread;
 };
 
 } // namespace mozilla

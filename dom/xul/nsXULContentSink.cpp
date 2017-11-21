@@ -42,7 +42,6 @@
 #include "nsReadableUtils.h"
 #include "nsXULElement.h"
 #include "mozilla/Logging.h"
-#include "prmem.h"
 #include "nsCRT.h"
 
 #include "nsXULPrototypeDocument.h"     // XXXbe temporary
@@ -256,15 +255,13 @@ XULContentSinkImpl::SetParser(nsParserBase* aParser)
     return NS_OK;
 }
 
-NS_IMETHODIMP
-XULContentSinkImpl::SetDocumentCharset(nsACString& aCharset)
+void
+XULContentSinkImpl::SetDocumentCharset(NotNull<const Encoding*> aEncoding)
 {
     nsCOMPtr<nsIDocument> doc = do_QueryReferent(mDocument);
     if (doc) {
-        doc->SetDocumentCharacterSet(aCharset);
+        doc->SetDocumentCharacterSet(aEncoding);
     }
-
-    return NS_OK;
 }
 
 nsISupports *
@@ -879,7 +876,7 @@ XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
               isJavaScript = false;
           }
       } else if (key.EqualsLiteral("language")) {
-          // Language is deprecated, and the impl in nsScriptLoader ignores the
+          // Language is deprecated, and the impl in ScriptLoader ignores the
           // various version strings anyway.  So we make no attempt to support
           // languages other than JS for language=
           nsAutoString lang(aAttributes[1]);

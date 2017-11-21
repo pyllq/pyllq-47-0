@@ -231,6 +231,10 @@ window.new_div = function(style) {
 // take over the refresh driver right from the start.
 advance_clock(0);
 
+SimpleTest.registerCleanupFunction(() => {
+  SpecialPowers.DOMWindowUtils.restoreNormalRefresh();
+});
+
 /*
  * css3-animations:  2. Animations
  * http://dev.w3.org/csswg/css3-animations/#animations
@@ -1558,7 +1562,7 @@ is(cs.marginLeft, "50px", "dynamic rule change test, change in keyframe keyText"
 dyn1.deleteRule("25%");
 is(cs.marginLeft, "25px", "dynamic rule change test, @keyframes deleteRule");
 done_div();
-dyn_sheet_elt.parentNode.removeChild(dyn_sheet_elt);
+dyn_sheet_elt.remove();
 dyn_sheet_elt = null;
 dyn_sheet = null;
 
@@ -2048,7 +2052,7 @@ div.parentNode.insertBefore(ancestor, div);
 ancestor.appendChild(div);
 testDisplayNoneTurnsOffAnimations("AncestorElement ", ancestor);
 ancestor.parentNode.insertBefore(div, ancestor);
-ancestor.parentNode.removeChild(ancestor);
+ancestor.remove();
 done_div();
 
 
@@ -2094,8 +2098,6 @@ div.style.animation = "unset";
 div.style.animation = "\"none\" 1s linear";
 is(cs.getPropertyValue("left"), "7px", "animation name 'none' as string is accepted");
 done_div();
-
-SpecialPowers.DOMWindowUtils.restoreNormalRefresh();
 
 </script>
 </pre>

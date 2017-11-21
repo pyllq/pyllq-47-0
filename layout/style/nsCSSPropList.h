@@ -1553,6 +1553,16 @@ CSS_PROP_COLUMN(
     CSS_PROP_NO_OFFSET,
     eStyleAnimType_Custom)
 CSS_PROP_COLUMN(
+    column-span,
+    column_span,
+    ColumnSpan,
+    CSS_PROPERTY_PARSE_VALUE,
+    "layout.css.column-span.enabled",
+    VARIANT_HK,
+    kColumnSpanKTable,
+    CSS_PROP_NO_OFFSET,
+    eStyleAnimType_Discrete)
+CSS_PROP_COLUMN(
     column-width,
     column_width,
     ColumnWidth,
@@ -1594,6 +1604,19 @@ CSS_PROP_CONTENT(
     CSS_PROP_NO_OFFSET,
     eStyleAnimType_Discrete)
 #ifndef CSS_PROP_LIST_EXCLUDE_INTERNAL
+CSS_PROP_SVG(
+    // Only intended to be used internally by Mozilla, so prefixed.
+    -moz-context-properties,
+    _moz_context_properties,
+    CSS_PROP_DOMPROP_PREFIXED(ContextProperties),
+    CSS_PROPERTY_PARSE_FUNCTION |
+        CSS_PROPERTY_VALUE_LIST_USES_COMMAS |
+        CSS_PROPERTY_INTERNAL,
+    "",
+    0,
+    nullptr,
+    CSS_PROP_NO_OFFSET,
+    eStyleAnimType_None)
 CSS_PROP_TEXT(
     -moz-control-character-visibility,
     _moz_control_character_visibility,
@@ -1701,7 +1724,7 @@ CSS_PROP_SVG(
     FillOpacity,
     CSS_PROPERTY_PARSE_VALUE,
     "",
-    VARIANT_HN | VARIANT_OPENTYPE_SVG_KEYWORD,
+    VARIANT_HN | VARIANT_KEYWORD,
     kContextOpacityKTable,
     offsetof(nsStyleSVG, mFillOpacity),
     eStyleAnimType_float)
@@ -2990,9 +3013,8 @@ CSS_PROP_POSITION(
     object-fit,
     object_fit,
     ObjectFit,
-    CSS_PROPERTY_PARSE_VALUE |
-        CSS_PROPERTY_ENABLED_IN_UA_SHEETS,
-    "layout.css.object-fit-and-position.enabled",
+    CSS_PROPERTY_PARSE_VALUE,
+    "",
     VARIANT_HK,
     kObjectFitKTable,
     CSS_PROP_NO_OFFSET,
@@ -3002,9 +3024,8 @@ CSS_PROP_POSITION(
     object_position,
     ObjectPosition,
     CSS_PROPERTY_PARSE_FUNCTION |
-        CSS_PROPERTY_STORES_CALC |
-        CSS_PROPERTY_ENABLED_IN_UA_SHEETS,
-    "layout.css.object-fit-and-position.enabled",
+        CSS_PROPERTY_STORES_CALC,
+    "",
     0,
     kImageLayerPositionKTable,
     offsetof(nsStylePosition, mObjectPosition),
@@ -3848,7 +3869,7 @@ CSS_PROP_SVG(
     StrokeOpacity,
     CSS_PROPERTY_PARSE_VALUE,
     "",
-    VARIANT_HN | VARIANT_OPENTYPE_SVG_KEYWORD,
+    VARIANT_HN | VARIANT_KEYWORD,
     kContextOpacityKTable,
     offsetof(nsStyleSVG, mStrokeOpacity),
     eStyleAnimType_float)
@@ -4052,6 +4073,17 @@ CSS_PROP_TEXT(
     nullptr,
     offsetof(nsStyleText, mTextIndent),
     eStyleAnimType_Coord)
+CSS_PROP_TEXT(
+    text-justify,
+    text_justify,
+    TextJustify,
+    CSS_PROPERTY_PARSE_VALUE |
+        CSS_PROPERTY_APPLIES_TO_PLACEHOLDER,
+    "layout.css.text-justify.enabled",
+    VARIANT_HK,
+    kTextJustifyKTable,
+    CSS_PROP_NO_OFFSET,
+    eStyleAnimType_Discrete)
 CSS_PROP_VISIBILITY(
     text-orientation,
     text_orientation,
@@ -4105,8 +4137,8 @@ CSS_PROP_TEXT(
     CSS_PROP_DOMPROP_PREFIXED(TextSizeAdjust),
     CSS_PROPERTY_PARSE_VALUE,
     "",
-    VARIANT_AUTO | VARIANT_NONE | VARIANT_INHERIT,
-    nullptr,
+    VARIANT_HK,
+    kTextSizeAdjustKTable,
     CSS_PROP_NO_OFFSET,
     eStyleAnimType_Discrete)
 CSS_PROP_SHORTHAND(
@@ -4462,6 +4494,41 @@ CSS_PROP_UIRESET(
     kWindowShadowKTable,
     CSS_PROP_NO_OFFSET,
     eStyleAnimType_None)
+CSS_PROP_UIRESET(
+    -moz-window-opacity,
+    _moz_window_opacity,
+    CSS_PROP_DOMPROP_PREFIXED(WindowOpacity),
+    CSS_PROPERTY_INTERNAL | CSS_PROPERTY_PARSE_VALUE,
+    "",
+    VARIANT_HN,
+    nullptr,
+    offsetof(nsStyleUIReset, mWindowOpacity),
+    eStyleAnimType_float)
+CSS_PROP_UIRESET(
+    -moz-window-transform,
+    _moz_window_transform,
+    CSS_PROP_DOMPROP_PREFIXED(WindowTransform),
+    CSS_PROPERTY_INTERNAL |
+        CSS_PROPERTY_PARSE_FUNCTION |
+        CSS_PROPERTY_GETCS_NEEDS_LAYOUT_FLUSH,
+    "",
+    0,
+    nullptr,
+    offsetof(nsStyleUIReset, mSpecifiedWindowTransform),
+    eStyleAnimType_Custom)
+CSS_PROP_UIRESET(
+    -moz-window-transform-origin,
+    _moz_window_transform_origin,
+    CSS_PROP_DOMPROP_PREFIXED(WindowTransformOrigin),
+    CSS_PROPERTY_INTERNAL |
+        CSS_PROPERTY_PARSE_FUNCTION |
+        CSS_PROPERTY_STORES_CALC |
+        CSS_PROPERTY_GETCS_NEEDS_LAYOUT_FLUSH,
+    "",
+    0,
+    kImageLayerPositionKTable,
+    CSS_PROP_NO_OFFSET,
+    eStyleAnimType_Custom)
 #endif // CSS_PROP_LIST_EXCLUDE_INTERNAL
 CSS_PROP_TEXT(
     word-break,

@@ -51,7 +51,7 @@ FormSubmitObserver.prototype =
 
     // nsIFormSubmitObserver callback about invalid forms. See HTMLFormElement
     // for details.
-    Services.obs.addObserver(this, "invalidformsubmit", false);
+    Services.obs.addObserver(this, "invalidformsubmit");
     this._tab.addEventListener("pageshow", this);
     this._tab.addEventListener("unload", this);
   },
@@ -206,7 +206,7 @@ FormSubmitObserver.prototype =
       panelData.position = "bottomcenter topleft";
     } else {
       let win = aElement.ownerGlobal;
-      let style = win.getComputedStyle(aElement, null);
+      let style = win.getComputedStyle(aElement);
       if (style.direction == "rtl") {
         offset = parseInt(style.paddingRight) + parseInt(style.borderRightWidth);
       } else {
@@ -236,5 +236,5 @@ FormSubmitObserver.prototype =
             (target.ownerDocument && target.ownerDocument == this._content.document));
   },
 
-  QueryInterface : XPCOMUtils.generateQI([Ci.nsIFormSubmitObserver])
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsIFormSubmitObserver])
 };

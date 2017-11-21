@@ -18,11 +18,15 @@
 #include "nsIResumableChannel.h"
 #include "nsIChildChannel.h"
 #include "nsIDivertableChannel.h"
+#include "nsIEventTarget.h"
 
 #include "nsIStreamListener.h"
 #include "PrivateBrowsingChannel.h"
 
+class nsIEventTarget;
+
 namespace mozilla {
+
 namespace net {
 
 // This class inherits logic from nsBaseChannel that is not needed for an
@@ -114,13 +118,17 @@ protected:
   void DoFailedAsyncOpen(const nsresult& statusCode);
   void DoDeleteSelf();
 
+  void SetupNeckoTarget() override;
+
   friend class FTPStartRequestEvent;
   friend class FTPDataAvailableEvent;
   friend class MaybeDivertOnDataFTPEvent;
   friend class FTPStopRequestEvent;
   friend class MaybeDivertOnStopFTPEvent;
   friend class FTPFailedAsyncOpenEvent;
+  friend class FTPFlushedForDiversionEvent;
   friend class FTPDeleteSelfEvent;
+  friend class NeckoTargetChannelEvent<FTPChannelChild>;
 
 private:
   nsCOMPtr<nsIInputStream> mUploadStream;

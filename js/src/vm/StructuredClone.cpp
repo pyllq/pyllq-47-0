@@ -29,6 +29,7 @@
 
 #include "js/StructuredClone.h"
 
+#include "mozilla/CheckedInt.h"
 #include "mozilla/EndianUtils.h"
 #include "mozilla/FloatingPoint.h"
 
@@ -39,9 +40,11 @@
 #include "jsdate.h"
 #include "jswrapper.h"
 
+#include "builtin/DataViewObject.h"
 #include "builtin/MapObject.h"
 #include "js/Date.h"
 #include "js/GCHashTable.h"
+#include "vm/RegExpObject.h"
 #include "vm/SavedFrame.h"
 #include "vm/SharedArrayObject.h"
 #include "vm/TypedArrayObject.h"
@@ -221,6 +224,10 @@ struct BufferIterator {
     T peek() const {
         MOZ_ASSERT(mIter.HasRoomFor(sizeof(T)));
         return *reinterpret_cast<T*>(mIter.Data());
+    }
+
+    bool canPeek() const {
+        return mIter.HasRoomFor(sizeof(T));
     }
 
     BufferList& mBuffer;
@@ -636,6 +643,7 @@ DiscardTransferables(mozilla::BufferList<AllocPolicy>& buffer,
         return; // Empty buffer
 
     uint32_t tag, data;
+    MOZ_RELEASE_ASSERT(point.canPeek());
     SCInput::getPair(point.peek(), &tag, &data);
     point.next();
 
@@ -643,6 +651,7 @@ DiscardTransferables(mozilla::BufferList<AllocPolicy>& buffer,
         if (point.done())
             return;
 
+        MOZ_RELEASE_ASSERT(point.canPeek());
         SCInput::getPair(point.peek(), &tag, &data);
         point.next();
     }
@@ -662,20 +671,20 @@ DiscardTransferables(mozilla::BufferList<AllocPolicy>& buffer,
     uint64_t numTransferables = NativeEndian::swapFromLittleEndian(point.peek());
     point.next();
     while (numTransferables--) {
-        if (point.done())
+        if (!point.canPeek())
             return;
 
         uint32_t ownership;
         SCInput::getPair(point.peek(), &tag, &ownership);
         point.next();
         MOZ_ASSERT(tag >= SCTAG_TRANSFER_MAP_PENDING_ENTRY);
-        if (point.done())
+        if (!point.canPeek())
             return;
 
         void* content;
         SCInput::getPtr(point.peek(), &content);
         point.next();
-        if (point.done())
+        if (!point.canPeek())
             return;
 
         uint64_t extraData = NativeEndian::swapFromLittleEndian(point.peek());
@@ -724,7 +733,7 @@ SCInput::SCInput(JSContext* cx, JSStructuredCloneData& data)
 bool
 SCInput::read(uint64_t* p)
 {
-    if (point.done()) {
+    if (!point.canPeek()) {
         *p = 0;  /* initialize to shut GCC up */
         return reportTruncated();
     }
@@ -736,7 +745,7 @@ SCInput::read(uint64_t* p)
 bool
 SCInput::readNativeEndian(uint64_t* p)
 {
-    if (point.done()) {
+    if (!point.canPeek()) {
         *p = 0;  /* initialize to shut GCC up */
         return reportTruncated();
     }
@@ -760,7 +769,7 @@ SCInput::readPair(uint32_t* tagp, uint32_t* datap)
 bool
 SCInput::get(uint64_t* p)
 {
-    if (point.done())
+    if (!point.canPeek())
         return reportTruncated();
     *p = NativeEndian::swapFromLittleEndian(point.peek());
     return true;
@@ -812,6 +821,18 @@ void
 swapFromLittleEndianInPlace(uint8_t* ptr, size_t nelems)
 {}
 
+// Data is packed into an integral number of uint64_t words. Compute the
+// padding required to finish off the final word.
+static size_t
+ComputePadding(size_t nelems, size_t elemSize)
+{
+    // We want total length mod 8, where total length is nelems * sizeof(T),
+    // but that might overflow. So reduce nelems to nelems mod 8, since we are
+    // going to be doing a mod 8 later anyway.
+    size_t leftoverLength = (nelems % sizeof(uint64_t)) * elemSize;
+    return (-leftoverLength) & (sizeof(uint64_t) - 1);
+}
+
 template <class T>
 bool
 SCInput::readArray(T* p, size_t nelems)
@@ -822,20 +843,18 @@ SCInput::readArray(T* p, size_t nelems)
     JS_STATIC_ASSERT(sizeof(uint64_t) % sizeof(T) == 0);
 
     /*
-     * Fail if nelems is so huge as to make JS_HOWMANY overflow or if nwords is
-     * larger than the remaining data.
+     * Fail if nelems is so huge that computing the full size will overflow.
      */
-    size_t nwords = JS_HOWMANY(nelems, sizeof(uint64_t) / sizeof(T));
-    if (nelems + sizeof(uint64_t) / sizeof(T) - 1 < nelems)
+    mozilla::CheckedInt<size_t> size = mozilla::CheckedInt<size_t>(nelems) * sizeof(T);
+    if (!size.isValid())
         return reportTruncated();
 
-    size_t size = sizeof(T) * nelems;
-    if (!point.readBytes(reinterpret_cast<char*>(p), size))
+    if (!point.readBytes(reinterpret_cast<char*>(p), size.value()))
         return false;
 
     swapFromLittleEndianInPlace(p, nelems);
 
-    point += sizeof(uint64_t) * nwords - size;
+    point += ComputePadding(nelems, sizeof(T));
 
     return true;
 }
@@ -918,20 +937,6 @@ SCOutput::writeDouble(double d)
     return write(BitwiseCast<uint64_t>(CanonicalizeNaN(d)));
 }
 
-template <typename T>
-static T
-swapToLittleEndian(T value)
-{
-    return NativeEndian::swapToLittleEndian(value);
-}
-
-template <>
-uint8_t
-swapToLittleEndian(uint8_t value)
-{
-    return value;
-}
-
 template <class T>
 bool
 SCOutput::writeArray(const T* p, size_t nelems)
@@ -942,25 +947,36 @@ SCOutput::writeArray(const T* p, size_t nelems)
     if (nelems == 0)
         return true;
 
-    if (nelems + sizeof(uint64_t) / sizeof(T) - 1 < nelems) {
-        ReportAllocationOverflow(context());
-        return false;
-    }
-
     for (size_t i = 0; i < nelems; i++) {
-        T value = swapToLittleEndian(p[i]);
+        T value = NativeEndian::swapToLittleEndian(p[i]);
         if (!buf.WriteBytes(reinterpret_cast<char*>(&value), sizeof(value)))
             return false;
     }
 
+    // Zero-pad to 8 bytes boundary.
+    size_t padbytes = ComputePadding(nelems, sizeof(T));
+    char zeroes[sizeof(uint64_t)] = { 0 };
+    if (!buf.WriteBytes(zeroes, padbytes))
+        return false;
+
+    return true;
+}
+
+template <>
+bool
+SCOutput::writeArray<uint8_t>(const uint8_t* p, size_t nelems)
+{
+    if (nelems == 0)
+        return true;
+
+    if (!buf.WriteBytes(reinterpret_cast<const char*>(p), nelems))
+        return false;
+
     // zero-pad to 8 bytes boundary
-    size_t nwords = JS_HOWMANY(nelems, sizeof(uint64_t) / sizeof(T));
-    size_t padbytes = sizeof(uint64_t) * nwords - sizeof(T) * nelems;
-    char zero = 0;
-    for (size_t i = 0; i < padbytes; i++) {
-        if (!buf.WriteBytes(&zero, sizeof(zero)))
-            return false;
-    }
+    size_t padbytes = ComputePadding(nelems, 1);
+    char zeroes[sizeof(uint64_t)] = { 0 };
+    if (!buf.WriteBytes(zeroes, padbytes))
+        return false;
 
     return true;
 }
@@ -1218,6 +1234,11 @@ JSStructuredCloneWriter::writeSharedArrayBuffer(HandleObject obj)
         return false;
     }
 
+    // We must not transfer buffer pointers cross-process.  The cloneDataPolicy
+    // should guard against this; check that it does.
+
+    MOZ_RELEASE_ASSERT(scope <= JS::StructuredCloneScope::SameProcessDifferentThread);
+
     Rooted<SharedArrayBufferObject*> sharedArrayBuffer(context(), &CheckedUnwrap(obj)->as<SharedArrayBufferObject>());
     SharedArrayRawBuffer* rawbuf = sharedArrayBuffer->rawBufferObject();
 
@@ -1413,6 +1434,7 @@ JSStructuredCloneWriter::traverseSavedFrame(HandleObject obj)
 
     RootedValue val(context());
 
+    context()->markAtom(savedFrame->getSource());
     val = StringValue(savedFrame->getSource());
     if (!startWrite(val))
         return false;
@@ -1426,11 +1448,15 @@ JSStructuredCloneWriter::traverseSavedFrame(HandleObject obj)
         return false;
 
     auto name = savedFrame->getFunctionDisplayName();
+    if (name)
+        context()->markAtom(name);
     val = name ? StringValue(name) : NullValue();
     if (!startWrite(val))
         return false;
 
     auto cause = savedFrame->getAsyncCause();
+    if (cause)
+        context()->markAtom(cause);
     val = cause ? StringValue(cause) : NullValue();
     if (!startWrite(val))
         return false;
@@ -1469,8 +1495,8 @@ JSStructuredCloneWriter::startWrite(HandleValue v)
             return false;
 
         if (cls == ESClass::RegExp) {
-            RegExpGuard re(context());
-            if (!RegExpToShared(context(), obj, &re))
+            RegExpShared* re = RegExpToShared(context(), obj);
+            if (!re)
                 return false;
             return out.writePair(SCTAG_REGEXP_OBJECT, re->getFlags()) &&
                    writeString(SCTAG_STRING, re->getSource());
@@ -1571,10 +1597,13 @@ JSStructuredCloneWriter::transferOwnership()
     // grabbing out pointers from the transferables and stuffing them into the
     // transfer map.
     auto point = out.iter();
+    MOZ_RELEASE_ASSERT(point.canPeek());
     MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) == SCTAG_HEADER);
     point++;
+    MOZ_RELEASE_ASSERT(point.canPeek());
     MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) == SCTAG_TRANSFER_MAP_HEADER);
     point++;
+    MOZ_RELEASE_ASSERT(point.canPeek());
     MOZ_ASSERT(NativeEndian::swapFromLittleEndian(point.peek()) == transferableObjects.count());
     point++;
 
@@ -1949,6 +1978,11 @@ JSStructuredCloneReader::readSharedArrayBuffer(uint32_t nbytes, MutableHandleVal
         return false;
     }
 
+    // We must not transfer buffer pointers cross-process.  The cloneDataPolicy
+    // in the sender should guard against this; check that it does.
+
+    MOZ_RELEASE_ASSERT(storedScope <= JS::StructuredCloneScope::SameProcessDifferentThread);
+
     // The new object will have a new reference to the rawbuf.
 
     if (!rawbuf->addReference()) {
@@ -2101,8 +2135,8 @@ JSStructuredCloneReader::startRead(MutableHandleValue vp)
         if (!atom)
             return false;
 
-        RegExpObject* reobj = RegExpObject::create(context(), atom, flags, nullptr,
-                                                   context()->tempLifoAlloc());
+        RegExpObject* reobj = RegExpObject::create(context(), atom, flags, nullptr, nullptr,
+                                                   context()->tempLifoAlloc(), GenericObject);
         if (!reobj)
             return false;
         vp.setObject(*reobj);
@@ -2406,6 +2440,7 @@ JSStructuredCloneReader::readSavedFrame(uint32_t principalsTag)
         if (!atomName)
             return nullptr;
     }
+
     savedFrame->initFunctionDisplayName(atomName);
 
     RootedValue cause(context());
@@ -2541,7 +2576,7 @@ JS_ReadStructuredClone(JSContext* cx, JSStructuredCloneData& buf,
                        const JSStructuredCloneCallbacks* optionalCallbacks,
                        void* closure)
 {
-    AssertHeapIsIdle(cx);
+    AssertHeapIsIdle();
     CHECK_REQUEST(cx);
 
     if (version > JS_STRUCTURED_CLONE_VERSION) {
@@ -2559,7 +2594,7 @@ JS_WriteStructuredClone(JSContext* cx, HandleValue value, JSStructuredCloneData*
                         const JSStructuredCloneCallbacks* optionalCallbacks,
                         void* closure, HandleValue transferable)
 {
-    AssertHeapIsIdle(cx);
+    AssertHeapIsIdle();
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, value);
 
@@ -2581,7 +2616,7 @@ JS_StructuredClone(JSContext* cx, HandleValue value, MutableHandleValue vp,
                    const JSStructuredCloneCallbacks* optionalCallbacks,
                    void* closure)
 {
-    AssertHeapIsIdle(cx);
+    AssertHeapIsIdle();
     CHECK_REQUEST(cx);
 
     // Strings are associated with zones, not compartments,

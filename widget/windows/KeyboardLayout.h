@@ -455,7 +455,7 @@ private:
 
   UINT GetScanCodeWithExtendedFlag() const;
 
-  // The result is one of nsIDOMKeyEvent::DOM_KEY_LOCATION_*.
+  // The result is one of eKeyLocation*.
   uint32_t GetKeyLocation() const;
 
   /**
@@ -530,6 +530,10 @@ private:
   {
     return aMSG.message == WM_CHAR &&
            !IsControlChar(static_cast<char16_t>(aMSG.wParam));
+  }
+  bool IsEnterKeyPressCharMessage(const MSG& aMSG) const
+  {
+    return aMSG.message == WM_CHAR && aMSG.wParam == '\r';
   }
   bool IsPrintableCharOrSysCharMessage(const MSG& aMSG) const
   {
@@ -667,6 +671,8 @@ private:
 
   static const MSG sEmptyMSG;
 
+  static MSG sLastKeyMSG;
+
   static bool IsEmptyMSG(const MSG& aMSG)
   {
     return !memcmp(&aMSG, &sEmptyMSG, sizeof(MSG));
@@ -676,6 +682,13 @@ private:
   {
     return mLastInstance && !IsEmptyMSG(mLastInstance->mRemovingMsg);
   }
+
+public:
+  /**
+   * Returns last key MSG.  If no key MSG has been received yet, the result
+   * is empty MSG (i.e., .message is WM_NULL).
+   */
+  static const MSG& LastKeyMSG() { return sLastKeyMSG; }
 };
 
 class KeyboardLayout

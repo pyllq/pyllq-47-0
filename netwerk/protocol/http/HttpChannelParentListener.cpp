@@ -16,6 +16,7 @@
 #include "nsIHttpHeaderVisitor.h"
 #include "nsIRedirectChannelRegistrar.h"
 #include "nsIPromptFactory.h"
+#include "nsIWindowWatcher.h"
 #include "nsQueryObject.h"
 
 using mozilla::Unused;
@@ -30,6 +31,8 @@ HttpChannelParentListener::HttpChannelParentListener(HttpChannelParent* aInitial
   , mShouldIntercept(false)
   , mShouldSuspendIntercept(false)
 {
+  LOG(("HttpChannelParentListener::HttpChannelParentListener [this=%p, next=%p]",
+       this, aInitialChannel));
 }
 
 HttpChannelParentListener::~HttpChannelParentListener()
@@ -83,8 +86,8 @@ HttpChannelParentListener::OnStopRequest(nsIRequest *aRequest,
   if (!mNextListener)
     return NS_ERROR_UNEXPECTED;
 
-  LOG(("HttpChannelParentListener::OnStopRequest: [this=%p status=%ul]\n",
-       this, aStatusCode));
+  LOG(("HttpChannelParentListener::OnStopRequest: [this=%p status=%" PRIu32 "]\n",
+       this, static_cast<uint32_t>(aStatusCode)));
   nsresult rv = mNextListener->OnStopRequest(aRequest, aContext, aStatusCode);
 
   mNextListener = nullptr;
@@ -160,6 +163,9 @@ HttpChannelParentListener::AsyncOnChannelRedirect(
                                     uint32_t redirectFlags,
                                     nsIAsyncVerifyRedirectCallback* callback)
 {
+  LOG(("HttpChannelParentListener::AsyncOnChannelRedirect [this=%p, old=%p, new=%p, flags=%u]",
+       this, oldChannel, newChannel, redirectFlags));
+
   nsresult rv;
 
   nsCOMPtr<nsIParentRedirectingChannel> activeRedirectingChannel =
@@ -193,6 +199,9 @@ HttpChannelParentListener::AsyncOnChannelRedirect(
 NS_IMETHODIMP
 HttpChannelParentListener::OnRedirectResult(bool succeeded)
 {
+  LOG(("HttpChannelParentListener::OnRedirectResult [this=%p, suc=%d]",
+       this, succeeded));
+
   nsresult rv;
 
   nsCOMPtr<nsIParentChannel> redirectChannel;
@@ -296,7 +305,8 @@ class FinishSynthesizedResponse : public Runnable
   nsCOMPtr<nsIInterceptedChannel> mChannel;
 public:
   explicit FinishSynthesizedResponse(nsIInterceptedChannel* aChannel)
-  : mChannel(aChannel)
+    : Runnable("net::FinishSynthesizedResponse")
+    , mChannel(aChannel)
   {
   }
 
@@ -321,8 +331,10 @@ HttpChannelParentListener::ChannelIntercepted(nsIInterceptedChannel* aChannel)
   mSynthesizedResponseHead->StatusText(statusText);
   aChannel->SynthesizeStatus(mSynthesizedResponseHead->Status(), statusText);
   nsCOMPtr<nsIHttpHeaderVisitor> visitor = new HeaderVisitor(aChannel);
-  mSynthesizedResponseHead->VisitHeaders(visitor,
-                                         nsHttpHeaderArray::eFilterResponse);
+  DebugOnly<nsresult> rv =
+    mSynthesizedResponseHead->VisitHeaders(visitor,
+                                           nsHttpHeaderArray::eFilterResponse);
+  MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   nsCOMPtr<nsIRunnable> event = new FinishSynthesizedResponse(aChannel);
   NS_DispatchToCurrentThread(event);

@@ -58,43 +58,12 @@ using namespace mozilla::media;
 
 typedef std::vector<CompositableOperation> OpVector;
 typedef nsTArray<OpDestroy> OpDestroyVector;
-
-namespace {
-class ImageBridgeThread : public Thread {
-public:
-
-  ImageBridgeThread() : Thread("ImageBridgeChild") {
-  }
-
-protected:
-
-  MOZ_IS_CLASS_INIT
-  void Init() {
-#ifdef MOZ_ENABLE_PROFILER_SPS
-    mPseudoStackHack = profiler_get_pseudo_stack();
-#endif
-  }
-
-  void CleanUp() {
-#ifdef MOZ_ENABLE_PROFILER_SPS
-    mPseudoStackHack = nullptr;
-#endif
-  }
-
-private:
-
-#ifdef MOZ_ENABLE_PROFILER_SPS
-  // This is needed to avoid a spurious leak report.  There's no other
-  // use for it.  See bug 1239504 and bug 1215265.
-  MOZ_INIT_OUTSIDE_CTOR PseudoStack* mPseudoStackHack;
-#endif
-};
-}
+typedef nsTArray<ReadLockInit> ReadLockVector;
 
 struct CompositableTransaction
 {
   CompositableTransaction()
-  : mSwapRequired(false)
+  : mReadLockSequenceNumber(0)
   , mFinished(true)
   {}
   ~CompositableTransaction()
@@ -109,13 +78,15 @@ struct CompositableTransaction
   {
     MOZ_ASSERT(mFinished);
     mFinished = false;
+    mReadLockSequenceNumber = 0;
+    mReadLocks.AppendElement();
   }
   void End()
   {
     mFinished = true;
-    mSwapRequired = false;
     mOperations.clear();
     mDestroyedActors.Clear();
+    mReadLocks.Clear();
   }
   bool IsEmpty() const
   {
@@ -126,19 +97,22 @@ struct CompositableTransaction
     MOZ_ASSERT(!Finished(), "forgot BeginTransaction?");
     mOperations.push_back(op);
   }
-  void AddEdit(const CompositableOperation& op)
+
+  ReadLockHandle AddReadLock(const ReadLockDescriptor& aReadLock)
   {
-    AddNoSwapEdit(op);
-    MarkSyncTransaction();
-  }
-  void MarkSyncTransaction()
-  {
-    mSwapRequired = true;
+    ReadLockHandle handle(++mReadLockSequenceNumber);
+    if (mReadLocks.LastElement().Length() >= CompositableForwarder::GetMaxFileDescriptorsPerMessage()) {
+      mReadLocks.AppendElement();
+    }
+    mReadLocks.LastElement().AppendElement(ReadLockInit(aReadLock, handle));
+    return handle;
   }
 
   OpVector mOperations;
   OpDestroyVector mDestroyedActors;
-  bool mSwapRequired;
+  nsTArray<ReadLockVector> mReadLocks;
+  uint64_t mReadLockSequenceNumber;
+
   bool mFinished;
 };
 
@@ -167,10 +141,13 @@ ImageBridgeChild::UseTextures(CompositableClient* aCompositable,
     }
 
     ReadLockDescriptor readLock;
-    t.mTextureClient->SerializeReadLock(readLock);
+    ReadLockHandle readLockHandle;
+    if (t.mTextureClient->SerializeReadLock(readLock)) {
+      readLockHandle = mTxn->AddReadLock(readLock);
+    }
 
     textures.AppendElement(TimedTexture(nullptr, t.mTextureClient->GetIPDLActor(),
-                                        readLock,
+                                        readLockHandle,
                                         t.mTimeStamp, t.mPictureRect,
                                         t.mFrameID, t.mProducerID));
 
@@ -186,32 +163,7 @@ ImageBridgeChild::UseComponentAlphaTextures(CompositableClient* aCompositable,
                                             TextureClient* aTextureOnBlack,
                                             TextureClient* aTextureOnWhite)
 {
-  MOZ_ASSERT(aCompositable);
-  MOZ_ASSERT(aTextureOnWhite);
-  MOZ_ASSERT(aTextureOnBlack);
-  MOZ_ASSERT(aCompositable->IsConnected());
-  MOZ_ASSERT(aTextureOnWhite->GetIPDLActor());
-  MOZ_ASSERT(aTextureOnBlack->GetIPDLActor());
-  MOZ_ASSERT(aTextureOnBlack->GetSize() == aTextureOnWhite->GetSize());
-
-  ReadLockDescriptor readLockW;
-  ReadLockDescriptor readLockB;
-  aTextureOnBlack->SerializeReadLock(readLockB);
-  aTextureOnWhite->SerializeReadLock(readLockW);
-
-  HoldUntilCompositableRefReleasedIfNecessary(aTextureOnBlack);
-  HoldUntilCompositableRefReleasedIfNecessary(aTextureOnWhite);
-
-  mTxn->AddNoSwapEdit(
-    CompositableOperation(
-      aCompositable->GetIPCHandle(),
-      OpUseComponentAlphaTextures(
-        nullptr, aTextureOnBlack->GetIPDLActor(),
-        nullptr, aTextureOnWhite->GetIPDLActor(),
-        readLockB, readLockW
-      )
-    )
-  );
+  MOZ_CRASH("should not be called");
 }
 
 void
@@ -229,26 +181,19 @@ ImageBridgeChild::HoldUntilCompositableRefReleasedIfNecessary(TextureClient* aCl
 void
 ImageBridgeChild::NotifyNotUsed(uint64_t aTextureId, uint64_t aFwdTransactionId)
 {
-  RefPtr<TextureClient> client = mTexturesWaitingRecycled.Get(aTextureId);
-  if (!client) {
-    return;
+  if (auto entry = mTexturesWaitingRecycled.Lookup(aTextureId)) {
+    if (aFwdTransactionId < entry.Data()->GetLastFwdTransactionId()) {
+      // Released on host side, but client already requested newer use texture.
+      return;
+    }
+    entry.Remove();
   }
-  if (aFwdTransactionId < client->GetLastFwdTransactionId()) {
-    // Released on host side, but client already requested newer use texture.
-    return;
-  }
-  mTexturesWaitingRecycled.Remove(aTextureId);
 }
 
 void
 ImageBridgeChild::CancelWaitForRecycle(uint64_t aTextureId)
 {
   MOZ_ASSERT(InImageBridgeChildThread());
-
-  RefPtr<TextureClient> client = mTexturesWaitingRecycled.Get(aTextureId);
-  if (!client) {
-    return;
-  }
   mTexturesWaitingRecycled.Remove(aTextureId);
 }
 
@@ -335,12 +280,14 @@ ImageBridgeChild::CreateCanvasClientSync(SynchronousTask* aTask,
   *outResult = CreateCanvasClientNow(aType, aFlags);
 }
 
-ImageBridgeChild::ImageBridgeChild()
-  : mCanSend(false)
+ImageBridgeChild::ImageBridgeChild(uint32_t aNamespace)
+  : mNamespace(aNamespace)
+  , mCanSend(false)
   , mDestroyed(false)
   , mFwdTransactionId(0)
   , mContainerMapLock("ImageBridgeChild.mContainerMapLock")
 {
+  MOZ_ASSERT(mNamespace);
   MOZ_ASSERT(NS_IsMainThread());
 
   mTxn = new CompositableTransaction();
@@ -436,9 +383,9 @@ ImageBridgeChild::DispatchReleaseTextureClient(TextureClient* aClient)
 }
 
 void
-ImageBridgeChild::UpdateImageClient(RefPtr<ImageClient> aClient, RefPtr<ImageContainer> aContainer)
+ImageBridgeChild::UpdateImageClient(RefPtr<ImageContainer> aContainer)
 {
-  if (!aClient || !aContainer) {
+  if (!aContainer) {
     return;
   }
 
@@ -446,7 +393,6 @@ ImageBridgeChild::UpdateImageClient(RefPtr<ImageClient> aClient, RefPtr<ImageCon
     RefPtr<Runnable> runnable = WrapRunnable(
       RefPtr<ImageBridgeChild>(this),
       &ImageBridgeChild::UpdateImageClient,
-      aClient,
       aContainer);
     GetMessageLoop()->PostTask(runnable.forget());
     return;
@@ -456,14 +402,19 @@ ImageBridgeChild::UpdateImageClient(RefPtr<ImageClient> aClient, RefPtr<ImageCon
     return;
   }
 
+  RefPtr<ImageClient> client = aContainer->GetImageClient();
+  if (NS_WARN_IF(!client)) {
+    return;
+  }
+
   // If the client has become disconnected before this event was dispatched,
   // early return now.
-  if (!aClient->IsConnected()) {
+  if (!client->IsConnected()) {
     return;
   }
 
   BeginTransaction();
-  aClient->UpdateImage(aContainer, Layer::CONTENT_OPAQUE);
+  client->UpdateImage(aContainer, Layer::CONTENT_OPAQUE);
   EndTransaction();
 }
 
@@ -587,23 +538,18 @@ ImageBridgeChild::EndTransaction()
     ShadowLayerForwarder::PlatformSyncBeforeUpdate();
   }
 
-  AutoTArray<EditReply, 10> replies;
-
-  if (mTxn->mSwapRequired) {
-    if (!SendUpdate(cset, mTxn->mDestroyedActors, GetFwdTransactionId(), &replies)) {
-      NS_WARNING("could not send async texture transaction");
-      return;
-    }
-  } else {
-    // If we don't require a swap we can call SendUpdateNoSwap which
-    // assumes that aReplies is empty (DEBUG assertion)
-    if (!SendUpdateNoSwap(cset, mTxn->mDestroyedActors, GetFwdTransactionId())) {
-      NS_WARNING("could not send async texture transaction (no swap)");
-      return;
+  for (ReadLockVector& locks : mTxn->mReadLocks) {
+    if (locks.Length()) {
+      if (!SendInitReadLocks(locks)) {
+        NS_WARNING("[LayersForwarder] WARNING: sending read locks failed!");
+        return;
+      }
     }
   }
-  for (nsTArray<EditReply>::size_type i = 0; i < replies.Length(); ++i) {
-    MOZ_CRASH("not reached");
+
+  if (!SendUpdate(cset, mTxn->mDestroyedActors, GetFwdTransactionId())) {
+    NS_WARNING("could not send async texture transaction");
+    return;
   }
 }
 
@@ -613,22 +559,23 @@ ImageBridgeChild::SendImageBridgeThreadId()
 }
 
 bool
-ImageBridgeChild::InitForContent(Endpoint<PImageBridgeChild>&& aEndpoint)
+ImageBridgeChild::InitForContent(Endpoint<PImageBridgeChild>&& aEndpoint, uint32_t aNamespace)
 {
   MOZ_ASSERT(NS_IsMainThread());
 
   gfxPlatform::GetPlatform();
 
   if (!sImageBridgeChildThread) {
-    sImageBridgeChildThread = new ImageBridgeThread();
+    sImageBridgeChildThread = new Thread("ImageBridgeChild");
     if (!sImageBridgeChildThread->Start()) {
       return false;
     }
   }
 
-  RefPtr<ImageBridgeChild> child = new ImageBridgeChild();
+  RefPtr<ImageBridgeChild> child = new ImageBridgeChild(aNamespace);
 
   RefPtr<Runnable> runnable = NewRunnableMethod<Endpoint<PImageBridgeChild>&&>(
+    "layers::ImageBridgeChild::Bind",
     child,
     &ImageBridgeChild::Bind,
     Move(aEndpoint));
@@ -644,7 +591,7 @@ ImageBridgeChild::InitForContent(Endpoint<PImageBridgeChild>&& aEndpoint)
 }
 
 bool
-ImageBridgeChild::ReinitForContent(Endpoint<PImageBridgeChild>&& aEndpoint)
+ImageBridgeChild::ReinitForContent(Endpoint<PImageBridgeChild>&& aEndpoint, uint32_t aNamespace)
 {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -654,7 +601,7 @@ ImageBridgeChild::ReinitForContent(Endpoint<PImageBridgeChild>&& aEndpoint)
   // false result and a MsgDropped processing error. This is okay.
   ShutdownSingleton();
 
-  return InitForContent(Move(aEndpoint));
+  return InitForContent(Move(aEndpoint), aNamespace);
 }
 
 void
@@ -740,19 +687,19 @@ ImageBridgeChild::WillShutdown()
 }
 
 void
-ImageBridgeChild::InitSameProcess()
+ImageBridgeChild::InitSameProcess(uint32_t aNamespace)
 {
   NS_ASSERTION(NS_IsMainThread(), "Should be on the main Thread!");
 
   MOZ_ASSERT(!sImageBridgeChildSingleton);
   MOZ_ASSERT(!sImageBridgeChildThread);
 
-  sImageBridgeChildThread = new ImageBridgeThread();
+  sImageBridgeChildThread = new Thread("ImageBridgeChild");
   if (!sImageBridgeChildThread->IsRunning()) {
     sImageBridgeChildThread->Start();
   }
 
-  RefPtr<ImageBridgeChild> child = new ImageBridgeChild();
+  RefPtr<ImageBridgeChild> child = new ImageBridgeChild(aNamespace);
   RefPtr<ImageBridgeParent> parent = ImageBridgeParent::CreateSameProcess();
 
   RefPtr<Runnable> runnable = WrapRunnable(
@@ -769,22 +716,25 @@ ImageBridgeChild::InitSameProcess()
 }
 
 /* static */ void
-ImageBridgeChild::InitWithGPUProcess(Endpoint<PImageBridgeChild>&& aEndpoint)
+ImageBridgeChild::InitWithGPUProcess(Endpoint<PImageBridgeChild>&& aEndpoint, uint32_t aNamespace)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!sImageBridgeChildSingleton);
   MOZ_ASSERT(!sImageBridgeChildThread);
 
-  sImageBridgeChildThread = new ImageBridgeThread();
+  sImageBridgeChildThread = new Thread("ImageBridgeChild");
   if (!sImageBridgeChildThread->IsRunning()) {
     sImageBridgeChildThread->Start();
   }
 
-  RefPtr<ImageBridgeChild> child = new ImageBridgeChild();
+  RefPtr<ImageBridgeChild> child = new ImageBridgeChild(aNamespace);
 
   MessageLoop* loop = child->GetMessageLoop();
   loop->PostTask(NewRunnableMethod<Endpoint<PImageBridgeChild>&&>(
-    child, &ImageBridgeChild::Bind, Move(aEndpoint)));
+    "layers::ImageBridgeChild::Bind",
+    child,
+    &ImageBridgeChild::Bind,
+    Move(aEndpoint)));
 
   // Assign this after so other threads can't post messages before we connect to IPDL.
   {
@@ -1024,7 +974,8 @@ PTextureChild*
 ImageBridgeChild::AllocPTextureChild(const SurfaceDescriptor&,
                                      const LayersBackend&,
                                      const TextureFlags&,
-                                     const uint64_t& aSerial)
+                                     const uint64_t& aSerial,
+                                     const wr::MaybeExternalImageId& aExternalImageId)
 {
   MOZ_ASSERT(CanSend());
   return TextureClient::CreateIPDLActor();
@@ -1095,38 +1046,35 @@ PTextureChild*
 ImageBridgeChild::CreateTexture(const SurfaceDescriptor& aSharedData,
                                 LayersBackend aLayersBackend,
                                 TextureFlags aFlags,
-                                uint64_t aSerial)
+                                uint64_t aSerial,
+                                wr::MaybeExternalImageId& aExternalImageId,
+                                nsIEventTarget* aTarget)
 {
   MOZ_ASSERT(CanSend());
-  return SendPTextureConstructor(aSharedData, aLayersBackend, aFlags, aSerial);
+  return SendPTextureConstructor(aSharedData, aLayersBackend, aFlags, aSerial, aExternalImageId);
 }
 
 static bool
-IBCAddOpDestroy(CompositableTransaction* aTxn, const OpDestroy& op, bool synchronously)
+IBCAddOpDestroy(CompositableTransaction* aTxn, const OpDestroy& op)
 {
   if (aTxn->Finished()) {
     return false;
   }
 
   aTxn->mDestroyedActors.AppendElement(op);
-
-  if (synchronously) {
-    aTxn->MarkSyncTransaction();
-  }
-
   return true;
 }
 
 bool
-ImageBridgeChild::DestroyInTransaction(PTextureChild* aTexture, bool synchronously)
+ImageBridgeChild::DestroyInTransaction(PTextureChild* aTexture)
 {
-  return IBCAddOpDestroy(mTxn, OpDestroy(aTexture), synchronously);
+  return IBCAddOpDestroy(mTxn, OpDestroy(aTexture));
 }
 
 bool
 ImageBridgeChild::DestroyInTransaction(const CompositableHandle& aHandle)
 {
-  return IBCAddOpDestroy(mTxn, OpDestroy(aHandle), false);
+  return IBCAddOpDestroy(mTxn, OpDestroy(aHandle));
 }
 
 void
@@ -1141,15 +1089,9 @@ ImageBridgeChild::RemoveTextureFromCompositable(CompositableClient* aCompositabl
     return;
   }
 
-  CompositableOperation op(
+  mTxn->AddNoSwapEdit(CompositableOperation(
     aCompositable->GetIPCHandle(),
-    OpRemoveTexture(nullptr, aTexture->GetIPDLActor()));
-
-  if (aTexture->GetFlags() & TextureFlags::DEALLOCATE_CLIENT) {
-    mTxn->AddEdit(op);
-  } else {
-    mTxn->AddNoSwapEdit(op);
-  }
+    OpRemoveTexture(nullptr, aTexture->GetIPDLActor())));
 }
 
 bool ImageBridgeChild::IsSameProcess() const
@@ -1216,6 +1158,18 @@ void
 ImageBridgeChild::HandleFatalError(const char* aName, const char* aMsg) const
 {
   dom::ContentChild::FatalErrorIfNotUsingGPUProcess(aName, aMsg, OtherPid());
+}
+
+wr::MaybeExternalImageId
+ImageBridgeChild::GetNextExternalImageId()
+{
+  static uint32_t sNextID = 1;
+  ++sNextID;
+  MOZ_RELEASE_ASSERT(sNextID != UINT32_MAX);
+
+  uint64_t imageId = mNamespace;
+  imageId = imageId << 32 | sNextID;
+  return Some(wr::ToExternalImageId(imageId));
 }
 
 } // namespace layers

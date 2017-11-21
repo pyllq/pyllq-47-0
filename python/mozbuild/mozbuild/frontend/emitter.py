@@ -63,6 +63,7 @@ from .data import (
     PreprocessedWebIDLFile,
     Program,
     RustLibrary,
+    HostRustLibrary,
     RustProgram,
     SharedLibrary,
     SimpleProgram,
@@ -77,7 +78,6 @@ from .data import (
     XPIDLFile,
 )
 from mozpack.chrome.manifest import (
-    ManifestBinaryComponent,
     Manifest,
 )
 
@@ -153,13 +153,14 @@ class TreeMetadataEmitter(LoggingMixin):
             execution_time=self._emitter_time,
             object_count=self._object_count)
 
-    def emit(self, output):
+    def emit(self, output, emitfn=None):
         """Convert the BuildReader output into data structures.
 
         The return value from BuildReader.read_topsrcdir() (a generator) is
         typically fed into this function.
         """
         contexts = {}
+        emitfn = emitfn or self.emit_from_context
 
         def emit_objs(objs):
             for o in objs:
@@ -178,7 +179,7 @@ class TreeMetadataEmitter(LoggingMixin):
 
                 start = time.time()
                 # We need to expand the generator for the timings to work.
-                objs = list(self.emit_from_context(out))
+                objs = list(emitfn(out))
                 self._emitter_time += time.time() - start
 
                 for o in emit_objs(objs): yield o
@@ -413,7 +414,7 @@ class TreeMetadataEmitter(LoggingMixin):
                     '%s %s of crate %s refers to a non-existent path' % (description, dep_crate_name, crate_name),
                     context)
 
-    def _rust_library(self, context, libname, static_args):
+    def _rust_library(self, context, libname, static_args, cls=RustLibrary):
         # We need to note any Rust library for linking purposes.
         config, cargo_file = self._parse_cargo_file(context)
         crate_name = config['package']['name']
@@ -463,17 +464,46 @@ class TreeMetadataEmitter(LoggingMixin):
                      ' in [profile.%s] section') % (libname, profile_name),
                     context)
 
+            # gkrust and gkrust-gtest must have the exact same profile settings
+            # for our almost-workspaces configuration to work properly.
+            if libname in ('gkrust', 'gkrust-gtest'):
+                if profile_name == 'dev':
+                    expected_profile = {
+                        'opt-level': 1,
+                        'rpath': False,
+                        'lto': False,
+                        'debug-assertions': True,
+                        'codegen-units': 4,
+                        'panic': 'abort',
+                    }
+                else:
+                    expected_profile = {
+                        'opt-level': 2,
+                        'rpath': False,
+                        'lto': True,
+                        'debug-assertions': False,
+                        'panic': 'abort',
+                    }
+
+                if profile != expected_profile:
+                    raise SandboxValidationError(
+                        'Cargo profile.%s for %s is incorrect' % (profile_name, libname),
+                        context)
+
+        cargo_target_dir = context.get('RUST_LIBRARY_TARGET_DIR', '.')
+
         dependencies = set(config.get('dependencies', {}).iterkeys())
 
-        features = context.get('RUST_LIBRARY_FEATURES', [])
+        features = context.get(cls.FEATURES_VAR, [])
         unique_features = set(features)
         if len(features) != len(unique_features):
             raise SandboxValidationError(
                 'features for %s should not contain duplicates: %s' % (libname, features),
                 context)
 
-        return RustLibrary(context, libname, cargo_file, crate_type,
-                           dependencies, features, **static_args)
+        return cls(context, libname, cargo_file, crate_type, dependencies,
+                   features, cargo_target_dir, **static_args)
+
 
     def _handle_linkables(self, context, passthru, generated_files):
         linkables = []
@@ -553,7 +583,12 @@ class TreeMetadataEmitter(LoggingMixin):
             if host_libname == libname:
                 raise SandboxValidationError('LIBRARY_NAME and '
                     'HOST_LIBRARY_NAME must have a different value', context)
-            lib = HostLibrary(context, host_libname)
+
+            is_rust_library = context.get('IS_RUST_LIBRARY')
+            if is_rust_library:
+                lib = self._rust_library(context, host_libname, {}, cls=HostRustLibrary)
+            else:
+                lib = HostLibrary(context, host_libname)
             self._libs[host_libname].append(lib)
             self._linkage.append((context, lib, 'HOST_USE_LIBS'))
             host_linkables.append(lib)
@@ -570,7 +605,6 @@ class TreeMetadataEmitter(LoggingMixin):
         shared_name = context.get('SHARED_LIBRARY_NAME')
 
         is_framework = context.get('IS_FRAMEWORK')
-        is_component = context.get('IS_COMPONENT')
 
         soname = context.get('SONAME')
 
@@ -592,22 +626,10 @@ class TreeMetadataEmitter(LoggingMixin):
                 raise SandboxValidationError(
                     'FINAL_LIBRARY conflicts with IS_FRAMEWORK. '
                     'Please remove one.', context)
-            if is_component:
-                raise SandboxValidationError(
-                    'FINAL_LIBRARY conflicts with IS_COMPONENT. '
-                    'Please remove one.', context)
             static_args['link_into'] = final_lib
             static_lib = True
 
         if libname:
-            if is_component:
-                if static_lib:
-                    raise SandboxValidationError(
-                        'IS_COMPONENT conflicts with FORCE_STATIC_LIB. '
-                        'Please remove one.', context)
-                shared_lib = True
-                shared_args['variant'] = SharedLibrary.COMPONENT
-
             if is_framework:
                 if soname:
                     raise SandboxValidationError(
@@ -704,10 +726,6 @@ class TreeMetadataEmitter(LoggingMixin):
                 self._linkage.append((context, lib, 'USE_LIBS'))
                 linkables.append(lib)
                 generated_files.add(lib.lib_name)
-                if is_component and not context['NO_COMPONENTS_MANIFEST']:
-                    yield ChromeManifestEntry(context,
-                        'components/components.manifest',
-                        ManifestBinaryComponent('components', lib.lib_name))
                 if symbols_file and isinstance(symbols_file, SourcePath):
                     script = mozpath.join(
                         mozpath.dirname(mozpath.dirname(__file__)),
@@ -1086,9 +1104,6 @@ class TreeMetadataEmitter(LoggingMixin):
 
         for name, jar in context.get('JAVA_JAR_TARGETS', {}).items():
             yield ContextWrapped(context, jar)
-
-        for name, data in context.get('ANDROID_ECLIPSE_PROJECT_TARGETS', {}).items():
-            yield ContextWrapped(context, data)
 
         if context.get('USE_YASM') is True:
             yasm = context.config.substs.get('YASM')

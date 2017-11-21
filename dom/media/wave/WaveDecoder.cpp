@@ -13,17 +13,20 @@
 
 namespace mozilla {
 
-MediaDecoder*
-WaveDecoder::Clone(MediaDecoderOwner* aOwner)
+ChannelMediaDecoder*
+WaveDecoder::Clone(MediaDecoderInit& aInit)
 {
-  return new WaveDecoder(aOwner);
+  return new WaveDecoder(aInit);
 }
 
 MediaDecoderStateMachine*
 WaveDecoder::CreateStateMachine()
 {
-  return new MediaDecoderStateMachine(
-    this, new MediaFormatReader(this, new WAVDemuxer(GetResource())));
+  MediaFormatReaderInit init;
+  init.mCrashHelper = GetOwner()->CreateGMPCrashHelper();
+  init.mFrameStats = mFrameStats;
+  mReader = new MediaFormatReader(init, new WAVDemuxer(mResource));
+  return new MediaDecoderStateMachine(this, mReader);
 }
 
 /* static */ bool
@@ -37,9 +40,9 @@ WaveDecoder::IsSupportedType(const MediaContainerType& aContainerType)
       || aContainerType.Type() == MEDIAMIMETYPE("audio/wav")
       || aContainerType.Type() == MEDIAMIMETYPE("audio/x-pn-wav")) {
     return (aContainerType.ExtendedType().Codecs().IsEmpty()
-            || aContainerType.ExtendedType().Codecs().AsString().EqualsASCII("1")
-            || aContainerType.ExtendedType().Codecs().AsString().EqualsASCII("6")
-            || aContainerType.ExtendedType().Codecs().AsString().EqualsASCII("7"));
+            || aContainerType.ExtendedType().Codecs() == "1"
+            || aContainerType.ExtendedType().Codecs() == "6"
+            || aContainerType.ExtendedType().Codecs() == "7");
   }
 
   return false;

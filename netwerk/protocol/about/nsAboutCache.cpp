@@ -224,7 +224,10 @@ nsAboutCache::Channel::VisitNextStorage()
     // from visitor callback.  The cache v1 service doesn't like it.
     // TODO - mayhemer, bug 913828, remove this dispatch and call
     // directly.
-    return NS_DispatchToMainThread(mozilla::NewRunnableMethod(this, &nsAboutCache::Channel::FireVisitStorage));
+    return NS_DispatchToMainThread(
+      mozilla::NewRunnableMethod("nsAboutCache::Channel::FireVisitStorage",
+                                 this,
+                                 &nsAboutCache::Channel::FireVisitStorage));
 }
 
 void
@@ -396,7 +399,7 @@ NS_IMETHODIMP
 nsAboutCache::Channel::OnCacheEntryInfo(nsIURI *aURI, const nsACString & aIdEnhance,
                                         int64_t aDataSize, int32_t aFetchCount,
                                         uint32_t aLastModified, uint32_t aExpirationTime,
-                                        bool aPinned)
+                                        bool aPinned, nsILoadContextInfo* aInfo)
 {
     // We need mStream for this
     if (!mStream || mCancel) {
@@ -491,7 +494,13 @@ nsAboutCache::Channel::OnCacheEntryInfo(nsIURI *aURI, const nsACString & aIdEnha
 
     // Expires time
     mBuffer.AppendLiteral("    <td>");
-    if (aExpirationTime < 0xFFFFFFFF) {
+
+    // Bug - 633747.
+    // When expiration time is 0, we show 1970-01-01 01:00:00 which is confusing.
+    // So we check if time is 0, then we show a message, "Expired Immediately"
+    if (aExpirationTime == 0) {
+        mBuffer.AppendLiteral("Expired Immediately");
+    } else if (aExpirationTime < 0xFFFFFFFF) {
         PrintTimeString(buf, sizeof(buf), aExpirationTime);
         mBuffer.Append(buf);
     } else {

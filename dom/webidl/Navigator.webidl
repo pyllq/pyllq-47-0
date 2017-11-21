@@ -87,7 +87,7 @@ interface NavigatorContentUtils {
   //void unregisterContentHandler(DOMString mimeType, DOMString url);
 };
 
-[NoInterfaceObject, Exposed=(Window,Worker)]
+[SecureContext, NoInterfaceObject, Exposed=(Window,Worker)]
 interface NavigatorStorage {
   [Func="mozilla::dom::StorageManager::PrefEnabled"]
   readonly attribute StorageManager storage;
@@ -273,6 +273,16 @@ partial interface Navigator {
   // TODO: Use FrozenArray once available. (Bug 1236777)
   [Frozen, Cached, Pure, Pref="dom.vr.enabled"]
   readonly attribute sequence<VRDisplay> activeVRDisplays;
+  [ChromeOnly, Pref="dom.vr.enabled"]
+  readonly attribute boolean isWebVRContentDetected;
+  [ChromeOnly, Pref="dom.vr.enabled"]
+  readonly attribute boolean isWebVRContentPresenting;
+  [ChromeOnly, Pref="dom.vr.enabled"]
+  void requestVRPresentation(VRDisplay display);
+};
+partial interface Navigator {
+  [Pref="dom.vr.test.enabled"]
+  VRServiceTest requestVRServiceTest();
 };
 
 #ifdef MOZ_TIME_MANAGER
@@ -283,14 +293,6 @@ partial interface Navigator {
 };
 #endif // MOZ_TIME_MANAGER
 
-#ifdef MOZ_AUDIO_CHANNEL_MANAGER
-// nsIMozNavigatorAudioChannelManager
-partial interface Navigator {
-  [Throws]
-  readonly attribute AudioChannelManager mozAudioChannelManager;
-};
-#endif // MOZ_AUDIO_CHANNEL_MANAGER
-
 callback NavigatorUserMediaSuccessCallback = void (MediaStream stream);
 callback NavigatorUserMediaErrorCallback = void (MediaStreamError error);
 
@@ -300,7 +302,8 @@ partial interface Navigator {
 
   // Deprecated. Use mediaDevices.getUserMedia instead.
   [Deprecated="NavigatorGetUserMedia", Throws,
-   Func="Navigator::HasUserMediaSupport", UnsafeInPrerendering]
+   Func="Navigator::HasUserMediaSupport", UnsafeInPrerendering,
+   NeedsCallerType]
   void mozGetUserMedia(MediaStreamConstraints constraints,
                        NavigatorUserMediaSuccessCallback successCallback,
                        NavigatorUserMediaErrorCallback errorCallback);
@@ -334,7 +337,7 @@ partial interface Navigator {
 partial interface Navigator {
   [Throws, Pref="beacon.enabled"]
   boolean sendBeacon(DOMString url,
-                     optional (ArrayBufferView or Blob or DOMString or FormData)? data = null);
+                     optional BodyInit? data = null);
 };
 
 partial interface Navigator {
@@ -348,7 +351,7 @@ partial interface Navigator {
 };
 
 partial interface Navigator {
-  [Pref="media.eme.apiVisible", NewObject]
+  [NewObject]
   Promise<MediaKeySystemAccess>
   requestMediaKeySystemAccess(DOMString keySystem,
                               sequence<MediaKeySystemConfiguration> supportedConfigurations);
@@ -368,5 +371,5 @@ interface NavigatorConcurrentHardware {
 
 partial interface Navigator {
   [Pref="security.webauth.webauthn", SameObject]
-  readonly attribute WebAuthentication authentication;
+  readonly attribute CredentialsContainer credentials;
 };

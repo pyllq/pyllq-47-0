@@ -65,10 +65,7 @@ with Files('nsPluginFrame.*'):
     BUG_COMPONENT = ('Core', 'Plug-ins')
 
 with Files('nsVideoFrame.*'):
-    BUG_COMPONENT = ('Core', 'Video/Audio')
-
-with Files('*Selection*'):
-    BUG_COMPONENT = ('Core', 'Selection')
+    BUG_COMPONENT = ('Core', 'Audio/Video')
 
 EXPORTS += [
     'AsyncScrollBase.h',
@@ -101,6 +98,7 @@ EXPORTS += [
     'nsRubyTextFrame.h',
     'nsSplittableFrame.h',
     'nsSubDocumentFrame.h',
+    'nsTextFrameUtils.h',
     'nsTextRunTransformations.h',
     'RubyUtils.h',
     'ScrollbarActivity.h',
@@ -110,14 +108,12 @@ EXPORTS += [
 
 EXPORTS.mozilla += [
     'CSSAlignUtils.h',
+    'CSSOrderAwareFrameIterator.h',
+    'FrameTypeList.h',
     'ReflowInput.h',
     'ReflowOutput.h',
     'ViewportFrame.h',
     'WritingModes.h',
-]
-
-EXPORTS.mozilla.dom += [
-    'Selection.h',
 ]
 
 EXPORTS.mozilla.layout += [
@@ -129,6 +125,7 @@ UNIFIED_SOURCES += [
     'BlockReflowInput.cpp',
     'BRFrame.cpp',
     'CSSAlignUtils.cpp',
+    'CSSOrderAwareFrameIterator.cpp',
     'DetailsFrame.cpp',
     'FrameChildList.cpp',
     'MathMLTextRunFactory.cpp',
@@ -146,6 +143,7 @@ UNIFIED_SOURCES += [
     'nsFontInflationData.cpp',
     'nsFrame.cpp',
     'nsFrameList.cpp',
+    'nsFrameSelection.cpp',
     'nsFrameSetFrame.cpp',
     'nsFrameState.cpp',
     'nsFrameUtil.cpp',
@@ -158,6 +156,7 @@ UNIFIED_SOURCES += [
     'nsIntervalSet.cpp',
     'nsLeafFrame.cpp',
     'nsLineBox.cpp',
+    'nsLineLayout.cpp',
     'nsPageContentFrame.cpp',
     'nsPageFrame.cpp',
     'nsPlaceholderFrame.cpp',
@@ -167,7 +166,6 @@ UNIFIED_SOURCES += [
     'nsRubyFrame.cpp',
     'nsRubyTextContainerFrame.cpp',
     'nsRubyTextFrame.cpp',
-    'nsSelection.cpp',
     'nsSimplePageSequenceFrame.cpp',
     'nsSplittableFrame.cpp',
     'nsSubDocumentFrame.cpp',
@@ -186,10 +184,8 @@ UNIFIED_SOURCES += [
     'ViewportFrame.cpp',
 ]
 
-# nsLineLayout.cpp needs to be built separately because it uses plarena.h.
 # nsPluginFrame.cpp needs to be built separately because of name clashes in the OS X headers.
 SOURCES += [
-    'nsLineLayout.cpp',
     'nsPluginFrame.cpp',
 ]
 

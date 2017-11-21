@@ -206,8 +206,8 @@ ComparePolicy::adjustInputs(TempAllocator& alloc, MInstruction* def)
 
     // Convert all inputs to the right input type
     MIRType type = compare->inputType();
-    MOZ_ASSERT(type == MIRType::Int32 || type == MIRType::Double ||
-               type == MIRType::Object || type == MIRType::String || type == MIRType::Float32);
+    MOZ_ASSERT(type == MIRType::Int32 || type == MIRType::Double || type == MIRType::Float32 ||
+               type == MIRType::Object || type == MIRType::String || type == MIRType::Symbol);
     for (size_t i = 0; i < 2; i++) {
         MDefinition* in = def->getOperand(i);
         if (in->type() == type)
@@ -250,6 +250,9 @@ ComparePolicy::adjustInputs(TempAllocator& alloc, MInstruction* def)
             break;
           case MIRType::String:
             replace = MUnbox::New(alloc, in, MIRType::String, MUnbox::Infallible);
+            break;
+          case MIRType::Symbol:
+            replace = MUnbox::New(alloc, in, MIRType::Symbol, MUnbox::Infallible);
             break;
           default:
             MOZ_CRASH("Unknown compare specialization");
@@ -584,6 +587,7 @@ NoFloatPolicyAfter<FirstOp>::adjustInputs(TempAllocator& alloc, MInstruction* de
     return true;
 }
 
+template bool NoFloatPolicyAfter<0>::adjustInputs(TempAllocator& alloc, MInstruction* def);
 template bool NoFloatPolicyAfter<1>::adjustInputs(TempAllocator& alloc, MInstruction* def);
 template bool NoFloatPolicyAfter<2>::adjustInputs(TempAllocator& alloc, MInstruction* def);
 
@@ -670,6 +674,7 @@ CacheIdPolicy<Op>::staticAdjustInputs(TempAllocator& alloc, MInstruction* ins)
     }
 }
 
+template bool CacheIdPolicy<0>::staticAdjustInputs(TempAllocator& alloc, MInstruction* ins);
 template bool CacheIdPolicy<1>::staticAdjustInputs(TempAllocator& alloc, MInstruction* ins);
 
 bool
@@ -1246,7 +1251,8 @@ FilterTypeSetPolicy::adjustInputs(TempAllocator& alloc, MInstruction* ins)
     _(MixPolicy<DoublePolicy<0>, DoublePolicy<1> >)                     \
     _(MixPolicy<IntPolicy<0>, IntPolicy<1> >)                           \
     _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1> >)                        \
-    _(MixPolicy<ObjectPolicy<0>, CacheIdPolicy<1>>)                     \
+    _(MixPolicy<BoxExceptPolicy<0, MIRType::Object>, CacheIdPolicy<1>>) \
+    _(MixPolicy<CacheIdPolicy<0>, ObjectPolicy<1> >)                    \
     _(MixPolicy<ObjectPolicy<0>, ConvertToStringPolicy<1> >)            \
     _(MixPolicy<ObjectPolicy<0>, IntPolicy<1> >)                        \
     _(MixPolicy<ObjectPolicy<0>, IntPolicy<2> >)                        \
@@ -1263,6 +1269,7 @@ FilterTypeSetPolicy::adjustInputs(TempAllocator& alloc, MInstruction* ins)
     _(MixPolicy<StringPolicy<0>, StringPolicy<1> >)                     \
     _(MixPolicy<BoxPolicy<0>, BoxPolicy<1> >)                           \
     _(NoFloatPolicy<0>)                                                 \
+    _(NoFloatPolicyAfter<0>)                                            \
     _(NoFloatPolicyAfter<1>)                                            \
     _(NoFloatPolicyAfter<2>)                                            \
     _(ObjectPolicy<0>)                                                  \

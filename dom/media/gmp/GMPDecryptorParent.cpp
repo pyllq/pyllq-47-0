@@ -30,10 +30,10 @@ GMPDecryptorParent::GMPDecryptorParent(GMPContentParent* aPlugin)
   , mPluginId(aPlugin->GetPluginId())
   , mCallback(nullptr)
 #ifdef DEBUG
-  , mGMPThread(aPlugin->GMPThread())
+  , mGMPEventTarget(aPlugin->GMPEventTarget())
 #endif
 {
-  MOZ_ASSERT(mPlugin && mGMPThread);
+  MOZ_ASSERT(mPlugin && mGMPEventTarget);
 }
 
 GMPDecryptorParent::~GMPDecryptorParent()
@@ -373,7 +373,7 @@ mozilla::ipc::IPCResult
 GMPDecryptorParent::RecvBatchedKeyStatusChanged(const nsCString& aSessionId,
                                                 InfallibleTArray<GMPKeyInformation>&& aKeyInfos)
 {
-  LOGD(("GMPDecryptorParent[%p]::RecvBatchedKeyStatusChanged(sessionId='%s', KeyInfos len='%d')",
+  LOGD(("GMPDecryptorParent[%p]::RecvBatchedKeyStatusChanged(sessionId='%s', KeyInfos len='%zu')",
         this, aSessionId.get(), aKeyInfos.Length()));
 
   if (mIsOpen) {
@@ -399,10 +399,10 @@ DecryptStatus
 ToDecryptStatus(GMPErr aError)
 {
   switch (aError) {
-    case GMPNoErr: return Ok;
-    case GMPNoKeyErr: return NoKeyErr;
-    case GMPAbortedErr: return AbortedErr;
-    default: return GenericErr;
+    case GMPNoErr: return eme::Ok;
+    case GMPNoKeyErr: return eme::NoKeyErr;
+    case GMPAbortedErr: return eme::AbortedErr;
+    default: return eme::GenericErr;
   }
 }
 
@@ -436,7 +436,7 @@ void
 GMPDecryptorParent::Close()
 {
   LOGD(("GMPDecryptorParent[%p]::Close()", this));
-  MOZ_ASSERT(mGMPThread == NS_GetCurrentThread());
+  MOZ_ASSERT(mGMPEventTarget->IsOnCurrentThread());
 
   // Consumer is done with us; we can shut down.  No more callbacks should
   // be made to mCallback. Note: do this before Shutdown()!
@@ -453,7 +453,7 @@ void
 GMPDecryptorParent::Shutdown()
 {
   LOGD(("GMPDecryptorParent[%p]::Shutdown()", this));
-  MOZ_ASSERT(mGMPThread == NS_GetCurrentThread());
+  MOZ_ASSERT(mGMPEventTarget->IsOnCurrentThread());
 
   if (mShuttingDown) {
     return;

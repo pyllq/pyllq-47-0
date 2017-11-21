@@ -960,13 +960,17 @@ IsOptimizedPlaceholderMagicValue(const Value& v)
 static MOZ_ALWAYS_INLINE void
 ExposeValueToActiveJS(const Value& v)
 {
+#ifdef DEBUG
+    Value tmp = v;
+    MOZ_ASSERT(!js::gc::EdgeNeedsSweepUnbarrieredSlow(&tmp));
+#endif
     if (v.isGCThing())
         js::gc::ExposeGCThingToActiveJS(GCCellPtr(v));
 }
 
 /************************************************************************/
 
-static inline Value
+static inline MOZ_MAY_CALL_AFTER_MUST_RETURN Value
 NullValue()
 {
     Value v;
@@ -1451,6 +1455,27 @@ template <class S> struct IdentityDefaultAdaptor { static S defaultValue(const S
 template <class S, bool v> struct BoolDefaultAdaptor { static bool defaultValue(const S&) { return v; } };
 
 } // namespace js
+
+#ifdef DEBUG
+namespace JS {
+
+MOZ_ALWAYS_INLINE bool
+ValueIsNotGray(const Value& value)
+{
+    if (!value.isGCThing())
+        return true;
+
+    return CellIsNotGray(value.toGCThing());
+}
+
+MOZ_ALWAYS_INLINE bool
+ValueIsNotGray(const Heap<Value>& value)
+{
+    return ValueIsNotGray(value.unbarrieredGet());
+}
+
+} // namespace JS
+#endif
 
 /************************************************************************/
 

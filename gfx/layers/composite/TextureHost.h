@@ -6,6 +6,7 @@
 #ifndef MOZILLA_GFX_TEXTUREHOST_H
 #define MOZILLA_GFX_TEXTUREHOST_H
 
+#include <functional>
 #include <stddef.h>                     // for size_t
 #include <stdint.h>                     // for uint64_t, uint32_t, uint8_t
 #include "gfxTypes.h"
@@ -20,7 +21,9 @@
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
 #include "mozilla/layers/LayersSurfaces.h"
 #include "mozilla/mozalloc.h"           // for operator delete
+#include "mozilla/Range.h"
 #include "mozilla/UniquePtr.h"          // for UniquePtr
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_RUNTIMEABORT
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
@@ -30,10 +33,16 @@
 #include "mozilla/layers/AtomicRefCountedWithFinalize.h"
 #include "mozilla/gfx/Rect.h"
 
+class MacIOSurface;
 namespace mozilla {
 namespace ipc {
 class Shmem;
 } // namespace ipc
+
+namespace wr {
+class DisplayListBuilder;
+class WebRenderAPI;
+}
 
 namespace layers {
 
@@ -46,15 +55,16 @@ class CompositorBridgeParent;
 class SurfaceDescriptor;
 class HostIPCAllocator;
 class ISurfaceAllocator;
+class MacIOSurfaceTextureHostOGL;
 class TextureHostOGL;
 class TextureReadLock;
 class TextureSourceOGL;
-class TextureSourceD3D9;
 class TextureSourceD3D11;
 class TextureSourceBasic;
 class DataTextureSource;
 class PTextureParent;
 class TextureParent;
+class WebRenderTextureHost;
 class WrappingTextureSourceYCbCrBasic;
 
 /**
@@ -120,7 +130,6 @@ public:
     gfxCriticalNote << "Failed to cast " << Name() << " into a TextureSourceOGL";
     return nullptr;
   }
-  virtual TextureSourceD3D9* AsSourceD3D9() { return nullptr; }
   virtual TextureSourceD3D11* AsSourceD3D11() { return nullptr; }
   virtual TextureSourceBasic* AsSourceBasic() { return nullptr; }
   /**
@@ -135,7 +144,7 @@ public:
    */
   virtual BigImageIterator* AsBigImageIterator() { return nullptr; }
 
-  virtual void SetCompositor(Compositor* aCompositor) {}
+  virtual void SetTextureSourceProvider(TextureSourceProvider* aProvider) {}
 
   virtual void Unbind() {}
 
@@ -162,6 +171,13 @@ public:
   void ReleaseCompositableRef() {
     --mCompositableCount;
     MOZ_ASSERT(mCompositableCount >= 0);
+  }
+
+  // When iterating as a BigImage, this creates temporary TextureSources wrapping
+  // individual tiles.
+  virtual RefPtr<TextureSource> ExtractCurrentTile() {
+    NS_WARNING("Implementation does not expose tile sources");
+    return nullptr;
   }
 
   int NumCompositableRefs() const { return mCompositableCount; }
@@ -386,7 +402,8 @@ public:
     const SurfaceDescriptor& aDesc,
     ISurfaceAllocator* aDeallocator,
     LayersBackend aBackend,
-    TextureFlags aFlags);
+    TextureFlags aFlags,
+    wr::MaybeExternalImageId& aExternalImageId);
 
   /**
    * Lock the texture host for compositing.
@@ -436,6 +453,14 @@ public:
   virtual bool BindTextureSource(CompositableTextureSourceRef& aTexture) = 0;
 
   /**
+   * Called when preparing the rendering pipeline for advanced-layers. This is
+   * a lockless version of BindTextureSource.
+   */
+  virtual bool AcquireTextureSource(CompositableTextureSourceRef& aTexture) {
+    return false;
+  }
+
+  /**
    * Called when another TextureHost will take over.
    */
   virtual void UnbindTextureSource();
@@ -452,13 +477,15 @@ public:
    void Updated(const nsIntRegion* aRegion = nullptr);
 
   /**
-   * Sets this TextureHost's compositor.
-   * A TextureHost can change compositor on certain occasions, in particular if
-   * it belongs to an async Compositable.
+   * Sets this TextureHost's compositor. A TextureHost can change compositor
+   * on certain occasions, in particular if it belongs to an async Compositable.
    * aCompositor can be null, in which case the TextureHost must cleanup  all
-   * of it's device textures.
+   * of its device textures.
+   *
+   * Setting mProvider from this callback implicitly causes the texture to
+   * be locked for an extra frame after being detached from a compositable.
    */
-  virtual void SetCompositor(Compositor* aCompositor) {}
+  virtual void SetTextureSourceProvider(TextureSourceProvider* aProvider) {}
 
   /**
    * Should be overridden in order to deallocate the data that is associated
@@ -517,7 +544,8 @@ public:
                                          const SurfaceDescriptor& aSharedData,
                                          LayersBackend aLayersBackend,
                                          TextureFlags aFlags,
-                                         uint64_t aSerial);
+                                         uint64_t aSerial,
+                                         const wr::MaybeExternalImageId& aExternalImageId);
   static bool DestroyIPDLActor(PTextureParent* actor);
 
   /**
@@ -541,17 +569,6 @@ public:
    * pointer.
    */
   PTextureParent* GetIPDLActor();
-
-  /**
-   * Specific to B2G's Composer2D
-   * XXX - more doc here
-   */
-  virtual LayerRenderState GetRenderState()
-  {
-    // By default we return an empty render state, this should be overridden
-    // by the TextureHost implementations that are used on B2G with Composer2D
-    return LayerRenderState();
-  }
 
   // If a texture host holds a reference to shmem, it should override this method
   // to forget about the shmem _without_ releasing it.
@@ -589,12 +606,56 @@ public:
 
   void DeserializeReadLock(const ReadLockDescriptor& aDesc,
                            ISurfaceAllocator* aAllocator);
+  void SetReadLock(TextureReadLock* aReadLock);
 
   TextureReadLock* GetReadLock() { return mReadLock; }
 
-  virtual Compositor* GetCompositor() = 0;
-
   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
+  virtual MacIOSurfaceTextureHostOGL* AsMacIOSurfaceTextureHost() { return nullptr; }
+  virtual WebRenderTextureHost* AsWebRenderTextureHost() { return nullptr; }
+
+  // Create the corresponding RenderTextureHost type of this texture, and
+  // register the RenderTextureHost into render thread.
+  virtual void CreateRenderTexture(const wr::ExternalImageId& aExternalImageId)
+  {
+    MOZ_RELEASE_ASSERT(false, "No CreateRenderTexture() implementation for this TextureHost type.");
+  }
+
+  // Create all necessary image keys for this textureHost rendering.
+  // @param aImageKeys - [out] The set of ImageKeys used for this textureHost
+  // composing.
+  // @param aImageKeyAllocator - [in] The function which is used for creating
+  // the new ImageKey.
+  virtual void GetWRImageKeys(nsTArray<wr::ImageKey>& aImageKeys,
+                              const std::function<wr::ImageKey()>& aImageKeyAllocator)
+  {
+    MOZ_ASSERT(aImageKeys.IsEmpty());
+    MOZ_ASSERT_UNREACHABLE("No GetWRImageKeys() implementation for this TextureHost type.");
+  }
+
+  // Add all necessary textureHost informations to WebrenderAPI. Then, WR could
+  // use these informations to compose this textureHost.
+  virtual void AddWRImage(wr::WebRenderAPI* aAPI,
+                          Range<const wr::ImageKey>& aImageKeys,
+                          const wr::ExternalImageId& aExtID)
+  {
+    MOZ_ASSERT_UNREACHABLE("No AddWRImage() implementation for this TextureHost type.");
+  }
+
+  // Put all necessary WR commands into DisplayListBuilder for this textureHost rendering.
+  virtual void PushExternalImage(wr::DisplayListBuilder& aBuilder,
+                                 const wr::LayoutRect& aBounds,
+                                 const wr::LayoutRect& aClip,
+                                 wr::ImageRendering aFilter,
+                                 Range<const wr::ImageKey>& aKeys)
+  {
+    MOZ_ASSERT_UNREACHABLE("No PushExternalImage() implementation for this TextureHost type.");
+  }
+
+  /**
+   * Some API's can use the cross-process IOSurface directly, such as OpenVR
+   */
+  virtual MacIOSurface* GetMacIOSurface() { return nullptr; }
 
 protected:
   void ReadUnlock();
@@ -606,12 +667,13 @@ protected:
   /**
    * Called when mCompositableCount becomes 0.
    */
-  void NotifyNotUsed();
+  virtual void NotifyNotUsed();
 
   // for Compositor.
   void CallNotifyNotUsed();
 
   PTextureParent* mActor;
+  RefPtr<TextureSourceProvider> mProvider;
   RefPtr<TextureReadLock> mReadLock;
   TextureFlags mFlags;
   int mCompositableCount;
@@ -620,6 +682,7 @@ protected:
   friend class Compositor;
   friend class TextureParent;
   friend class TiledLayerBufferComposite;
+  friend class TextureSourceProvider;
 };
 
 /**
@@ -653,14 +716,13 @@ public:
   virtual void PrepareTextureSource(CompositableTextureSourceRef& aTexture) override;
 
   virtual bool BindTextureSource(CompositableTextureSourceRef& aTexture) override;
+  virtual bool AcquireTextureSource(CompositableTextureSourceRef& aTexture) override;
 
   virtual void UnbindTextureSource() override;
 
   virtual void DeallocateDeviceData() override;
 
-  virtual void SetCompositor(Compositor* aCompositor) override;
-
-  virtual Compositor* GetCompositor() override { return mCompositor; }
+  virtual void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
 
   /**
    * Return the format that is exposed to the compositor when calling
@@ -683,9 +745,25 @@ public:
 
   const BufferDescriptor& GetBufferDescriptor() const { return mDescriptor; }
 
+  virtual void CreateRenderTexture(const wr::ExternalImageId& aExternalImageId) override;
+
+  virtual void GetWRImageKeys(nsTArray<wr::ImageKey>& aImageKeys,
+                              const std::function<wr::ImageKey()>& aImageKeyAllocator) override;
+
+  virtual void AddWRImage(wr::WebRenderAPI* aAPI,
+                          Range<const wr::ImageKey>& aImageKeys,
+                          const wr::ExternalImageId& aExtID) override;
+
+  virtual void PushExternalImage(wr::DisplayListBuilder& aBuilder,
+                                 const wr::LayoutRect& aBounds,
+                                 const wr::LayoutRect& aClip,
+                                 wr::ImageRendering aFilter,
+                                 Range<const wr::ImageKey>& aImageKeys) override;
+
 protected:
   bool Upload(nsIntRegion *aRegion = nullptr);
-  bool MaybeUpload(nsIntRegion *aRegion = nullptr);
+  bool UploadIfNeeded();
+  bool MaybeUpload(nsIntRegion *aRegion);
   bool EnsureWrappingTextureSource();
 
   virtual void UpdatedInternal(const nsIntRegion* aRegion = nullptr) override;
@@ -892,6 +970,7 @@ private:
 already_AddRefed<TextureHost>
 CreateBackendIndependentTextureHost(const SurfaceDescriptor& aDesc,
                                     ISurfaceAllocator* aDeallocator,
+                                    LayersBackend aBackend,
                                     TextureFlags aFlags);
 
 } // namespace layers

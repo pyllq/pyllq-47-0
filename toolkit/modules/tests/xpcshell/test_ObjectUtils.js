@@ -4,7 +4,7 @@ function run_test() {
   run_next_test();
 }
 
-add_task(function* test_deepEqual() {
+add_task(async function test_deepEqual() {
   let deepEqual = ObjectUtils.deepEqual.bind(ObjectUtils);
   // CommonJS 7.2
   Assert.ok(deepEqual(new Date(2000, 3, 14), new Date(2000, 3, 14)), "deepEqual date");
@@ -101,4 +101,13 @@ add_task(function* test_deepEqual() {
   } catch (e) {
     Assert.ok(true, "Didn't recurse infinitely.");
   }
+
+  let e = {a: 3, b: 4};
+  let f = {b: 4, a: 3};
+
+  function checkEquiv() {
+    return arguments;
+  }
+
+  Assert.ok(deepEqual(checkEquiv(e, f), checkEquiv(f, e)));
 });

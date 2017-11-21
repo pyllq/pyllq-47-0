@@ -5,7 +5,12 @@
 
 #include "nsTemporaryFileInputStream.h"
 #include "nsStreamUtils.h"
+#include "mozilla/ipc/InputStreamUtils.h"
+#include "private/pprio.h"
 #include <algorithm>
+
+using namespace mozilla;
+using namespace mozilla::ipc;
 
 typedef mozilla::ipc::FileDescriptor::PlatformHandleType FileHandleType;
 
@@ -20,7 +25,7 @@ nsTemporaryFileInputStream::nsTemporaryFileInputStream(FileDescOwner* aFileDescO
     mCurPos(aStartPos),
     mEndPos(aEndPos),
     mClosed(false)
-{ 
+{
   NS_ASSERTION(aStartPos <= aEndPos, "StartPos should less equal than EndPos!");
 }
 

@@ -172,8 +172,23 @@ class BuildMonitor(MozbuildObject):
             except ValueError:
                 os.remove(warnings_path)
 
-        self._warnings_collector = WarningsCollector(
-            database=self.warnings_database, objdir=self.topobjdir)
+        # Contains warnings unique to this invocation. Not populated with old
+        # warnings.
+        self.instance_warnings = WarningsDatabase()
+
+        def on_warning(warning):
+            filename = warning['filename']
+
+            if not os.path.exists(filename):
+                raise Exception('Could not find file containing warning: %s' %
+                                filename)
+
+            self.warnings_database.insert(warning)
+            # Make a copy so mutations don't impact other database.
+            self.instance_warnings.insert(warning.copy())
+
+        self._warnings_collector = WarningsCollector(on_warning,
+                                                     objdir=self.topobjdir)
 
         self.build_objects = []
 
@@ -501,6 +516,7 @@ class CCacheStats(object):
         ('unsupported_lang', 'unsupported source language'),
         ('compiler_check_failed', 'compiler check failed'),
         ('autoconf', 'autoconf compile/link'),
+        ('unsupported_code_directive', 'unsupported code directive'),
         ('unsupported_compiler_option', 'unsupported compiler option'),
         ('out_stdout', 'output to stdout'),
         ('out_device', 'output to a non-regular file'),

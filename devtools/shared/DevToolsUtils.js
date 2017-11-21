@@ -29,6 +29,21 @@ for (let key of Object.keys(ThreadSafeDevToolsUtils)) {
 }
 
 /**
+ * Helper for Cu.isCrossProcessWrapper that works with Debugger.Objects.
+ * This will always return false in workers (see the implementation in
+ * ThreadSafeDevToolsUtils.js).
+ *
+ * @param Debugger.Object debuggerObject
+ * @return bool
+ */
+exports.isCPOW = function (debuggerObject) {
+  try {
+    return Cu.isCrossProcessWrapper(debuggerObject.unsafeDereference());
+  } catch (e) { }
+  return false;
+};
+
+/**
  * Waits for the next tick in the event loop to execute a callback.
  */
 exports.executeSoon = function (fn) {
@@ -46,9 +61,9 @@ exports.executeSoon = function (fn) {
     } else {
       executor = fn;
     }
-    Services.tm.mainThread.dispatch({
+    Services.tm.dispatchToMainThread({
       run: exports.makeInfallible(executor)
-    }, Ci.nsIThread.DISPATCH_NORMAL);
+    });
   }
 };
 
@@ -361,10 +376,6 @@ DevToolsUtils.defineLazyGetter(this, "NetUtil", () => {
 
 DevToolsUtils.defineLazyGetter(this, "OS", () => {
   return Cu.import("resource://gre/modules/osfile.jsm", {}).OS;
-});
-
-DevToolsUtils.defineLazyGetter(this, "TextDecoder", () => {
-  return Cu.import("resource://gre/modules/osfile.jsm", {}).TextDecoder;
 });
 
 DevToolsUtils.defineLazyGetter(this, "NetworkHelper", () => {

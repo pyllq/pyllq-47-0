@@ -34,10 +34,14 @@ TracedTaskCommon::~TracedTaskCommon()
 void
 TracedTaskCommon::Init()
 {
-  TraceInfo* info = GetOrCreateTraceInfo();
+  // Keep the following line before GetOrCreateTraceInfo() to avoid a
+  // deadlock.
+  uint64_t taskid = GenNewUniqueTaskId();
+
+  TraceInfoHolder info = GetOrCreateTraceInfo();
   ENSURE_TRUE_VOID(info);
 
-  mTaskId = GenNewUniqueTaskId();
+  mTaskId = taskid;
   mSourceEventId = info->mCurTraceSourceId;
   mSourceEventType = info->mCurTraceSourceType;
   mParentTaskId = info->mCurTaskId;
@@ -52,10 +56,11 @@ TracedTaskCommon::DispatchTask(int aDelayTimeMs)
 }
 
 void
-TracedTaskCommon::GetTLSTraceInfo()
+TracedTaskCommon::DoGetTLSTraceInfo()
 {
-  TraceInfo* info = GetOrCreateTraceInfo();
+  TraceInfoHolder info = GetOrCreateTraceInfo();
   ENSURE_TRUE_VOID(info);
+  MOZ_ASSERT(!mIsTraceInfoInit);
 
   mSourceEventType = info->mCurTraceSourceType;
   mSourceEventId = info->mCurTraceSourceId;
@@ -64,9 +69,9 @@ TracedTaskCommon::GetTLSTraceInfo()
 }
 
 void
-TracedTaskCommon::SetTLSTraceInfo()
+TracedTaskCommon::DoSetTLSTraceInfo()
 {
-  TraceInfo* info = GetOrCreateTraceInfo();
+  TraceInfoHolder info = GetOrCreateTraceInfo();
   ENSURE_TRUE_VOID(info);
 
   if (mIsTraceInfoInit) {
@@ -79,7 +84,7 @@ TracedTaskCommon::SetTLSTraceInfo()
 void
 TracedTaskCommon::ClearTLSTraceInfo()
 {
-  TraceInfo* info = GetOrCreateTraceInfo();
+  TraceInfoHolder info = GetOrCreateTraceInfo();
   ENSURE_TRUE_VOID(info);
 
   info->mCurTraceSourceId = 0;
@@ -90,6 +95,9 @@ TracedTaskCommon::ClearTLSTraceInfo()
 /**
  * Implementation of class TracedRunnable.
  */
+
+NS_IMPL_ISUPPORTS(TracedRunnable, nsIRunnable);
+
 TracedRunnable::TracedRunnable(already_AddRefed<nsIRunnable>&& aOriginalObj)
   : TracedTaskCommon()
   , mOriginalObj(Move(aOriginalObj))
@@ -118,22 +126,22 @@ TracedRunnable::Run()
  * CreateTracedRunnable() returns a TracedRunnable wrapping the original
  * nsIRunnable object, aRunnable.
  */
-already_AddRefed<Runnable>
+already_AddRefed<nsIRunnable>
 CreateTracedRunnable(already_AddRefed<nsIRunnable>&& aRunnable)
 {
-  RefPtr<Runnable> runnable = new TracedRunnable(Move(aRunnable));
+  RefPtr<nsIRunnable> runnable = new TracedRunnable(Move(aRunnable));
   return runnable.forget();
 }
 
-VirtualTask::AutoRunTask::AutoRunTask(VirtualTask* aTask)
-  : AutoSaveCurTraceInfo()
-  , mTask(aTask)
+void
+VirtualTask::AutoRunTask::StartScope(VirtualTask* aTask)
 {
   mTask->SetTLSTraceInfo();
   LogBegin(mTask->mTaskId, mTask->mSourceEventId);
 }
 
-VirtualTask::AutoRunTask::~AutoRunTask()
+void
+VirtualTask::AutoRunTask::StopScope()
 {
   LogEnd(mTask->mTaskId, mTask->mSourceEventId);
 }

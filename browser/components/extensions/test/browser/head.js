@@ -9,26 +9,42 @@
  *          closeBrowserAction closePageAction
  *          promisePopupShown promisePopupHidden
  *          openContextMenu closeContextMenu
+ *          openContextMenuInSidebar openContextMenuInPopup
  *          openExtensionContextMenu closeExtensionContextMenu
  *          openActionContextMenu openSubmenu closeActionContextMenu
  *          openTabContextMenu closeTabContextMenu
- *          imageBuffer getListStyleImage getPanelForNode
+ *          openToolsMenu closeToolsMenu
+ *          imageBuffer imageBufferFromDataURI
+ *          getListStyleImage getPanelForNode
  *          awaitExtensionPanel awaitPopupResize
  *          promiseContentDimensions alterContent
+ *          promisePrefChangeObserved openContextMenuInFrame
+ *          promiseAnimationFrame getCustomizableUIPanelID
  */
+
+// There are shutdown issues for which multiple rejections are left uncaught.
+// This bug should be fixed, but for the moment this directory is whitelisted.
+//
+// NOTE: Entire directory whitelisting should be kept to a minimum. Normally you
+//       should use "expectUncaughtRejection" to flag individual failures.
+const {PromiseTestUtils} = Cu.import("resource://testing-common/PromiseTestUtils.jsm", {});
+PromiseTestUtils.whitelistRejectionsGlobally(/Message manager disconnected/);
+PromiseTestUtils.whitelistRejectionsGlobally(/No matching message handler/);
+PromiseTestUtils.whitelistRejectionsGlobally(/Receiving end does not exist/);
 
 const {AppConstants} = Cu.import("resource://gre/modules/AppConstants.jsm", {});
 const {CustomizableUI} = Cu.import("resource:///modules/CustomizableUI.jsm", {});
+const {Preferences} = Cu.import("resource://gre/modules/Preferences.jsm", {});
 
 // We run tests under two different configurations, from browser.ini and
 // browser-remote.ini. When running from browser-remote.ini, the tests are
 // copied to the sub-directory "test-oop-extensions", which we detect here, and
 // use to select our configuration.
-if (gTestPath.includes("test-oop-extensions")) {
-  SpecialPowers.pushPrefEnv({set: [
-    ["dom.ipc.processCount.extension", 1],
-    ["extensions.webextensions.remote", true],
-  ]});
+let remote = gTestPath.includes("test-oop-extensions");
+SpecialPowers.pushPrefEnv({set: [
+  ["extensions.webextensions.remote", remote],
+]});
+if (remote) {
   // We don't want to reset this at the end of the test, so that we don't have
   // to spawn a new extension child process for each test unit.
   SpecialPowers.setIntPref("dom.ipc.keepProcessesAlive.extension", 1);
@@ -49,32 +65,43 @@ function makeWidgetId(id) {
   return id.replace(/[^a-z0-9_-]/g, "_");
 }
 
-var focusWindow = Task.async(function* focusWindow(win) {
+var focusWindow = async function focusWindow(win) {
   let fm = Cc["@mozilla.org/focus-manager;1"].getService(Ci.nsIFocusManager);
   if (fm.activeWindow == win) {
     return;
   }
 
   let promise = new Promise(resolve => {
-    win.addEventListener("focus", function listener() {
-      win.removeEventListener("focus", listener, true);
+    win.addEventListener("focus", function() {
       resolve();
-    }, true);
+    }, {capture: true, once: true});
   });
 
   win.focus();
-  yield promise;
-});
+  await promise;
+};
+
+function imageBufferFromDataURI(encodedImageData) {
+  let decodedImageData = atob(encodedImageData);
+  return Uint8Array.from(decodedImageData, byte => byte.charCodeAt(0)).buffer;
+}
 
 let img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==";
-var imageBuffer = Uint8Array.from(atob(img), byte => byte.charCodeAt(0)).buffer;
+var imageBuffer = imageBufferFromDataURI(img);
 
 function getListStyleImage(button) {
-  let style = button.ownerDocument.defaultView.getComputedStyle(button);
+  let style = button.ownerGlobal.getComputedStyle(button);
 
   let match = /^url\("(.*)"\)$/.exec(style.listStyleImage);
 
   return match && match[1];
+}
+
+async function promiseAnimationFrame(win = window) {
+  await new Promise(resolve => win.requestAnimationFrame(resolve));
+
+  let {tm} = Services;
+  return new Promise(resolve => tm.dispatchToMainThread(resolve));
 }
 
 function promisePopupShown(popup) {
@@ -102,7 +129,7 @@ function promisePopupHidden(popup) {
 }
 
 function promisePossiblyInaccurateContentDimensions(browser) {
-  return ContentTask.spawn(browser, null, function* () {
+  return ContentTask.spawn(browser, null, async function() {
     function copyProps(obj, props) {
       let res = {};
       for (let prop of props) {
@@ -172,19 +199,24 @@ var awaitBrowserLoaded = browser => ContentTask.spawn(browser, null, () => {
   }
 });
 
-var awaitExtensionPanel = Task.async(function* (extension, win = window, awaitLoad = true) {
-  let {originalTarget: browser} = yield BrowserTestUtils.waitForEvent(
+var awaitExtensionPanel = async function(extension, win = window, awaitLoad = true) {
+  let {originalTarget: browser} = await BrowserTestUtils.waitForEvent(
     win.document, "WebExtPopupLoaded", true,
     event => event.detail.extension.id === extension.id);
 
-  yield Promise.all([
+  await Promise.all([
     promisePopupShown(getPanelForNode(browser)),
 
-    awaitLoad && awaitBrowserLoaded(browser, awaitLoad),
+    awaitLoad && awaitBrowserLoaded(browser),
   ]);
 
   return browser;
-});
+};
+
+function getCustomizableUIPanelID() {
+  return gPhotonStructure ? CustomizableUI.AREA_FIXED_OVERFLOW_PANEL
+                          : CustomizableUI.AREA_PANEL;
+}
 
 function getBrowserActionWidget(extension) {
   return CustomizableUI.getWidget(makeWidgetId(extension.id) + "-browser-action");
@@ -196,27 +228,34 @@ function getBrowserActionPopup(extension, win = window) {
   if (group.areaType == CustomizableUI.TYPE_TOOLBAR) {
     return win.document.getElementById("customizationui-widget-panel");
   }
-  return win.PanelUI.panel;
+  return gPhotonStructure ? win.PanelUI.overflowPanel : win.PanelUI.panel;
 }
 
-var showBrowserAction = Task.async(function* (extension, win = window) {
+var showBrowserAction = async function(extension, win = window) {
   let group = getBrowserActionWidget(extension);
   let widget = group.forWindow(win);
 
   if (group.areaType == CustomizableUI.TYPE_TOOLBAR) {
     ok(!widget.overflowed, "Expect widget not to be overflowed");
   } else if (group.areaType == CustomizableUI.TYPE_MENU_PANEL) {
-    yield win.PanelUI.show();
+    // Show the right panel. After Photon is turned on permanently, this
+    // can be re-simplified. This is unfortunately easier than getting
+    // and using the panel (area) ID out of CustomizableUI for the widget.
+    if (gPhotonStructure) {
+      await win.document.getElementById("nav-bar").overflowable.show();
+    } else {
+      await win.PanelUI.show();
+    }
   }
-});
+};
 
-var clickBrowserAction = Task.async(function* (extension, win = window) {
-  yield showBrowserAction(extension, win);
+var clickBrowserAction = async function(extension, win = window) {
+  await promiseAnimationFrame(win);
+  await showBrowserAction(extension, win);
 
   let widget = getBrowserActionWidget(extension).forWindow(win);
-
-  EventUtils.synthesizeMouseAtCenter(widget.node, {}, win);
-});
+  widget.node.click();
+};
 
 function closeBrowserAction(extension, win = window) {
   let group = getBrowserActionWidget(extension);
@@ -227,23 +266,54 @@ function closeBrowserAction(extension, win = window) {
   return Promise.resolve();
 }
 
-function* openContextMenu(selector = "#img1") {
+async function openContextMenuInPopup(extension, selector = "body") {
   let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let browser = await awaitExtensionPanel(extension);
   let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
-  yield BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "contextmenu"}, gBrowser.selectedBrowser);
-  yield popupShownPromise;
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "mousedown", button: 2}, browser);
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "contextmenu"}, browser);
+  await popupShownPromise;
   return contentAreaContextMenu;
 }
 
-function* closeContextMenu() {
-  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
-  let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
-  contentAreaContextMenu.hidePopup();
-  yield popupHiddenPromise;
+async function openContextMenuInSidebar(selector = "body") {
+  let contentAreaContextMenu = SidebarUI.browser.contentDocument.getElementById("contentAreaContextMenu");
+  let browser = SidebarUI.browser.contentDocument.getElementById("webext-panels-browser");
+  let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "mousedown", button: 2}, browser);
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "contextmenu"}, browser);
+  await popupShownPromise;
+  return contentAreaContextMenu;
 }
 
-function* openExtensionContextMenu(selector = "#img1") {
-  let contextMenu = yield openContextMenu(selector);
+async function openContextMenuInFrame(frameId) {
+  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
+  let doc = gBrowser.selectedBrowser.contentDocument;
+  let frame = doc.getElementById(frameId);
+  EventUtils.synthesizeMouseAtCenter(frame.contentDocument.body, {type: "contextmenu"}, frame.contentWindow);
+  await popupShownPromise;
+  return contentAreaContextMenu;
+}
+
+async function openContextMenu(selector = "#img1") {
+  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "mousedown", button: 2}, gBrowser.selectedBrowser);
+  await BrowserTestUtils.synthesizeMouseAtCenter(selector, {type: "contextmenu"}, gBrowser.selectedBrowser);
+  await popupShownPromise;
+  return contentAreaContextMenu;
+}
+
+async function closeContextMenu(contextMenu) {
+  let contentAreaContextMenu = contextMenu || document.getElementById("contentAreaContextMenu");
+  let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
+  contentAreaContextMenu.hidePopup();
+  await popupHiddenPromise;
+}
+
+async function openExtensionContextMenu(selector = "#img1") {
+  let contextMenu = await openContextMenu(selector);
   let topLevelMenu = contextMenu.getElementsByAttribute("ext-type", "top-level-menu");
 
   // Return null if the extension only has one item and therefore no extension menu.
@@ -251,34 +321,66 @@ function* openExtensionContextMenu(selector = "#img1") {
     return null;
   }
 
-  let extensionMenu = topLevelMenu[0].childNodes[0];
+  let extensionMenu = topLevelMenu[0];
   let popupShownPromise = BrowserTestUtils.waitForEvent(contextMenu, "popupshown");
   EventUtils.synthesizeMouseAtCenter(extensionMenu, {});
-  yield popupShownPromise;
+  await popupShownPromise;
   return extensionMenu;
 }
 
-function* closeExtensionContextMenu(itemToSelect) {
+async function closeExtensionContextMenu(itemToSelect, modifiers = {}) {
   let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
   let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
-  EventUtils.synthesizeMouseAtCenter(itemToSelect, {});
-  yield popupHiddenPromise;
+  EventUtils.synthesizeMouseAtCenter(itemToSelect, modifiers);
+  await popupHiddenPromise;
+
+  // Bug 1351638: parent menu fails to close intermittently, make sure it does.
+  contentAreaContextMenu.hidePopup();
 }
 
-function* openChromeContextMenu(menuId, target, win = window) {
+async function openToolsMenu(win = window) {
+  const node = win.document.getElementById("tools-menu");
+  const menu = win.document.getElementById("menu_ToolsPopup");
+  const shown = BrowserTestUtils.waitForEvent(menu, "popupshown");
+  if (AppConstants.platform === "macosx") {
+    // We can't open menubar items on OSX, so mocking instead.
+    menu.dispatchEvent(new MouseEvent("popupshowing"));
+    menu.dispatchEvent(new MouseEvent("popupshown"));
+  } else {
+    node.open = true;
+  }
+  await shown;
+  return menu;
+}
+
+function closeToolsMenu(itemToSelect, win = window) {
+  const menu = win.document.getElementById("menu_ToolsPopup");
+  const hidden = BrowserTestUtils.waitForEvent(menu, "popuphidden");
+  if (AppConstants.platform === "macosx") {
+    // Mocking on OSX, see above.
+    itemToSelect.doCommand();
+    menu.dispatchEvent(new MouseEvent("popuphiding"));
+    menu.dispatchEvent(new MouseEvent("popuphidden"));
+  } else {
+    EventUtils.synthesizeMouseAtCenter(itemToSelect, {}, win);
+  }
+  return hidden;
+}
+
+async function openChromeContextMenu(menuId, target, win = window) {
   const node = win.document.querySelector(target);
   const menu = win.document.getElementById(menuId);
   const shown = BrowserTestUtils.waitForEvent(menu, "popupshown");
   EventUtils.synthesizeMouseAtCenter(node, {type: "contextmenu"}, win);
-  yield shown;
+  await shown;
   return menu;
 }
 
-function* openSubmenu(submenuItem, win = window) {
+async function openSubmenu(submenuItem, win = window) {
   const submenu = submenuItem.firstChild;
   const shown = BrowserTestUtils.waitForEvent(submenu, "popupshown");
   EventUtils.synthesizeMouseAtCenter(submenuItem, {}, win);
-  yield shown;
+  await shown;
   return submenu;
 }
 
@@ -293,9 +395,10 @@ function closeChromeContextMenu(menuId, itemToSelect, win = window) {
   return hidden;
 }
 
-function openActionContextMenu(extension, kind, win = window) {
+async function openActionContextMenu(extension, kind, win = window) {
   // See comment from clickPageAction below.
   SetPageProxyState("valid");
+  await promiseAnimationFrame(win);
   const id = `#${makeWidgetId(extension.id)}-${kind}-action`;
   return openChromeContextMenu("toolbar-context-menu", id, win);
 }
@@ -317,15 +420,16 @@ function getPageActionPopup(extension, win = window) {
   return win.document.getElementById(panelId);
 }
 
-function clickPageAction(extension, win = window) {
+async function clickPageAction(extension, win = window) {
   // This would normally be set automatically on navigation, and cleared
   // when the user types a value into the URL bar, to show and hide page
   // identity info and icons such as page action buttons.
   //
   // Unfortunately, that doesn't happen automatically in browser chrome
   // tests.
-  /* globals SetPageProxyState */
   SetPageProxyState("valid");
+
+  await promiseAnimationFrame(win);
 
   let pageActionId = makeWidgetId(extension.id) + "-page-action";
   let elem = win.document.getElementById(pageActionId);
@@ -343,4 +447,12 @@ function closePageAction(extension, win = window) {
   }
 
   return Promise.resolve();
+}
+
+function promisePrefChangeObserved(pref) {
+  return new Promise((resolve, reject) =>
+    Preferences.observe(pref, function prefObserver() {
+      Preferences.ignore(pref, prefObserver);
+      resolve();
+    }));
 }

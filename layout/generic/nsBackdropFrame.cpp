@@ -14,12 +14,6 @@ using namespace mozilla;
 
 NS_IMPL_FRAMEARENA_HELPERS(nsBackdropFrame)
 
-/* virtual */ nsIAtom*
-nsBackdropFrame::GetType() const
-{
-  return nsGkAtoms::backdropFrame;
-}
-
 #ifdef DEBUG_FRAME_DUMP
 nsresult
 nsBackdropFrame::GetFrameName(nsAString& aResult) const
@@ -56,7 +50,7 @@ nsBackdropFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
 }
 
 /* virtual */ LogicalSize
-nsBackdropFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
+nsBackdropFrame::ComputeAutoSize(gfxContext*         aRenderingContext,
                                  WritingMode         aWM,
                                  const LogicalSize&  aCBSize,
                                  nscoord             aAvailableISize,
@@ -92,5 +86,5 @@ nsBackdropFrame::Reflow(nsPresContext* aPresContext,
   nscoord isize = aReflowInput.ComputedISize() + borderPadding.IStartEnd(wm);
   nscoord bsize = aReflowInput.ComputedBSize() + borderPadding.BStartEnd(wm);
   aDesiredSize.SetSize(wm, LogicalSize(wm, isize, bsize));
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 }

@@ -12,6 +12,7 @@
 namespace mozilla {
 
 class TimeStamp;
+class ChildProfilerController;
 
 namespace gfx {
 
@@ -32,34 +33,38 @@ public:
 
   mozilla::ipc::IPCResult RecvInit(nsTArray<GfxPrefSetting>&& prefs,
                                    nsTArray<GfxVarUpdate>&& vars,
-                                   const DevicePrefs& devicePrefs) override;
+                                   const DevicePrefs& devicePrefs,
+                                   nsTArray<LayerTreeIdMapping>&& mappings) override;
+  mozilla::ipc::IPCResult RecvInitCompositorManager(Endpoint<PCompositorManagerParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvInitVsyncBridge(Endpoint<PVsyncBridgeParent>&& aVsyncEndpoint) override;
   mozilla::ipc::IPCResult RecvInitImageBridge(Endpoint<PImageBridgeParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvInitVRManager(Endpoint<PVRManagerParent>&& aEndpoint) override;
-  mozilla::ipc::IPCResult RecvInitUiCompositorController(Endpoint<PUiCompositorControllerParent>&& aEndpoint) override;
+  mozilla::ipc::IPCResult RecvInitUiCompositorController(const uint64_t& aRootLayerTreeId, Endpoint<PUiCompositorControllerParent>&& aEndpoint) override;
+  mozilla::ipc::IPCResult RecvInitProfiler(Endpoint<PProfilerChild>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvUpdatePref(const GfxPrefSetting& pref) override;
   mozilla::ipc::IPCResult RecvUpdateVar(const GfxVarUpdate& pref) override;
-  mozilla::ipc::IPCResult RecvNewWidgetCompositor(
-      Endpoint<PCompositorBridgeParent>&& aEndpoint,
-      const CSSToLayoutDeviceScale& aScale,
-      const TimeDuration& aVsyncRate,
-      const CompositorOptions& aOptions,
-      const bool& aUseExternalSurface,
-      const IntSize& aSurfaceSize) override;
-  mozilla::ipc::IPCResult RecvNewContentCompositorBridge(Endpoint<PCompositorBridgeParent>&& aEndpoint) override;
+  mozilla::ipc::IPCResult RecvNewContentCompositorManager(Endpoint<PCompositorManagerParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvNewContentImageBridge(Endpoint<PImageBridgeParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvNewContentVRManager(Endpoint<PVRManagerParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvNewContentVideoDecoderManager(Endpoint<PVideoDecoderManagerParent>&& aEndpoint) override;
   mozilla::ipc::IPCResult RecvGetDeviceStatus(GPUDeviceData* aOutStatus) override;
-  mozilla::ipc::IPCResult RecvAddLayerTreeIdMapping(nsTArray<LayerTreeIdMapping>&& aMappings) override;
+  mozilla::ipc::IPCResult RecvAddLayerTreeIdMapping(const LayerTreeIdMapping& aMapping) override;
   mozilla::ipc::IPCResult RecvRemoveLayerTreeIdMapping(const LayerTreeIdMapping& aMapping) override;
   mozilla::ipc::IPCResult RecvNotifyGpuObservers(const nsCString& aTopic) override;
+  mozilla::ipc::IPCResult RecvRequestMemoryReport(
+    const uint32_t& generation,
+    const bool& anonymize,
+    const bool& minimizeMemoryUsage,
+    const MaybeFileDesc& DMDFile) override;
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
 private:
   const TimeStamp mLaunchTime;
   RefPtr<VsyncBridgeParent> mVsyncBridge;
+#ifdef MOZ_GECKO_PROFILER
+  RefPtr<ChildProfilerController> mProfilerController;
+#endif
 };
 
 } // namespace gfx

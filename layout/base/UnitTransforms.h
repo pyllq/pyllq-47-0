@@ -55,7 +55,12 @@ enum class PixelCastJustification : uint8_t {
   MultipleAsyncTransforms,
   // We have reason to believe a layer doesn't have a local transform.
   // Should only be used if we've already checked or asserted this.
-  NoTransformOnLayer
+  NoTransformOnLayer,
+  // When building non-rasterized WebRender layers (e.g.
+  // WebRenderDisplayItemLayer, or anything else that doesn't deal in textures),
+  // there is no "resolution" and so the LayoutDevicePixel space is equal to the
+  // LayerPixel space.
+  WebRenderHasUnitResolution
 };
 
 template <class TargetUnits, class SourceUnits>
@@ -103,6 +108,13 @@ gfx::ScaleFactor<SourceUnits, NewTargetUnits> ViewTargetAs(
     const gfx::ScaleFactor<SourceUnits, OldTargetUnits>& aScaleFactor,
     PixelCastJustification) {
   return gfx::ScaleFactor<SourceUnits, NewTargetUnits>(aScaleFactor.scale);
+}
+template <class TargetUnits, class SourceUnits>
+Maybe<gfx::IntRectTyped<TargetUnits>> ViewAs(const Maybe<gfx::IntRectTyped<SourceUnits>>& aRect, PixelCastJustification aJustification) {
+  if (aRect.isSome()) {
+    return Some(ViewAs<TargetUnits>(aRect.value(), aJustification));
+  }
+  return Nothing();
 }
 // Unlike the other functions in this category, this function takes the
 // target matrix type, rather than its source and target unit types, as

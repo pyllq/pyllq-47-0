@@ -10,14 +10,12 @@
 #include "mozilla/MouseEvents.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/TextEvents.h"
-#include "mozilla/WindowsVersion.h"
 
 #include "nsAlgorithm.h"
 #ifdef MOZ_CRASHREPORTER
 #include "nsExceptionHandler.h"
 #endif
 #include "nsGkAtoms.h"
-#include "nsIDOMKeyEvent.h"
 #include "nsIIdleServiceInternal.h"
 #include "nsIWindowsRegKey.h"
 #include "nsMemory.h"
@@ -50,7 +48,7 @@
 namespace mozilla {
 namespace widget {
 
-static const char* kVirtualKeyName[] = {
+static const char* const kVirtualKeyName[] = {
   "NULL", "VK_LBUTTON", "VK_RBUTTON", "VK_CANCEL",
   "VK_MBUTTON", "VK_XBUTTON1", "VK_XBUTTON2", "0x07",
   "VK_BACK", "VK_TAB", "0x0A", "0x0B",
@@ -255,13 +253,13 @@ static const nsCString
 GetKeyLocationName(uint32_t aLocation)
 {
   switch (aLocation) {
-    case nsIDOMKeyEvent::DOM_KEY_LOCATION_LEFT:
+    case eKeyLocationLeft:
       return NS_LITERAL_CSTRING("KEY_LOCATION_LEFT");
-    case nsIDOMKeyEvent::DOM_KEY_LOCATION_RIGHT:
+    case eKeyLocationRight:
       return NS_LITERAL_CSTRING("KEY_LOCATION_RIGHT");
-    case nsIDOMKeyEvent::DOM_KEY_LOCATION_STANDARD:
+    case eKeyLocationStandard:
       return NS_LITERAL_CSTRING("KEY_LOCATION_STANDARD");
-    case nsIDOMKeyEvent::DOM_KEY_LOCATION_NUMPAD:
+    case eKeyLocationNumpad:
       return NS_LITERAL_CSTRING("KEY_LOCATION_NUMPAD");
     default:
       return nsPrintfCString("Unknown (0x%04X)", aLocation);
@@ -1198,6 +1196,7 @@ VirtualKey::FillKbdState(PBYTE aKbdState,
 uint8_t NativeKey::sDispatchedKeyOfAppCommand = 0;
 NativeKey* NativeKey::sLatestInstance = nullptr;
 const MSG NativeKey::sEmptyMSG = {};
+MSG NativeKey::sLastKeyMSG = {};
 
 LazyLogModule sNativeKeyLogger("NativeKeyWidgets");
 
@@ -1247,6 +1246,7 @@ NativeKey::NativeKey(nsWindowBase* aWidget,
     mIsOverridingKeyboardLayout = true;
   } else {
     mIsOverridingKeyboardLayout = false;
+    sLastKeyMSG = aMessage;
   }
 
   if (mMsg.message == WM_APPCOMMAND) {
@@ -1778,18 +1778,17 @@ NativeKey::GetKeyLocation() const
     case VK_LCONTROL:
     case VK_LMENU:
     case VK_LWIN:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_LEFT;
+      return eKeyLocationLeft;
 
     case VK_RSHIFT:
     case VK_RCONTROL:
     case VK_RMENU:
     case VK_RWIN:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_RIGHT;
+      return eKeyLocationRight;
 
     case VK_RETURN:
       // XXX This code assumes that all keyboard drivers use same mapping.
-      return !mIsExtended ? nsIDOMKeyEvent::DOM_KEY_LOCATION_STANDARD :
-                            nsIDOMKeyEvent::DOM_KEY_LOCATION_NUMPAD;
+      return !mIsExtended ? eKeyLocationStandard : eKeyLocationNumpad;
 
     case VK_INSERT:
     case VK_DELETE:
@@ -1803,8 +1802,7 @@ NativeKey::GetKeyLocation() const
     case VK_UP:
     case VK_PRIOR:
       // XXX This code assumes that all keyboard drivers use same mapping.
-      return mIsExtended ? nsIDOMKeyEvent::DOM_KEY_LOCATION_STANDARD :
-                           nsIDOMKeyEvent::DOM_KEY_LOCATION_NUMPAD;
+      return mIsExtended ? eKeyLocationStandard : eKeyLocationNumpad;
 
     // NumLock key isn't included due to IE9's behavior.
     case VK_NUMPAD0:
@@ -1824,7 +1822,7 @@ NativeKey::GetKeyLocation() const
     case VK_ADD:
     // Separator key of Brazilian keyboard or JIS keyboard for Mac
     case VK_ABNT_C2:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_NUMPAD;
+      return eKeyLocationNumpad;
 
     case VK_SHIFT:
     case VK_CONTROL:
@@ -1832,7 +1830,7 @@ NativeKey::GetKeyLocation() const
       NS_WARNING("Failed to decide the key location?");
 
     default:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_STANDARD;
+      return eKeyLocationStandard;
   }
 }
 
@@ -2423,8 +2421,10 @@ NativeKey::HandleKeyDownMessage(bool* aEventDispatched) const
 
   MOZ_ASSERT(!mWidget->Destroyed());
 
-  // If the key was processed by IME, we shouldn't dispatch keypress event.
-  if (mOriginalVirtualKeyCode == VK_PROCESSKEY) {
+  // If the key was processed by IME and didn't cause WM_(SYS)CHAR messages, we
+  // shouldn't dispatch keypress event.
+  if (mOriginalVirtualKeyCode == VK_PROCESSKEY &&
+      !IsFollowedByPrintableCharOrSysCharMessage()) {
     MOZ_LOG(sNativeKeyLogger, LogLevel::Info,
       ("%p   NativeKey::HandleKeyDownMessage(), not dispatching keypress "
        "event because the key was already handled by IME, defaultPrevented=%s",
@@ -2518,7 +2518,8 @@ NativeKey::HandleCharMessage(const MSG& aCharMsg,
     *aEventDispatched = false;
   }
 
-  if (IsCharOrSysCharMessage(mMsg) && IsAnotherInstanceRemovingCharMessage()) {
+  if ((IsCharOrSysCharMessage(mMsg) || IsEnterKeyPressCharMessage(mMsg)) &&
+      IsAnotherInstanceRemovingCharMessage()) {
     MOZ_LOG(sNativeKeyLogger, LogLevel::Warning,
       ("%p   NativeKey::HandleCharMessage(), WARNING, does nothing because "
        "the message should be handled in another instance removing this "
@@ -2547,7 +2548,9 @@ NativeKey::HandleCharMessage(const MSG& aCharMsg,
   // When a control key is inputted by a key, it should be handled without
   // WM_*CHAR messages at receiving WM_*KEYDOWN message.  So, when we receive
   // WM_*CHAR message directly, we see a control character here.
-  if (IsControlCharMessage(aCharMsg)) {
+  // Note that when the char is '\r', it means that the char message should
+  // cause "Enter" keypress event for inserting a line break.
+  if (IsControlCharMessage(aCharMsg) && !IsEnterKeyPressCharMessage(aCharMsg)) {
     // In this case, we don't need to dispatch eKeyPress event because:
     // 1. We're the only browser which dispatches "keypress" event for
     //    non-printable characters (Although, both Chrome and Edge dispatch
@@ -2574,7 +2577,11 @@ NativeKey::HandleCharMessage(const MSG& aCharMsg,
 
   // First, handle normal text input or non-printable key case here.
   WidgetKeyboardEvent keypressEvent(true, eKeyPress, mWidget);
-  keypressEvent.mCharCode = static_cast<uint32_t>(aCharMsg.wParam);
+  if (IsEnterKeyPressCharMessage(aCharMsg)) {
+    keypressEvent.mKeyCode = NS_VK_RETURN;
+  } else {
+    keypressEvent.mCharCode = static_cast<uint32_t>(aCharMsg.wParam);
+  }
   nsresult rv = mDispatcher->BeginNativeInputTransaction();
   if (NS_WARN_IF(NS_FAILED(rv))) {
     MOZ_LOG(sNativeKeyLogger, LogLevel::Error,

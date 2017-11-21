@@ -127,7 +127,7 @@ NS_IMETHODIMP nsPrintSettingsX::ReadPageFormatFromPrefs()
 
   nsAutoCString encodedData;
   nsresult rv =
-    Preferences::GetCString(MAC_OS_X_PAGE_SETUP_PREFNAME, &encodedData);
+    Preferences::GetCString(MAC_OS_X_PAGE_SETUP_PREFNAME, encodedData);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -259,6 +259,24 @@ nsPrintSettingsX::GetEffectivePageSize(double *aWidth, double *aHeight)
   return NS_OK;
 }
 
+void
+nsPrintSettingsX::GetFilePageSize(double *aWidth, double *aHeight)
+{
+  double height, width;
+  if (kPaperSizeInches == GetCocoaUnit(mPaperSizeUnit)) {
+    width  = NS_INCHES_TO_TWIPS(mAdjustedPaperWidth / mWidthScale);
+    height = NS_INCHES_TO_TWIPS(mAdjustedPaperHeight / mHeightScale);
+  } else {
+    width  = NS_MILLIMETERS_TO_TWIPS(mAdjustedPaperWidth / mWidthScale);
+    height = NS_MILLIMETERS_TO_TWIPS(mAdjustedPaperHeight / mHeightScale);
+  }
+  width /= TWIPS_PER_POINT_FLOAT;
+  height /= TWIPS_PER_POINT_FLOAT;
+
+  *aWidth = width;
+  *aHeight = height;
+}
+
 void nsPrintSettingsX::SetAdjustedPaperSize(double aWidth, double aHeight)
 {
   mAdjustedPaperWidth = aWidth;
@@ -269,4 +287,232 @@ void nsPrintSettingsX::GetAdjustedPaperSize(double *aWidth, double *aHeight)
 {
   *aWidth = mAdjustedPaperWidth;
   *aHeight = mAdjustedPaperHeight;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetScaling(double aScaling)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  [printInfoDict setObject: [NSNumber numberWithFloat: aScaling]
+   forKey: NSPrintScalingFactor];
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::GetScaling(double *aScaling)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  NSDictionary* printInfoDict = [mPrintInfo dictionary];
+
+  *aScaling = [[printInfoDict objectForKey: NSPrintScalingFactor] doubleValue];
+
+  // Limit scaling precision to whole number percent values
+  *aScaling = round(*aScaling * 100.0) / 100.0;
+
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetToFileName(const char16_t *aToFileName)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  nsString filename = nsDependentString(aToFileName);
+
+  NSURL* jobSavingURL =
+      [NSURL fileURLWithPath: nsCocoaUtils::ToNSString(filename)];
+  if (jobSavingURL) {
+    [printInfoDict setObject: NSPrintSaveJob forKey: NSPrintJobDisposition];
+    [printInfoDict setObject: jobSavingURL forKey: NSPrintJobSavingURL];
+  }
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::GetOrientation(int32_t *aOrientation)
+{
+  if ([mPrintInfo orientation] == NS_PAPER_ORIENTATION_PORTRAIT) {
+    *aOrientation = nsIPrintSettings::kPortraitOrientation;
+  } else {
+    *aOrientation = nsIPrintSettings::kLandscapeOrientation;
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetOrientation(int32_t aOrientation)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  if (aOrientation == nsIPrintSettings::kPortraitOrientation) {
+    [printInfoDict setObject: [NSNumber numberWithInt: NS_PAPER_ORIENTATION_PORTRAIT]
+     forKey: NSPrintOrientation];
+  } else {
+    [printInfoDict setObject: [NSNumber numberWithInt: NS_PAPER_ORIENTATION_LANDSCAPE]
+     forKey: NSPrintOrientation];
+  }
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetUnwriteableMarginTop(double aUnwriteableMarginTop)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  nsPrintSettings::SetUnwriteableMarginTop(aUnwriteableMarginTop);
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  [printInfoDict setObject : [NSNumber numberWithDouble: aUnwriteableMarginTop]
+   forKey : NSPrintTopMargin];
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetUnwriteableMarginLeft(double aUnwriteableMarginLeft)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  nsPrintSettings::SetUnwriteableMarginLeft(aUnwriteableMarginLeft);
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  [printInfoDict setObject : [NSNumber numberWithDouble: aUnwriteableMarginLeft]
+   forKey : NSPrintLeftMargin];
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetUnwriteableMarginBottom(double aUnwriteableMarginBottom)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  nsPrintSettings::SetUnwriteableMarginBottom(aUnwriteableMarginBottom);
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  [printInfoDict setObject : [NSNumber numberWithDouble: aUnwriteableMarginBottom]
+   forKey : NSPrintBottomMargin];
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+NS_IMETHODIMP
+nsPrintSettingsX::SetUnwriteableMarginRight(double aUnwriteableMarginRight)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  nsPrintSettings::SetUnwriteableMarginRight(aUnwriteableMarginRight);
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  [printInfoDict setObject : [NSNumber numberWithDouble: aUnwriteableMarginRight]
+   forKey : NSPrintRightMargin];
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
+int
+nsPrintSettingsX::GetCocoaUnit(int16_t aGeckoUnit)
+{
+  if (aGeckoUnit == kPaperSizeMillimeters)
+    return kPaperSizeMillimeters;
+  else
+    return kPaperSizeInches;
+}
+
+nsresult nsPrintSettingsX::SetCocoaPaperSize(double aWidth, double aHeight)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  NSSize paperSize;
+  NSMutableDictionary* printInfoDict = [mPrintInfo dictionary];
+  if ([mPrintInfo orientation] == NS_PAPER_ORIENTATION_PORTRAIT) {
+    // switch widths and heights
+    paperSize = NSMakeSize(aWidth, aHeight);
+    [printInfoDict setObject: [NSValue valueWithSize: paperSize]
+     forKey: NSPrintPaperSize];
+  } else {
+    paperSize = NSMakeSize(aHeight, aWidth);
+    [printInfoDict setObject: [NSValue valueWithSize: paperSize]
+     forKey: NSPrintPaperSize];
+  }
+  NSPrintInfo* newPrintInfo =
+      [[NSPrintInfo alloc] initWithDictionary: printInfoDict];
+  if (NS_WARN_IF(!newPrintInfo)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  SetCocoaPrintInfo(newPrintInfo);
+  [newPrintInfo release];
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
 }

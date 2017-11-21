@@ -8,6 +8,8 @@ var gContentAPI;
 var gContentWindow;
 
 Components.utils.import("resource://testing-common/TelemetryArchiveTesting.jsm", this);
+Components.utils.import("resource://gre/modules/ProfileAge.jsm", this);
+
 
 function test() {
   UITourTest();
@@ -120,7 +122,7 @@ var tests = [
     let highlight = document.getElementById("UITourHighlight");
     is_element_hidden(highlight, "Highlight should initially be hidden");
 
-    gContentAPI.showHighlight("addons");
+    gContentAPI.showHighlight("home");
     waitForElementToBeVisible(highlight, check_highlight_size, "Highlight should be shown after showHighlight()");
   },
   function test_highlight_customize_auto_open_close(done) {
@@ -159,7 +161,7 @@ var tests = [
           done();
         }, "Highlight should move to the appMenu button");
       }, "Highlight should be shown after showHighlight() for fixed panel items");
-    }).then(null, Components.utils.reportError);
+    }).catch(Components.utils.reportError);
   },
   function test_highlight_effect(done) {
     function waitForHighlightWithEffect(highlightEl, effect, next, error) {
@@ -184,11 +186,10 @@ var tests = [
     function checkSameEffectOnDifferentTarget() {
       gContentAPI.showHighlight("appMenu", "wobble");
       waitForHighlightWithEffect(highlight, "wobble", () => {
-        highlight.addEventListener("animationstart", function onAnimationStart(aEvent) {
-          highlight.removeEventListener("animationstart", onAnimationStart);
+        highlight.addEventListener("animationstart", function(aEvent) {
           ok(true, "Animation occurred again even though the effect was the same");
           checkRandomEffect();
-        });
+        }, {once: true});
         gContentAPI.showHighlight("backForward", "wobble");
       }, "There should be a wobble effect");
     }
@@ -235,8 +236,7 @@ var tests = [
     let icon = document.getElementById("UITourTooltipIcon");
     let buttons = document.getElementById("UITourTooltipButtons");
 
-    popup.addEventListener("popupshown", function onPopupShown() {
-      popup.removeEventListener("popupshown", onPopupShown);
+    popup.addEventListener("popupshown", function() {
       is(popup.popupBoxObject.anchorNode, document.getElementById("urlbar"), "Popup should be anchored to the urlbar");
       is(title.textContent, "test title", "Popup should have correct title");
       is(desc.textContent, "test text", "Popup should have correct description text");
@@ -252,18 +252,18 @@ var tests = [
 
       }, {once: true});
       gContentAPI.hideInfo();
-    });
+    }, {once: true});
 
     gContentAPI.showInfo("urlbar", "test title", "test text");
   },
-  taskify(function* test_info_2() {
+  taskify(async function test_info_2() {
     let popup = document.getElementById("UITourTooltip");
     let title = document.getElementById("UITourTooltipTitle");
     let desc = document.getElementById("UITourTooltipDescription");
     let icon = document.getElementById("UITourTooltipIcon");
     let buttons = document.getElementById("UITourTooltipButtons");
 
-    yield showInfoPromise("urlbar", "urlbar title", "urlbar text");
+    await showInfoPromise("urlbar", "urlbar title", "urlbar text");
 
     is(popup.popupBoxObject.anchorNode, document.getElementById("urlbar"), "Popup should be anchored to the urlbar");
     is(title.textContent, "urlbar title", "Popup should have correct title");
@@ -271,7 +271,7 @@ var tests = [
     is(icon.src, "", "Popup should have no icon");
     is(buttons.hasChildNodes(), false, "Popup should have no buttons");
 
-    yield showInfoPromise("search", "search title", "search text");
+    await showInfoPromise("search", "search title", "search text");
 
     is(popup.popupBoxObject.anchorNode, document.getElementById("searchbar"), "Popup should be anchored to the searchbar");
     is(title.textContent, "search title", "Popup should have correct title");
@@ -301,6 +301,21 @@ var tests = [
         ok(typeof(result2.distribution) !== "undefined", "Check distribution isn't undefined.");
         is(result2.distribution, testDistributionID, "Should have the distribution as set in preference.");
 
+        done();
+      });
+    });
+  },
+  function test_getConfigurationProfileAge(done) {
+    gContentAPI.getConfiguration("appinfo", (result) => {
+      ok(typeof(result.profileCreatedWeeksAgo) === "number", "profileCreatedWeeksAgo should be number.");
+      ok(result.profileResetWeeksAgo === null, "profileResetWeeksAgo should be null.");
+
+      // Set profile reset date to 15 days ago.
+      let profileAccessor = new ProfileAge();
+      profileAccessor.recordProfileReset(Date.now() - (15 * 24 * 60 * 60 * 1000));
+      gContentAPI.getConfiguration("appinfo", (result2) => {
+        ok(typeof(result2.profileResetWeeksAgo) === "number", "profileResetWeeksAgo should be number.");
+        is(result2.profileResetWeeksAgo, 2, "profileResetWeeksAgo should be 2.");
         done();
       });
     });
@@ -361,7 +376,7 @@ var tests = [
             done();
           }
         };
-        Services.obs.addObserver(observe, "browser-search-engine-modified", false);
+        Services.obs.addObserver(observe, "browser-search-engine-modified");
         registerCleanupFunction(() => {
           // Clean up
           Services.obs.removeObserver(observe, "browser-search-engine-modified");
@@ -372,14 +387,14 @@ var tests = [
       });
     });
   },
-  taskify(function* test_treatment_tag() {
+  taskify(async function test_treatment_tag() {
     let ac = new TelemetryArchiveTesting.Checker();
-    yield ac.promiseInit();
-    yield gContentAPI.setTreatmentTag("foobar", "baz");
+    await ac.promiseInit();
+    await gContentAPI.setTreatmentTag("foobar", "baz");
     // Wait until the treatment telemetry is sent before looking in the archive.
-    yield BrowserTestUtils.waitForContentEvent(gTestTab.linkedBrowser, "mozUITourNotification", false,
+    await BrowserTestUtils.waitForContentEvent(gTestTab.linkedBrowser, "mozUITourNotification", false,
                                                event => event.detail.event === "TreatmentTag:TelemetrySent");
-    yield new Promise((resolve) => {
+    await new Promise((resolve) => {
       gContentAPI.getTreatmentTag("foobar", (data) => {
         is(data.value, "baz", "set and retrieved treatmentTag");
         ac.promiseFindPing("uitour-tag", [
@@ -397,9 +412,9 @@ var tests = [
   }),
 
   // Make sure this test is last in the file so the appMenu gets left open and done will confirm it got tore down.
-  taskify(function* cleanupMenus() {
+  taskify(async function cleanupMenus() {
     let shownPromise = promisePanelShown(window);
     gContentAPI.showMenu("appMenu");
-    yield shownPromise;
+    await shownPromise;
   }),
 ];

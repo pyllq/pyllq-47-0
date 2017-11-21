@@ -8,6 +8,8 @@
 #include "necko-config.h"
 #include "nsHttp.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/ipc/IPCStreamUtils.h"
+#include "mozilla/net/ExtensionProtocolHandler.h"
 #include "mozilla/net/NeckoParent.h"
 #include "mozilla/net/HttpChannelParent.h"
 #include "mozilla/net/CookieServiceParent.h"
@@ -16,8 +18,10 @@
 #include "mozilla/net/WebSocketChannelParent.h"
 #include "mozilla/net/WebSocketEventListenerParent.h"
 #include "mozilla/net/DataChannelParent.h"
+#include "mozilla/net/SimpleChannelParent.h"
 #include "mozilla/net/AltDataOutputStreamParent.h"
 #include "mozilla/Unused.h"
+#include "mozilla/net/FileChannelParent.h"
 #ifdef NECKO_PROTOCOL_rtsp
 #include "mozilla/net/RtspControllerParent.h"
 #include "mozilla/net/RtspChannelParent.h"
@@ -25,6 +29,9 @@
 #include "mozilla/net/DNSRequestParent.h"
 #include "mozilla/net/ChannelDiverterParent.h"
 #include "mozilla/net/IPCTransportProvider.h"
+#ifdef MOZ_WEBRTC
+#include "mozilla/net/StunAddrsRequestParent.h"
+#endif
 #include "mozilla/dom/ChromeUtils.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/TabContext.h"
@@ -34,16 +41,18 @@
 #include "mozilla/dom/network/UDPSocketParent.h"
 #include "mozilla/dom/workers/ServiceWorkerManager.h"
 #include "mozilla/LoadContext.h"
+#include "mozilla/MozPromise.h"
 #include "nsPrintfCString.h"
 #include "nsHTMLDNSPrefetch.h"
 #include "nsEscape.h"
 #include "SerializedLoadContext.h"
 #include "nsAuthInformationHolder.h"
 #include "nsIAuthPromptCallback.h"
-#include "nsPrincipal.h"
+#include "ContentPrincipal.h"
 #include "nsINetworkPredictor.h"
 #include "nsINetworkPredictorVerifier.h"
 #include "nsISpeculativeConnect.h"
+#include "nsNetUtil.h"
 
 using mozilla::OriginAttributes;
 using mozilla::dom::ChromeUtils;
@@ -57,8 +66,10 @@ using mozilla::dom::TCPServerSocketParent;
 using mozilla::net::PUDPSocketParent;
 using mozilla::dom::UDPSocketParent;
 using mozilla::dom::workers::ServiceWorkerManager;
+using mozilla::ipc::AutoIPCStream;
 using mozilla::ipc::OptionalPrincipalInfo;
 using mozilla::ipc::PrincipalInfo;
+using mozilla::ipc::LoadInfoArgsToLoadInfo;
 using IPC::SerializedLoadContext;
 
 namespace mozilla {
@@ -148,8 +159,7 @@ static MOZ_COLD
 void CrashWithReason(const char * reason)
 {
 #ifndef RELEASE_OR_BETA
-  MOZ_CRASH_ANNOTATE(reason);
-  MOZ_REALLY_CRASH();
+  MOZ_CRASH_UNSAFE_OOL(reason);
 #endif
 }
 
@@ -323,6 +333,28 @@ NeckoParent::RecvPHttpChannelConstructor(
     return IPC_FAIL_NO_REASON(this);
   }
   return IPC_OK();
+}
+
+PStunAddrsRequestParent*
+NeckoParent::AllocPStunAddrsRequestParent()
+{
+#ifdef MOZ_WEBRTC
+  StunAddrsRequestParent* p = new StunAddrsRequestParent();
+  p->AddRef();
+  return p;
+#else
+  return nullptr;
+#endif
+}
+
+bool
+NeckoParent::DeallocPStunAddrsRequestParent(PStunAddrsRequestParent* aActor)
+{
+#ifdef MOZ_WEBRTC
+  StunAddrsRequestParent* p = static_cast<StunAddrsRequestParent*>(aActor);
+  p->Release();
+#endif
+  return true;
 }
 
 PAltDataOutputStreamParent*
@@ -499,6 +531,53 @@ NeckoParent::RecvPDataChannelConstructor(PDataChannelParent* actor,
   return IPC_OK();
 }
 
+PSimpleChannelParent*
+NeckoParent::AllocPSimpleChannelParent(const uint32_t &channelId)
+{
+  RefPtr<SimpleChannelParent> p = new SimpleChannelParent();
+  return p.forget().take();
+}
+
+bool
+NeckoParent::DeallocPSimpleChannelParent(PSimpleChannelParent* actor)
+{
+  RefPtr<SimpleChannelParent> p = dont_AddRef(actor).downcast<SimpleChannelParent>();
+  return true;
+}
+
+mozilla::ipc::IPCResult
+NeckoParent::RecvPSimpleChannelConstructor(PSimpleChannelParent* actor,
+                                           const uint32_t& channelId)
+{
+  SimpleChannelParent* p = static_cast<SimpleChannelParent*>(actor);
+  MOZ_ALWAYS_TRUE(p->Init(channelId));
+  return IPC_OK();
+}
+
+PFileChannelParent*
+NeckoParent::AllocPFileChannelParent(const uint32_t &channelId)
+{
+  RefPtr<FileChannelParent> p = new FileChannelParent();
+  return p.forget().take();
+}
+
+bool
+NeckoParent::DeallocPFileChannelParent(PFileChannelParent* actor)
+{
+  RefPtr<FileChannelParent> p = dont_AddRef(static_cast<FileChannelParent*>(actor));
+  return true;
+}
+
+mozilla::ipc::IPCResult
+NeckoParent::RecvPFileChannelConstructor(PFileChannelParent* actor,
+                                         const uint32_t& channelId)
+{
+  FileChannelParent* p = static_cast<FileChannelParent*>(actor);
+  DebugOnly<bool> rv = p->Init(channelId);
+  MOZ_ASSERT(rv);
+  return IPC_OK();
+}
+
 PRtspControllerParent*
 NeckoParent::AllocPRtspControllerParent()
 {
@@ -635,6 +714,7 @@ NeckoParent::DeallocPUDPSocketParent(PUDPSocketParent* actor)
 
 PDNSRequestParent*
 NeckoParent::AllocPDNSRequestParent(const nsCString& aHost,
+                                    const OriginAttributes& aOriginAttributes,
                                     const uint32_t& aFlags,
                                     const nsCString& aNetworkInterface)
 {
@@ -646,10 +726,13 @@ NeckoParent::AllocPDNSRequestParent(const nsCString& aHost,
 mozilla::ipc::IPCResult
 NeckoParent::RecvPDNSRequestConstructor(PDNSRequestParent* aActor,
                                         const nsCString& aHost,
+                                        const OriginAttributes& aOriginAttributes,
                                         const uint32_t& aFlags,
                                         const nsCString& aNetworkInterface)
 {
-  static_cast<DNSRequestParent*>(aActor)->DoAsyncResolve(aHost, aFlags,
+  static_cast<DNSRequestParent*>(aActor)->DoAsyncResolve(aHost,
+                                                         aOriginAttributes,
+                                                         aFlags,
                                                          aNetworkInterface);
   return IPC_OK();
 }
@@ -683,18 +766,20 @@ NeckoParent::RecvSpeculativeConnect(const URIParams& aURI,
 
 mozilla::ipc::IPCResult
 NeckoParent::RecvHTMLDNSPrefetch(const nsString& hostname,
+                                 const OriginAttributes& aOriginAttributes,
                                  const uint16_t& flags)
 {
-  nsHTMLDNSPrefetch::Prefetch(hostname, flags);
+  nsHTMLDNSPrefetch::Prefetch(hostname, aOriginAttributes, flags);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
 NeckoParent::RecvCancelHTMLDNSPrefetch(const nsString& hostname,
-                                 const uint16_t& flags,
-                                 const nsresult& reason)
+                                       const OriginAttributes& aOriginAttributes,
+                                       const uint16_t& flags,
+                                       const nsresult& reason)
 {
-  nsHTMLDNSPrefetch::CancelPrefetch(hostname, flags, reason);
+  nsHTMLDNSPrefetch::CancelPrefetch(hostname, aOriginAttributes, flags, reason);
   return IPC_OK();
 }
 
@@ -823,21 +908,11 @@ mozilla::ipc::IPCResult
 NeckoParent::RecvPredPredict(const ipc::OptionalURIParams& aTargetURI,
                              const ipc::OptionalURIParams& aSourceURI,
                              const uint32_t& aReason,
-                             const SerializedLoadContext& aLoadContext,
+                             const OriginAttributes& aOriginAttributes,
                              const bool& hasVerifier)
 {
   nsCOMPtr<nsIURI> targetURI = DeserializeURI(aTargetURI);
   nsCOMPtr<nsIURI> sourceURI = DeserializeURI(aSourceURI);
-
-  // We only actually care about the loadContext.mPrivateBrowsing, so we'll just
-  // pass dummy params for nestFrameId, and originAttributes.
-  uint64_t nestedFrameId = 0;
-  OriginAttributes attrs(NECKO_UNKNOWN_APP_ID, false);
-  nsCOMPtr<nsILoadContext> loadContext;
-  if (aLoadContext.IsNotNull()) {
-    attrs.SyncAttributesWithPrivateBrowsing(aLoadContext.mOriginAttributes.mPrivateBrowsingId > 0);
-    loadContext = new LoadContext(aLoadContext, nestedFrameId, attrs);
-  }
 
   // Get the current predictor
   nsresult rv = NS_OK;
@@ -849,7 +924,7 @@ NeckoParent::RecvPredPredict(const ipc::OptionalURIParams& aTargetURI,
   if (hasVerifier) {
     verifier = do_QueryInterface(predictor);
   }
-  predictor->Predict(targetURI, sourceURI, aReason, loadContext, verifier);
+  predictor->PredictNative(targetURI, sourceURI, aReason, aOriginAttributes, verifier);
   return IPC_OK();
 }
 
@@ -857,20 +932,10 @@ mozilla::ipc::IPCResult
 NeckoParent::RecvPredLearn(const ipc::URIParams& aTargetURI,
                            const ipc::OptionalURIParams& aSourceURI,
                            const uint32_t& aReason,
-                           const SerializedLoadContext& aLoadContext)
+                           const OriginAttributes& aOriginAttributes)
 {
   nsCOMPtr<nsIURI> targetURI = DeserializeURI(aTargetURI);
   nsCOMPtr<nsIURI> sourceURI = DeserializeURI(aSourceURI);
-
-  // We only actually care about the loadContext.mPrivateBrowsing, so we'll just
-  // pass dummy params for nestFrameId, and originAttributes;
-  uint64_t nestedFrameId = 0;
-  OriginAttributes attrs(NECKO_UNKNOWN_APP_ID, false);
-  nsCOMPtr<nsILoadContext> loadContext;
-  if (aLoadContext.IsNotNull()) {
-    attrs.SyncAttributesWithPrivateBrowsing(aLoadContext.mOriginAttributes.mPrivateBrowsingId > 0);
-    loadContext = new LoadContext(aLoadContext, nestedFrameId, attrs);
-  }
 
   // Get the current predictor
   nsresult rv = NS_OK;
@@ -878,7 +943,7 @@ NeckoParent::RecvPredLearn(const ipc::URIParams& aTargetURI,
     do_GetService("@mozilla.org/network/predictor;1", &rv);
   NS_ENSURE_SUCCESS(rv, IPC_FAIL_NO_REASON(this));
 
-  predictor->Learn(targetURI, sourceURI, aReason, loadContext);
+  predictor->LearnNative(targetURI, sourceURI, aReason, aOriginAttributes);
   return IPC_OK();
 }
 
@@ -896,7 +961,7 @@ NeckoParent::RecvPredReset()
 }
 
 mozilla::ipc::IPCResult
-NeckoParent::RecvRemoveRequestContext(const nsCString& rcid)
+NeckoParent::RecvRemoveRequestContext(const uint64_t& rcid)
 {
   nsCOMPtr<nsIRequestContextService> rcsvc =
     do_GetService("@mozilla.org/network/request-context-service;1");
@@ -904,9 +969,84 @@ NeckoParent::RecvRemoveRequestContext(const nsCString& rcid)
     return IPC_OK();
   }
 
-  nsID id;
-  id.Parse(rcid.BeginReading());
-  rcsvc->RemoveRequestContext(id);
+  rcsvc->RemoveRequestContext(rcid);
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+NeckoParent::RecvGetExtensionStream(const URIParams& aURI,
+                                    GetExtensionStreamResolver&& aResolve)
+{
+  nsCOMPtr<nsIURI> deserializedURI = DeserializeURI(aURI);
+  if (!deserializedURI) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  RefPtr<ExtensionProtocolHandler> ph(ExtensionProtocolHandler::GetSingleton());
+  MOZ_ASSERT(ph);
+
+  // Ask the ExtensionProtocolHandler to give us a new input stream for
+  // this URI. The request comes from an ExtensionProtocolHandler in the
+  // child process, but is not guaranteed to be a valid moz-extension URI,
+  // and not guaranteed to represent a resource that the child should be
+  // allowed to access. The ExtensionProtocolHandler is responsible for
+  // validating the request. Specifically, only URI's for local files that
+  // an extension is allowed to access via moz-extension URI's should be
+  // accepted.
+  AutoIPCStream autoStream;
+  nsCOMPtr<nsIInputStream> inputStream;
+  bool terminateSender = true;
+  auto inputStreamOrReason = ph->NewStream(deserializedURI, &terminateSender);
+  if (inputStreamOrReason.isOk()) {
+    inputStream = inputStreamOrReason.unwrap();
+    ContentParent* contentParent = static_cast<ContentParent*>(Manager());
+    Unused << autoStream.Serialize(inputStream, contentParent);
+  }
+
+  // If NewStream failed, we send back an invalid stream to the child so
+  // it can handle the error. MozPromise rejection is reserved for channel
+  // errors/disconnects.
+  aResolve(autoStream.TakeOptionalValue());
+
+  if (terminateSender) {
+    return IPC_FAIL_NO_REASON(this);
+  } else {
+    return IPC_OK();
+  }
+}
+
+mozilla::ipc::IPCResult
+NeckoParent::RecvGetExtensionFD(const URIParams& aURI,
+                                GetExtensionFDResolver&& aResolve)
+{
+  nsCOMPtr<nsIURI> deserializedURI = DeserializeURI(aURI);
+  if (!deserializedURI) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  RefPtr<ExtensionProtocolHandler> ph(ExtensionProtocolHandler::GetSingleton());
+  MOZ_ASSERT(ph);
+
+  // Ask the ExtensionProtocolHandler to give us a new input stream for
+  // this URI. The request comes from an ExtensionProtocolHandler in the
+  // child process, but is not guaranteed to be a valid moz-extension URI,
+  // and not guaranteed to represent a resource that the child should be
+  // allowed to access. The ExtensionProtocolHandler is responsible for
+  // validating the request. Specifically, only URI's for local files that
+  // an extension is allowed to access via moz-extension URI's should be
+  // accepted.
+  bool terminateSender = true;
+  auto result = ph->NewFD(deserializedURI, &terminateSender, aResolve);
+
+  if (result.isErr() && terminateSender) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  if (result.isErr()) {
+    FileDescriptor invalidFD;
+    aResolve(invalidFD);
+  }
 
   return IPC_OK();
 }

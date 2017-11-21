@@ -18,6 +18,9 @@
 #include <osvr/ClientKit/ClientKitC.h>
 #include <osvr/ClientKit/DisplayC.h>
 
+#if defined(XP_MACOSX)
+class MacIOSurface;
+#endif
 namespace mozilla {
 namespace gfx {
 namespace impl {
@@ -25,20 +28,23 @@ namespace impl {
 class VRDisplayOSVR : public VRDisplayHost
 {
 public:
-  VRHMDSensorState GetSensorState() override;
-  VRHMDSensorState GetImmediateSensorState() override;
   void ZeroSensor() override;
 
 protected:
+  VRHMDSensorState GetSensorState() override;
   virtual void StartPresentation() override;
   virtual void StopPresentation() override;
 
 #if defined(XP_WIN)
-  virtual void SubmitFrame(TextureSourceD3D11* aSource,
-    const IntSize& aSize,
-    const VRHMDSensorState& aSensorState,
-    const gfx::Rect& aLeftEyeRect,
-    const gfx::Rect& aRightEyeRect) override;
+  virtual bool SubmitFrame(mozilla::layers::TextureSourceD3D11* aSource,
+                           const IntSize& aSize,
+                           const gfx::Rect& aLeftEyeRect,
+                           const gfx::Rect& aRightEyeRect) override;
+#elif defined(XP_MACOSX)
+  virtual bool SubmitFrame(MacIOSurface* aMacIOSurface,
+                           const IntSize& aSize,
+                           const gfx::Rect& aLeftEyeRect,
+                           const gfx::Rect& aRightEyeRect) override;
 #endif
 
 public:
@@ -61,16 +67,25 @@ protected:
 
 } // namespace impl
 
-class VRDisplayManagerOSVR : public VRDisplayManager
+class VRSystemManagerOSVR : public VRSystemManager
 {
 public:
-  static already_AddRefed<VRDisplayManagerOSVR> Create();
-  virtual bool Init() override;
+  static already_AddRefed<VRSystemManagerOSVR> Create();
   virtual void Destroy() override;
-  virtual void GetHMDs(nsTArray<RefPtr<VRDisplayHost>>& aHMDResult) override;
+  virtual void Shutdown() override;
+  virtual bool GetHMDs(nsTArray<RefPtr<VRDisplayHost>>& aHMDResult) override;
+  virtual bool GetIsPresenting() override;
+  virtual void HandleInput() override;
+  virtual void GetControllers(nsTArray<RefPtr<VRControllerHost>>&
+                              aControllerResult) override;
+  virtual void ScanForControllers() override;
+  virtual void RemoveControllers() override;
+  virtual void VibrateHaptic(uint32_t aControllerIdx, uint32_t aHapticIndex,
+                             double aIntensity, double aDuration, uint32_t aPromiseID) override;
+  virtual void StopVibrateHaptic(uint32_t aControllerIdx) override;
 
 protected:
-  VRDisplayManagerOSVR()
+  VRSystemManagerOSVR()
     : mOSVRInitialized(false)
     , mClientContextInitialized(false)
     , mDisplayConfigInitialized(false)
@@ -80,6 +95,8 @@ protected:
     , m_display(nullptr)
   {
   }
+
+  bool Init();
 
   RefPtr<impl::VRDisplayOSVR> mHMDInfo;
   bool mOSVRInitialized;

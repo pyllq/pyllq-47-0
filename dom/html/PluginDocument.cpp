@@ -75,8 +75,7 @@ private:
 NS_IMETHODIMP
 PluginStreamListener::OnStartRequest(nsIRequest* request, nsISupports *ctxt)
 {
-  PROFILER_LABEL("PluginStreamListener", "OnStartRequest",
-    js::ProfileEntry::Category::NETWORK);
+  AUTO_PROFILER_LABEL("PluginStreamListener::OnStartRequest", NETWORK);
 
   nsCOMPtr<nsIContent> embed = mPluginDoc->GetPluginContent();
   nsCOMPtr<nsIObjectLoadingContent> objlc = do_QueryInterface(embed);
@@ -101,9 +100,6 @@ PluginStreamListener::OnStartRequest(nsIRequest* request, nsISupports *ctxt)
   // likely spawn a plugin, which may re-enter.
   return MediaDocumentStreamListener::OnStartRequest(request, ctxt);
 }
-
-  // NOTE! nsDocument::operator new() zeroes out all members, so don't
-  // bother initializing members to 0.
 
 PluginDocument::PluginDocument()
 {}

@@ -6,12 +6,16 @@
 
 #include "MediaSource.h"
 
+#if MOZ_AV1
+#include "AOMDecoder.h"
+#endif
 #include "AsyncEventRunner.h"
 #include "DecoderTraits.h"
 #include "Benchmark.h"
 #include "DecoderDoctorDiagnostics.h"
 #include "MediaContainerType.h"
 #include "MediaResult.h"
+#include "MediaSourceDemuxer.h"
 #include "MediaSourceUtils.h"
 #include "SourceBuffer.h"
 #include "SourceBufferList.h"
@@ -115,6 +119,13 @@ MediaSource::IsTypeSupported(const nsAString& aType, DecoderDoctorDiagnostics* a
   }
   if (mimeType == MEDIAMIMETYPE("video/webm")) {
     if (!(Preferences::GetBool("media.mediasource.webm.enabled", false) ||
+          containerType->ExtendedType().Codecs().Contains(
+            NS_LITERAL_STRING("vp8")) ||
+#ifdef MOZ_AV1
+          // FIXME: Temporary comparison with the full codecs attribute.
+          // See bug 1377015.
+          AOMDecoder::IsSupportedCodec(containerType->ExtendedType().Codecs().AsString()) ||
+#endif
           IsWebMForced(aDiagnostics))) {
       return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
     }
@@ -253,11 +264,12 @@ MediaSource::AddSourceBuffer(const nsAString& aType, ErrorResult& aRv)
   return sourceBuffer.forget();
 }
 
-void
+RefPtr<MediaSource::ActiveCompletionPromise>
 MediaSource::SourceBufferIsActive(SourceBuffer* aSourceBuffer)
 {
   MOZ_ASSERT(NS_IsMainThread());
   mActiveSourceBuffers->ClearSimple();
+  bool initMissing = false;
   bool found = false;
   for (uint32_t i = 0; i < mSourceBuffers->Length(); i++) {
     SourceBuffer* sourceBuffer = mSourceBuffers->IndexedGetter(i, found);
@@ -266,8 +278,35 @@ MediaSource::SourceBufferIsActive(SourceBuffer* aSourceBuffer)
       mActiveSourceBuffers->Append(aSourceBuffer);
     } else if (sourceBuffer->IsActive()) {
       mActiveSourceBuffers->AppendSimple(sourceBuffer);
+    } else {
+      // Some source buffers haven't yet received an init segment.
+      // There's nothing more we can do at this stage.
+      initMissing = true;
     }
   }
+  if (initMissing || !mDecoder) {
+    return ActiveCompletionPromise::CreateAndResolve(true, __func__);
+  }
+
+  mDecoder->NotifyInitDataArrived();
+
+  // Add our promise to the queue.
+  // It will be resolved once the HTMLMediaElement modifies its readyState.
+  MozPromiseHolder<ActiveCompletionPromise> holder;
+  RefPtr<ActiveCompletionPromise> promise = holder.Ensure(__func__);
+  mCompletionPromises.AppendElement(Move(holder));
+  return promise;
+}
+
+void
+MediaSource::CompletePendingTransactions()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  MSE_DEBUG("Resolving %u promises", unsigned(mCompletionPromises.Length()));
+  for (auto& promise : mCompletionPromises) {
+    promise.Resolve(true, __func__);
+  }
+  mCompletionPromises.Clear();
 }
 
 void
@@ -335,7 +374,7 @@ void
 MediaSource::EndOfStream(const MediaResult& aError)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("EndOfStream(aError=%d)", aError.Code());
+  MSE_API("EndOfStream(aError=%" PRId32")", static_cast<uint32_t>(aError.Code()));
 
   SetReadyState(MediaSourceReadyState::Ended);
   mSourceBuffers->Ended();
@@ -431,6 +470,7 @@ void
 MediaSource::Detach()
 {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(mCompletionPromises.IsEmpty());
   MSE_DEBUG("mDecoder=%p owner=%p",
             mDecoder.get(), mDecoder ? mDecoder->GetOwner() : nullptr);
   if (!mDecoder) {
@@ -475,7 +515,8 @@ MediaSource::SetReadyState(MediaSourceReadyState aState)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aState != mReadyState);
-  MSE_DEBUG("SetReadyState(aState=%d) mReadyState=%d", aState, mReadyState);
+  MSE_DEBUG("SetReadyState(aState=%" PRIu32 ") mReadyState=%" PRIu32,
+            static_cast<uint32_t>(aState), static_cast<uint32_t>(mReadyState));
 
   MediaSourceReadyState oldState = mReadyState;
   mReadyState = aState;
@@ -520,7 +561,7 @@ MediaSource::QueueAsyncSimpleEvent(const char* aName)
 {
   MSE_DEBUG("Queuing event '%s'", aName);
   nsCOMPtr<nsIRunnable> event = new AsyncEventRunner<MediaSource>(this, aName);
-  NS_DispatchToMainThread(event);
+  mAbstractMainThread->Dispatch(event.forget());
 }
 
 void

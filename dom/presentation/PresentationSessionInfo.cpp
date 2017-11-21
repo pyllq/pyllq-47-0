@@ -30,11 +30,6 @@
 #include "nsIPresentationNetworkHelper.h"
 #endif // MOZ_WIDGET_ANDROID
 
-#ifdef MOZ_WIDGET_GONK
-#include "nsINetworkInterface.h"
-#include "nsINetworkManager.h"
-#endif
-
 using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::services;
@@ -111,7 +106,8 @@ PresentationNetworkHelper::OnGetWifiIPAddress(const nsACString& aIPAddress)
   MOZ_ASSERT(mFunc);
 
   NS_DispatchToMainThread(
-    NewRunnableMethod<nsCString>(mInfo,
+    NewRunnableMethod<nsCString>("dom::PresentationNetworkHelper::OnGetWifiIPAddress",
+                                 mInfo,
                                  mFunc,
                                  aIPAddress));
   return NS_OK;
@@ -221,8 +217,9 @@ PresentationSessionInfo::Init(nsIPresentationControlChannel* aControlChannel)
 /* virtual */ void
 PresentationSessionInfo::Shutdown(nsresult aReason)
 {
-  PRES_DEBUG("%s:id[%s], reason[%x], role[%d]\n", __func__,
-             NS_ConvertUTF16toUTF8(mSessionId).get(), aReason, mRole);
+  PRES_DEBUG("%s:id[%s], reason[%" PRIx32 "], role[%d]\n", __func__,
+             NS_ConvertUTF16toUTF8(mSessionId).get(), static_cast<uint32_t>(aReason),
+             mRole);
 
   NS_WARNING_ASSERTION(NS_SUCCEEDED(aReason), "bad reason");
 
@@ -460,8 +457,9 @@ PresentationSessionInfo::NotifyTransportReady()
 NS_IMETHODIMP
 PresentationSessionInfo::NotifyTransportClosed(nsresult aReason)
 {
-  PRES_DEBUG("%s:id[%s], reason[%x], role[%d]\n", __func__,
-             NS_ConvertUTF16toUTF8(mSessionId).get(), aReason, mRole);
+  PRES_DEBUG("%s:id[%s], reason[%" PRIx32 "], role[%d]\n", __func__,
+             NS_ConvertUTF16toUTF8(mSessionId).get(), static_cast<uint32_t>(aReason),
+             mRole);
 
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -543,8 +541,9 @@ PresentationSessionInfo::OnSessionTransport(nsIPresentationSessionTransport* aTr
 NS_IMETHODIMP
 PresentationSessionInfo::OnError(nsresult aReason)
 {
-  PRES_DEBUG("%s:id[%s], reason[%x], role[%d]\n", __func__,
-             NS_ConvertUTF16toUTF8(mSessionId).get(), aReason, mRole);
+  PRES_DEBUG("%s:id[%s], reason[%" PRIx32 "], role[%d]\n", __func__,
+             NS_ConvertUTF16toUTF8(mSessionId).get(), static_cast<uint32_t>(aReason),
+             mRole);
 
   ResetBuilder();
   return ReplyError(aReason);
@@ -646,49 +645,7 @@ PresentationControllingInfo::Shutdown(nsresult aReason)
 nsresult
 PresentationControllingInfo::GetAddress()
 {
-#if defined(MOZ_WIDGET_GONK)
-  nsCOMPtr<nsINetworkManager> networkManager =
-    do_GetService("@mozilla.org/network/manager;1");
-  if (NS_WARN_IF(!networkManager)) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  nsCOMPtr<nsINetworkInfo> activeNetworkInfo;
-  networkManager->GetActiveNetworkInfo(getter_AddRefs(activeNetworkInfo));
-  if (NS_WARN_IF(!activeNetworkInfo)) {
-    return NS_ERROR_FAILURE;
-  }
-
-  char16_t** ips = nullptr;
-  uint32_t* prefixes = nullptr;
-  uint32_t count = 0;
-  activeNetworkInfo->GetAddresses(&ips, &prefixes, &count);
-  if (NS_WARN_IF(!count)) {
-    NS_Free(prefixes);
-    NS_FREE_XPCOM_ALLOCATED_POINTER_ARRAY(count, ips);
-    return NS_ERROR_FAILURE;
-  }
-
-  // TODO bug 1228504 Take all IP addresses in PresentationChannelDescription
-  // into account. And at the first stage Presentation API is only exposed on
-  // Firefox OS where the first IP appears enough for most scenarios.
-
-  nsAutoString ip;
-  ip.Assign(ips[0]);
-
-  // On Android platform, the IP address is retrieved from a callback function.
-  // To make consistent code sequence, following function call is dispatched
-  // into main thread instead of calling it directly.
-  NS_DispatchToMainThread(
-    NewRunnableMethod<nsCString>(
-      this,
-      &PresentationControllingInfo::OnGetAddress,
-      NS_ConvertUTF16toUTF8(ip)));
-
-  NS_Free(prefixes);
-  NS_FREE_XPCOM_ALLOCATED_POINTER_ARRAY(count, ips);
-
-#elif defined(MOZ_WIDGET_ANDROID)
+#if defined(MOZ_WIDGET_ANDROID)
   RefPtr<PresentationNetworkHelper> networkHelper =
     new PresentationNetworkHelper(this,
                                   &PresentationControllingInfo::OnGetAddress);
@@ -899,8 +856,9 @@ PresentationControllingInfo::BuildTransport()
 NS_IMETHODIMP
 PresentationControllingInfo::NotifyDisconnected(nsresult aReason)
 {
-  PRES_DEBUG("%s:id[%s], reason[%x], role[%d]\n", __func__,
-             NS_ConvertUTF16toUTF8(mSessionId).get(), aReason, mRole);
+  PRES_DEBUG("%s:id[%s], reason[%" PRIx32 "], role[%d]\n", __func__,
+             NS_ConvertUTF16toUTF8(mSessionId).get(), static_cast<uint32_t>(aReason),
+             mRole);
 
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -982,7 +940,8 @@ NS_IMETHODIMP
 PresentationControllingInfo::OnStopListening(nsIServerSocket* aServerSocket,
                                            nsresult aStatus)
 {
-  PRES_DEBUG("controller %s:status[%x]\n",__func__, aStatus);
+  PRES_DEBUG("controller %s:status[%" PRIx32 "]\n",__func__,
+             static_cast<uint32_t>(aStatus));
 
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -1104,11 +1063,11 @@ PresentationControllingInfo::OnListedNetworkAddresses(const char** aAddressArray
   // On Firefox desktop, the IP address is retrieved from a callback function.
   // To make consistent code sequence, following function call is dispatched
   // into main thread instead of calling it directly.
-  NS_DispatchToMainThread(
-    NewRunnableMethod<nsCString>(
-      this,
-      &PresentationControllingInfo::OnGetAddress,
-      ip));
+  NS_DispatchToMainThread(NewRunnableMethod<nsCString>(
+    "dom::PresentationControllingInfo::OnGetAddress",
+    this,
+    &PresentationControllingInfo::OnGetAddress,
+    ip));
 
   return NS_OK;
 }
@@ -1120,11 +1079,11 @@ PresentationControllingInfo::OnListNetworkAddressesFailed()
 
   // In 1-UA case, transport channel can still be established
   // on loopback interface even if no network address available.
-  NS_DispatchToMainThread(
-    NewRunnableMethod<nsCString>(
-      this,
-      &PresentationControllingInfo::OnGetAddress,
-      "127.0.0.1"));
+  NS_DispatchToMainThread(NewRunnableMethod<nsCString>(
+    "dom::PresentationControllingInfo::OnGetAddress",
+    this,
+    &PresentationControllingInfo::OnGetAddress,
+    "127.0.0.1"));
 
   return NS_OK;
 }
@@ -1196,7 +1155,8 @@ PresentationControllingInfo::NotifyData(const nsACString& aData, bool aIsBinary)
 
 NS_IMPL_ISUPPORTS_INHERITED(PresentationPresentingInfo,
                             PresentationSessionInfo,
-                            nsITimerCallback)
+                            nsITimerCallback,
+                            nsINamed)
 
 nsresult
 PresentationPresentingInfo::Init(nsIPresentationControlChannel* aControlChannel)
@@ -1542,8 +1502,9 @@ PresentationPresentingInfo::NotifyReconnected()
 NS_IMETHODIMP
 PresentationPresentingInfo::NotifyDisconnected(nsresult aReason)
 {
-  PRES_DEBUG("%s:id[%s], reason[%x], role[%d]\n", __func__,
-             NS_ConvertUTF16toUTF8(mSessionId).get(), aReason, mRole);
+  PRES_DEBUG("%s:id[%s], reason[%" PRIx32 "], role[%d]\n", __func__,
+             NS_ConvertUTF16toUTF8(mSessionId).get(), static_cast<uint32_t>(aReason),
+             mRole);
 
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -1582,6 +1543,14 @@ PresentationPresentingInfo::Notify(nsITimer* aTimer)
   return ReplyError(NS_ERROR_DOM_TIMEOUT_ERR);
 }
 
+// nsITimerCallback
+NS_IMETHODIMP
+PresentationPresentingInfo::GetName(nsACString& aName)
+{
+  aName.AssignLiteral("PresentationPresentingInfo");
+  return NS_OK;
+}
+
 // PromiseNativeHandler
 void
 PresentationPresentingInfo::ResolvedCallback(JSContext* aCx,
@@ -1603,7 +1572,7 @@ PresentationPresentingInfo::ResolvedCallback(JSContext* aCx,
   // Start to listen to document state change event |STATE_TRANSFERRING|.
   // Use Element to support both HTMLIFrameElement and nsXULElement.
   Element* frame = nullptr;
-  nsresult rv = UNWRAP_OBJECT(Element, obj, frame);
+  nsresult rv = UNWRAP_OBJECT(Element, &obj, frame);
   if (NS_WARN_IF(!frame)) {
     ReplyError(NS_ERROR_DOM_OPERATION_ERR);
     return;

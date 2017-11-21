@@ -25,7 +25,10 @@ var ecmaGlobals =
   [
     "Array",
     "ArrayBuffer",
+    "Atomics",
     "Boolean",
+    {name: "ByteLengthQueuingStrategy", optional: true},
+    {name: "CountQueuingStrategy", optional: true},
     "DataView",
     "Date",
     "Error",
@@ -38,7 +41,7 @@ var ecmaGlobals =
     "Int32Array",
     "Int8Array",
     "InternalError",
-    {name: "Intl", android: false},
+    "Intl",
     "Iterator",
     "JSON",
     "Map",
@@ -49,13 +52,13 @@ var ecmaGlobals =
     "Promise",
     "Proxy",
     "RangeError",
+    {name: "ReadableStream", optional: true},
     "ReferenceError",
     "Reflect",
     "RegExp",
     "Set",
-    {name: "SharedArrayBuffer", release: false},
+    "SharedArrayBuffer",
     {name: "SIMD", nightly: true},
-    {name: "Atomics", release: false},
     "StopIteration",
     "String",
     "Symbol",
@@ -86,6 +89,8 @@ var interfaceNamesInGlobalScope =
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "CacheStorage",
 // IMPORTANT: Do not change this list without review from a DOM peer!
+    "CloseEvent",
+// IMPORTANT: Do not change this list without review from a DOM peer!
     "Crypto",
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "CustomEvent",
@@ -104,6 +109,8 @@ var interfaceNamesInGlobalScope =
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "DOMStringList",
 // IMPORTANT: Do not change this list without review from a DOM peer!
+    "ErrorEvent",
+// IMPORTANT: Do not change this list without review from a DOM peer!
     "Event",
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "EventSource",
@@ -111,6 +118,8 @@ var interfaceNamesInGlobalScope =
     "EventTarget",
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "File",
+// IMPORTANT: Do not change this list without review from a DOM peer!
+    "FileList",
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "FileReader",
 // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -172,6 +181,8 @@ var interfaceNamesInGlobalScope =
 // IMPORTANT: Do not change this list without review from a DOM peer!
     { name: "PerformanceObserverEntryList", nightly: true },
 // IMPORTANT: Do not change this list without review from a DOM peer!
+    "ProgressEvent",
+// IMPORTANT: Do not change this list without review from a DOM peer!
     "PushManager",
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "PushSubscription",
@@ -184,7 +195,7 @@ var interfaceNamesInGlobalScope =
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "ServiceWorkerRegistration",
 // IMPORTANT: Do not change this list without review from a DOM peer!
-    {name: "StorageManager", nightly: true},
+    {name: "StorageManager", nightly: true, isSecureContext: true, android: false},
 // IMPORTANT: Do not change this list without review from a DOM peer!
     "SubtleCrypto",
 // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -257,6 +268,7 @@ function createInterfaceMap(version, userAgent) {
             (entry.desktop === !isDesktop) ||
             (entry.android === !isAndroid && !entry.nightlyAndroid) ||
             (entry.release === !isRelease) ||
+            (entry.isSecureContext === !isSecureContext) ||
             entry.disabled) {
           interfaceMap[entry.name] = false;
         } else if (entry.optional) {

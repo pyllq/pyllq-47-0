@@ -25,6 +25,7 @@ from mozbuild.frontend.data import (
     GeneratedFile,
     GeneratedSources,
     HostDefines,
+    HostRustLibrary,
     HostRustProgram,
     HostSources,
     IPDLFile,
@@ -1131,6 +1132,17 @@ class TestEmitterBasic(unittest.TestCase):
         self.assertIsInstance(objs[0], HostRustProgram)
         self.assertEqual(objs[0].name, 'some')
 
+    def test_host_rust_libraries(self):
+        '''Test HOST_RUST_LIBRARIES emission.'''
+        reader = self.reader('host-rust-libraries',
+                             extra_substs=dict(RUST_HOST_TARGET='i686-pc-windows-msvc',
+                                               HOST_BIN_SUFFIX='.exe'))
+        objs = self.read_topsrcdir(reader)
+        self.assertEqual(len(objs), 1)
+        self.assertIsInstance(objs[0], HostRustLibrary)
+        self.assertRegexpMatches(objs[0].lib_name, 'host_lib')
+        self.assertRegexpMatches(objs[0].import_name, 'host_lib')
+
     def test_crate_dependency_path_resolution(self):
         '''Test recursive dependencies resolve with the correct paths.'''
         reader = self.reader('crate-dependency-path-resolution',
@@ -1155,23 +1167,6 @@ class TestEmitterBasic(unittest.TestCase):
             '/dir3',
         ]
         self.assertEquals([p.full_path for p in objs[0].paths], expected)
-
-    def test_binary_components(self):
-        """Test that IS_COMPONENT/NO_COMPONENTS_MANIFEST work properly."""
-        reader = self.reader('binary-components')
-        objs = self.read_topsrcdir(reader)
-
-        self.assertEqual(len(objs), 3)
-        self.assertIsInstance(objs[0], ChromeManifestEntry)
-        self.assertEqual(objs[0].path,
-                         'dist/bin/components/components.manifest')
-        self.assertIsInstance(objs[0].entry, manifest.ManifestBinaryComponent)
-        self.assertEqual(objs[0].entry.base, 'dist/bin/components')
-        self.assertEqual(objs[0].entry.relpath, objs[1].lib_name)
-        self.assertIsInstance(objs[1], SharedLibrary)
-        self.assertEqual(objs[1].basename, 'foo')
-        self.assertIsInstance(objs[2], SharedLibrary)
-        self.assertEqual(objs[2].basename, 'bar')
 
     def test_install_shared_lib(self):
         """Test that we can install a shared library with TEST_HARNESS_FILES"""

@@ -17,6 +17,12 @@ def SourceFileWithTest(path, hash, cls, *args):
     s.manifest_items = mock.Mock(return_value=(cls.item_type, [test]))
     return s
 
+def SourceFileWithTests(path, hash, cls, variants):
+    s = mock.Mock(rel_path=path, hash=hash)
+    tests = [cls(s, item[0], *item[1:]) for item in variants]
+    s.manifest_items = mock.Mock(return_value=(cls.item_type, tests))
+    return s
+
 
 @hs.composite
 def rel_dir_file_path(draw):
@@ -179,8 +185,8 @@ def test_reftest_computation_chain():
     test2 = s2.manifest_items()[1][0]
     test2_node = test2.to_RefTestNode()
 
-    assert list(m) == [("reftest", {test1}),
-                       ("reftest_node", {test2_node})]
+    assert list(m) == [("reftest", test1.path, {test1}),
+                       ("reftest_node", test2.path, {test2_node})]
 
 
 def test_reftest_computation_chain_update_add():
@@ -191,7 +197,7 @@ def test_reftest_computation_chain_update_add():
 
     assert m.update([s2]) is True
 
-    assert list(m) == [("reftest", {test2})]
+    assert list(m) == [("reftest", test2.path, {test2})]
 
     s1 = SourceFileWithTest("test1", "0"*40, item.RefTest, [("/test2", "==")])
     test1 = s1.manifest_items()[1][0]
@@ -201,8 +207,8 @@ def test_reftest_computation_chain_update_add():
 
     test2_node = test2.to_RefTestNode()
 
-    assert list(m) == [("reftest", {test1}),
-                       ("reftest_node", {test2_node})]
+    assert list(m) == [("reftest", test1.path, {test1}),
+                       ("reftest_node", test2.path, {test2_node})]
 
 
 def test_reftest_computation_chain_update_remove():
@@ -217,10 +223,26 @@ def test_reftest_computation_chain_update_remove():
     test2 = s2.manifest_items()[1][0]
     test2_node = test2.to_RefTestNode()
 
-    assert list(m) == [("reftest", {test1}),
-                       ("reftest_node", {test2_node})]
+    assert list(m) == [("reftest", test1.path, {test1}),
+                       ("reftest_node", test2.path, {test2_node})]
 
     # s2's hash is unchanged, but it has gone from a node to a test
     assert m.update([s2]) is True
 
-    assert list(m) == [("reftest", {test2})]
+    assert list(m) == [("reftest", test2.path, {test2})]
+
+
+def test_iterpath():
+    m = manifest.Manifest()
+
+    sources = [SourceFileWithTest("test1", "0"*40, item.RefTest, [("/test1-ref", "==")]),
+               SourceFileWithTest("test2", "0"*40, item.RefTest, [("/test2-ref", "==")]),
+               SourceFileWithTests("test2", "0"*40, item.TestharnessTest, [("/test2-1.html",),
+                                                                           ("/test2-2.html",)]),
+               SourceFileWithTest("test3", "0"*40, item.TestharnessTest)]
+    m.update(sources)
+
+    assert set(item.url for item in m.iterpath("test2")) == set(["/test2",
+                                                                 "/test2-1.html",
+                                                                 "/test2-2.html"])
+    assert set(m.iterpath("missing")) == set()

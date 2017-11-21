@@ -22,6 +22,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TextEditor.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/css/StyleRule.h"
 #include "mozilla/dom/Element.h"
@@ -91,7 +92,6 @@
 #include "nsXBLBinding.h"
 #include "nsXBLPrototypeBinding.h"
 #include "mozilla/Preferences.h"
-#include "prprf.h"
 #include "xpcpublic.h"
 #include "nsCSSRuleProcessor.h"
 #include "nsCSSParser.h"
@@ -106,6 +106,9 @@
 #include "nsIAnimationObserver.h"
 #include "nsChildContentList.h"
 #include "mozilla/dom/NodeBinding.h"
+#include "mozilla/dom/BindingDeclarations.h"
+
+#include "XPathGenerator.h"
 
 #ifdef ACCESSIBILITY
 #include "mozilla/dom/AccessibleNode.h"
@@ -158,6 +161,12 @@ void*
 nsINode::GetProperty(uint16_t aCategory, nsIAtom *aPropertyName,
                      nsresult *aStatus) const
 {
+  if (!HasProperties()) { // a fast HasFlag() test
+    if (aStatus) {
+      *aStatus = NS_PROPTABLE_PROP_NOT_THERE;
+    }
+    return nullptr;
+  }
   return OwnerDoc()->PropertyTable(aCategory)->GetProperty(this, aPropertyName,
                                                            aStatus);
 }
@@ -224,24 +233,29 @@ static nsIContent* GetEditorRootContent(nsIEditor* aEditor)
 }
 
 nsIContent*
-nsINode::GetTextEditorRootContent(nsIEditor** aEditor)
+nsINode::GetTextEditorRootContent(TextEditor** aTextEditor)
 {
-  if (aEditor)
-    *aEditor = nullptr;
+  if (aTextEditor) {
+    *aTextEditor = nullptr;
+  }
   for (nsINode* node = this; node; node = node->GetParentNode()) {
     if (!node->IsElement() ||
         !node->IsHTMLElement())
       continue;
 
-    nsCOMPtr<nsIEditor> editor =
-      static_cast<nsGenericHTMLElement*>(node)->GetEditorInternal();
-    if (!editor)
+    RefPtr<TextEditor> textEditor =
+      static_cast<nsGenericHTMLElement*>(node)->GetTextEditorInternal();
+    if (!textEditor) {
       continue;
+    }
 
-    nsIContent* rootContent = GetEditorRootContent(editor);
-    if (aEditor)
-      editor.swap(*aEditor);
-    return rootContent;
+    MOZ_ASSERT(!textEditor->AsHTMLEditor(),
+               "If it were an HTML editor, needs to use GetRootElement()");
+    Element* rootElement = textEditor->GetRoot();
+    if (aTextEditor) {
+      textEditor.forget(aTextEditor);
+    }
+    return rootElement;
   }
   return nullptr;
 }
@@ -719,9 +733,11 @@ nsINode::GetBaseURI(nsAString &aURI) const
 }
 
 void
-nsINode::GetBaseURIFromJS(nsAString& aURI, ErrorResult& aRv) const
+nsINode::GetBaseURIFromJS(nsAString& aURI,
+                          CallerType aCallerType,
+                          ErrorResult& aRv) const
 {
-  nsCOMPtr<nsIURI> baseURI = GetBaseURI(nsContentUtils::IsCallerChrome());
+  nsCOMPtr<nsIURI> baseURI = GetBaseURI(aCallerType == CallerType::System);
   nsAutoCString spec;
   if (baseURI) {
     nsresult res = baseURI->GetSpec(spec);
@@ -1265,36 +1281,43 @@ nsINode::GetEventTargetParent(EventChainPreVisitor& aVisitor)
 void
 nsINode::GetBoxQuads(const BoxQuadOptions& aOptions,
                      nsTArray<RefPtr<DOMQuad> >& aResult,
+                     CallerType aCallerType,
                      mozilla::ErrorResult& aRv)
 {
-  mozilla::GetBoxQuads(this, aOptions, aResult, aRv);
+  mozilla::GetBoxQuads(this, aOptions, aResult, aCallerType, aRv);
 }
 
 already_AddRefed<DOMQuad>
 nsINode::ConvertQuadFromNode(DOMQuad& aQuad,
                              const GeometryNode& aFrom,
                              const ConvertCoordinateOptions& aOptions,
+                             CallerType aCallerType,
                              ErrorResult& aRv)
 {
-  return mozilla::ConvertQuadFromNode(this, aQuad, aFrom, aOptions, aRv);
+  return mozilla::ConvertQuadFromNode(this, aQuad, aFrom, aOptions, aCallerType,
+                                      aRv);
 }
 
 already_AddRefed<DOMQuad>
 nsINode::ConvertRectFromNode(DOMRectReadOnly& aRect,
                              const GeometryNode& aFrom,
                              const ConvertCoordinateOptions& aOptions,
+                             CallerType aCallerType,
                              ErrorResult& aRv)
 {
-  return mozilla::ConvertRectFromNode(this, aRect, aFrom, aOptions, aRv);
+  return mozilla::ConvertRectFromNode(this, aRect, aFrom, aOptions, aCallerType,
+                                      aRv);
 }
 
 already_AddRefed<DOMPoint>
 nsINode::ConvertPointFromNode(const DOMPointInit& aPoint,
                               const GeometryNode& aFrom,
                               const ConvertCoordinateOptions& aOptions,
+                              CallerType aCallerType,
                               ErrorResult& aRv)
 {
-  return mozilla::ConvertPointFromNode(this, aPoint, aFrom, aOptions, aRv);
+  return mozilla::ConvertPointFromNode(this, aPoint, aFrom, aOptions,
+                                       aCallerType, aRv);
 }
 
 nsresult
@@ -1433,19 +1456,20 @@ nsINode::Traverse(nsINode *tmp, nsCycleCollectionTraversalCallback &cb)
 
     if (nsCCUncollectableMarker::sGeneration) {
       // If we're black no need to traverse.
-      if (tmp->IsBlack() || tmp->InCCBlackTree()) {
+      if (tmp->HasKnownLiveWrapper() || tmp->InCCBlackTree()) {
         return false;
       }
 
       if (!tmp->UnoptimizableCCNode()) {
         // If we're in a black document, return early.
-        if ((currentDoc && currentDoc->IsBlack())) {
+        if ((currentDoc && currentDoc->HasKnownLiveWrapper())) {
           return false;
         }
         // If we're not in anonymous content and we have a black parent,
         // return early.
         nsIContent* parent = tmp->GetParent();
-        if (parent && !parent->UnoptimizableCCNode() && parent->IsBlack()) {
+        if (parent && !parent->UnoptimizableCCNode() &&
+            parent->HasKnownLiveWrapper()) {
           MOZ_ASSERT(parent->IndexOf(tmp) >= 0, "Parent doesn't own us?");
           return false;
         }
@@ -1501,27 +1525,6 @@ nsINode::Unlink(nsINode* tmp)
     nsNodeUtils::UnlinkUserData(tmp);
     tmp->DeleteProperty(nsGkAtoms::keepobjectsalive);
   }
-}
-
-static void
-ReleaseURI(void*, /* aObject*/
-           nsIAtom*, /* aPropertyName */
-           void* aPropertyValue,
-           void* /* aData */)
-{
-  nsIURI* uri = static_cast<nsIURI*>(aPropertyValue);
-  NS_RELEASE(uri);
-}
-
-nsresult
-nsINode::SetExplicitBaseURI(nsIURI* aURI)
-{
-  nsresult rv = SetProperty(nsGkAtoms::baseURIProperty, aURI, ReleaseURI);
-  if (NS_SUCCEEDED(rv)) {
-    SetHasExplicitBaseURI();
-    NS_ADDREF(aURI);
-  }
-  return rv;
 }
 
 static nsresult
@@ -1844,12 +1847,9 @@ nsINode::Remove()
   if (!parent) {
     return;
   }
-  int32_t index = parent->IndexOf(this);
-  if (index < 0) {
-    NS_WARNING("Ignoring call to nsINode::Remove on anonymous child.");
-    return;
-  }
-  parent->RemoveChildAt(uint32_t(index), true);
+
+  IgnoredErrorResult err;
+  parent->RemoveChild(*this, err);
 }
 
 Element*
@@ -1911,6 +1911,10 @@ void
 nsINode::doRemoveChildAt(uint32_t aIndex, bool aNotify,
                          nsIContent* aKid, nsAttrAndChildArray& aChildArray)
 {
+  // NOTE: This function must not trigger any calls to
+  // nsIDocument::GetRootElement() calls until *after* it has removed aKid from
+  // aChildArray. Any calls before then could potentially restore a stale
+  // value for our cached root element, per note in nsDocument::RemoveChildAt().
   NS_PRECONDITION(aKid && aKid->GetParentNode() == this &&
                   aKid == GetChildAt(aIndex) &&
                   IndexOf(aKid) == (int32_t)aIndex, "Bogus aKid");
@@ -2575,12 +2579,12 @@ nsINode::GetAccessibleNode()
 }
 
 size_t
-nsINode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+nsINode::SizeOfExcludingThis(SizeOfState& aState) const
 {
   size_t n = 0;
   EventListenerManager* elm = GetExistingListenerManager();
   if (elm) {
-    n += elm->SizeOfIncludingThis(aMallocSizeOf);
+    n += elm->SizeOfIncludingThis(aState.mMallocSizeOf);
   }
 
   // Measurement of the following members may be added later if DMD finds it is
@@ -2810,7 +2814,6 @@ FindMatchingElements(nsINode* aRoot, nsCSSSelectorList* aSelectorList, T &aList,
 
   TreeMatchContext matchingContext(false, nsRuleWalker::eRelevantLinkUnvisited,
                                    doc, TreeMatchContext::eNeverMatchVisited);
-  doc->FlushPendingLinkUpdates();
   AddScopeElements(matchingContext, aRoot);
 
   // Fast-path selectors involving IDs.  We can only do this if aRoot
@@ -2943,7 +2946,7 @@ nsINode::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aGivenProto)
   bool hasHadScriptHandlingObject = false;
   if (!OwnerDoc()->GetScriptHandlingObject(hasHadScriptHandlingObject) &&
       !hasHadScriptHandlingObject &&
-      !nsContentUtils::IsCallerChrome()) {
+      !nsContentUtils::IsSystemCaller(aCx)) {
     Throw(aCx, NS_ERROR_UNEXPECTED);
     return nullptr;
   }
@@ -2998,7 +3001,7 @@ bool
 nsINode::HasBoxQuadsSupport(JSContext* aCx, JSObject* /* unused */)
 {
   return xpc::AccessCheck::isChrome(js::GetContextCompartment(aCx)) ||
-         Preferences::GetBool("layout.css.getBoxQuads.enabled");
+         nsContentUtils::GetBoxQuadsEnabled();
 }
 
 nsINode*
@@ -3020,6 +3023,12 @@ nsINode::AddAnimationObserverUnlessExists(
 {
   AddMutationObserverUnlessExists(aAnimationObserver);
   OwnerDoc()->SetMayHaveAnimationObservers();
+}
+
+void
+nsINode::GenerateXPath(nsAString& aResult)
+{
+  XPathGenerator::Generate(this, aResult);
 }
 
 bool

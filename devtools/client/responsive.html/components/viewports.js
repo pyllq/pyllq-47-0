@@ -16,31 +16,29 @@ module.exports = createClass({
 
   propTypes: {
     devices: PropTypes.shape(Types.devices).isRequired,
-    location: Types.location.isRequired,
     screenshot: PropTypes.shape(Types.screenshot).isRequired,
     viewports: PropTypes.arrayOf(PropTypes.shape(Types.viewport)).isRequired,
     onBrowserMounted: PropTypes.func.isRequired,
     onChangeDevice: PropTypes.func.isRequired,
     onContentResize: PropTypes.func.isRequired,
-    onRemoveDevice: PropTypes.func.isRequired,
+    onRemoveDeviceAssociation: PropTypes.func.isRequired,
     onResizeViewport: PropTypes.func.isRequired,
     onRotateViewport: PropTypes.func.isRequired,
-    onUpdateDeviceModalOpen: PropTypes.func.isRequired,
+    onUpdateDeviceModal: PropTypes.func.isRequired,
   },
 
   render() {
     let {
       devices,
-      location,
       screenshot,
       viewports,
       onBrowserMounted,
       onChangeDevice,
       onContentResize,
-      onRemoveDevice,
+      onRemoveDeviceAssociation,
       onResizeViewport,
       onRotateViewport,
-      onUpdateDeviceModalOpen,
+      onUpdateDeviceModal,
     } = this.props;
 
     return dom.div(
@@ -51,17 +49,16 @@ module.exports = createClass({
         return Viewport({
           key: viewport.id,
           devices,
-          location,
           screenshot,
           swapAfterMount: i == 0,
           viewport,
           onBrowserMounted,
           onChangeDevice,
           onContentResize,
-          onRemoveDevice,
+          onRemoveDeviceAssociation,
           onResizeViewport,
           onRotateViewport,
-          onUpdateDeviceModalOpen,
+          onUpdateDeviceModal,
         });
       })
     );

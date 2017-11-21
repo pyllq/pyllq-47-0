@@ -64,41 +64,6 @@ WebGLContext::ValidateBlendEquationEnum(GLenum mode, const char* info)
 }
 
 bool
-WebGLContext::ValidateBlendFuncDstEnum(GLenum factor, const char* info)
-{
-    switch (factor) {
-    case LOCAL_GL_ZERO:
-    case LOCAL_GL_ONE:
-    case LOCAL_GL_SRC_COLOR:
-    case LOCAL_GL_ONE_MINUS_SRC_COLOR:
-    case LOCAL_GL_DST_COLOR:
-    case LOCAL_GL_ONE_MINUS_DST_COLOR:
-    case LOCAL_GL_SRC_ALPHA:
-    case LOCAL_GL_ONE_MINUS_SRC_ALPHA:
-    case LOCAL_GL_DST_ALPHA:
-    case LOCAL_GL_ONE_MINUS_DST_ALPHA:
-    case LOCAL_GL_CONSTANT_COLOR:
-    case LOCAL_GL_ONE_MINUS_CONSTANT_COLOR:
-    case LOCAL_GL_CONSTANT_ALPHA:
-    case LOCAL_GL_ONE_MINUS_CONSTANT_ALPHA:
-        return true;
-
-    default:
-        ErrorInvalidEnumInfo(info, factor);
-        return false;
-    }
-}
-
-bool
-WebGLContext::ValidateBlendFuncSrcEnum(GLenum factor, const char* info)
-{
-    if (factor == LOCAL_GL_SRC_ALPHA_SATURATE)
-        return true;
-
-    return ValidateBlendFuncDstEnum(factor, info);
-}
-
-bool
 WebGLContext::ValidateBlendFuncEnumsCompatibility(GLenum sfactor,
                                                   GLenum dfactor,
                                                   const char* info)
@@ -304,8 +269,10 @@ WebGLContext::ValidateUniformMatrixArraySetter(WebGLUniformLocation* loc,
     if (!loc->ValidateArrayLength(setterElemSize, setterArraySize, funcName))
         return false;
 
-    if (!ValidateUniformMatrixTranspose(setterTranspose, funcName))
+    if (setterTranspose && !IsWebGL2()) {
+        ErrorInvalidValue("%s: `transpose` must be false.", funcName);
         return false;
+    }
 
     const auto& elemCount = loc->mInfo->mActiveInfo->mElemCount;
     MOZ_ASSERT(elemCount > loc->mArrayIndex);
@@ -336,66 +303,6 @@ WebGLContext::ValidateAttribIndex(GLuint index, const char* info)
     }
 
     return valid;
-}
-
-bool
-WebGLContext::ValidateAttribPointer(bool integerMode, GLuint index, GLint size, GLenum type,
-                                    WebGLboolean normalized, GLsizei stride,
-                                    WebGLintptr byteOffset, const char* info)
-{
-    WebGLBuffer* buffer = mBoundArrayBuffer;
-    if (!buffer) {
-        ErrorInvalidOperation("%s: must have valid GL_ARRAY_BUFFER binding", info);
-        return false;
-    }
-
-    uint32_t requiredAlignment = 0;
-    if (!ValidateAttribPointerType(integerMode, type, &requiredAlignment, info))
-        return false;
-
-    // requiredAlignment should always be a power of two
-    MOZ_ASSERT(IsPowerOfTwo(requiredAlignment));
-    GLsizei requiredAlignmentMask = requiredAlignment - 1;
-
-    if (size < 1 || size > 4) {
-        ErrorInvalidValue("%s: invalid element size", info);
-        return false;
-    }
-
-    switch (type) {
-    case LOCAL_GL_INT_2_10_10_10_REV:
-    case LOCAL_GL_UNSIGNED_INT_2_10_10_10_REV:
-        if (size != 4) {
-            ErrorInvalidOperation("%s: size must be 4 for this type.", info);
-            return false;
-        }
-        break;
-    }
-
-    // see WebGL spec section 6.6 "Vertex Attribute Data Stride"
-    if (stride < 0 || stride > 255) {
-        ErrorInvalidValue("%s: negative or too large stride", info);
-        return false;
-    }
-
-    if (byteOffset < 0) {
-        ErrorInvalidValue("%s: negative offset", info);
-        return false;
-    }
-
-    if (stride & requiredAlignmentMask) {
-        ErrorInvalidOperation("%s: stride doesn't satisfy the alignment "
-                              "requirement of given type", info);
-        return false;
-    }
-
-    if (byteOffset & requiredAlignmentMask) {
-        ErrorInvalidOperation("%s: byteOffset doesn't satisfy the alignment "
-                              "requirement of given type", info);
-        return false;
-    }
-
-    return true;
 }
 
 bool
@@ -511,6 +418,8 @@ WebGLContext::InitAndValidateGL(FailureReason* const out_failReason)
     mDitherEnabled = true;
     mRasterizerDiscardEnabled = false;
     mScissorTestEnabled = false;
+    mDepthTestEnabled = 0;
+    mStencilTestEnabled = 0;
     mGenerateMipmapHint = LOCAL_GL_DONT_CARE;
 
     // Bindings, etc.
@@ -596,21 +505,6 @@ WebGLContext::InitAndValidateGL(FailureReason* const out_failReason)
         gl->fGetIntegerv(LOCAL_GL_MAX_TEXTURE_IMAGE_UNITS, &mGLMaxTextureImageUnits);
         gl->fGetIntegerv(LOCAL_GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &mGLMaxVertexTextureImageUnits);
     }
-
-    // If we don't support a target, its max size is 0. We should only floor-to-POT if the
-    // value if it's non-zero. (NB log2(0) is -Inf, so zero isn't an integer power-of-two)
-    const auto fnFloorPOTIfSupported = [](uint32_t& val) {
-        if (val) {
-            val = FloorPOT(val);
-        }
-    };
-
-    fnFloorPOTIfSupported(mImplMaxTextureSize);
-    fnFloorPOTIfSupported(mImplMaxCubeMapTextureSize);
-    fnFloorPOTIfSupported(mImplMaxRenderbufferSize);
-
-    fnFloorPOTIfSupported(mImplMax3DTextureSize);
-    fnFloorPOTIfSupported(mImplMaxArrayTextureLayers);
 
     ////////////////
 
@@ -759,6 +653,7 @@ WebGLContext::InitAndValidateGL(FailureReason* const out_failReason)
     mPixelStore_FlipY = false;
     mPixelStore_PremultiplyAlpha = false;
     mPixelStore_ColorspaceConversion = BROWSER_DEFAULT_WEBGL;
+    mPixelStore_RequireFastPath = false;
 
     // GLES 3.0.4, p259:
     mPixelStore_UnpackImageHeight = 0;
@@ -782,6 +677,11 @@ WebGLContext::InitAndValidateGL(FailureReason* const out_failReason)
            sizeof(mGenericVertexAttrib0Data));
 
     mFakeVertexAttrib0BufferObject = 0;
+
+    mNeedsIndexValidation = !gl->IsSupported(gl::GLFeature::robust_buffer_access_behavior);
+    if (gfxPrefs::WebGLForceIndexValidation()) {
+        mNeedsIndexValidation = true;
+    }
 
     return true;
 }

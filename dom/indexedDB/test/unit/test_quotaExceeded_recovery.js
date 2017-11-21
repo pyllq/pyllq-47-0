@@ -7,7 +7,7 @@ var disableWorkerTest = "Need a way to set temporary prefs from a worker";
 
 var testGenerator = testSteps();
 
-function testSteps()
+function* testSteps()
 {
   const spec = "http://foo.com";
   const name =
@@ -38,7 +38,7 @@ function testSteps()
 
     let request = indexedDB.openForPrincipal(getPrincipal(spec), name);
     request.onerror = errorHandler;
-    request.onupgradeneeded = grabEventAndContinueHandler;;
+    request.onupgradeneeded = grabEventAndContinueHandler;
     request.onsuccess = unexpectedSuccessHandler;
 
     yield undefined;
@@ -129,7 +129,7 @@ function testSteps()
         }
       }
 
-      trans.onabort = unexpectedSuccessHandler;;
+      trans.onabort = unexpectedSuccessHandler;
       trans.oncomplete = grabEventAndContinueHandler;
 
       yield undefined;

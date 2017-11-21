@@ -7,9 +7,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Sprintf.h"
 #include "XRemoteClient.h"
-#include "prmem.h"
 #include "plstr.h"
 #include "prsystem.h"
 #include "mozilla/Logging.h"
@@ -51,7 +51,7 @@
 
 using mozilla::LogLevel;
 
-static PRLogModuleInfo *sRemoteLm = nullptr;
+static mozilla::LazyLogModule sRemoteLm("XRemoteClient");
 
 static int (*sOldHandler)(Display *, XErrorEvent *);
 static bool sGotBadWindow;
@@ -69,8 +69,6 @@ XRemoteClient::XRemoteClient()
   mMozProfileAtom = 0;
   mMozProgramAtom = 0;
   mLockData = 0;
-  if (!sRemoteLm)
-    sRemoteLm = PR_NewLogModule("XRemoteClient");
   MOZ_LOG(sRemoteLm, LogLevel::Debug, ("XRemoteClient::XRemoteClient"));
 }
 
@@ -151,9 +149,9 @@ HandleBadWindow(Display *display, XErrorEvent *event)
     sGotBadWindow = true;
     return 0; // ignored
   }
-  else {
+  
     return (*sOldHandler)(display, event);
-  }
+  
 }
 
 nsresult
@@ -208,7 +206,8 @@ XRemoteClient::SendCommandLine (const char *aProgram, const char *aUsername,
 
   XSetErrorHandler(sOldHandler);
 
-  MOZ_LOG(sRemoteLm, LogLevel::Debug, ("SendCommandInternal returning 0x%x\n", rv));
+  MOZ_LOG(sRemoteLm, LogLevel::Debug, ("SendCommandInternal returning 0x%" PRIx32 "\n",
+                                       static_cast<uint32_t>(rv)));
 
   return rv;
 }
@@ -384,7 +383,7 @@ XRemoteClient::GetLock(Window aWindow, bool *aDestroyed)
           rv = NS_ERROR_FAILURE;
           break;
 	}
-	else if (event.xany.type == PropertyNotify &&
+	if (event.xany.type == PropertyNotify &&
 		 event.xproperty.state == PropertyDelete &&
 		 event.xproperty.window == aWindow &&
 		 event.xproperty.atom == mMozLockAtom) {
@@ -584,7 +583,7 @@ XRemoteClient::FreeLock(Window aWindow)
               " property\n"));
       return NS_ERROR_FAILURE;
   }
-  else if (!data || !*data){
+  if (!data || !*data){
       MOZ_LOG(sRemoteLm, LogLevel::Debug,
              ("invalid data on " MOZILLA_LOCK_PROP
               " of window 0x%x.\n",
@@ -709,7 +708,7 @@ XRemoteClient::WaitForResponse(Window aWindow, char **aResponse,
       *aDestroyed = true;
       return false;
     }
-    else if (event.xany.type == PropertyNotify &&
+    if (event.xany.type == PropertyNotify &&
              event.xproperty.state == PropertyNewValue &&
              event.xproperty.window == aWindow &&
              event.xproperty.atom == mMozResponseAtom) {

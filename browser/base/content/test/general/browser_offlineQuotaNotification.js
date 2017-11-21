@@ -15,6 +15,7 @@ registerCleanupFunction(function() {
   Services.perms.removeFromPrincipal(principal, "offline-app");
   Services.prefs.clearUserPref("offline-apps.quota.warn");
   Services.prefs.clearUserPref("offline-apps.allow_by_default");
+  Services.prefs.clearUserPref("browser.preferences.useOldOrganization");
   let {OfflineAppCacheHelper} = Components.utils.import("resource:///modules/offlineAppCache.jsm", {});
   OfflineAppCacheHelper.clear();
 });
@@ -23,10 +24,8 @@ registerCleanupFunction(function() {
 function checkInContentPreferences(win) {
   let doc = win.document;
   let sel = doc.getElementById("categories").selectedItems[0].id;
-  let tab = doc.getElementById("advancedPrefs").selectedTab.id;
-  is(gBrowser.currentURI.spec, "about:preferences#advanced", "about:preferences loaded");
-  is(sel, "category-advanced", "Advanced pane was selected");
-  is(tab, "networkTab", "Network tab is selected");
+  is(gBrowser.currentURI.spec, "about:preferences#privacy", "about:preferences loaded");
+  is(sel, "category-privacy", "Privacy pane was selected");
   // all good, we are done.
   win.close();
   finish();
@@ -35,10 +34,11 @@ function checkInContentPreferences(win) {
 function test() {
   waitForExplicitFinish();
 
+  Services.prefs.setBoolPref("browser.preferences.useOldOrganization", false);
   Services.prefs.setBoolPref("offline-apps.allow_by_default", false);
 
   // Open a new tab.
-  gBrowser.selectedTab = gBrowser.addTab(URL);
+  gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, URL);
   registerCleanupFunction(() => gBrowser.removeCurrentTab());
 
 
@@ -52,7 +52,7 @@ function test() {
     // Need a promise to keep track of when we've added our handler.
     let mm = gBrowser.selectedBrowser.messageManager;
     let onCachedAttached = BrowserTestUtils.waitForMessage(mm, "Test:OnCachedAttached");
-    let gotCached = ContentTask.spawn(gBrowser.selectedBrowser, null, function*() {
+    let gotCached = ContentTask.spawn(gBrowser.selectedBrowser, null, async function() {
       return new Promise(resolve => {
         content.window.applicationCache.oncached = function() {
           setTimeout(resolve, 0);
@@ -68,12 +68,11 @@ function test() {
       // tab to open - which we track via an "Initialized" event.
       PopupNotifications.panel.firstElementChild.button.click();
       let newTabBrowser = gBrowser.getBrowserForTab(gBrowser.selectedTab);
-      newTabBrowser.addEventListener("Initialized", function PrefInit() {
-        newTabBrowser.removeEventListener("Initialized", PrefInit, true);
+      newTabBrowser.addEventListener("Initialized", function() {
         executeSoon(function() {
           checkInContentPreferences(newTabBrowser.contentWindow);
         })
-      }, true);
+      }, {capture: true, once: true});
     });
     onCachedAttached.then(function() {
       Services.prefs.setIntPref("offline-apps.quota.warn", 1);
@@ -87,9 +86,8 @@ function test() {
 
 function promiseNotification() {
   return new Promise(resolve => {
-    PopupNotifications.panel.addEventListener("popupshown", function onShown() {
-      PopupNotifications.panel.removeEventListener("popupshown", onShown);
+    PopupNotifications.panel.addEventListener("popupshown", function() {
       resolve();
-    });
+    }, {once: true});
   });
 }

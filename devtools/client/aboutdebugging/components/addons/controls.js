@@ -47,21 +47,34 @@ module.exports = createClass({
     fp.init(window,
       Strings.GetStringFromName("selectAddonFromFile2"),
       Ci.nsIFilePicker.modeOpen);
-    let res = fp.show();
-    if (res == Ci.nsIFilePicker.returnCancel || !fp.file) {
-      return;
-    }
-    let file = fp.file;
-    // AddonManager.installTemporaryAddon accepts either
-    // addon directory or final xpi file.
-    if (!file.isDirectory() && !file.leafName.endsWith(".xpi")) {
-      file = file.parent;
-    }
+    fp.open(res => {
+      if (res == Ci.nsIFilePicker.returnCancel || !fp.file) {
+        return;
+      }
+      let file = fp.file;
+      // AddonManager.installTemporaryAddon accepts either
+      // addon directory or final xpi file.
+      if (!file.isDirectory() && !file.leafName.endsWith(".xpi")) {
+        file = file.parent;
+      }
 
+      this.installAddon(file);
+    });
+  },
+
+  retryInstall() {
+    this.setState({ installError: null });
+    this.installAddon(this.state.lastInstallErrorFile);
+  },
+
+  installAddon(file) {
     AddonManager.installTemporaryAddon(file)
+      .then(() => {
+        this.setState({ lastInstallErrorFile: null });
+      })
       .catch(e => {
         console.error(e);
-        this.setState({ installError: e.message });
+        this.setState({ installError: e.message, lastInstallErrorFile: file });
       });
   },
 
@@ -76,22 +89,25 @@ module.exports = createClass({
             type: "checkbox",
             checked: !debugDisabled,
             onChange: this.onEnableAddonDebuggingChange,
+            role: "checkbox",
           }),
           dom.label({
             className: "addons-debugging-label",
             htmlFor: "enable-addon-debugging",
             title: Strings.GetStringFromName("addonDebugging.tooltip")
           }, Strings.GetStringFromName("addonDebugging.label")),
-          "(",
           dom.a({ href: MORE_INFO_URL, target: "_blank" },
-            Strings.GetStringFromName("moreInfo")),
-          ")"
+            Strings.GetStringFromName("addonDebugging.learnMore")
+          ),
         ),
         dom.button({
           id: "load-addon-from-file",
           onClick: this.loadAddonFromFile,
         }, Strings.GetStringFromName("loadTemporaryAddon"))
       ),
-      AddonsInstallError({ error: this.state.installError }));
+      AddonsInstallError({
+        error: this.state.installError,
+        retryInstall: this.retryInstall,
+      }));
   }
 });

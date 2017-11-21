@@ -15,6 +15,8 @@
 #include "vpx/vpx_encoder.h"
 #include "WebMWriter.h"
 #include "mozilla/media/MediaUtils.h"
+#include "mozilla/dom/ImageUtils.h"
+#include "mozilla/dom/ImageBitmapBinding.h"
 
 namespace mozilla {
 
@@ -28,6 +30,7 @@ LazyLogModule gVP8TrackEncoderLog("VP8TrackEncoder");
 using namespace mozilla::gfx;
 using namespace mozilla::layers;
 using namespace mozilla::media;
+using namespace mozilla::dom;
 
 static already_AddRefed<SourceSurface>
 GetSourceSurface(already_AddRefed<Image> aImg)
@@ -64,6 +67,14 @@ VP8TrackEncoder::VP8TrackEncoder(TrackRate aTrackRate)
 
 VP8TrackEncoder::~VP8TrackEncoder()
 {
+  Destroy();
+  MOZ_COUNT_DTOR(VP8TrackEncoder);
+}
+
+void
+VP8TrackEncoder::Destroy()
+{
+  ReentrantMonitorAutoEnter mon(mReentrantMonitor);
   if (mInitialized) {
     vpx_codec_destroy(mVPXContext);
   }
@@ -71,7 +82,7 @@ VP8TrackEncoder::~VP8TrackEncoder()
   if (mVPXImageWrapper) {
     vpx_img_free(mVPXImageWrapper);
   }
-  MOZ_COUNT_DTOR(VP8TrackEncoder);
+  mInitialized = false;
 }
 
 nsresult
@@ -83,24 +94,86 @@ VP8TrackEncoder::Init(int32_t aWidth, int32_t aHeight, int32_t aDisplayWidth,
   }
 
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
-
-  mFrameWidth = aWidth;
-  mFrameHeight = aHeight;
-  mDisplayWidth = aDisplayWidth;
-  mDisplayHeight = aDisplayHeight;
+  if (mInitialized) {
+    MOZ_ASSERT(false);
+    return NS_ERROR_FAILURE;
+  }
 
   // Encoder configuration structure.
   vpx_codec_enc_cfg_t config;
-  memset(&config, 0, sizeof(vpx_codec_enc_cfg_t));
-  if (vpx_codec_enc_config_default(vpx_codec_vp8_cx(), &config, 0)) {
-    return NS_ERROR_FAILURE;
-  }
+  nsresult rv = SetConfigurationValues(aWidth, aHeight, aDisplayWidth, aDisplayHeight, config);
+  NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
 
   // Creating a wrapper to the image - setting image data to NULL. Actual
   // pointer will be set in encode. Setting align to 1, as it is meaningless
   // (actual memory is not allocated).
   vpx_img_wrap(mVPXImageWrapper, VPX_IMG_FMT_I420,
                mFrameWidth, mFrameHeight, 1, nullptr);
+
+  vpx_codec_flags_t flags = 0;
+  flags |= VPX_CODEC_USE_OUTPUT_PARTITION;
+  if (vpx_codec_enc_init(mVPXContext, vpx_codec_vp8_cx(), &config, flags)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  vpx_codec_control(mVPXContext, VP8E_SET_STATIC_THRESHOLD, 1);
+  vpx_codec_control(mVPXContext, VP8E_SET_CPUUSED, -6);
+  vpx_codec_control(mVPXContext, VP8E_SET_TOKEN_PARTITIONS,
+                    VP8_ONE_TOKENPARTITION);
+
+  mInitialized = true;
+  mon.NotifyAll();
+
+  return NS_OK;
+}
+
+nsresult
+VP8TrackEncoder::Reconfigure(int32_t aWidth, int32_t aHeight,
+                             int32_t aDisplayWidth, int32_t aDisplayHeight)
+{
+  if(aWidth <= 0 || aHeight <= 0 || aDisplayWidth <= 0 || aDisplayHeight <= 0) {
+    MOZ_ASSERT(false);
+    return NS_ERROR_FAILURE;
+  }
+
+  ReentrantMonitorAutoEnter mon(mReentrantMonitor);
+  if (!mInitialized) {
+    MOZ_ASSERT(false);
+    return NS_ERROR_FAILURE;
+  }
+
+  mInitialized = false;
+  // Recreate image wrapper
+  vpx_img_free(mVPXImageWrapper);
+  vpx_img_wrap(mVPXImageWrapper, VPX_IMG_FMT_I420, aWidth, aHeight, 1, nullptr);
+  // Encoder configuration structure.
+  vpx_codec_enc_cfg_t config;
+  nsresult rv = SetConfigurationValues(aWidth, aHeight, aDisplayWidth, aDisplayHeight, config);
+  NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
+  // Set new configuration
+  if (vpx_codec_enc_config_set(mVPXContext.get(), &config) != VPX_CODEC_OK) {
+    VP8LOG(LogLevel::Error, "Failed to set new configuration");
+    return NS_ERROR_FAILURE;
+  }
+  mInitialized = true;
+  return NS_OK;
+}
+
+nsresult
+VP8TrackEncoder::SetConfigurationValues(int32_t aWidth, int32_t aHeight, int32_t aDisplayWidth,
+                                        int32_t aDisplayHeight, vpx_codec_enc_cfg_t& config)
+{
+  mFrameWidth = aWidth;
+  mFrameHeight = aHeight;
+  mDisplayWidth = aDisplayWidth;
+  mDisplayHeight = aDisplayHeight;
+
+  // Encoder configuration structure.
+  memset(&config, 0, sizeof(vpx_codec_enc_cfg_t));
+  if (vpx_codec_enc_config_default(vpx_codec_vp8_cx(), &config, 0)) {
+    VP8LOG(LogLevel::Error, "Failed to get default configuration");
+    return NS_ERROR_FAILURE;
+  }
 
   config.g_w = mFrameWidth;
   config.g_h = mFrameHeight;
@@ -144,28 +217,13 @@ VP8TrackEncoder::Init(int32_t aWidth, int32_t aHeight, int32_t aDisplayWidth,
   // Ensure that we can output one I-frame per second.
   config.kf_max_dist = 60;
 
-  vpx_codec_flags_t flags = 0;
-  flags |= VPX_CODEC_USE_OUTPUT_PARTITION;
-  if (vpx_codec_enc_init(mVPXContext, vpx_codec_vp8_cx(), &config, flags)) {
-    return NS_ERROR_FAILURE;
-  }
-
-  vpx_codec_control(mVPXContext, VP8E_SET_STATIC_THRESHOLD, 1);
-  vpx_codec_control(mVPXContext, VP8E_SET_CPUUSED, -6);
-  vpx_codec_control(mVPXContext, VP8E_SET_TOKEN_PARTITIONS,
-                    VP8_ONE_TOKENPARTITION);
-
-  mInitialized = true;
-  mon.NotifyAll();
-
   return NS_OK;
 }
 
 already_AddRefed<TrackMetadataBase>
 VP8TrackEncoder::GetMetadata()
 {
-  PROFILER_LABEL("VP8TrackEncoder", "GetMetadata",
-    js::ProfileEntry::Category::OTHER);
+  AUTO_PROFILER_LABEL("VP8TrackEncoder::GetMetadata", OTHER);
   {
     // Wait if mEncoder is not initialized.
     ReentrantMonitorAutoEnter mon(mReentrantMonitor);
@@ -251,7 +309,7 @@ VP8TrackEncoder::GetEncodedPartitions(EncodedFrameContainer& aData)
     videoData->SetDuration((uint64_t)duration.value());
     videoData->SwapInFrameData(frameData);
     VP8LOG(LogLevel::Verbose,
-           "GetEncodedPartitions TimeStamp %lld, Duration %lld, FrameType %d",
+           "GetEncodedPartitions TimeStamp %" PRIu64 ", Duration %" PRIu64 ", FrameType %d",
            videoData->GetTimeStamp(), videoData->GetDuration(),
            videoData->GetFrameType());
     aData.AppendEncodedFrame(videoData);
@@ -260,38 +318,17 @@ VP8TrackEncoder::GetEncodedPartitions(EncodedFrameContainer& aData)
   return pkt ? NS_OK : NS_ERROR_NOT_AVAILABLE;
 }
 
-static bool isYUV420(const PlanarYCbCrImage::Data *aData)
-{
-  if (aData->mYSize == aData->mCbCrSize * 2) {
-    return true;
-  }
-  return false;
-}
-
-static bool isYUV422(const PlanarYCbCrImage::Data *aData)
-{
-  if ((aData->mYSize.width == aData->mCbCrSize.width * 2) &&
-      (aData->mYSize.height == aData->mCbCrSize.height)) {
-    return true;
-  }
-  return false;
-}
-
-static bool isYUV444(const PlanarYCbCrImage::Data *aData)
-{
-  if (aData->mYSize == aData->mCbCrSize) {
-    return true;
-  }
-  return false;
-}
-
 nsresult VP8TrackEncoder::PrepareRawFrame(VideoChunk &aChunk)
 {
   RefPtr<Image> img;
   if (aChunk.mFrame.GetForceBlack() || aChunk.IsNull()) {
     if (!mMuteFrame) {
       mMuteFrame = VideoFrame::CreateBlackImage(gfx::IntSize(mFrameWidth, mFrameHeight));
-      MOZ_ASSERT(mMuteFrame);
+    }
+    if (!mMuteFrame) {
+      VP8LOG(LogLevel::Warning, "Failed to allocate black image of size %dx%d",
+             mFrameWidth, mFrameHeight);
+      return NS_OK;
     }
     img = mMuteFrame;
   } else {
@@ -299,10 +336,31 @@ nsresult VP8TrackEncoder::PrepareRawFrame(VideoChunk &aChunk)
   }
 
   if (img->GetSize() != IntSize(mFrameWidth, mFrameHeight)) {
-    VP8LOG(LogLevel::Error,
-           "Dynamic resolution changes (was %dx%d, now %dx%d) are unsupported",
+    VP8LOG(LogLevel::Info,
+           "Dynamic resolution change (was %dx%d, now %dx%d).",
            mFrameWidth, mFrameHeight, img->GetSize().width, img->GetSize().height);
-    return NS_ERROR_FAILURE;
+
+
+    gfx::IntSize intrinsicSize = aChunk.mFrame.GetIntrinsicSize();
+    gfx::IntSize imgSize = aChunk.mFrame.GetImage()->GetSize();
+    if (imgSize <= IntSize(mFrameWidth, mFrameHeight) && // check buffer size instead
+        // If the new size is less than or equal to old,
+        // the existing encoder instance can continue.
+        NS_SUCCEEDED(Reconfigure(imgSize.width,
+                                 imgSize.height,
+                                 intrinsicSize.width,
+                                 intrinsicSize.height))) {
+      VP8LOG(LogLevel::Info, "Reconfigured VP8 encoder.");
+    } else {
+      // New frame size is larger; re-create the encoder.
+      Destroy();
+      nsresult rv = Init(imgSize.width,
+                         imgSize.height,
+                         intrinsicSize.width,
+                         intrinsicSize.height);
+      VP8LOG(LogLevel::Info, "Recreated VP8 encoder.");
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
   }
 
   ImageFormat format = img->GetFormat();
@@ -314,10 +372,16 @@ nsresult VP8TrackEncoder::PrepareRawFrame(VideoChunk &aChunk)
       NS_WARNING("PlanarYCbCrImage is not valid");
       return NS_ERROR_FAILURE;
     }
-    const PlanarYCbCrImage::Data *data = yuv->GetData();
 
-    if (isYUV420(data) && !data->mCbSkip) {
+    // The ImageUtils API may change depending on our support for ImageBitmap
+    // extensions. Should this happen in a breaking way we should abstract out
+    // the format detection for use here.
+    const ImageUtils imageUtils(img);
+    const ImageBitmapFormat imageBitmapFormat = imageUtils.GetFormat();
+
+    if (imageBitmapFormat == ImageBitmapFormat::YUV420P) {
       // 420 planar, no need for conversions
+      const PlanarYCbCrImage::Data* data = yuv->GetData();
       mVPXImageWrapper->planes[VPX_PLANE_Y] = data->mYChannel;
       mVPXImageWrapper->planes[VPX_PLANE_U] = data->mCbChannel;
       mVPXImageWrapper->planes[VPX_PLANE_V] = data->mCrChannel;
@@ -335,7 +399,7 @@ nsresult VP8TrackEncoder::PrepareRawFrame(VideoChunk &aChunk)
   uint32_t halfHeight = (mFrameHeight + 1) / 2;
   uint32_t uvPlaneSize = halfWidth * halfHeight;
 
-  if (mI420Frame.IsEmpty()) {
+  if (mI420Frame.Length() != yPlaneSize + uvPlaneSize * 2) {
     mI420Frame.SetLength(yPlaneSize + uvPlaneSize * 2);
   }
 
@@ -351,46 +415,72 @@ nsresult VP8TrackEncoder::PrepareRawFrame(VideoChunk &aChunk)
       NS_WARNING("PlanarYCbCrImage is not valid");
       return NS_ERROR_FAILURE;
     }
+
+    const ImageUtils imageUtils(img);
+    const ImageBitmapFormat imageBitmapFormat = imageUtils.GetFormat();
     const PlanarYCbCrImage::Data *data = yuv->GetData();
 
     int rv;
     std::string yuvFormat;
-    if (isYUV420(data) && data->mCbSkip) {
-      // If mCbSkip is set, we assume it's nv12 or nv21.
-      if (data->mCbChannel < data->mCrChannel) { // nv12
-        rv = libyuv::NV12ToI420(data->mYChannel, data->mYStride,
-                                data->mCbChannel, data->mCbCrStride,
-                                y, mFrameWidth,
-                                cb, halfWidth,
-                                cr, halfWidth,
-                                mFrameWidth, mFrameHeight);
-        yuvFormat = "NV12";
-      } else { // nv21
-        rv = libyuv::NV21ToI420(data->mYChannel, data->mYStride,
-                                data->mCrChannel, data->mCbCrStride,
-                                y, mFrameWidth,
-                                cb, halfWidth,
-                                cr, halfWidth,
-                                mFrameWidth, mFrameHeight);
-        yuvFormat = "NV21";
-      }
-    } else if (isYUV444(data) && !data->mCbSkip) {
-      rv = libyuv::I444ToI420(data->mYChannel, data->mYStride,
-                              data->mCbChannel, data->mCbCrStride,
-                              data->mCrChannel, data->mCbCrStride,
-                              y, mFrameWidth,
-                              cb, halfWidth,
-                              cr, halfWidth,
-                              mFrameWidth, mFrameHeight);
+    if (imageBitmapFormat == ImageBitmapFormat::YUV420SP_NV12) {
+      rv = libyuv::NV12ToI420(data->mYChannel,
+                              data->mYStride,
+                              data->mCbChannel,
+                              data->mCbCrStride,
+                              y,
+                              mFrameWidth,
+                              cb,
+                              halfWidth,
+                              cr,
+                              halfWidth,
+                              mFrameWidth,
+                              mFrameHeight);
+      yuvFormat = "NV12";
+    } else if (imageBitmapFormat == ImageBitmapFormat::YUV420SP_NV21) {
+      rv = libyuv::NV21ToI420(data->mYChannel,
+                              data->mYStride,
+                              data->mCrChannel,
+                              data->mCbCrStride,
+                              y,
+                              mFrameWidth,
+                              cb,
+                              halfWidth,
+                              cr,
+                              halfWidth,
+                              mFrameWidth,
+                              mFrameHeight);
+      yuvFormat = "NV21";
+    } else if (imageBitmapFormat == ImageBitmapFormat::YUV444P) {
+      rv = libyuv::I444ToI420(data->mYChannel,
+                              data->mYStride,
+                              data->mCbChannel,
+                              data->mCbCrStride,
+                              data->mCrChannel,
+                              data->mCbCrStride,
+                              y,
+                              mFrameWidth,
+                              cb,
+                              halfWidth,
+                              cr,
+                              halfWidth,
+                              mFrameWidth,
+                              mFrameHeight);
       yuvFormat = "I444";
-    } else if (isYUV422(data) && !data->mCbSkip) {
-      rv = libyuv::I422ToI420(data->mYChannel, data->mYStride,
-                              data->mCbChannel, data->mCbCrStride,
-                              data->mCrChannel, data->mCbCrStride,
-                              y, mFrameWidth,
-                              cb, halfWidth,
-                              cr, halfWidth,
-                              mFrameWidth, mFrameHeight);
+    } else if (imageBitmapFormat == ImageBitmapFormat::YUV422P) {
+      rv = libyuv::I422ToI420(data->mYChannel,
+                              data->mYStride,
+                              data->mCbChannel,
+                              data->mCbCrStride,
+                              data->mCrChannel,
+                              data->mCbCrStride,
+                              y,
+                              mFrameWidth,
+                              cb,
+                              halfWidth,
+                              cr,
+                              halfWidth,
+                              mFrameWidth,
+                              mFrameHeight);
       yuvFormat = "I422";
     } else {
       VP8LOG(LogLevel::Error, "Unsupported planar format");
@@ -522,8 +612,7 @@ VP8TrackEncoder::GetNextEncodeOperation(TimeDuration aTimeElapsed,
 nsresult
 VP8TrackEncoder::GetEncodedTrack(EncodedFrameContainer& aData)
 {
-  PROFILER_LABEL("VP8TrackEncoder", "GetEncodedTrack",
-    js::ProfileEntry::Category::OTHER);
+  AUTO_PROFILER_LABEL("VP8TrackEncoder::GetEncodedTrack", OTHER);
   bool EOS;
   {
     // Move all the samples from mRawSegment to mSourceSegment. We only hold
@@ -550,7 +639,7 @@ VP8TrackEncoder::GetEncodedTrack(EncodedFrameContainer& aData)
   for (VideoSegment::ChunkIterator iter(mSourceSegment);
        !iter.IsEnded(); iter.Next()) {
     VideoChunk &chunk = *iter;
-    VP8LOG(LogLevel::Verbose, "nextEncodeOperation is %d for frame of duration %lld",
+    VP8LOG(LogLevel::Verbose, "nextEncodeOperation is %d for frame of duration %" PRId64,
              nextEncodeOperation, chunk.GetDuration());
 
     // Encode frame.
@@ -567,6 +656,7 @@ VP8TrackEncoder::GetEncodedTrack(EncodedFrameContainer& aData)
       if (vpx_codec_encode(mVPXContext, mVPXImageWrapper, mEncodedTimestamp,
                            (unsigned long)chunk.GetDuration(), flags,
                            VPX_DL_REALTIME)) {
+        VP8LOG(LogLevel::Error, "vpx_codec_encode failed to encode the frame.");
         return NS_ERROR_FAILURE;
       }
       // Get the encoded data from VP8 encoder.

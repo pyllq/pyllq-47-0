@@ -8,7 +8,6 @@ const shared_modules = [
   "async.js",
   "logmanager.js",
   "rest.js",
-  "stringbundle.js",
   "utils.js",
 ];
 
@@ -35,7 +34,7 @@ function expectImportsToSucceed(mm, base = MODULE_BASE) {
     } catch (e) {}
 
     if (!succeeded) {
-      throw "Importing " + resource + " should have succeeded!";
+      throw new Error(`Importing ${resource} should have succeeded!`);
     }
   }
 }
@@ -50,7 +49,7 @@ function expectImportsToFail(mm, base = MODULE_BASE) {
     } catch (e) {}
 
     if (succeeded) {
-      throw "Importing " + resource + " should have failed!";
+      throw new Error(`Importing ${resource} should have failed!`);
     }
   }
 }

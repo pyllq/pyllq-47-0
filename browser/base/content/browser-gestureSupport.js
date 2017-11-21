@@ -2,6 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// This file is loaded into the browser window scope.
+/* eslint-env mozilla/browser-window */
+
 // Simple gestures support
 //
 // As per bug #412486, web content must not be allowed to receive any
@@ -191,12 +194,12 @@ var gGestureSupport = {
 
     let isVerticalSwipe = false;
     if (aEvent.direction == aEvent.DIRECTION_UP) {
-      if (gMultiProcessBrowser || content.pageYOffset > 0) {
+      if (gMultiProcessBrowser || window.content.pageYOffset > 0) {
         return false;
       }
       isVerticalSwipe = true;
     } else if (aEvent.direction == aEvent.DIRECTION_DOWN) {
-      if (gMultiProcessBrowser || content.pageYOffset < content.scrollMaxY) {
+      if (gMultiProcessBrowser || window.content.pageYOffset < window.content.scrollMaxY) {
         return false;
       }
       isVerticalSwipe = true;
@@ -334,7 +337,8 @@ var gGestureSupport = {
         let cmdEvent = document.createEvent("xulcommandevent");
         cmdEvent.initCommandEvent("command", true, true, window, 0,
                                   aEvent.ctrlKey, aEvent.altKey,
-                                  aEvent.shiftKey, aEvent.metaKey, aEvent);
+                                  aEvent.shiftKey, aEvent.metaKey,
+                                  aEvent, aEvent.mozInputSource);
         node.dispatchEvent(cmdEvent);
       }
 
@@ -442,10 +446,10 @@ var gGestureSupport = {
    *        The MozRotateGestureUpdate event triggering this call
    */
   rotate(aEvent) {
-    if (!(content.document instanceof ImageDocument))
+    if (!(window.content.document instanceof ImageDocument))
       return;
 
-    let contentElement = content.document.body.firstElementChild;
+    let contentElement = window.content.document.body.firstElementChild;
     if (!contentElement)
       return;
     // If we're currently snapping, cancel that snap
@@ -461,10 +465,10 @@ var gGestureSupport = {
    * Perform a rotation end for ImageDocuments
    */
   rotateEnd() {
-    if (!(content.document instanceof ImageDocument))
+    if (!(window.content.document instanceof ImageDocument))
       return;
 
-    let contentElement = content.document.body.firstElementChild;
+    let contentElement = window.content.document.body.firstElementChild;
     if (!contentElement)
       return;
 
@@ -529,16 +533,16 @@ var gGestureSupport = {
    * image
    */
   restoreRotationState() {
-    // Bug 863514 - Make gesture support work in electrolysis
+    // Bug 1108553 - Cannot rotate images in stand-alone image documents with e10s
     if (gMultiProcessBrowser)
       return;
 
-    if (!(content.document instanceof ImageDocument))
+    if (!(window.content.document instanceof ImageDocument))
       return;
 
-    let contentElement = content.document.body.firstElementChild;
-    let transformValue = content.window.getComputedStyle(contentElement, null)
-                                       .transform;
+    let contentElement = window.content.document.body.firstElementChild;
+    let transformValue = window.content.window.getComputedStyle(contentElement)
+                                              .transform;
 
     if (transformValue == "none") {
       this.rotation = 0;
@@ -558,10 +562,10 @@ var gGestureSupport = {
    * Removes the transition rule by removing the completeRotation class
    */
   _clearCompleteRotation() {
-    let contentElement = content.document &&
-                         content.document instanceof ImageDocument &&
-                         content.document.body &&
-                         content.document.body.firstElementChild;
+    let contentElement = window.content.document &&
+                         window.content.document instanceof ImageDocument &&
+                         window.content.document.body &&
+                         window.content.document.body.firstElementChild;
     if (!contentElement)
       return;
     contentElement.classList.remove("completeRotation");
@@ -918,7 +922,7 @@ var gHistorySwipeAnimation = {
     this._prevBox = null;
     this._nextBox = null;
     if (this._container)
-      this._container.parentNode.removeChild(this._container);
+      this._container.remove();
     this._container = null;
     this._boxWidth = -1;
     this._boxHeight = -1;
@@ -1057,7 +1061,7 @@ var gHistorySwipeAnimation = {
     try {
       let browser = gBrowser.selectedBrowser;
       let snapshots = browser.snapshots;
-      let currIndex = _getCurrentHistoryIndex();
+      let currIndex = this._getCurrentHistoryIndex();
 
       // Kick off snapshot compression.
       let canvas = snapshots[currIndex].image;

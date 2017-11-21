@@ -38,7 +38,7 @@ NS_NewProgressFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(nsProgressFrame)
 
 nsProgressFrame::nsProgressFrame(nsStyleContext* aContext)
-  : nsContainerFrame(aContext)
+  : nsContainerFrame(aContext, kClassID)
   , mBarDiv(nullptr)
 {
 }
@@ -58,12 +58,6 @@ nsProgressFrame::DestroyFrom(nsIFrame* aDestructRoot)
   nsContainerFrame::DestroyFrom(aDestructRoot);
 }
 
-nsIAtom*
-nsProgressFrame::GetType() const
-{
-  return nsGkAtoms::progressFrame;
-}
-
 nsresult
 nsProgressFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 {
@@ -72,12 +66,9 @@ nsProgressFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
   mBarDiv = doc->CreateHTMLElement(nsGkAtoms::div);
 
   // Associate ::-moz-progress-bar pseudo-element to the anonymous child.
-  CSSPseudoElementType pseudoType = CSSPseudoElementType::mozProgressBar;
-  RefPtr<nsStyleContext> newStyleContext = PresContext()->StyleSet()->
-    ResolvePseudoElementStyle(mContent->AsElement(), pseudoType,
-                              StyleContext(), mBarDiv->AsElement());
+  mBarDiv->SetPseudoElementType(CSSPseudoElementType::mozProgressBar);
 
-  if (!aElements.AppendElement(ContentInfo(mBarDiv, newStyleContext))) {
+  if (!aElements.AppendElement(mBarDiv)) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
@@ -140,7 +131,7 @@ nsProgressFrame::Reflow(nsPresContext*           aPresContext,
 
   FinishAndStoreOverflow(&aDesiredSize);
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
@@ -233,7 +224,7 @@ nsProgressFrame::AttributeChanged(int32_t  aNameSpaceID,
 }
 
 LogicalSize
-nsProgressFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
+nsProgressFrame::ComputeAutoSize(gfxContext*         aRenderingContext,
                                  WritingMode         aWM,
                                  const LogicalSize&  aCBSize,
                                  nscoord             aAvailableISize,
@@ -258,7 +249,7 @@ nsProgressFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
 }
 
 nscoord
-nsProgressFrame::GetMinISize(nsRenderingContext *aRenderingContext)
+nsProgressFrame::GetMinISize(gfxContext *aRenderingContext)
 {
   RefPtr<nsFontMetrics> fontMet =
     nsLayoutUtils::GetFontMetricsForFrame(this, 1.0f);
@@ -274,7 +265,7 @@ nsProgressFrame::GetMinISize(nsRenderingContext *aRenderingContext)
 }
 
 nscoord
-nsProgressFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
+nsProgressFrame::GetPrefISize(gfxContext *aRenderingContext)
 {
   return GetMinISize(aRenderingContext);
 }

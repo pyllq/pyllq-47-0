@@ -133,6 +133,7 @@ static bool throwExceptionNextInvoke(NPObject* npobj, const NPVariant* args, uin
 static bool convertPointX(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool convertPointY(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool streamTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
+static bool postFileToURLTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool setPluginWantsAllStreams(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool crashPlugin(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool crashOnDestroy(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
@@ -140,9 +141,6 @@ static bool getObjectValue(NPObject* npobj, const NPVariant* args, uint32_t argC
 static bool getJavaCodebase(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool checkObjectValue(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool enableFPExceptions(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
-static bool setCookie(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
-static bool getCookie(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
-static bool getAuthInfo(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool asyncCallbackTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool checkGCRace(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool hangPlugin(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
@@ -209,6 +207,7 @@ static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "convertPointX",
   "convertPointY",
   "streamTest",
+  "postFileToURLTest",
   "setPluginWantsAllStreams",
   "crash",
   "crashOnDestroy",
@@ -216,9 +215,6 @@ static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "getJavaCodebase",
   "checkObjectValue",
   "enableFPExceptions",
-  "setCookie",
-  "getCookie",
-  "getAuthInfo",
   "asyncCallbackTest",
   "checkGCRace",
   "hang",
@@ -286,6 +282,7 @@ static const ScriptableFunction sPluginMethodFunctions[] = {
   convertPointX,
   convertPointY,
   streamTest,
+  postFileToURLTest,
   setPluginWantsAllStreams,
   crashPlugin,
   crashOnDestroy,
@@ -293,9 +290,6 @@ static const ScriptableFunction sPluginMethodFunctions[] = {
   getJavaCodebase,
   checkObjectValue,
   enableFPExceptions,
-  setCookie,
-  getCookie,
-  getAuthInfo,
   asyncCallbackTest,
   checkGCRace,
   hangPlugin,
@@ -484,68 +478,33 @@ static void sendBufferToFrame(NPP instance)
     outbuf.append("Error: no data in buffer");
   }
 
-  if (instanceData->npnNewStream &&
-      instanceData->err.str().length() == 0) {
-    char typeHTML[] = "text/html";
-    NPStream* stream;
-    printf("calling NPN_NewStream...");
-    NPError err = NPN_NewStream(instance, typeHTML,
-        instanceData->frame.c_str(), &stream);
-    printf("return value %d\n", err);
-    if (err != NPERR_NO_ERROR) {
-      instanceData->err << "NPN_NewStream returned " << err;
-      return;
+  // Convert CRLF to LF, and escape most other non-alphanumeric chars.
+  for (size_t i = 0; i < outbuf.length(); i++) {
+    if (outbuf[i] == '\n') {
+      outbuf.replace(i, 1, "%0a");
+      i += 2;
     }
-
-    int32_t bytesToWrite = outbuf.length();
-    int32_t bytesWritten = 0;
-    while ((bytesToWrite - bytesWritten) > 0) {
-      int32_t numBytes = (bytesToWrite - bytesWritten) <
-          instanceData->streamChunkSize ?
-          bytesToWrite - bytesWritten : instanceData->streamChunkSize;
-      int32_t written = NPN_Write(instance, stream,
-          numBytes, (void*)(outbuf.c_str() + bytesWritten));
-      if (written <= 0) {
-        instanceData->err << "NPN_Write returned " << written;
-        break;
-      }
-      bytesWritten += numBytes;
-      printf("%d bytes written, total %d\n", written, bytesWritten);
+    else if (outbuf[i] == '\r') {
+      outbuf.replace(i, 1, "");
+      i -= 1;
     }
-    err = NPN_DestroyStream(instance, stream, NPRES_DONE);
-    if (err != NPERR_NO_ERROR) {
-      instanceData->err << "NPN_DestroyStream returned " << err;
-    }
-  }
-  else {
-    // Convert CRLF to LF, and escape most other non-alphanumeric chars.
-    for (size_t i = 0; i < outbuf.length(); i++) {
-      if (outbuf[i] == '\n') {
-        outbuf.replace(i, 1, "%0a");
+    else {
+      int ascii = outbuf[i];
+      if (!((ascii >= ',' && ascii <= ';') ||
+            (ascii >= 'A' && ascii <= 'Z') ||
+            (ascii >= 'a' && ascii <= 'z'))) {
+        char hex[10];
+        sprintf(hex, "%%%x", ascii);
+        outbuf.replace(i, 1, hex);
         i += 2;
       }
-      else if (outbuf[i] == '\r') {
-        outbuf.replace(i, 1, "");
-        i -= 1;
-      }
-      else {
-        int ascii = outbuf[i];
-        if (!((ascii >= ',' && ascii <= ';') ||
-              (ascii >= 'A' && ascii <= 'Z') ||
-              (ascii >= 'a' && ascii <= 'z'))) {
-          char hex[8];
-          sprintf(hex, "%%%x", ascii);
-          outbuf.replace(i, 1, hex);
-          i += 2;
-        }
-      }
     }
+  }
 
-    NPError err = NPN_GetURL(instance, outbuf.c_str(),
-                             instanceData->frame.c_str());
-    if (err != NPERR_NO_ERROR) {
-      instanceData->err << "NPN_GetURL returned " << err;
-    }
+  NPError err = NPN_GetURL(instance, outbuf.c_str(),
+                           instanceData->frame.c_str());
+  if (err != NPERR_NO_ERROR) {
+    instanceData->err << "NPN_GetURL returned " << err;
   }
 }
 
@@ -858,7 +817,6 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
   instanceData->focusState = ACTIVATION_STATE_UNKNOWN;
   instanceData->focusEventCount = 0;
   instanceData->eventModel = 0;
-  instanceData->closeStream = false;
   instanceData->wantsAllStreams = false;
   instanceData->mouseUpEventCount = 0;
   instanceData->bugMode = -1;
@@ -881,12 +839,6 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
   instanceData->scriptableObject = scriptableObject;
 
   instanceData->instanceCountWatchGeneration = sCurrentInstanceCountWatchGeneration;
-
-  if (NP_FULL == mode) {
-    instanceData->streamMode = NP_SEEK;
-    instanceData->frame = "testframe";
-    addRange(instanceData, "100,100");
-  }
 
   AsyncDrawing requestAsyncDrawing = AD_NONE;
 
@@ -996,9 +948,6 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
         strcmp(argv[i], "false") == 0) {
       instanceData->cleanupWidget = false;
     }
-    if (!strcmp(argn[i], "closestream")) {
-      instanceData->closeStream = true;
-    }
     if (strcmp(argn[i], "bugmode") == 0) {
       instanceData->bugMode = atoi(argv[i]);
     }
@@ -1021,7 +970,16 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
     if (strcmp(argn[i], "salign") == 0) {
       alreadyHasSalign = true;
     }
-}
+
+    // We don't support NP_FULL any more, but name="plugin" is an indication
+    // that we're a full-page plugin. We use default seek parameters for
+    // test_fullpage.html
+    if (strcmp(argn[i], "name") == 0 && strcmp(argv[i], "plugin") == 0) {
+      instanceData->streamMode = NP_SEEK;
+      instanceData->frame = "testframe";
+      addRange(instanceData, "100,100");
+    }
+  }
 
   if (!browserSupportsWindowless || !pluginSupportsWindowlessMode()) {
     requestWindow = true;
@@ -1421,15 +1379,7 @@ NPP_Write(NPP instance, NPStream* stream, int32_t offset, int32_t len, void* buf
     nd->size = newsize;
     return len;
   }
-
-  if (instanceData->closeStream) {
-    instanceData->closeStream = false;
-    if (instanceData->testrange != nullptr) {
-      NPN_RequestRead(stream, instanceData->testrange);
-    }
-    NPN_DestroyStream(instance, stream, NPRES_USER_BREAK);
-  }
-  else if (instanceData->streamMode == NP_SEEK &&
+  if (instanceData->streamMode == NP_SEEK &&
       stream->end != 0 &&
       stream->end == ((uint32_t)instanceData->streamBufSize + len)) {
     // If the complete stream has been written, and we're doing a seek test,
@@ -1456,20 +1406,12 @@ NPP_Write(NPP instance, NPStream* stream, int32_t offset, int32_t len, void* buf
       printf("data matches!\n");
     }
     TestRange* range = instanceData->testrange;
-    bool stillwaiting = false;
     while(range != nullptr) {
       if (offset == range->offset &&
         (uint32_t)len == range->length) {
         range->waiting = false;
       }
-      if (range->waiting) stillwaiting = true;
       range = reinterpret_cast<TestRange*>(range->next);
-    }
-    if (!stillwaiting) {
-      NPError err = NPN_DestroyStream(instance, stream, NPRES_DONE);
-      if (err != NPERR_NO_ERROR) {
-        instanceData->err << "Error: NPN_DestroyStream returned " << err;
-      }
     }
   }
   else {
@@ -1912,29 +1854,7 @@ NPN_PostURL(NPP instance, const char *url,
   return sBrowserFuncs->posturl(instance, url, target, len, buf, file);
 }
 
-NPError
-NPN_DestroyStream(NPP instance, NPStream* stream, NPError reason)
-{
-  return sBrowserFuncs->destroystream(instance, stream, reason);
-}
 
-NPError
-NPN_NewStream(NPP instance,
-              NPMIMEType  type,
-              const char* target,
-              NPStream**  stream)
-{
-  return sBrowserFuncs->newstream(instance, type, target, stream);
-}
-
-int32_t
-NPN_Write(NPP instance,
-          NPStream* stream,
-          int32_t len,
-          void* buf)
-{
-  return sBrowserFuncs->write(instance, stream, len, buf);
-}
 
 bool
 NPN_Enumerate(NPP instance,
@@ -1983,20 +1903,6 @@ NPError
 NPN_GetValueForURL(NPP instance, NPNURLVariable variable, const char *url, char **value, uint32_t *len)
 {
   return sBrowserFuncs->getvalueforurl(instance, variable, url, value, len);
-}
-
-NPError
-NPN_GetAuthenticationInfo(NPP instance,
-                          const char *protocol,
-                          const char *host, int32_t port,
-                          const char *scheme,
-                          const char *realm,
-                          char **username, uint32_t *ulen,
-                          char **password,
-                          uint32_t *plen)
-{
-  return sBrowserFuncs->getauthenticationinfo(instance, protocol, host, port, scheme, realm,
-      username, ulen, password, plen);
 }
 
 void
@@ -2738,8 +2644,8 @@ convertPointY(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVaria
 static bool
 streamTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
 {
-  // .streamTest(url, doPost, doNull, writeCallback, notifyCallback, redirectCallback, allowRedirects)
-  if (7 != argCount)
+  // .streamTest(url, doPost, postData, writeCallback, notifyCallback, redirectCallback, allowRedirects, postFile = false)
+  if (!(7 <= argCount && argCount <= 8))
     return false;
 
   NPP npp = static_cast<TestNPObject*>(npobj)->npp;
@@ -2796,6 +2702,14 @@ streamTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant*
     return false;
   bool allowRedirects = NPVARIANT_TO_BOOLEAN(args[6]);
 
+  bool postFile = false;
+  if (argCount >= 8) {
+    if (!NPVARIANT_IS_BOOLEAN(args[7])) {
+      return false;
+    }
+    postFile = NPVARIANT_TO_BOOLEAN(args[7]);
+  }
+
   URLNotifyData* ndata = new URLNotifyData;
   ndata->cookie = "dynamic-cookie";
   ndata->writeCallback = writeCallback;
@@ -2814,7 +2728,7 @@ streamTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant*
   if (doPost) {
     err = NPN_PostURLNotify(npp, urlstr, nullptr,
                             postData.UTF8Length, postData.UTF8Characters,
-                            false, ndata);
+                            postFile, ndata);
   }
   else {
     err = NPN_GetURLNotify(npp, urlstr, nullptr, ndata);
@@ -2839,6 +2753,38 @@ streamTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant*
     BOOLEAN_TO_NPVARIANT(false, *result);
   }
 
+  return true;
+}
+
+static bool
+postFileToURLTest(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
+{
+  if (1 != argCount)
+    return false;
+
+  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
+
+  string url;
+  {
+    if (!NPVARIANT_IS_STRING(args[0]))
+      return false;
+    NPString npurl = NPVARIANT_TO_STRING(args[0]);
+    // make a copy to ensure that the url string is null-terminated
+    url = string(npurl.UTF8Characters, npurl.UTF8Length);
+  }
+
+
+  NPError err;
+  {
+    string buf("/path/to/file");
+    err = NPN_PostURL(npp,
+                      url.c_str(),
+                      nullptr /* target */,
+                      buf.length(), buf.c_str(),
+                      true /* file */);
+  }
+
+  BOOLEAN_TO_NPVARIANT(NPERR_NO_ERROR == err, *result);
   return true;
 }
 
@@ -3013,136 +2959,6 @@ static bool enableFPExceptions(NPObject* npobj, const NPVariant* args, uint32_t 
 #else
   return false;
 #endif
-}
-
-// caller is responsible for freeing return buffer
-static char* URLForInstanceWindow(NPP instance) {
-  char *outString = nullptr;
-
-  NPObject* windowObject = nullptr;
-  NPError err = NPN_GetValue(instance, NPNVWindowNPObject, &windowObject);
-  if (err != NPERR_NO_ERROR || !windowObject)
-    return nullptr;
-
-  NPIdentifier locationIdentifier = NPN_GetStringIdentifier("location");
-  NPVariant locationVariant;
-  if (NPN_GetProperty(instance, windowObject, locationIdentifier, &locationVariant)) {
-    NPObject *locationObject = locationVariant.value.objectValue;
-    if (locationObject) {
-      NPIdentifier hrefIdentifier = NPN_GetStringIdentifier("href");
-      NPVariant hrefVariant;
-      if (NPN_GetProperty(instance, locationObject, hrefIdentifier, &hrefVariant)) {
-        const NPString* hrefString = &NPVARIANT_TO_STRING(hrefVariant);
-        if (hrefString) {
-          outString = (char *)malloc(hrefString->UTF8Length + 1);
-          if (outString) {
-            strcpy(outString, hrefString->UTF8Characters);
-            outString[hrefString->UTF8Length] = '\0';
-          }
-        }
-        NPN_ReleaseVariantValue(&hrefVariant);
-      }
-    }
-    NPN_ReleaseVariantValue(&locationVariant);
-  }
-
-  NPN_ReleaseObject(windowObject);
-
-  return outString;
-}
-
-static bool
-setCookie(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
-{
-  if (argCount != 1)
-    return false;
-  if (!NPVARIANT_IS_STRING(args[0]))
-    return false;
-  const NPString* cookie = &NPVARIANT_TO_STRING(args[0]);
-
-  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
-
-  char* url = URLForInstanceWindow(npp);
-  if (!url)
-    return false;
-  NPError err = NPN_SetValueForURL(npp, NPNURLVCookie, url, cookie->UTF8Characters, cookie->UTF8Length);
-  free(url);
-
-  return (err == NPERR_NO_ERROR);
-}
-
-static bool
-getCookie(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
-{
-  if (argCount != 0)
-    return false;
-
-  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
-
-  char* url = URLForInstanceWindow(npp);
-  if (!url)
-    return false;
-  char* cookie = nullptr;
-  unsigned int length = 0;
-  NPError err = NPN_GetValueForURL(npp, NPNURLVCookie, url, &cookie, &length);
-  free(url);
-  if (err != NPERR_NO_ERROR || !cookie)
-    return false;
-
-  STRINGZ_TO_NPVARIANT(cookie, *result);
-  return true;
-}
-
-static bool
-getAuthInfo(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
-{
-  if (argCount != 5)
-    return false;
-
-  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
-
-  if (!NPVARIANT_IS_STRING(args[0]) || !NPVARIANT_IS_STRING(args[1]) ||
-      !NPVARIANT_IS_INT32(args[2]) || !NPVARIANT_IS_STRING(args[3]) ||
-      !NPVARIANT_IS_STRING(args[4]))
-    return false;
-
-  const NPString* protocol = &NPVARIANT_TO_STRING(args[0]);
-  const NPString* host = &NPVARIANT_TO_STRING(args[1]);
-  uint32_t port = NPVARIANT_TO_INT32(args[2]);
-  const NPString* scheme = &NPVARIANT_TO_STRING(args[3]);
-  const NPString* realm = &NPVARIANT_TO_STRING(args[4]);
-
-  char* username = nullptr;
-  char* password = nullptr;
-  uint32_t ulen = 0, plen = 0;
-
-  NPError err = NPN_GetAuthenticationInfo(npp,
-      protocol->UTF8Characters,
-      host->UTF8Characters,
-      port,
-      scheme->UTF8Characters,
-      realm->UTF8Characters,
-      &username,
-      &ulen,
-      &password,
-      &plen);
-
-  if (err != NPERR_NO_ERROR) {
-    return false;
-  }
-
-  char* outstring = (char*)NPN_MemAlloc(ulen + plen + 2);
-  memset(outstring, 0, ulen + plen + 2);
-  strncpy(outstring, username, ulen);
-  strcat(outstring, "|");
-  strncat(outstring, password, plen);
-
-  STRINGZ_TO_NPVARIANT(outstring, *result);
-
-  NPN_MemFree(username);
-  NPN_MemFree(password);
-
-  return true;
 }
 
 static void timerCallback(NPP npp, uint32_t timerID)

@@ -60,6 +60,12 @@ XPCOMUtils.defineLazyGetter(Services, "ppmm", () => {
            .QueryInterface(Ci.nsIProcessScriptLoader);
 });
 
+XPCOMUtils.defineLazyGetter(Services, "io", () => {
+  return Cc["@mozilla.org/network/io-service;1"]
+           .getService(Ci.nsIIOService2)
+           .QueryInterface(Ci.nsISpeculativeConnect);
+});
+
 var initTable = [
   ["androidBridge", "@mozilla.org/android/bridge;1", "nsIAndroidBridge",
    AppConstants.platform == "android"],
@@ -74,14 +80,14 @@ var initTable = [
   ["droppedLinkHandler", "@mozilla.org/content/dropped-link-handler;1", "nsIDroppedLinkHandler"],
   ["els", "@mozilla.org/eventlistenerservice;1", "nsIEventListenerService"],
   ["eTLD", "@mozilla.org/network/effective-tld-service;1", "nsIEffectiveTLDService"],
-  ["io", "@mozilla.org/network/io-service;1", "nsIIOService2"],
-  ["locale", "@mozilla.org/intl/nslocaleservice;1", "nsILocaleService"],
+  ["intl", "@mozilla.org/mozintl;1", "mozIMozIntl"],
+  ["locale", "@mozilla.org/intl/localeservice;1", "mozILocaleService"],
   ["logins", "@mozilla.org/login-manager;1", "nsILoginManager"],
   ["obs", "@mozilla.org/observer-service;1", "nsIObserverService"],
   ["perms", "@mozilla.org/permissionmanager;1", "nsIPermissionManager"],
   ["prompt", "@mozilla.org/embedcomp/prompt-service;1", "nsIPromptService"],
   ["profiler", "@mozilla.org/tools/profiler;1", "nsIProfiler",
-   AppConstants.MOZ_ENABLE_PROFILER_SPS],
+   AppConstants.MOZ_GECKO_PROFILER],
   ["scriptloader", "@mozilla.org/moz/jssubscript-loader;1", "mozIJSSubScriptLoader"],
   ["scriptSecurityManager", "@mozilla.org/scriptsecuritymanager;1", "nsIScriptSecurityManager"],
   ["search", "@mozilla.org/browser/search-service;1", "nsIBrowserSearchService",
@@ -107,11 +113,11 @@ var initTable = [
   ["qms", "@mozilla.org/dom/quota-manager-service;1", "nsIQuotaManagerService"],
 ];
 
-initTable.forEach(([name, contract, intf, enabled = true]) => {
+for (let [name, contract, intf, enabled = true] of initTable) {
   if (enabled) {
     XPCOMUtils.defineLazyServiceGetter(Services, name, contract, intf);
   }
-});
+}
 
 
 initTable = undefined;

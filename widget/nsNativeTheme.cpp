@@ -38,7 +38,7 @@ nsNativeTheme::nsNativeTheme()
 {
 }
 
-NS_IMPL_ISUPPORTS(nsNativeTheme, nsITimerCallback)
+NS_IMPL_ISUPPORTS(nsNativeTheme, nsITimerCallback, nsINamed)
 
 nsIPresShell *
 nsNativeTheme::GetPresShell(nsIFrame* aFrame)
@@ -224,7 +224,8 @@ nsNativeTheme::IsButtonTypeMenu(nsIFrame* aFrame)
     return false;
 
   nsIContent* content = aFrame->GetContent();
-  return content->AttrValueIs(kNameSpaceID_None, nsGkAtoms::type,
+  return content->IsXULElement(nsGkAtoms::button) &&
+         content->AttrValueIs(kNameSpaceID_None, nsGkAtoms::type,
                               NS_LITERAL_STRING("menu"), eCaseMatters);
 }
 
@@ -280,7 +281,7 @@ nsNativeTheme::IsWidgetStyled(nsPresContext* aPresContext, nsIFrame* aFrame,
   // fall through and return false.
   if (aWidgetType == NS_THEME_RESIZER) {
     nsIFrame* parentFrame = aFrame->GetParent();
-    if (parentFrame && parentFrame->GetType() == nsGkAtoms::scrollFrame) {
+    if (parentFrame && parentFrame->IsScrollFrame()) {
       // if the parent is a scrollframe, the resizer should be native themed
       // only if the scrollable area doesn't override the widget style.
       parentFrame = parentFrame->GetParent();
@@ -646,6 +647,9 @@ nsNativeTheme::QueueAnimatedContentForRefresh(nsIContent* aContent,
       NS_ENSURE_SUCCESS(rv, false);
     }
 
+    if (XRE_IsContentProcess() && NS_IsMainThread()) {
+      mAnimatedContentTimer->SetTarget(aContent->OwnerDoc()->EventTargetFor(TaskCategory::Other));
+    }
     rv = mAnimatedContentTimer->InitWithCallback(this, timeout,
                                                  nsITimer::TYPE_ONE_SHOT);
     NS_ENSURE_SUCCESS(rv, false);
@@ -682,6 +686,13 @@ nsNativeTheme::Notify(nsITimer* aTimer)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsNativeTheme::GetName(nsACString& aName)
+{
+  aName.AssignLiteral("nsNativeTheme");
+  return NS_OK;
+}
+
 nsIFrame*
 nsNativeTheme::GetAdjacentSiblingFrameWithSameAppearance(nsIFrame* aFrame,
                                                          bool aNextSibling)
@@ -708,11 +719,11 @@ bool
 nsNativeTheme::IsRangeHorizontal(nsIFrame* aFrame)
 {
   nsIFrame* rangeFrame = aFrame;
-  if (rangeFrame->GetType() != nsGkAtoms::rangeFrame) {
+  if (!rangeFrame->IsRangeFrame()) {
     // If the thumb's frame is passed in, get its range parent:
     rangeFrame = aFrame->GetParent();
   }
-  if (rangeFrame->GetType() == nsGkAtoms::rangeFrame) {
+  if (rangeFrame->IsRangeFrame()) {
     return static_cast<nsRangeFrame*>(rangeFrame)->IsHorizontal();
   }
   // Not actually a range frame - just use the ratio of the frame's size to

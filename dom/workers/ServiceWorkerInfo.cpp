@@ -70,6 +70,33 @@ ServiceWorkerInfo::GetHandlesFetchEvents(bool* aValue)
 }
 
 NS_IMETHODIMP
+ServiceWorkerInfo::GetInstalledTime(PRTime* _retval)
+{
+  AssertIsOnMainThread();
+  MOZ_ASSERT(_retval);
+  *_retval = mInstalledTime;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+ServiceWorkerInfo::GetActivatedTime(PRTime* _retval)
+{
+  AssertIsOnMainThread();
+  MOZ_ASSERT(_retval);
+  *_retval = mActivatedTime;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+ServiceWorkerInfo::GetRedundantTime(PRTime* _retval)
+{
+  AssertIsOnMainThread();
+  MOZ_ASSERT(_retval);
+  *_retval = mRedundantTime;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 ServiceWorkerInfo::AttachDebugger()
 {
   return mServiceWorkerPrivate->AttachDebugger();
@@ -117,7 +144,8 @@ class ChangeStateUpdater final : public Runnable
 public:
   ChangeStateUpdater(const nsTArray<ServiceWorker*>& aInstances,
                      ServiceWorkerState aState)
-    : mState(aState)
+    : Runnable("dom::workers::ChangeStateUpdater")
+    , mState(aState)
   {
     for (size_t i = 0; i < aInstances.Length(); ++i) {
       mInstances.AppendElement(aInstances[i]);
@@ -189,6 +217,11 @@ ServiceWorkerInfo::ServiceWorkerInfo(nsIPrincipal* aPrincipal,
   , mLoadFlags(aLoadFlags)
   , mState(ServiceWorkerState::EndGuard_)
   , mServiceWorkerID(GetNextID())
+  , mCreationTime(PR_Now())
+  , mCreationTimeStamp(TimeStamp::Now())
+  , mInstalledTime(0)
+  , mActivatedTime(0)
+  , mRedundantTime(0)
   , mServiceWorkerPrivate(new ServiceWorkerPrivate(this))
   , mSkipWaitingFlag(false)
   , mHandlesFetch(Unknown)
@@ -236,6 +269,39 @@ ServiceWorkerInfo::GetOrCreateInstance(nsPIDOMWindowInner* aWindow)
   }
 
   return ref.forget();
+}
+
+void
+ServiceWorkerInfo::UpdateInstalledTime()
+{
+  MOZ_ASSERT(mState == ServiceWorkerState::Installed);
+  MOZ_ASSERT(mInstalledTime == 0);
+
+  mInstalledTime =
+    mCreationTime + static_cast<PRTime>((TimeStamp::Now() -
+                                         mCreationTimeStamp).ToMicroseconds());
+}
+
+void
+ServiceWorkerInfo::UpdateActivatedTime()
+{
+  MOZ_ASSERT(mState == ServiceWorkerState::Activated);
+  MOZ_ASSERT(mActivatedTime == 0);
+
+  mActivatedTime =
+    mCreationTime + static_cast<PRTime>((TimeStamp::Now() -
+                                         mCreationTimeStamp).ToMicroseconds());
+}
+
+void
+ServiceWorkerInfo::UpdateRedundantTime()
+{
+  MOZ_ASSERT(mState == ServiceWorkerState::Redundant);
+  MOZ_ASSERT(mRedundantTime == 0);
+
+  mRedundantTime =
+    mCreationTime + static_cast<PRTime>((TimeStamp::Now() -
+                                         mCreationTimeStamp).ToMicroseconds());
 }
 
 END_WORKERS_NAMESPACE

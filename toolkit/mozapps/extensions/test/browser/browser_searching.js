@@ -163,7 +163,7 @@ function get_actual_results() {
   for (var item of rows) {
 
     // Only consider items that are currently showing
-    var style = gManagerWindow.document.defaultView.getComputedStyle(item, "");
+    var style = gManagerWindow.document.defaultView.getComputedStyle(item);
     if (style.display == "none" || style.visibility != "visible")
       continue;
 
@@ -262,10 +262,7 @@ function get_expected_results(aSortBy, aLocalExpected) {
  */
 function check_results(aQuery, aSortBy, aReverseOrder, aShowLocal) {
 
-  var xpinstall_enabled = true;
-  try {
-    xpinstall_enabled = Services.prefs.getBoolPref(PREF_XPI_ENABLED);
-  } catch (e) {}
+  var xpinstall_enabled = Services.prefs.getBoolPref(PREF_XPI_ENABLED, true);
 
   // When XPI Instalation is disabled, those buttons are hidden and unused
   if (xpinstall_enabled) {

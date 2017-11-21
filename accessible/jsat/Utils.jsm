@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* global Components, XPCOMUtils, Services, PluralForm, Logger, Rect, Utils,
-          States, Relations, Roles, dump, Events, PivotContext, PrefCache */
 /* exported Utils, Logger, PivotContext, PrefCache */
 
 'use strict';
@@ -495,7 +493,7 @@ this.Utils = { // jshint ignore:line
     let details = {
       type: aType,
       details: JSON.stringify(
-        typeof aDetails === 'string' ? { eventType : aDetails } : aDetails)
+        typeof aDetails === 'string' ? { eventType: aDetails } : aDetails)
     };
     let window = this.win;
     let shell = window.shell || window.content.shell;
@@ -639,7 +637,7 @@ this.Logger = { // jshint ignore:line
     }
 
     try {
-      return'[ ' + Utils.AccService.getStringRole(aAccessible.role) +
+      return '[ ' + Utils.AccService.getStringRole(aAccessible.role) +
         ' | ' + aAccessible.name + ' ]';
     } catch (x) {
       return '[ defunct ]';
@@ -662,7 +660,7 @@ this.Logger = { // jshint ignore:line
       let pivot = aEvent.accessible.QueryInterface(
         Ci.nsIAccessibleDocument).virtualCursor;
       str += ' (' + this.accessibleToString(event.oldAccessible) + ' -> ' +
-	this.accessibleToString(pivot.position) + ')';
+        this.accessibleToString(pivot.position) + ')';
     }
 
     return str;
@@ -1070,6 +1068,6 @@ PrefCache.prototype = {
     }
   },
 
-  QueryInterface : XPCOMUtils.generateQI([Ci.nsIObserver,
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver,
                                           Ci.nsISupportsWeakReference])
 };

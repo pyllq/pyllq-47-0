@@ -85,7 +85,7 @@ HashValue(const Value& v, const mozilla::HashCodeScrambler& hcs)
         return hcs.scramble(v.asRawBits());
 
     MOZ_ASSERT(!v.isGCThing(), "do not reveal pointers via hash codes");
-    return v.asRawBits();
+    return mozilla::HashGeneric(v.asRawBits());
 }
 
 HashNumber
@@ -102,9 +102,9 @@ HashableValue::operator==(const HashableValue& other) const
 
 #ifdef DEBUG
     bool same;
-    JS::RootingContext* rcx = GetJSContextFromMainThread();
-    RootedValue valueRoot(rcx, value);
-    RootedValue otherRoot(rcx, other.value);
+    JSContext* cx = TlsContext.get();
+    RootedValue valueRoot(cx, value);
+    RootedValue otherRoot(cx, other.value);
     MOZ_ASSERT(SameValue(nullptr, valueRoot, otherRoot, &same));
     MOZ_ASSERT(same == b);
 #endif
@@ -132,6 +132,7 @@ static const ClassOps MapIteratorObjectClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     MapIteratorObject::finalize
@@ -209,7 +210,7 @@ MapIteratorObject::create(JSContext* cx, HandleObject mapobj, ValueMap* data,
 void
 MapIteratorObject::finalize(FreeOp* fop, JSObject* obj)
 {
-    MOZ_ASSERT(fop->onMainThread());
+    MOZ_ASSERT(fop->onActiveCooperatingThread());
     fop->delete_(MapIteratorObjectRange(static_cast<NativeObject*>(obj)));
 }
 
@@ -290,6 +291,7 @@ const ClassOps MapObject::classOps_ = {
     nullptr, // getProperty
     nullptr, // setProperty
     nullptr, // enumerate
+    nullptr, // newEnumerate
     nullptr, // resolve
     nullptr, // mayResolve
     finalize,
@@ -464,7 +466,7 @@ WriteBarrierPostImpl(JSRuntime* rt, ObjectT* obj, const Value& keyValue)
         if (!keys)
             return false;
 
-        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<ObjectT>(obj));
+        key->zone()->group()->storeBuffer().putGeneric(OrderedHashTableRef<ObjectT>(obj));
     }
 
     if (!keys->append(key))
@@ -548,7 +550,7 @@ MapObject::create(JSContext* cx, HandleObject proto /* = nullptr */)
 void
 MapObject::finalize(FreeOp* fop, JSObject* obj)
 {
-    MOZ_ASSERT(fop->onMainThread());
+    MOZ_ASSERT(fop->onActiveCooperatingThread());
     if (ValueMap* map = obj->as<MapObject>().getData())
         fop->delete_(map);
 }
@@ -562,8 +564,7 @@ MapObject::construct(JSContext* cx, unsigned argc, Value* vp)
         return false;
 
     RootedObject proto(cx);
-    RootedObject newTarget(cx, &args.newTarget().toObject());
-    if (!GetPrototypeFromConstructor(cx, newTarget, &proto))
+    if (!GetPrototypeFromBuiltinConstructor(cx, args, &proto))
         return false;
 
     Rooted<MapObject*> obj(cx, MapObject::create(cx, proto));
@@ -783,7 +784,10 @@ MapObject::iterator(JSContext* cx, IteratorKind kind,
 {
     ValueMap& map = extract(obj);
     Rooted<JSObject*> iterobj(cx, MapIteratorObject::create(cx, obj, &map, kind));
-    return iterobj && (iter.setObject(*iterobj), true);
+    if (!iterobj)
+        return false;
+    iter.setObject(*iterobj);
+    return true;
 }
 
 bool
@@ -867,6 +871,7 @@ static const ClassOps SetIteratorObjectClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     SetIteratorObject::finalize
@@ -946,7 +951,7 @@ SetIteratorObject::create(JSContext* cx, HandleObject setobj, ValueSet* data,
 void
 SetIteratorObject::finalize(FreeOp* fop, JSObject* obj)
 {
-    MOZ_ASSERT(fop->onMainThread());
+    MOZ_ASSERT(fop->onActiveCooperatingThread());
     fop->delete_(SetIteratorObjectRange(static_cast<NativeObject*>(obj)));
 }
 
@@ -1012,6 +1017,7 @@ const ClassOps SetObject::classOps_ = {
     nullptr, // getProperty
     nullptr, // setProperty
     nullptr, // enumerate
+    nullptr, // newEnumerate
     nullptr, // resolve
     nullptr, // mayResolve
     finalize,
@@ -1140,7 +1146,7 @@ SetObject::trace(JSTracer* trc, JSObject* obj)
 void
 SetObject::finalize(FreeOp* fop, JSObject* obj)
 {
-    MOZ_ASSERT(fop->onMainThread());
+    MOZ_ASSERT(fop->onActiveCooperatingThread());
     SetObject* setobj = static_cast<SetObject*>(obj);
     if (ValueSet* set = setobj->getData())
         fop->delete_(set);
@@ -1161,8 +1167,7 @@ SetObject::construct(JSContext* cx, unsigned argc, Value* vp)
         return false;
 
     RootedObject proto(cx);
-    RootedObject newTarget(cx, &args.newTarget().toObject());
-    if (!GetPrototypeFromConstructor(cx, newTarget, &proto))
+    if (!GetPrototypeFromBuiltinConstructor(cx, args, &proto))
         return false;
 
     Rooted<SetObject*> obj(cx, SetObject::create(cx, proto));
@@ -1368,7 +1373,10 @@ SetObject::iterator(JSContext *cx, IteratorKind kind,
     MOZ_ASSERT(SetObject::is(obj));
     ValueSet &set = extract(obj);
     Rooted<JSObject*> iterobj(cx, SetIteratorObject::create(cx, obj, &set, kind));
-    return iterobj && (iter.setObject(*iterobj), true);
+    if (!iterobj)
+        return false;
+    iter.setObject(*iterobj);
+    return true;
 }
 
 bool

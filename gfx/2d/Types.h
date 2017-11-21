@@ -16,6 +16,7 @@ namespace mozilla {
 namespace gfx {
 
 typedef float Float;
+typedef double Double;
 
 enum class SurfaceType : int8_t {
   DATA, /* Data surface - bitmap in memory */
@@ -29,7 +30,8 @@ enum class SurfaceType : int8_t {
   DUAL_DT, /* Snapshot of a dual drawtarget */
   D2D1_1_IMAGE, /* A D2D 1.1 ID2D1Image SourceSurface */
   RECORDING, /* Surface used for recording */
-  TILED /* Surface from a tiled DrawTarget */
+  TILED, /* Surface from a tiled DrawTarget */
+  DATA_SHARED, /* Data surface using shared memory */
 };
 
 enum class SurfaceFormat : int8_t {
@@ -54,6 +56,8 @@ enum class SurfaceFormat : int8_t {
 
   // This one is a single-byte, so endianness isn't an issue.
   A8,
+
+  R8G8,
 
   // These ones are their own special cases.
   YUV,
@@ -149,7 +153,8 @@ enum class FontType : int8_t {
   SKIA,
   CAIRO,
   COREGRAPHICS,
-  FONTCONFIG
+  FONTCONFIG,
+  FREETYPE
 };
 
 enum class NativeSurfaceType : int8_t {
@@ -271,6 +276,12 @@ enum class CapStyle : int8_t {
 enum class SamplingBounds : int8_t {
   UNBOUNDED,
   BOUNDED
+};
+
+// Moz2d version for SVG mask types
+enum class LuminanceType : int8_t {
+  LUMINANCE,
+  LINEARRGB,
 };
 
 /* Color is stored in non-premultiplied form */

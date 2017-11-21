@@ -152,7 +152,7 @@ function constructCertFromFile(filename) {
   let certdb = Cc["@mozilla.org/security/x509certdb;1"]
                  .getService(Ci.nsIX509CertDB);
   try {
-    return certdb.constructX509(certBytes, certBytes.length);
+    return certdb.constructX509(certBytes);
   } catch (e) {}
   // It might be PEM instead of DER.
   return certdb.constructX509FromBase64(pemToBase64(certBytes));
@@ -173,8 +173,8 @@ function getXPCOMStatusFromNSS(statusNSS) {
 // certdb implements nsIX509CertDB. See nsIX509CertDB.idl for documentation.
 // In particular, hostname is optional.
 function checkCertErrorGenericAtTime(certdb, cert, expectedError, usage, time,
-                                     /*optional*/ hasEVPolicy,
-                                     /*optional*/ hostname) {
+                                     /* optional */ hasEVPolicy,
+                                     /* optional */ hostname) {
   do_print(`cert cn=${cert.commonName}`);
   do_print(`cert issuer cn=${cert.issuerCommonName}`);
   let verifiedChain = {};
@@ -187,8 +187,8 @@ function checkCertErrorGenericAtTime(certdb, cert, expectedError, usage, time,
 // certdb implements nsIX509CertDB. See nsIX509CertDB.idl for documentation.
 // In particular, hostname is optional.
 function checkCertErrorGeneric(certdb, cert, expectedError, usage,
-                               /*optional*/ hasEVPolicy,
-                               /*optional*/ hostname) {
+                               /* optional */ hasEVPolicy,
+                               /* optional */ hostname) {
   do_print(`cert cn=${cert.commonName}`);
   do_print(`cert issuer cn=${cert.issuerCommonName}`);
   let verifiedChain = {};
@@ -238,15 +238,18 @@ function clearSessionCache() {
   let SSL_ClearSessionCache = null;
   try {
     SSL_ClearSessionCache =
-      _getLibraryFunctionWithNoArguments("SSL_ClearSessionCache", "ssl3");
+      _getLibraryFunctionWithNoArguments("SSL_ClearSessionCache", "ssl3",
+                                         ctypes.void_t);
   } catch (e) {
     // On Windows, this is actually in the nss3 library.
     SSL_ClearSessionCache =
-      _getLibraryFunctionWithNoArguments("SSL_ClearSessionCache", "nss3");
+      _getLibraryFunctionWithNoArguments("SSL_ClearSessionCache", "nss3",
+                                         ctypes.void_t);
   }
-  if (!SSL_ClearSessionCache || SSL_ClearSessionCache() != 0) {
-    throw new Error("Failed to clear SSL session cache");
+  if (!SSL_ClearSessionCache) {
+    throw new Error("couldn't get SSL_ClearSessionCache");
   }
+  SSL_ClearSessionCache();
 }
 
 function getSSLStatistics() {
@@ -363,7 +366,7 @@ function add_tls_server_setup(serverBinName, certsPath) {
 function add_connection_test(aHost, aExpectedResult,
                              aBeforeConnect, aWithSecurityInfo,
                              aAfterStreamOpen,
-                             /*optional*/ aOriginAttributes) {
+                             /* optional */ aOriginAttributes) {
   const REMOTE_PORT = 8443;
 
   function Connection(host) {
@@ -389,7 +392,7 @@ function add_connection_test(aHost, aExpectedResult,
 
   Connection.prototype = {
     // nsITransportEventSink
-    onTransportStatus: function(aTransport, aStatus, aProgress, aProgressMax) {
+    onTransportStatus(aTransport, aStatus, aProgress, aProgressMax) {
       if (!this.connected && aStatus == Ci.nsISocketTransport.STATUS_CONNECTED_TO) {
         this.connected = true;
         this.outputStream.asyncWait(this, 0, 0, this.thread);
@@ -397,7 +400,7 @@ function add_connection_test(aHost, aExpectedResult,
     },
 
     // nsIInputStreamCallback
-    onInputStreamReady: function(aStream) {
+    onInputStreamReady(aStream) {
       try {
         // this will throw if the stream has been closed by an error
         let str = NetUtil.readInputStreamToString(aStream, aStream.available());
@@ -413,7 +416,7 @@ function add_connection_test(aHost, aExpectedResult,
     },
 
     // nsIOutputStreamCallback
-    onOutputStreamReady: function(aStream) {
+    onOutputStreamReady(aStream) {
       if (aAfterStreamOpen) {
         aAfterStreamOpen(this.transport);
       }
@@ -427,7 +430,7 @@ function add_connection_test(aHost, aExpectedResult,
       this.inputStream.asyncWait(this, 0, 0, this.thread);
     },
 
-    go: function() {
+    go() {
       this.outputStream = this.transport.openOutputStream(0, 0, 0)
                             .QueryInterface(Ci.nsIAsyncOutputStream);
       return this.defer.promise;
@@ -488,8 +491,7 @@ function _getBinaryUtil(binaryUtilName) {
 }
 
 // Do not call this directly; use add_tls_server_setup
-function _setupTLSServerTest(serverBinName, certsPath)
-{
+function _setupTLSServerTest(serverBinName, certsPath) {
   let certdb = Cc["@mozilla.org/security/x509certdb;1"]
                   .getService(Ci.nsIX509CertDB);
   // The trusted CA that is typically used for "good" certificates.
@@ -540,8 +542,7 @@ function _setupTLSServerTest(serverBinName, certsPath)
 // for a nssDB where the certs and public keys are prepopulated.
 // ocspRespArray is an array of arrays like:
 // [ [typeOfResponse, certnick, extracertnick]...]
-function generateOCSPResponses(ocspRespArray, nssDBlocation)
-{
+function generateOCSPResponses(ocspRespArray, nssDBlocation) {
   let utilBinName = "GenerateOCSPResponse";
   let ocspGenBin = _getBinaryUtil(utilBinName);
   let retArray = [];
@@ -643,7 +644,7 @@ function startOCSPResponder(serverPort, identity, nssDBLocation,
   httpServer.identity.setPrimary("http", identity, serverPort);
   httpServer.start(serverPort);
   return {
-    stop: function(callback) {
+    stop(callback) {
       // make sure we consumed each expected response
       Assert.equal(ocspResponses.length, 0,
                    "Should have 0 remaining expected OCSP responses");
@@ -677,10 +678,10 @@ FakeSSLStatus.prototype = {
   isNotValidAtThisTime: false,
   isUntrusted: false,
   isExtendedValidation: false,
-  getInterface: function(aIID) {
+  getInterface(aIID) {
     return this.QueryInterface(aIID);
   },
-  QueryInterface: function(aIID) {
+  QueryInterface(aIID) {
     if (aIID.equals(Ci.nsISSLStatus) ||
         aIID.equals(Ci.nsISupports)) {
       return this;
@@ -771,7 +772,7 @@ function loginToDBWithDefaultPassword() {
                   .getService(Ci.nsIPK11TokenDB);
   let token = tokenDB.getInternalKeyToken();
   token.initPassword("");
-  token.login(/*force*/ false);
+  token.login(/* force */ false);
 }
 
 // Helper for asyncTestCertificateUsages.
@@ -856,4 +857,30 @@ function loadPKCS11TestModule(expectModuleUnloadToFail) {
     }
   });
   pkcs11.addModule("PKCS11 Test Module", libraryFile.path, 0, 0);
+}
+
+/**
+ * @param {String} data
+ * @returns {String}
+ */
+function hexify(data) {
+  // |slice(-2)| chomps off the last two characters of a string.
+  // Therefore, if the Unicode value is < 0x10, we have a single-character hex
+  // string when we want one that's two characters, and unconditionally
+  // prepending a "0" solves the problem.
+  return Array.from(data, (c, i) => ("0" + data.charCodeAt(i).toString(16)).slice(-2)).join("");
+}
+
+/**
+ * @param {String[]} lines
+ *        Lines to write. Each line automatically has "\n" appended to it when
+ *        being written.
+ * @param {nsIFileOutputStream} outputStream
+ */
+function writeLinesAndClose(lines, outputStream) {
+  for (let line of lines) {
+    line += "\n";
+    outputStream.write(line, line.length);
+  }
+  outputStream.close();
 }

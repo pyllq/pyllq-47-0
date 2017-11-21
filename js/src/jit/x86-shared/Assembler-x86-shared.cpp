@@ -39,13 +39,6 @@ AssemblerX86Shared::copyDataRelocationTable(uint8_t* dest)
         memcpy(dest, dataRelocations_.buffer(), dataRelocations_.length());
 }
 
-void
-AssemblerX86Shared::copyPreBarrierTable(uint8_t* dest)
-{
-    if (preBarriers_.length())
-        memcpy(dest, preBarriers_.buffer(), preBarriers_.length());
-}
-
 static void
 TraceDataRelocations(JSTracer* trc, uint8_t* buffer, CompactBufferReader& reader)
 {
@@ -97,9 +90,8 @@ AssemblerX86Shared::trace(JSTracer* trc)
     }
     if (dataRelocations_.length()) {
         CompactBufferReader reader(dataRelocations_);
-        unsigned char* code = masm.acquireData();
+        unsigned char* code = masm.data();
         ::TraceDataRelocations(trc, code, reader);
-        masm.releaseData();
     }
 }
 
@@ -263,9 +255,8 @@ AssemblerX86Shared::verifyHeapAccessDisassembly(uint32_t begin, uint32_t end,
 #ifdef DEBUG
     if (masm.oom())
         return;
-    unsigned char* code = masm.acquireData();
+    unsigned char* code = masm.data();
     Disassembler::VerifyHeapAccess(code + begin, code + end, heapAccess);
-    masm.releaseData();
 #endif
 }
 

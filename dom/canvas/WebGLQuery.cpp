@@ -5,6 +5,7 @@
 
 #include "WebGLQuery.h"
 
+#include "gfxPrefs.h"
 #include "GLContext.h"
 #include "mozilla/dom/WebGL2RenderingContextBinding.h"
 #include "nsContentUtils.h"
@@ -17,13 +18,16 @@ class AvailableRunnable final : public Runnable
     const RefPtr<WebGLQuery> mQuery;
 
 public:
-    explicit AvailableRunnable(WebGLQuery* query)
-        : mQuery(query)
-    { }
+  explicit AvailableRunnable(WebGLQuery* query)
+    : Runnable("AvailableRunnable")
+    , mQuery(query)
+  {
+  }
 
-    NS_IMETHOD Run() override {
-        mQuery->mCanBeAvailable = true;
-        return NS_OK;
+  NS_IMETHOD Run() override
+  {
+    mQuery->mCanBeAvailable = true;
+    return NS_OK;
     }
 };
 
@@ -234,8 +238,7 @@ void
 WebGLQuery::QueryCounter(const char* funcName, GLenum target)
 {
     if (target != LOCAL_GL_TIMESTAMP_EXT) {
-        mContext->ErrorInvalidEnum("%s: `target` must be TIMESTAMP_EXT.", funcName,
-                                   target);
+        mContext->ErrorInvalidEnum("%s: `target` must be TIMESTAMP_EXT.", funcName);
         return;
     }
 

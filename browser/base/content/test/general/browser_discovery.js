@@ -6,20 +6,18 @@ function doc() {
 
 function setHandlerFunc(aResultFunc) {
   gBrowser.addEventListener("DOMLinkAdded", function(event) {
-    gBrowser.removeEventListener("DOMLinkAdded", arguments.callee);
     executeSoon(aResultFunc);
-  });
+  }, {once: true});
 }
 
 function test() {
   waitForExplicitFinish();
 
-  gBrowser.selectedTab = gBrowser.addTab();
+  gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
   browser = gBrowser.selectedBrowser;
   browser.addEventListener("load", function(event) {
-    event.currentTarget.removeEventListener("load", arguments.callee, true);
     iconDiscovery();
-  }, true);
+  }, {capture: true, once: true});
   var rootDir = getRootDirectory(gTestPath);
   content.location = rootDir + "discovery.html";
 }

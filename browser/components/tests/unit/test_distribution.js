@@ -88,7 +88,7 @@ do_register_cleanup(function() {
   Assert.ok(!distDir.exists());
 });
 
-add_task(function* () {
+add_task(async function() {
   // Force distribution.
   let glue = Cc["@mozilla.org/browser/browserglue;1"].getService(Ci.nsIObserver)
   glue.observe(null, TOPIC_BROWSERGLUE_TEST, TOPICDATA_DISTRIBUTION_CUSTOMIZATION);
@@ -97,7 +97,7 @@ add_task(function* () {
 
   Assert.equal(defaultBranch.getCharPref("distribution.id"), "disttest");
   Assert.equal(defaultBranch.getCharPref("distribution.version"), "1.0");
-  Assert.equal(defaultBranch.getComplexValue("distribution.about", Ci.nsISupportsString).data, "Tèƨƭ δïƨƭřïβúƭïôñ ƒïℓè");
+  Assert.equal(defaultBranch.getStringPref("distribution.about"), "Tèƨƭ δïƨƭřïβúƭïôñ ƒïℓè");
 
   Assert.equal(defaultBranch.getCharPref("distribution.test.string"), "Test String");
   Assert.equal(defaultBranch.getCharPref("distribution.test.string.noquotes"), "Test String");

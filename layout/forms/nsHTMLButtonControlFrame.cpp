@@ -26,8 +26,9 @@ NS_NewHTMLButtonControlFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 
 NS_IMPL_FRAMEARENA_HELPERS(nsHTMLButtonControlFrame)
 
-nsHTMLButtonControlFrame::nsHTMLButtonControlFrame(nsStyleContext* aContext)
-  : nsContainerFrame(aContext)
+nsHTMLButtonControlFrame::nsHTMLButtonControlFrame(nsStyleContext* aContext,
+                                                   nsIFrame::ClassID aID)
+  : nsContainerFrame(aContext, aID)
 {
 }
 
@@ -63,19 +64,13 @@ nsHTMLButtonControlFrame::AccessibleType()
 }
 #endif
 
-nsIAtom*
-nsHTMLButtonControlFrame::GetType() const
-{
-  return nsGkAtoms::HTMLButtonControlFrame;
-}
-
-void 
+void
 nsHTMLButtonControlFrame::SetFocus(bool aOn, bool aRepaint)
 {
 }
 
 nsresult
-nsHTMLButtonControlFrame::HandleEvent(nsPresContext* aPresContext, 
+nsHTMLButtonControlFrame::HandleEvent(nsPresContext* aPresContext,
                                       WidgetGUIEvent* aEvent,
                                       nsEventStatus* aEventStatus)
 {
@@ -135,11 +130,11 @@ nsHTMLButtonControlFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                              DISPLAY_CHILD_FORCE_PSEUDO_STACKING_CONTEXT);
     // That should put the display items in set.Content()
   }
-  
+
   // Put the foreground outline and focus rects on top of the children
   set.Content()->AppendToTop(&onTop);
   set.MoveTo(aLists);
-  
+
   DisplayOutline(aBuilder, aLists);
 
   // to draw border when selected in editor
@@ -147,7 +142,7 @@ nsHTMLButtonControlFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 }
 
 nscoord
-nsHTMLButtonControlFrame::GetMinISize(nsRenderingContext* aRenderingContext)
+nsHTMLButtonControlFrame::GetMinISize(gfxContext* aRenderingContext)
 {
   nscoord result;
   DISPLAY_MIN_WIDTH(this, result);
@@ -161,11 +156,11 @@ nsHTMLButtonControlFrame::GetMinISize(nsRenderingContext* aRenderingContext)
 }
 
 nscoord
-nsHTMLButtonControlFrame::GetPrefISize(nsRenderingContext* aRenderingContext)
+nsHTMLButtonControlFrame::GetPrefISize(gfxContext* aRenderingContext)
 {
   nscoord result;
   DISPLAY_PREF_WIDTH(this, result);
-  
+
   nsIFrame* kid = mFrames.FirstChild();
   result = nsLayoutUtils::IntrinsicForContainer(aRenderingContext,
                                                 kid,
@@ -214,13 +209,13 @@ nsHTMLButtonControlFrame::Reflow(nsPresContext* aPresContext,
   // else, we ignore child overflow -- anything that overflows beyond our
   // own border-box will get clipped when painting.
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
   FinishReflowWithAbsoluteFrames(aPresContext, aDesiredSize,
                                  aReflowInput, aStatus);
 
   // We're always complete and we don't support overflow containers
   // so we shouldn't have a next-in-flow ever.
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
   MOZ_ASSERT(!GetNextInFlow());
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
@@ -257,7 +252,7 @@ nsHTMLButtonControlFrame::ReflowButtonContents(nsPresContext* aPresContext,
   ReflowChild(aFirstKid, aPresContext,
               contentsDesiredSize, contentsReflowInput,
               wm, childPos, dummyContainerSize, 0, contentsReflowStatus);
-  MOZ_ASSERT(NS_FRAME_IS_COMPLETE(contentsReflowStatus),
+  MOZ_ASSERT(contentsReflowStatus.IsComplete(),
              "We gave button-contents frame unconstrained available height, "
              "so it should be complete");
 
@@ -337,6 +332,47 @@ nsHTMLButtonControlFrame::ReflowButtonContents(nsPresContext* aPresContext,
   aButtonDesiredSize.SetOverflowAreasToDesiredBounds();
 }
 
+bool
+nsHTMLButtonControlFrame::GetVerticalAlignBaseline(mozilla::WritingMode aWM,
+                                                   nscoord* aBaseline) const
+{
+  nsIFrame* inner = mFrames.FirstChild();
+  if (MOZ_UNLIKELY(inner->GetWritingMode().IsOrthogonalTo(aWM))) {
+    return false;
+  }
+  if (!inner->GetVerticalAlignBaseline(aWM, aBaseline)) {
+    // <input type=color> has an empty block frame as inner frame
+    *aBaseline = inner->
+      SynthesizeBaselineBOffsetFromBorderBox(aWM, BaselineSharingGroup::eFirst);
+  }
+  nscoord innerBStart = inner->BStart(aWM, GetSize());
+  *aBaseline += innerBStart;
+  return true;
+}
+
+bool
+nsHTMLButtonControlFrame::GetNaturalBaselineBOffset(mozilla::WritingMode aWM,
+                                         BaselineSharingGroup aBaselineGroup,
+                                         nscoord* aBaseline) const
+{
+  nsIFrame* inner = mFrames.FirstChild();
+  if (MOZ_UNLIKELY(inner->GetWritingMode().IsOrthogonalTo(aWM))) {
+    return false;
+  }
+  if (!inner->GetNaturalBaselineBOffset(aWM, aBaselineGroup, aBaseline)) {
+    // <input type=color> has an empty block frame as inner frame
+    *aBaseline = inner->
+      SynthesizeBaselineBOffsetFromBorderBox(aWM, aBaselineGroup);
+  }
+  nscoord innerBStart = inner->BStart(aWM, GetSize());
+  if (aBaselineGroup == BaselineSharingGroup::eFirst) {
+    *aBaseline += innerBStart;
+  } else {
+    *aBaseline += BSize(aWM) - (innerBStart + inner->BSize(aWM));
+  }
+  return true;
+}
+
 nsresult nsHTMLButtonControlFrame::SetFormProperty(nsIAtom* aName, const nsAString& aValue)
 {
   if (nsGkAtoms::value == aName) {
@@ -353,10 +389,19 @@ nsHTMLButtonControlFrame::GetAdditionalStyleContext(int32_t aIndex) const
 }
 
 void
-nsHTMLButtonControlFrame::SetAdditionalStyleContext(int32_t aIndex, 
+nsHTMLButtonControlFrame::SetAdditionalStyleContext(int32_t aIndex,
                                                     nsStyleContext* aStyleContext)
 {
   mRenderer.SetStyleContext(aIndex, aStyleContext);
+}
+
+void
+nsHTMLButtonControlFrame::AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult)
+{
+  MOZ_ASSERT(mFrames.FirstChild(), "Must have our button-content anon box");
+  MOZ_ASSERT(!mFrames.FirstChild()->GetNextSibling(),
+             "Must only have our button-content anon box");
+  aResult.AppendElement(OwnedAnonBox(mFrames.FirstChild()));
 }
 
 #ifdef DEBUG

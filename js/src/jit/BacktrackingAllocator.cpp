@@ -590,18 +590,12 @@ BacktrackingAllocator::buildLivenessInfo()
                 if (!callRanges.insert(callRange))
                     return false;
             }
-            DebugOnly<bool> hasDoubleDef = false;
-            DebugOnly<bool> hasFloat32Def = false;
+
             for (size_t i = 0; i < ins->numDefs(); i++) {
                 LDefinition* def = ins->getDef(i);
                 if (def->isBogusTemp())
                     continue;
-#ifdef DEBUG
-                if (def->type() == LDefinition::DOUBLE)
-                    hasDoubleDef = true;
-                if (def->type() == LDefinition::FLOAT32)
-                    hasFloat32Def = true;
-#endif
+
                 CodePosition from = outputOf(*ins);
 
                 if (def->policy() == LDefinition::MUST_REUSE_INPUT) {
@@ -646,8 +640,7 @@ BacktrackingAllocator::buildLivenessInfo()
                     }
                 }
 
-                CodePosition to =
-                    ins->isCall() ? outputOf(*ins) : outputOf(*ins).next();
+                CodePosition to = ins->isCall() ? outputOf(*ins) : outputOf(*ins).next();
 
                 if (!vreg(temp).addInitialRange(alloc(), from, to))
                     return false;
@@ -672,8 +665,9 @@ BacktrackingAllocator::buildLivenessInfo()
                     // use and temp are fixed registers, as they can't alias.
                     if (ins->isCall() && use->usedAtStart()) {
                         for (size_t i = 0; i < ins->numTemps(); i++) {
-                            MOZ_ASSERT(vreg(ins->getTemp(i)).type() != vreg(use).type() ||
-                                       (use->isFixedRegister() && ins->getTemp(i)->isFixed()));
+                            MOZ_ASSERT_IF(!ins->getTemp(i)->isBogusTemp(),
+                                          vreg(ins->getTemp(i)).type() != vreg(use).type() ||
+                                          (use->isFixedRegister() && ins->getTemp(i)->isFixed()));
                         }
                     }
 
@@ -837,7 +831,11 @@ BacktrackingAllocator::go()
         if (!processBundle(mir, item.bundle))
             return false;
     }
+
     JitSpew(JitSpew_RegAlloc, "Main allocation loop complete");
+
+    if (!tryAllocatingRegistersForSpillBundles())
+        return false;
 
     if (!pickStackSlots())
         return false;
@@ -1210,7 +1208,8 @@ BacktrackingAllocator::tryAllocateNonFixed(LiveBundle* bundle,
 
     // Spill bundles which have no hint or register requirement.
     if (requirement.kind() == Requirement::NONE && hint.kind() != Requirement::REGISTER) {
-        if (!spill(bundle))
+        JitSpew(JitSpew_RegAlloc, "  postponed spill (no hint or register requirement)");
+        if (!spilledBundles.append(bundle))
             return false;
         *success = true;
         return true;
@@ -1230,7 +1229,8 @@ BacktrackingAllocator::tryAllocateNonFixed(LiveBundle* bundle,
     // Spill bundles which have no register requirement if they didn't get
     // allocated.
     if (requirement.kind() == Requirement::NONE) {
-        if (!spill(bundle))
+        JitSpew(JitSpew_RegAlloc, "  postponed spill (no register requirement)");
+        if (!spilledBundles.append(bundle))
             return false;
         *success = true;
         return true;
@@ -1245,7 +1245,7 @@ bool
 BacktrackingAllocator::processBundle(MIRGenerator* mir, LiveBundle* bundle)
 {
     if (JitSpewEnabled(JitSpew_RegAlloc)) {
-        JitSpew(JitSpew_RegAlloc, "Allocating %s [priority %" PRIuSIZE "] [weight %" PRIuSIZE "]",
+        JitSpew(JitSpew_RegAlloc, "Allocating %s [priority %zu] [weight %zu]",
                 bundle->toString().get(), computePriority(bundle), computeSpillWeight(bundle));
     }
 
@@ -1437,13 +1437,13 @@ BacktrackingAllocator::tryAllocateRegister(PhysicalRegister& r, LiveBundle* bund
         if (JitSpewEnabled(JitSpew_RegAlloc)) {
             if (aliasedConflicting.length() == 1) {
                 LiveBundle* existing = aliasedConflicting[0];
-                JitSpew(JitSpew_RegAlloc, "  %s collides with %s [weight %" PRIuSIZE "]",
+                JitSpew(JitSpew_RegAlloc, "  %s collides with %s [weight %zu]",
                         r.reg.name(), existing->toString().get(), computeSpillWeight(existing));
             } else {
                 JitSpew(JitSpew_RegAlloc, "  %s collides with the following", r.reg.name());
                 for (size_t i = 0; i < aliasedConflicting.length(); i++) {
                     LiveBundle* existing = aliasedConflicting[i];
-                    JitSpew(JitSpew_RegAlloc, "      %s [weight %" PRIuSIZE "]",
+                    JitSpew(JitSpew_RegAlloc, "      %s [weight %zu]",
                             existing->toString().get(), computeSpillWeight(existing));
                 }
             }
@@ -1482,7 +1482,7 @@ bool
 BacktrackingAllocator::evictBundle(LiveBundle* bundle)
 {
     if (JitSpewEnabled(JitSpew_RegAlloc)) {
-        JitSpew(JitSpew_RegAlloc, "  Evicting %s [priority %" PRIuSIZE "] [weight %" PRIuSIZE "]",
+        JitSpew(JitSpew_RegAlloc, "  Evicting %s [priority %zu] [weight %zu]",
                 bundle->toString().get(), computePriority(bundle), computeSpillWeight(bundle));
     }
 
@@ -1558,6 +1558,38 @@ BacktrackingAllocator::spill(LiveBundle* bundle)
     }
 
     return bundle->spillSet()->addSpilledBundle(bundle);
+}
+
+bool
+BacktrackingAllocator::tryAllocatingRegistersForSpillBundles()
+{
+    for (auto it = spilledBundles.begin(); it != spilledBundles.end(); it++) {
+        LiveBundle* bundle = *it;
+        LiveBundleVector conflicting;
+        bool fixed = false;
+        bool success = false;
+
+        if (mir->shouldCancel("Backtracking Try Allocating Spilled Bundles"))
+            return false;
+
+        if (JitSpewEnabled(JitSpew_RegAlloc))
+            JitSpew(JitSpew_RegAlloc, "Spill or allocate %s", bundle->toString().get());
+
+        // Search for any available register which the bundle can be
+        // allocated to.
+        for (size_t i = 0; i < AnyRegister::Total; i++) {
+            if (!tryAllocateRegister(registers[i], bundle, &success, &fixed, conflicting))
+                return false;
+            if (success)
+                break;
+        }
+
+        // If the bundle still has no register, spill the bundle.
+        if (!success && !spill(bundle))
+            return false;
+    }
+
+    return true;
 }
 
 bool
@@ -2274,21 +2306,21 @@ LiveRange::toString() const
 {
     AutoEnterOOMUnsafeRegion oomUnsafe;
 
-    char* buf = JS_smprintf("v%u [%u,%u)", hasVreg() ? vreg() : 0, from().bits(), to().bits());
+    UniqueChars buf = JS_smprintf("v%u [%u,%u)", hasVreg() ? vreg() : 0, from().bits(), to().bits());
 
     if (buf && bundle() && !bundle()->allocation().isBogus())
-        buf = JS_sprintf_append(buf, " %s", bundle()->allocation().toString().get());
+        buf = JS_sprintf_append(Move(buf), " %s", bundle()->allocation().toString().get());
 
     if (buf && hasDefinition())
-        buf = JS_sprintf_append(buf, " (def)");
+        buf = JS_sprintf_append(Move(buf), " (def)");
 
     for (UsePositionIterator iter = usesBegin(); buf && iter; iter++)
-        buf = JS_sprintf_append(buf, " %s@%u", iter->use()->toString().get(), iter->pos.bits());
+        buf = JS_sprintf_append(Move(buf), " %s@%u", iter->use()->toString().get(), iter->pos.bits());
 
     if (!buf)
         oomUnsafe.crash("LiveRange::toString()");
 
-    return UniqueChars(buf);
+    return buf;
 }
 
 UniqueChars
@@ -2297,10 +2329,10 @@ LiveBundle::toString() const
     AutoEnterOOMUnsafeRegion oomUnsafe;
 
     // Suppress -Wformat warning.
-    char *buf = JS_smprintf("%s", "");
+    UniqueChars buf = JS_smprintf("%s", "");
 
     for (LiveRange::BundleLinkIterator iter = rangesBegin(); buf && iter; iter++) {
-        buf = JS_sprintf_append(buf, "%s %s",
+        buf = JS_sprintf_append(Move(buf), "%s %s",
                                 (iter == rangesBegin()) ? "" : " ##",
                                 LiveRange::get(*iter)->toString().get());
     }
@@ -2308,7 +2340,7 @@ LiveBundle::toString() const
     if (!buf)
         oomUnsafe.crash("LiveBundle::toString()");
 
-    return UniqueChars(buf);
+    return buf;
 }
 
 #endif // JS_JITSPEW

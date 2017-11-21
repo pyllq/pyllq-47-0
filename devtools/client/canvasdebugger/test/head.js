@@ -98,11 +98,10 @@ function removeTab(aTab, aWindow) {
   let targetBrowser = targetWindow.gBrowser;
   let tabContainer = targetBrowser.tabContainer;
 
-  tabContainer.addEventListener("TabClose", function onClose(aEvent) {
-    tabContainer.removeEventListener("TabClose", onClose);
+  tabContainer.addEventListener("TabClose", function (aEvent) {
     info("Tab removed and finished closing.");
     deferred.resolve();
-  });
+  }, {once: true});
 
   targetBrowser.removeTab(aTab);
   return deferred.promise;
@@ -127,7 +126,7 @@ function ifTestingUnsupported() {
 
 function test() {
   let generator = isTestingSupported() ? ifTestingSupported : ifTestingUnsupported;
-  Task.spawn(generator).then(null, handleError);
+  Task.spawn(generator).catch(handleError);
 }
 
 function createCanvas() {

@@ -8,9 +8,9 @@
 
 #include "nsIStyleSheetLinkingElement.h"
 #include "nsStyleLinkElement.h"
-#include "nsScriptLoader.h"
 #include "nsIHTMLDocument.h"
 #include "nsNameSpaceManager.h"
+#include "mozilla/dom/ScriptLoader.h"
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(nsHtml5DocumentBuilder, nsContentSink,
                                    mOwnedElements)
@@ -22,6 +22,8 @@ NS_IMPL_ADDREF_INHERITED(nsHtml5DocumentBuilder, nsContentSink)
 NS_IMPL_RELEASE_INHERITED(nsHtml5DocumentBuilder, nsContentSink)
 
 nsHtml5DocumentBuilder::nsHtml5DocumentBuilder(bool aRunsToCompletion)
+  : mBroken(NS_OK)
+  , mFlushState(eHtml5FlushState::eNotFlushing)
 {
   mRunsToCompletion = aRunsToCompletion;
 }
@@ -47,11 +49,12 @@ nsHtml5DocumentBuilder::MarkAsBroken(nsresult aReason)
 }
 
 void
-nsHtml5DocumentBuilder::SetDocumentCharsetAndSource(nsACString& aCharset, int32_t aCharsetSource)
+nsHtml5DocumentBuilder::SetDocumentCharsetAndSource(NotNull<const Encoding*> aEncoding,
+                                                    int32_t aCharsetSource)
 {
   if (mDocument) {
     mDocument->SetDocumentCharacterSetSource(aCharsetSource);
-    mDocument->SetDocumentCharacterSet(aCharset);
+    mDocument->SetDocumentCharacterSet(aEncoding);
   }
 }
 

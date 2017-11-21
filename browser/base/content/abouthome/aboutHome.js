@@ -12,8 +12,8 @@
 //   * add an entry here in the proper ordering (based on spans)
 // The <a/> part of the snippet will be linked to the corresponding url.
 const DEFAULT_SNIPPETS_URLS = [
-  "https://www.mozilla.org/firefox/features/?utm_source=snippet&utm_medium=snippet&utm_campaign=default+feature+snippet"
-, "https://addons.mozilla.org/firefox/?utm_source=snippet&utm_medium=snippet&utm_campaign=addons"
+  "https://www.mozilla.org/firefox/features/?utm_source=snippet&utm_medium=snippet&utm_campaign=default+feature+snippet",
+  "https://addons.mozilla.org/firefox/?utm_source=snippet&utm_medium=snippet&utm_campaign=addons"
 ];
 
 const SNIPPETS_UPDATE_INTERVAL_MS = 14400000; // 4 hours.
@@ -53,7 +53,7 @@ window.addEventListener("pageshow", function() {
   window.addEventListener("resize", fitToWidth);
 
   // Ask chrome to update snippets.
-  var event = new CustomEvent("AboutHomeLoad", {bubbles:true});
+  var event = new CustomEvent("AboutHomeLoad", {bubbles: true});
   document.dispatchEvent(event);
 });
 
@@ -226,10 +226,9 @@ function setupSearch() {
   // immediately when the element is first drawn, so the
   // attribute is also used for styling when the page first loads.
   searchText = document.getElementById("searchText");
-  searchText.addEventListener("blur", function searchText_onBlur() {
-    searchText.removeEventListener("blur", searchText_onBlur);
+  searchText.addEventListener("blur", function() {
     searchText.removeAttribute("autofocus");
-  });
+  }, {once: true});
 
   if (!gContentSearchController) {
     gContentSearchController =
@@ -242,7 +241,7 @@ function setupSearch() {
  * Inform the test harness that we're done loading the page.
  */
 function loadCompleted() {
-  var event = new CustomEvent("AboutHomeLoadSnippetsCompleted", {bubbles:true});
+  var event = new CustomEvent("AboutHomeLoadSnippetsCompleted", {bubbles: true});
   document.dispatchEvent(event);
 }
 
@@ -255,7 +254,7 @@ function loadSnippets() {
     throw new Error("Snippets map has not properly been initialized");
 
   // Allow tests to modify the snippets map before using it.
-  var event = new CustomEvent("AboutHomeLoadSnippets", {bubbles:true});
+  var event = new CustomEvent("AboutHomeLoadSnippets", {bubbles: true});
   document.dispatchEvent(event);
 
   // Check cached snippets version.
@@ -335,12 +334,13 @@ function showSnippets() {
   if (snippets) {
     // Injecting snippets can throw if they're invalid XML.
     try {
+      // eslint-disable-next-line no-unsanitized/property
       snippetsElt.innerHTML = snippets;
       // Scripts injected by innerHTML are inactive, so we have to relocate them
       // through DOM manipulation to activate their contents.
       Array.forEach(snippetsElt.getElementsByTagName("script"), function(elt) {
         let relocatedScript = document.createElement("script");
-        relocatedScript.type = "text/javascript;version=1.8";
+        relocatedScript.type = "text/javascript";
         relocatedScript.text = elt.text;
         elt.parentNode.replaceChild(relocatedScript, elt);
       });

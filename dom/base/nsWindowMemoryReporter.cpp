@@ -34,7 +34,8 @@ const int32_t kTimeBetweenChecks = 45; /* seconds */
 nsWindowMemoryReporter::nsWindowMemoryReporter()
   : mLastCheckForGhostWindows(TimeStamp::NowLoRes()),
     mCycleCollectorIsRunning(false),
-    mCheckTimerWaitingForCCEnd(false)
+    mCheckTimerWaitingForCCEnd(false),
+    mGhostWindowCount(0)
 {
 }
 
@@ -51,18 +52,18 @@ AddNonJSSizeOfWindowAndItsDescendents(nsGlobalWindow* aWindow,
                                       nsTabSizes* aSizes)
 {
   // Measure the window.
-  nsWindowSizes windowSizes(moz_malloc_size_of);
+  SizeOfState state(moz_malloc_size_of);
+  nsWindowSizes windowSizes(state);
   aWindow->AddSizeOfIncludingThis(&windowSizes);
-  windowSizes.addToTabSizes(aSizes);
 
   // Measure the inner window, if there is one.
-  nsWindowSizes innerWindowSizes(moz_malloc_size_of);
   nsGlobalWindow* inner = aWindow->IsOuterWindow() ? aWindow->GetCurrentInnerWindowInternal()
                                                    : nullptr;
   if (inner) {
-    inner->AddSizeOfIncludingThis(&innerWindowSizes);
-    innerWindowSizes.addToTabSizes(aSizes);
+    inner->AddSizeOfIncludingThis(&windowSizes);
   }
+
+  windowSizes.addToTabSizes(aSizes);
 
   nsCOMPtr<nsIDOMWindowCollection> frames = aWindow->GetFrames();
 
@@ -119,8 +120,7 @@ nsWindowMemoryReporter::Init()
                     /* weakRef = */ true);
   }
 
-  RegisterStrongMemoryReporter(new GhostWindowsReporter());
-  RegisterGhostWindowsDistinguishedAmount(GhostWindowsReporter::DistinguishedAmount);
+  RegisterGhostWindowsDistinguishedAmount(GhostWindowsDistinguishedAmount);
 }
 
 /* static */ nsWindowMemoryReporter*
@@ -168,7 +168,7 @@ AppendWindowURI(nsGlobalWindow *aWindow, nsACString& aStr, bool aAnonymize)
 
   if (uri) {
     if (aAnonymize && !aWindow->IsChromeWindow()) {
-      aStr.AppendPrintf("<anonymized-%llu>", aWindow->WindowID());
+      aStr.AppendPrintf("<anonymized-%" PRIu64 ">", aWindow->WindowID());
     } else {
       nsCString spec = uri->GetSpecOrDefault();
 
@@ -276,7 +276,7 @@ CollectWindowReports(nsGlobalWindow *aWindow,
   if (top) {
     windowPath += NS_LITERAL_CSTRING("top(");
     AppendWindowURI(top, windowPath, aAnonymize);
-    windowPath.AppendPrintf(", id=%llu)", top->WindowID());
+    windowPath.AppendPrintf(", id=%" PRIu64 ")", top->WindowID());
 
     aTopWindowPaths->Put(aWindow->WindowID(), windowPath);
 
@@ -309,7 +309,10 @@ CollectWindowReports(nsGlobalWindow *aWindow,
   ReportCount(censusWindowPath, _pathTail, _amount, NS_LITERAL_CSTRING(_desc), \
               aHandleReport, aData);
 
-  nsWindowSizes windowSizes(WindowsMallocSizeOf);
+  // This SizeOfState contains the SeenPtrs used for all memory reporting of
+  // this window.
+  SizeOfState state(WindowsMallocSizeOf);
+  nsWindowSizes windowSizes(state);
   aWindow->AddSizeOfIncludingThis(&windowSizes);
 
   REPORT_SIZE("/dom/element-nodes", windowSizes.mDOMElementNodesSize,
@@ -400,6 +403,24 @@ CollectWindowReports(nsGlobalWindow *aWindow,
   aWindowTotalSizes->mLayoutPresContextSize +=
     windowSizes.mLayoutPresContextSize;
 
+  REPORT_SIZE("/layout/frame-properties", windowSizes.mLayoutFramePropertiesSize,
+         "Memory used for frame properties attached to frames "
+         "within a window.");
+  aWindowTotalSizes->mLayoutFramePropertiesSize +=
+    windowSizes.mLayoutFramePropertiesSize;
+
+  REPORT_SIZE("/dom/performance/user-entries",
+              windowSizes.mDOMPerformanceUserEntries,
+              "Memory used for performance user entries.");
+  aWindowTotalSizes->mDOMPerformanceUserEntries +=
+    windowSizes.mDOMPerformanceUserEntries;
+
+  REPORT_SIZE("/dom/performance/resource-entries",
+              windowSizes.mDOMPerformanceResourceEntries,
+              "Memory used for performance resource entries.");
+  aWindowTotalSizes->mDOMPerformanceResourceEntries +=
+    windowSizes.mDOMPerformanceResourceEntries;
+
   // There are many different kinds of frames, but it is very likely
   // that only a few matter.  Implement a cutoff so we don't bloat
   // about:memory with many uninteresting entries.
@@ -407,7 +428,7 @@ CollectWindowReports(nsGlobalWindow *aWindow,
     js::MemoryReportingSundriesThreshold();
 
   size_t frameSundriesSize = 0;
-#define FRAME_ID(classname)                                             \
+#define FRAME_ID(classname, ...)                                        \
   {                                                                     \
     size_t frameSize                                                    \
       = windowSizes.mArenaStats.FRAME_ID_STAT_FIELD(classname);         \
@@ -421,8 +442,10 @@ CollectWindowReports(nsGlobalWindow *aWindow,
     aWindowTotalSizes->mArenaStats.FRAME_ID_STAT_FIELD(classname)       \
       += frameSize;                                                     \
   }
+#define ABSTRACT_FRAME_ID(...)
 #include "nsFrameIdList.h"
 #undef FRAME_ID
+#undef ABSTRACT_FRAME_ID
 
   if (frameSundriesSize > 0) {
     REPORT_SIZE("/layout/frames/sundries", frameSundriesSize,
@@ -483,11 +506,23 @@ nsWindowMemoryReporter::CollectReports(nsIHandleReportCallback* aHandleReport,
       aData);
   }
 
+  MOZ_COLLECT_REPORT(
+    "ghost-windows", KIND_OTHER, UNITS_COUNT, ghostWindows.Count(),
+"The number of ghost windows present (the number of nodes underneath "
+"explicit/window-objects/top(none)/ghost, modulo race conditions).  A ghost "
+"window is not shown in any tab, does not share a domain with any non-detached "
+"windows, and has met these criteria for at least "
+"memory.ghost_window_timeout_seconds, or has survived a round of "
+"about:memory's minimize memory usage button.\n\n"
+"Ghost windows can happen legitimately, but they are often indicative of "
+"leaks in the browser or add-ons.");
+
   WindowPaths windowPaths;
   WindowPaths topWindowPaths;
 
   // Collect window memory usage.
-  nsWindowSizes windowTotalSizes(nullptr);
+  SizeOfState fakeState(nullptr);   // this won't be used
+  nsWindowSizes windowTotalSizes(fakeState);
   nsCOMPtr<amIAddonManager> addonManager;
   if (XRE_IsParentProcess()) {
     // Only try to access the service from the main process.
@@ -563,11 +598,16 @@ nsWindowMemoryReporter::CollectReports(nsIHandleReportCallback* aHandleReport,
   REPORT("window-objects/layout/pres-contexts", windowTotalSizes.mLayoutPresContextSize,
          "This is the sum of all windows' 'layout/pres-contexts' numbers.");
 
+  REPORT("window-objects/layout/frame-properties", windowTotalSizes.mLayoutFramePropertiesSize,
+         "This is the sum of all windows' 'layout/frame-properties' numbers.");
+
   size_t frameTotal = 0;
-#define FRAME_ID(classname)                \
+#define FRAME_ID(classname, ...)                \
   frameTotal += windowTotalSizes.mArenaStats.FRAME_ID_STAT_FIELD(classname);
+#define ABSTRACT_FRAME_ID(...)
 #include "nsFrameIdList.h"
 #undef FRAME_ID
+#undef ABSTRACT_FRAME_ID
 
   REPORT("window-objects/layout/frames", frameTotal,
          "Memory used for layout frames within windows. "
@@ -656,8 +696,9 @@ nsWindowMemoryReporter::AsyncCheckForGhostWindows()
   mCheckTimer = do_CreateInstance("@mozilla.org/timer;1");
 
   if (mCheckTimer) {
-    mCheckTimer->InitWithFuncCallback(CheckTimerFired, nullptr,
-                                      timerDelay, nsITimer::TYPE_ONE_SHOT);
+    mCheckTimer->InitWithNamedFuncCallback(CheckTimerFired, nullptr,
+                                           timerDelay, nsITimer::TYPE_ONE_SHOT,
+                                           "nsWindowMemoryReporter::AsyncCheckForGhostWindows_timer");
   }
 }
 
@@ -720,6 +761,7 @@ nsWindowMemoryReporter::CheckForGhostWindows(
   KillCheckTimer();
 
   nsTHashtable<nsCStringHashKey> nonDetachedWindowDomains;
+  nsDataHashtable<nsISupportsHashKey, nsCString> domainMap;
 
   // Populate nonDetachedWindowDomains.
   for (auto iter = windowsById->Iter(); !iter.Done(); iter.Next()) {
@@ -734,8 +776,13 @@ nsWindowMemoryReporter::CheckForGhostWindows(
     nsCOMPtr<nsIURI> uri = GetWindowURI(window);
     nsAutoCString domain;
     if (uri) {
-      tldService->GetBaseDomain(uri, 0, domain);
+      domain = domainMap.LookupForAdd(uri).OrInsert([&]() {
+        nsCString d;
+        tldService->GetBaseDomain(uri, 0, d);
+        return d;
+      });
     }
+
     nonDetachedWindowDomains.PutEntry(domain);
   }
 
@@ -743,6 +790,7 @@ nsWindowMemoryReporter::CheckForGhostWindows(
   // if it's not null.
   uint32_t ghostTimeout = GetGhostTimeout();
   TimeStamp now = mLastCheckForGhostWindows;
+  mGhostWindowCount = 0;
   for (auto iter = mDetachedWindows.Iter(); !iter.Done(); iter.Next()) {
     nsWeakPtr weakKey = do_QueryInterface(iter.Key());
     nsCOMPtr<mozIDOMWindow> iwindow = do_QueryReferent(weakKey);
@@ -793,6 +841,7 @@ nsWindowMemoryReporter::CheckForGhostWindows(
       } else if ((now - timeStamp).ToSeconds() > ghostTimeout) {
         // This definitely is a ghost window, so add it to aOutGhostIDs, if
         // that is not null.
+        mGhostWindowCount++;
         if (aOutGhostIDs && window) {
           aOutGhostIDs->PutEntry(window->WindowID());
         }
@@ -801,15 +850,10 @@ nsWindowMemoryReporter::CheckForGhostWindows(
   }
 }
 
-NS_IMPL_ISUPPORTS(nsWindowMemoryReporter::GhostWindowsReporter,
-                  nsIMemoryReporter)
-
 /* static */ int64_t
-nsWindowMemoryReporter::GhostWindowsReporter::DistinguishedAmount()
+nsWindowMemoryReporter::GhostWindowsDistinguishedAmount()
 {
-  nsTHashtable<nsUint64HashKey> ghostWindows;
-  sWindowReporter->CheckForGhostWindows(&ghostWindows);
-  return ghostWindows.Count();
+  return sWindowReporter->mGhostWindowCount;
 }
 
 void

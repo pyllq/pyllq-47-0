@@ -21,7 +21,7 @@
 
 #include "nsCOMPtr.h"
 #include "nsIFile.h"
-#include "nsStringGlue.h"
+
 
 // pyllq
 #include "../../intl/pye/libpye.h"
@@ -43,7 +43,7 @@
 #include "nsXPCOMPrivate.h" // for MAXPATHLEN and XPCOM_DLL
 
 #include "mozilla/Sprintf.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/StartupTimeline.h"
 #include "mozilla/WindowsDllBlocklist.h"
 
 #ifdef LIBFUZZER
@@ -108,7 +108,7 @@ using namespace mozilla;
 #endif
 #define kDesktopFolder "browser"
 
-static void Output(const char *fmt, ... )
+static MOZ_FORMAT_PRINTF(1, 2) void Output(const char *fmt, ... )
 {
   va_list ap;
   va_start(ap, fmt);
@@ -220,6 +220,8 @@ static int do_main(int argc, char* argv[], char* envp[])
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
   sandbox::BrokerServices* brokerServices =
     sandboxing::GetInitializedBrokerServices();
+  sandboxing::PermissionsService* permissionsService =
+    sandboxing::GetPermissionsService();
 #if defined(MOZ_CONTENT_SANDBOX)
   if (!brokerServices) {
     Output("Couldn't initialize the broker services.\n");
@@ -227,6 +229,7 @@ static int do_main(int argc, char* argv[], char* envp[])
   }
 #endif
   config.sandboxBrokerServices = brokerServices;
+  config.sandboxPermissionsService = permissionsService;
 #endif
 
 #ifdef LIBFUZZER
@@ -285,16 +288,16 @@ int main(int argc, char* argv[], char* envp[])
 {
   mozilla::TimeStamp start = mozilla::TimeStamp::Now();
 
+  printf("InitPYE\n");
   InitPYE(argv[0]);
-
-#ifdef HAS_DLL_BLOCKLIST
-  DllBlocklist_Initialize();
-#endif
 
 #ifdef MOZ_BROWSER_CAN_BE_CONTENTPROC
   // We are launching as a content process, delegate to the appropriate
   // main
   if (argc > 1 && IsArg(argv[1], "contentproc")) {
+#ifdef HAS_DLL_BLOCKLIST
+    DllBlocklist_Initialize(eDllBlocklistInitFlagIsChildProcess);
+#endif
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
     // We need to initialize the sandbox TargetServices before InitXPCOMGlue
     // because we might need the sandbox broker to give access to some files.
@@ -316,6 +319,10 @@ int main(int argc, char* argv[], char* envp[])
 
     return result;
   }
+#endif
+
+#ifdef HAS_DLL_BLOCKLIST
+  DllBlocklist_Initialize();
 #endif
 
   nsresult rv = InitXPCOMGlue(argv[0]);

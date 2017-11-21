@@ -17,9 +17,11 @@
 #include "nsTObserverArray.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/NotNull.h"
+#include "mozilla/TimeStamp.h"
 #include "nsAutoPtr.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Array.h"
 
 namespace mozilla {
 class CycleCollectedJSContext;
@@ -34,11 +36,10 @@ class nsThread
 {
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_NSIEVENTTARGET
+  NS_DECL_NSIEVENTTARGET_FULL
   NS_DECL_NSITHREAD
   NS_DECL_NSITHREADINTERNAL
   NS_DECL_NSISUPPORTSPRIORITY
-  using nsIEventTarget::Dispatch;
 
   enum MainThreadFlag
   {
@@ -93,11 +94,17 @@ public:
   static bool SaveMemoryReportNearOOM(ShouldSaveMemoryReport aShouldSave);
 #endif
 
+  static const uint32_t kRunnableNameBufSize = 1000;
+  static mozilla::Array<char, kRunnableNameBufSize> sMainThreadRunnableName;
+
 private:
   void DoMainThreadSpecificProcessing(bool aReallyWait);
 
+  // Returns a null TimeStamp if we're not in the idle period.
+  mozilla::TimeStamp GetIdleDeadline();
   void GetIdleEvent(nsIRunnable** aEvent, mozilla::MutexAutoLock& aProofOfLock);
   void GetEvent(bool aWait, nsIRunnable** aEvent,
+                unsigned short* aPriority,
                 mozilla::MutexAutoLock& aProofOfLock);
 
 protected:
@@ -154,6 +161,7 @@ protected:
     }
 
     bool GetEvent(bool aMayWait, nsIRunnable** aEvent,
+                  unsigned short* aPriority,
                   mozilla::MutexAutoLock& aProofOfLock);
 
     void PutEvent(nsIRunnable* aEvent, mozilla::MutexAutoLock& aProofOfLock)
@@ -206,7 +214,7 @@ protected:
   {
   public:
     NS_DECL_THREADSAFE_ISUPPORTS
-    NS_DECL_NSIEVENTTARGET
+    NS_DECL_NSIEVENTTARGET_FULL
 
     nsNestedEventTarget(NotNull<nsThread*> aThread,
                         NotNull<nsChainedEventQueue*> aQueue)
@@ -270,8 +278,20 @@ protected:
   bool mEventsAreDoomed;
   MainThreadFlag mIsMainThread;
 
+  // The time when we last ran an unlabeled runnable (one not associated with a
+  // SchedulerGroup).
+  mozilla::TimeStamp mLastUnlabeledRunnable;
+
   // Set to true if this thread creates a JSRuntime.
   bool mCanInvokeJS;
+  // Set to true if HasPendingEvents() has been called and returned true because
+  // of a pending idle event.  This is used to remember to return that idle
+  // event from GetIdleEvent() to ensure that HasPendingEvents() never lies.
+  bool mHasPendingEventsPromisedIdleEvent;
+
+#ifndef RELEASE_OR_BETA
+  mozilla::TimeStamp mNextIdleDeadline;
+#endif
 };
 
 #if defined(XP_UNIX) && !defined(ANDROID) && !defined(DEBUG) && HAVE_UALARM \

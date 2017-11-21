@@ -14,7 +14,7 @@
 #include "mozilla/Attributes.h"         // for override
 #include "mozilla/ipc/SharedMemory.h"   // for SharedMemory, etc
 #include "mozilla/layers/PLayerTransactionParent.h"
-#include "nsDataHashtable.h"
+#include "nsRefPtrHashtable.h"
 #include "nsTArrayForwardDeclare.h"     // for InfallibleTArray
 
 namespace mozilla {
@@ -33,6 +33,7 @@ class Layer;
 class HostLayerManager;
 class ShadowLayerParent;
 class CompositableParent;
+class CompositorAnimationStorage;
 class CompositorBridgeParentBase;
 
 class LayerTransactionParent final : public PLayerTransactionParent,
@@ -42,12 +43,13 @@ class LayerTransactionParent final : public PLayerTransactionParent,
   typedef mozilla::layout::RenderFrameParent RenderFrameParent;
   typedef InfallibleTArray<Edit> EditArray;
   typedef InfallibleTArray<OpDestroy> OpDestroyArray;
-  typedef InfallibleTArray<EditReply> EditReplyArray;
   typedef InfallibleTArray<PluginWindowData> PluginsArray;
+  typedef InfallibleTArray<ReadLockInit> ReadLockArray;
 
 public:
   LayerTransactionParent(HostLayerManager* aManager,
                          CompositorBridgeParentBase* aBridge,
+                         CompositorAnimationStorage* aAnimStorage,
                          uint64_t aId);
 
 protected:
@@ -58,7 +60,7 @@ public:
 
   HostLayerManager* layer_manager() const { return mLayerManager; }
 
-  void SetLayerManager(HostLayerManager* aLayerManager);
+  void SetLayerManager(HostLayerManager* aLayerManager, CompositorAnimationStorage* aAnimStorage);
 
   uint64_t GetId() const { return mId; }
   Layer* GetRoot() const { return mRoot; }
@@ -97,29 +99,15 @@ public:
     return OtherPid();
   }
 
-  void AddPendingCompositorUpdate() {
-    mPendingCompositorUpdates++;
-  }
-  void SetPendingCompositorUpdates(uint32_t aCount) {
-    // Only called after construction.
-    MOZ_ASSERT(mPendingCompositorUpdates == 0);
-    mPendingCompositorUpdates = aCount;
-  }
-  void AcknowledgeCompositorUpdate() {
-    MOZ_ASSERT(mPendingCompositorUpdates > 0);
-    mPendingCompositorUpdates--;
-  }
-
 protected:
   virtual mozilla::ipc::IPCResult RecvShutdown() override;
+  virtual mozilla::ipc::IPCResult RecvShutdownSync() override;
 
   virtual mozilla::ipc::IPCResult RecvPaintTime(const uint64_t& aTransactionId,
                                                 const TimeDuration& aPaintTime) override;
 
-  virtual mozilla::ipc::IPCResult RecvUpdate(const TransactionInfo& aInfo,
-                                             EditReplyArray* reply) override;
-
-  virtual mozilla::ipc::IPCResult RecvUpdateNoSwap(const TransactionInfo& aInfo) override;
+  virtual mozilla::ipc::IPCResult RecvInitReadLocks(ReadLockArray&& aReadLocks) override;
+  virtual mozilla::ipc::IPCResult RecvUpdate(const TransactionInfo& aInfo) override;
 
   virtual mozilla::ipc::IPCResult RecvSetLayerObserverEpoch(const uint64_t& aLayerObserverEpoch) override;
   virtual mozilla::ipc::IPCResult RecvNewCompositable(const CompositableHandle& aHandle,
@@ -131,10 +119,10 @@ protected:
   virtual mozilla::ipc::IPCResult RecvForceComposite() override;
   virtual mozilla::ipc::IPCResult RecvSetTestSampleTime(const TimeStamp& aTime) override;
   virtual mozilla::ipc::IPCResult RecvLeaveTestMode() override;
-  virtual mozilla::ipc::IPCResult RecvGetAnimationOpacity(const LayerHandle& aLayerHandle,
+  virtual mozilla::ipc::IPCResult RecvGetAnimationOpacity(const uint64_t& aCompositorAnimationsId,
                                                           float* aOpacity,
                                                           bool* aHasAnimationOpacity) override;
-  virtual mozilla::ipc::IPCResult RecvGetAnimationTransform(const LayerHandle& aLayerHandle,
+  virtual mozilla::ipc::IPCResult RecvGetAnimationTransform(const uint64_t& aCompositorAnimationsId,
                                                             MaybeTransform* aTransform)
                                          override;
   virtual mozilla::ipc::IPCResult RecvSetAsyncScrollOffset(const FrameMetrics::ViewID& aId,
@@ -146,6 +134,10 @@ protected:
   virtual mozilla::ipc::IPCResult RecvRequestProperty(const nsString& aProperty, float* aValue) override;
   virtual mozilla::ipc::IPCResult RecvSetConfirmedTargetAPZC(const uint64_t& aBlockId,
                                                              nsTArray<ScrollableLayerGuid>&& aTargets) override;
+  virtual mozilla::ipc::IPCResult RecvRecordPaintTimes(const PaintTiming& aTiming) override;
+  virtual mozilla::ipc::IPCResult RecvGetTextureFactoryIdentifier(TextureFactoryIdentifier* aIdentifier) override;
+
+  bool SetLayerAttributes(const OpSetLayerAttributes& aOp);
 
   virtual void ActorDestroy(ActorDestroyReason why) override;
 
@@ -175,15 +167,23 @@ protected:
   friend class layout::RenderFrameParent;
 
 private:
+  // This is a function so we can log or breakpoint on why hit
+  // testing tree changes are made.
+  void UpdateHitTestingTree(Layer* aLayer, const char* aWhy) {
+    mUpdateHitTestingTree = true;
+  }
+
+private:
   RefPtr<HostLayerManager> mLayerManager;
   CompositorBridgeParentBase* mCompositorBridge;
+  RefPtr<CompositorAnimationStorage> mAnimStorage;
 
   // Hold the root because it might be grafted under various
   // containers in the "real" layer tree
   RefPtr<Layer> mRoot;
 
   // Mapping from LayerHandles to Layers.
-  nsDataHashtable<nsUint64HashKey, RefPtr<Layer>> mLayerMap;
+  nsRefPtrHashtable<nsUint64HashKey, Layer> mLayerMap;
 
   // When this is nonzero, it refers to a layer tree owned by the
   // compositor thread.  It is always true that
@@ -200,10 +200,6 @@ private:
 
   uint64_t mPendingTransaction;
 
-  // Number of compositor updates we're waiting for the child to
-  // acknowledge.
-  uint32_t mPendingCompositorUpdates;
-
   // When the widget/frame/browser stuff in this process begins its
   // destruction process, we need to Disconnect() all the currently
   // live shadow layers, because some of them might be orphaned from
@@ -219,8 +215,11 @@ private:
   // transactions posted by the child.
 
   bool mDestroyed;
-
   bool mIPCOpen;
+
+  // This is set during RecvUpdate to track whether we'll need to update
+  // APZ's hit test regions.
+  bool mUpdateHitTestingTree;
 };
 
 } // namespace layers

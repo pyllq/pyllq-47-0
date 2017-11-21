@@ -72,7 +72,7 @@ public:
                                    const nsIntRegion& aUpdatedRegion) = 0;
 
   virtual void ReleaseCompositable(const CompositableHandle& aHandle) = 0;
-  virtual bool DestroyInTransaction(PTextureChild* aTexture, bool synchronously) = 0;
+  virtual bool DestroyInTransaction(PTextureChild* aTexture) = 0;
 
   /**
    * Tell the CompositableHost on the compositor side to remove the texture
@@ -113,6 +113,10 @@ public:
   void AssertInForwarderThread() {
     MOZ_ASSERT(InForwarderThread());
   }
+
+  static uint32_t GetMaxFileDescriptorsPerMessage();
+
+  virtual ShadowLayerForwarder* AsLayerForwarder() { return nullptr; }
 
 protected:
   nsTArray<RefPtr<TextureClient> > mTexturesToRemove;

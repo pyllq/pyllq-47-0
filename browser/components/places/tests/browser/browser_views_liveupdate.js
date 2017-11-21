@@ -33,10 +33,9 @@ function openBookmarksSidebar() {
   // Open bookmarks sidebar.
   var sidebar = document.getElementById("sidebar");
   sidebar.addEventListener("load", function() {
-    sidebar.removeEventListener("load", arguments.callee, true);
     // Need to executeSoon since the tree is initialized on sidebar load.
     executeSoon(startTest);
-  }, true);
+  }, {capture: true, once: true});
   SidebarUI.show("viewBookmarksSidebar");
 }
 
@@ -58,8 +57,8 @@ function fakeOpenPopup(aPopup) {
 function startTest() {
   var bs = PlacesUtils.bookmarks;
   // Add observers.
-  bs.addObserver(bookmarksObserver, false);
-  PlacesUtils.annotations.addObserver(bookmarksObserver, false);
+  bs.addObserver(bookmarksObserver);
+  PlacesUtils.annotations.addObserver(bookmarksObserver);
   var addedBookmarks = [];
 
   // MENU
@@ -187,8 +186,8 @@ function finishTest() {
  */
 var bookmarksObserver = {
   QueryInterface: XPCOMUtils.generateQI([
-    Ci.nsINavBookmarkObserver
-  , Ci.nsIAnnotationObserver
+    Ci.nsINavBookmarkObserver,
+    Ci.nsIAnnotationObserver
   ]),
 
   // nsIAnnotationObserver
@@ -471,5 +470,5 @@ function getViewsForFolder(aFolderId) {
     case PlacesUtils.unfiledBookmarksFolderId:
       return ["sidebar"]
   }
-  return new Array();
+  return [];
 }

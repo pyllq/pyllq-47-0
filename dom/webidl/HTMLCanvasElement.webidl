@@ -15,18 +15,18 @@ interface Variant;
 
 [HTMLConstructor]
 interface HTMLCanvasElement : HTMLElement {
-  [Pure, SetterThrows]
+  [CEReactions, Pure, SetterThrows]
            attribute unsigned long width;
-  [Pure, SetterThrows]
+  [CEReactions, Pure, SetterThrows]
            attribute unsigned long height;
 
   [Throws]
   nsISupports? getContext(DOMString contextId, optional any contextOptions = null);
 
-  [Throws, NeedsCallerType]
+  [Throws]
   DOMString toDataURL(optional DOMString type = "",
                       optional any encoderOptions);
-  [Throws, NeedsCallerType]
+  [Throws]
   void toBlob(BlobCallback _callback,
               optional DOMString type = "",
               optional any encoderOptions);
@@ -68,4 +68,4 @@ interface MozCanvasPrintState
 
 callback PrintCallback = void(MozCanvasPrintState ctx);
 
-callback BlobCallback = void(Blob blob);
+callback BlobCallback = void(Blob? blob);

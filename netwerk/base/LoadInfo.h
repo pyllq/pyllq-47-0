@@ -38,6 +38,8 @@ LoadInfoArgsToLoadInfo(const mozilla::net::OptionalLoadInfoArgs& aLoadInfoArgs,
 
 namespace net {
 
+typedef nsTArray<nsCOMPtr<nsIRedirectHistoryEntry>> RedirectHistoryArray;
+
 /**
  * Class that provides an nsILoadInfo implementation.
  */
@@ -72,7 +74,16 @@ public:
   // when a separate request is made with the same security properties.
   already_AddRefed<nsILoadInfo> CloneForNewRequest() const;
 
+  // The service worker and fetch specifications require returning the
+  // exact tainting level of the Response passed to FetchEvent.respondWith().
+  // This method allows us to override the tainting level in that case.
+  //
+  // NOTE: This should not be used outside of service worker code! Use
+  //       nsILoadInfo::MaybeIncreaseTainting() instead.
+  void SynthesizeServiceWorkerTainting(LoadTainting aTainting);
+
   void SetIsPreflight();
+  void SetUpgradeInsecureRequests();
 
 private:
   // private constructor that is only allowed to be called from within
@@ -82,6 +93,8 @@ private:
   LoadInfo(nsIPrincipal* aLoadingPrincipal,
            nsIPrincipal* aTriggeringPrincipal,
            nsIPrincipal* aPrincipalToInherit,
+           nsIPrincipal* aSandboxedLoadingPrincipal,
+           nsIURI* aResultPrincipalURI,
            nsSecurityFlags aSecurityFlags,
            nsContentPolicyType aContentPolicyType,
            LoadTainting aTainting,
@@ -97,14 +110,19 @@ private:
            bool aInitialSecurityCheckDone,
            bool aIsThirdPartyRequest,
            const OriginAttributes& aOriginAttributes,
-           nsTArray<nsCOMPtr<nsIPrincipal>>& aRedirectChainIncludingInternalRedirects,
-           nsTArray<nsCOMPtr<nsIPrincipal>>& aRedirectChain,
+           RedirectHistoryArray& aRedirectChainIncludingInternalRedirects,
+           RedirectHistoryArray& aRedirectChain,
            const nsTArray<nsCString>& aUnsafeHeaders,
            bool aForcePreflight,
            bool aIsPreflight,
            bool aForceHSTSPriming,
-           bool aMixedContentWouldBlock);
+           bool aMixedContentWouldBlock,
+           bool aIsHSTSPriming,
+           bool aIsHSTSPrimingUpgrade);
   LoadInfo(const LoadInfo& rhs);
+
+  NS_IMETHOD GetRedirects(JSContext* aCx, JS::MutableHandle<JS::Value> aRedirects,
+                          const RedirectHistoryArray& aArra);
 
   friend nsresult
   mozilla::ipc::LoadInfoArgsToLoadInfo(
@@ -125,6 +143,8 @@ private:
   nsCOMPtr<nsIPrincipal>           mLoadingPrincipal;
   nsCOMPtr<nsIPrincipal>           mTriggeringPrincipal;
   nsCOMPtr<nsIPrincipal>           mPrincipalToInherit;
+  nsCOMPtr<nsIPrincipal>           mSandboxedLoadingPrincipal;
+  nsCOMPtr<nsIURI>                 mResultPrincipalURI;
   nsWeakPtr                        mLoadingContext;
   nsSecurityFlags                  mSecurityFlags;
   nsContentPolicyType              mInternalContentPolicyType;
@@ -141,14 +161,16 @@ private:
   bool                             mInitialSecurityCheckDone;
   bool                             mIsThirdPartyContext;
   OriginAttributes                 mOriginAttributes;
-  nsTArray<nsCOMPtr<nsIPrincipal>> mRedirectChainIncludingInternalRedirects;
-  nsTArray<nsCOMPtr<nsIPrincipal>> mRedirectChain;
+  RedirectHistoryArray             mRedirectChainIncludingInternalRedirects;
+  RedirectHistoryArray             mRedirectChain;
   nsTArray<nsCString>              mCorsUnsafeHeaders;
   bool                             mForcePreflight;
   bool                             mIsPreflight;
 
   bool                             mForceHSTSPriming : 1;
   bool                             mMixedContentWouldBlock : 1;
+  bool                             mIsHSTSPriming: 1;
+  bool                             mIsHSTSPrimingUpgrade: 1;
 };
 
 } // namespace net

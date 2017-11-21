@@ -7,6 +7,7 @@
 #define GMPChild_h_
 
 #include "mozilla/gmp/PGMPChild.h"
+#include "mozilla/Pair.h"
 #include "GMPTimerChild.h"
 #include "GMPStorageChild.h"
 #include "GMPLoader.h"
@@ -41,14 +42,12 @@ public:
 private:
   friend class GMPContentChild;
 
+  bool ResolveLinks(nsCOMPtr<nsIFile>& aPath);
+
   bool GetUTF8LibPath(nsACString& aOutLibPath);
 
-  mozilla::ipc::IPCResult RecvSetNodeId(const nsCString& aNodeId) override;
   mozilla::ipc::IPCResult AnswerStartPlugin(const nsString& aAdapter) override;
   mozilla::ipc::IPCResult RecvPreloadLibs(const nsCString& aLibs) override;
-
-  PCrashReporterChild* AllocPCrashReporterChild(const NativeThreadId& aThread) override;
-  bool DeallocPCrashReporterChild(PCrashReporterChild*) override;
 
   PGMPTimerChild* AllocPGMPTimerChild() override;
   bool DeallocPGMPTimerChild(PGMPTimerChild* aActor) override;
@@ -56,17 +55,19 @@ private:
   PGMPStorageChild* AllocPGMPStorageChild() override;
   bool DeallocPGMPStorageChild(PGMPStorageChild* aActor) override;
 
-  PGMPContentChild* AllocPGMPContentChild(Transport* aTransport,
-                                          ProcessId aOtherPid) override;
   void GMPContentChildActorDestroy(GMPContentChild* aGMPContentChild);
 
   mozilla::ipc::IPCResult RecvCrashPluginNow() override;
   mozilla::ipc::IPCResult RecvCloseActive() override;
 
+  mozilla::ipc::IPCResult RecvInitGMPContentChild(Endpoint<PGMPContentChild>&& aEndpoint) override;
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
   void ProcessingError(Result aCode, const char* aReason) override;
 
   GMPErr GetAPI(const char* aAPIName, void* aHostAPI, void** aPluginAPI, uint32_t aDecryptorId = 0);
+
+  nsTArray<Pair<nsCString, nsCString>> MakeCDMHostVerificationPaths();
 
   nsTArray<UniquePtr<GMPContentChild>> mGMPContentChildren;
 
@@ -75,8 +76,7 @@ private:
 
   MessageLoop* mGMPMessageLoop;
   nsString mPluginPath;
-  nsCString mNodeId;
-  GMPLoader* mGMPLoader;
+  UniquePtr<GMPLoader> mGMPLoader;
 };
 
 } // namespace gmp

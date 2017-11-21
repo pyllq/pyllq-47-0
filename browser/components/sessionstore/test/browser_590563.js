@@ -16,14 +16,14 @@ function test() {
 
   waitForExplicitFinish();
 
-  newWindowWithState(state, function (win) {
+  newWindowWithState(state, function(win) {
     registerCleanupFunction(() => BrowserTestUtils.closeWindow(win));
 
     is(gBrowser.tabs.length, 1, "The total number of tabs should be 1");
     is(gBrowser.visibleTabs.length, 1, "The total number of visible tabs should be 1");
 
-    executeSoon(function () {
-      waitForFocus(function () {
+    executeSoon(function() {
+      waitForFocus(function() {
         middleClickTest(win);
         finish();
       }, win);
@@ -55,20 +55,20 @@ function newWindowWithState(state, callback) {
   let opts = "chrome,all,dialog=no,height=800,width=800";
   let win = window.openDialog(getBrowserURL(), "_blank", opts);
 
-  win.addEventListener("load", function onLoad() {
-    win.removeEventListener("load", onLoad);
-
-    let tab = win.gBrowser.selectedTab;
-
+  win.addEventListener("load", function() {
     // The form data will be restored before SSTabRestored, so we want to listen
-    // for that on the currently selected tab (it will be reused)
-    tab.addEventListener("SSTabRestored", function onRestored() {
-      tab.removeEventListener("SSTabRestored", onRestored, true);
-      callback(win);
-    }, true);
+    // for that on the currently selected tab
+    let onSSTabRestored = event => {
+      let tab = event.target;
+      if (tab.selected) {
+        win.gBrowser.tabContainer.removeEventListener("SSTabRestored", onSSTabRestored, true);
+        callback(win);
+      }
+    };
+    win.gBrowser.tabContainer.addEventListener("SSTabRestored", onSSTabRestored, true);
 
-    executeSoon(function () {
+    executeSoon(function() {
       ss.setWindowState(win, JSON.stringify(state), true);
     });
-  });
+  }, {once: true});
 }

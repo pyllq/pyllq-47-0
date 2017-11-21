@@ -24,8 +24,17 @@ loader.lazyGetter(this, "StoragePanel", () => require("devtools/client/storage/p
 loader.lazyGetter(this, "ScratchpadPanel", () => require("devtools/client/scratchpad/scratchpad-panel").ScratchpadPanel);
 loader.lazyGetter(this, "DomPanel", () => require("devtools/client/dom/dom-panel").DomPanel);
 
-const {LocalizationHelper} = require("devtools/shared/l10n");
-const L10N = new LocalizationHelper("devtools/client/locales/startup.properties");
+// Other dependencies
+loader.lazyRequireGetter(this, "CommandUtils", "devtools/client/shared/developer-toolbar", true);
+loader.lazyRequireGetter(this, "CommandState", "devtools/shared/gcli/command-state", true);
+loader.lazyImporter(this, "ResponsiveUIManager", "resource://devtools/client/responsivedesign/responsivedesign.jsm");
+loader.lazyImporter(this, "ScratchpadManager", "resource://devtools/client/scratchpad/scratchpad-manager.jsm");
+
+const {MultiLocalizationHelper} = require("devtools/shared/l10n");
+const L10N = new MultiLocalizationHelper(
+  "devtools/client/locales/startup.properties",
+  "devtools/client/locales/key-shortcuts.properties"
+);
 
 var Tools = {};
 exports.Tools = Tools;
@@ -56,9 +65,7 @@ Tools.options = {
 Tools.inspector = {
   id: "inspector",
   accesskey: l10n("inspector.accesskey"),
-  key: l10n("inspector.commandkey"),
   ordinal: 1,
-  modifiers: osString == "Darwin" ? "accel,alt" : "accel,shift",
   icon: "chrome://devtools/skin/images/tool-inspector.svg",
   invertIconForDarkTheme: true,
   url: "chrome://devtools/content/inspector/inspector.xhtml",
@@ -66,7 +73,8 @@ Tools.inspector = {
   panelLabel: l10n("inspector.panelLabel"),
   get tooltip() {
     return l10n("inspector.tooltip2",
-    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") + this.key);
+    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") +
+    l10n("inspector.commandkey"));
   },
   inMenu: true,
   commands: [
@@ -87,22 +95,21 @@ Tools.inspector = {
     return new InspectorPanel(iframeWindow, toolbox);
   }
 };
-
 Tools.webConsole = {
   id: "webconsole",
-  key: l10n("cmd.commandkey"),
   accesskey: l10n("webConsoleCmd.accesskey"),
-  modifiers: Services.appinfo.OS == "Darwin" ? "accel,alt" : "accel,shift",
   ordinal: 2,
+  oldWebConsoleURL: "chrome://devtools/content/webconsole/webconsole.xul",
+  newWebConsoleURL: "chrome://devtools/content/webconsole/webconsole.xhtml",
   icon: "chrome://devtools/skin/images/tool-webconsole.svg",
   invertIconForDarkTheme: true,
-  url: "chrome://devtools/content/webconsole/webconsole.xul",
   label: l10n("ToolboxTabWebconsole.label"),
   menuLabel: l10n("MenuWebconsole.label"),
   panelLabel: l10n("ToolboxWebConsole.panelLabel"),
   get tooltip() {
     return l10n("ToolboxWebconsole.tooltip2",
-    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") + this.key);
+    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") +
+    l10n("webconsole.commandkey"));
   },
   inMenu: true,
   commands: "devtools/client/webconsole/console-commands",
@@ -120,17 +127,27 @@ Tools.webConsole = {
   isTargetSupported: function () {
     return true;
   },
-
   build: function (iframeWindow, toolbox) {
     return new WebConsolePanel(iframeWindow, toolbox);
   }
 };
+function switchWebconsole() {
+  if (Services.prefs.getBoolPref("devtools.webconsole.new-frontend-enabled")) {
+    Tools.webConsole.url = Tools.webConsole.newWebConsoleURL;
+  } else {
+    Tools.webConsole.url = Tools.webConsole.oldWebConsoleURL;
+  }
+}
+switchWebconsole();
+
+Services.prefs.addObserver(
+  "devtools.webconsole.new-frontend-enabled",
+  { observe: switchWebconsole }
+);
 
 Tools.jsdebugger = {
   id: "jsdebugger",
-  key: l10n("debuggerMenu.commandkey"),
   accesskey: l10n("debuggerMenu.accesskey"),
-  modifiers: osString == "Darwin" ? "accel,alt" : "accel,shift",
   ordinal: 3,
   icon: "chrome://devtools/skin/images/tool-debugger.svg",
   invertIconForDarkTheme: true,
@@ -140,7 +157,8 @@ Tools.jsdebugger = {
   panelLabel: l10n("ToolboxDebugger.panelLabel"),
   get tooltip() {
     return l10n("ToolboxDebugger.tooltip2",
-    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") + this.key);
+    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") +
+    l10n("debugger.commandkey"));
   },
   inMenu: true,
   commands: "devtools/client/debugger/debugger-commands",
@@ -171,17 +189,14 @@ switchDebugger();
 
 Services.prefs.addObserver(
   "devtools.debugger.new-debugger-frontend",
-  { observe: switchDebugger },
-  false
+  { observe: switchDebugger }
 );
 
 Tools.styleEditor = {
   id: "styleeditor",
-  key: l10n("open.commandkey"),
   ordinal: 4,
   visibilityswitch: "devtools.styleeditor.enabled",
   accesskey: l10n("open.accesskey"),
-  modifiers: "shift",
   icon: "chrome://devtools/skin/images/tool-styleeditor.svg",
   invertIconForDarkTheme: true,
   url: "chrome://devtools/content/styleeditor/styleeditor.xul",
@@ -189,7 +204,7 @@ Tools.styleEditor = {
   panelLabel: l10n("ToolboxStyleEditor.panelLabel"),
   get tooltip() {
     return l10n("ToolboxStyleEditor.tooltip3",
-    "Shift+" + functionkey(this.key));
+    "Shift+" + functionkey(l10n("styleeditor.commandkey")));
   },
   inMenu: true,
   commands: "devtools/client/styleeditor/styleeditor-commands",
@@ -256,11 +271,10 @@ Tools.performance = {
   label: l10n("performance.label"),
   panelLabel: l10n("performance.panelLabel"),
   get tooltip() {
-    return l10n("performance.tooltip", "Shift+" + functionkey(this.key));
+    return l10n("performance.tooltip", "Shift+" +
+    functionkey(l10n("performance.commandkey")));
   },
   accesskey: l10n("performance.accesskey"),
-  key: l10n("performance.commandkey"),
-  modifiers: "shift",
   inMenu: true,
 
   isTargetSupported: function (target) {
@@ -296,18 +310,17 @@ Tools.memory = {
 Tools.netMonitor = {
   id: "netmonitor",
   accesskey: l10n("netmonitor.accesskey"),
-  key: l10n("netmonitor.commandkey"),
   ordinal: 9,
-  modifiers: osString == "Darwin" ? "accel,alt" : "accel,shift",
   visibilityswitch: "devtools.netmonitor.enabled",
   icon: "chrome://devtools/skin/images/tool-network.svg",
   invertIconForDarkTheme: true,
-  url: "chrome://devtools/content/netmonitor/netmonitor.xul",
+  url: "chrome://devtools/content/netmonitor/index.html",
   label: l10n("netmonitor.label"),
   panelLabel: l10n("netmonitor.panelLabel"),
   get tooltip() {
     return l10n("netmonitor.tooltip2",
-    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") + this.key);
+    (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") +
+    l10n("netmonitor.commandkey"));
   },
   inMenu: true,
 
@@ -322,10 +335,8 @@ Tools.netMonitor = {
 
 Tools.storage = {
   id: "storage",
-  key: l10n("storage.commandkey"),
   ordinal: 10,
   accesskey: l10n("storage.accesskey"),
-  modifiers: "shift",
   visibilityswitch: "devtools.storage.enabled",
   icon: "chrome://devtools/skin/images/tool-storage.svg",
   invertIconForDarkTheme: true,
@@ -334,7 +345,8 @@ Tools.storage = {
   menuLabel: l10n("storage.menuLabel"),
   panelLabel: l10n("storage.panelLabel"),
   get tooltip() {
-    return l10n("storage.tooltip3", "Shift+" + functionkey(this.key));
+    return l10n("storage.tooltip3", "Shift+" +
+    functionkey(l10n("storage.commandkey")));
   },
   inMenu: true,
 
@@ -393,9 +405,7 @@ Tools.scratchpad = {
 Tools.dom = {
   id: "dom",
   accesskey: l10n("dom.accesskey"),
-  key: l10n("dom.commandkey"),
   ordinal: 13,
-  modifiers: osString == "Darwin" ? "accel,alt" : "accel,shift",
   visibilityswitch: "devtools.dom.enabled",
   icon: "chrome://devtools/skin/images/tool-dom.svg",
   invertIconForDarkTheme: true,
@@ -404,7 +414,8 @@ Tools.dom = {
   panelLabel: l10n("dom.panelLabel"),
   get tooltip() {
     return l10n("dom.tooltip",
-      (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") + this.key);
+      (osString == "Darwin" ? "Cmd+Opt+" : "Ctrl+Shift+") +
+      l10n("dom.commandkey"));
   },
   inMenu: true,
 
@@ -470,26 +481,116 @@ exports.defaultThemes = [
 // addons that have manually inserted toolbarbuttons into DOM.
 // (By default, supported target is only local tab)
 exports.ToolboxButtons = [
-  { id: "command-button-pick",
-    isTargetSupported: target => {
-      return target.activeTab && target.activeTab.traits.frames;
-    }
-  },
-  { id: "command-button-frames",
-    isTargetSupported: target => {
-      return target.activeTab && target.activeTab.traits.frames;
-    }
-  },
   { id: "command-button-splitconsole",
-    isTargetSupported: target => !target.isAddon },
-  { id: "command-button-responsive" },
-  { id: "command-button-paintflashing" },
-  { id: "command-button-scratchpad" },
-  { id: "command-button-screenshot" },
-  { id: "command-button-rulers" },
-  { id: "command-button-measure" },
-  { id: "command-button-noautohide",
-    isTargetSupported: target => target.chrome },
+    description: l10n("toolbox.buttons.splitconsole", "Esc"),
+    isTargetSupported: target => !target.isAddon,
+    onClick(event, toolbox) {
+      toolbox.toggleSplitConsole();
+    },
+    isChecked(toolbox) {
+      return toolbox.splitConsole;
+    },
+    setup(toolbox, onChange) {
+      toolbox.on("split-console", onChange);
+    },
+    teardown(toolbox, onChange) {
+      toolbox.off("split-console", onChange);
+    }
+  },
+  { id: "command-button-paintflashing",
+    description: l10n("toolbox.buttons.paintflashing"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      CommandUtils.executeOnTarget(toolbox.target, "paintflashing toggle");
+    },
+    isChecked(toolbox) {
+      return CommandState.isEnabledForTarget(toolbox.target, "paintflashing");
+    },
+    setup(toolbox, onChange) {
+      CommandState.on("changed", onChange);
+    },
+    teardown(toolbox, onChange) {
+      CommandState.off("changed", onChange);
+    }
+  },
+  { id: "command-button-scratchpad",
+    description: l10n("toolbox.buttons.scratchpad"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      ScratchpadManager.openScratchpad();
+    }
+  },
+  { id: "command-button-responsive",
+    description: l10n("toolbox.buttons.responsive",
+                      osString == "Darwin" ? "Cmd+Opt+M" : "Ctrl+Shift+M"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      let tab = toolbox.target.tab;
+      let browserWindow = tab.ownerDocument.defaultView;
+      ResponsiveUIManager.handleGcliCommand(browserWindow, tab,
+        "resize toggle", null);
+    },
+    isChecked(toolbox) {
+      if (!toolbox.target.tab) {
+        return false;
+      }
+      return ResponsiveUIManager.isActiveForTab(toolbox.target.tab);
+    },
+    setup(toolbox, onChange) {
+      ResponsiveUIManager.on("on", onChange);
+      ResponsiveUIManager.on("off", onChange);
+    },
+    teardown(toolbox, onChange) {
+      ResponsiveUIManager.off("on", onChange);
+      ResponsiveUIManager.off("off", onChange);
+    }
+  },
+  { id: "command-button-screenshot",
+    description: l10n("toolbox.buttons.screenshot"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      // Special case for screenshot button to check for clipboard preference
+      const clipboardEnabled = Services.prefs
+        .getBoolPref("devtools.screenshot.clipboard.enabled");
+      let args = "--fullpage --file";
+      if (clipboardEnabled) {
+        args += " --clipboard";
+      }
+      CommandUtils.executeOnTarget(toolbox.target, "screenshot " + args);
+    }
+  },
+  { id: "command-button-rulers",
+    description: l10n("toolbox.buttons.rulers"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      CommandUtils.executeOnTarget(toolbox.target, "rulers");
+    },
+    isChecked(toolbox) {
+      return CommandState.isEnabledForTarget(toolbox.target, "rulers");
+    },
+    setup(toolbox, onChange) {
+      CommandState.on("changed", onChange);
+    },
+    teardown(toolbox, onChange) {
+      CommandState.off("changed", onChange);
+    }
+  },
+  { id: "command-button-measure",
+    description: l10n("toolbox.buttons.measure"),
+    isTargetSupported: target => target.isLocalTab,
+    onClick(event, toolbox) {
+      CommandUtils.executeOnTarget(toolbox.target, "measure");
+    },
+    isChecked(toolbox) {
+      return CommandState.isEnabledForTarget(toolbox.target, "measure");
+    },
+    setup(toolbox, onChange) {
+      CommandState.on("changed", onChange);
+    },
+    teardown(toolbox, onChange) {
+      CommandState.off("changed", onChange);
+    }
+  },
 ];
 
 /**

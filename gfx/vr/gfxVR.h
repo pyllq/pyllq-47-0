@@ -34,6 +34,7 @@ enum class VRDeviceType : uint16_t {
   Oculus,
   OpenVR,
   OSVR,
+  Puppet,
   NumVRDeviceTypes
 };
 
@@ -79,9 +80,14 @@ enum class VRDisplayCapabilityFlags : uint16_t {
    */
   Cap_StageParameters = 1 << 7,
   /**
+   * Cap_MountDetection is set if the VRDisplay is capable of sensing when the
+   * user is wearing the device.
+   */
+  Cap_MountDetection = 1 << 8,
+  /**
    * Cap_All used for validity checking during IPC serialization
    */
-  Cap_All = (1 << 8) - 1
+  Cap_All = (1 << 9) - 1
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(VRDisplayCapabilityFlags)
@@ -126,6 +132,57 @@ struct VRFieldOfView {
   double leftDegrees;
 };
 
+struct VRHMDSensorState {
+  VRHMDSensorState()
+  {
+    Clear();
+  }
+  int32_t inputFrameID;
+  double timestamp;
+  VRDisplayCapabilityFlags flags;
+
+  // These members will only change with inputFrameID:
+  float orientation[4];
+  float position[3];
+  float angularVelocity[3];
+  float angularAcceleration[3];
+  float linearVelocity[3];
+  float linearAcceleration[3];
+
+  void Clear() {
+    memset(this, 0, sizeof(VRHMDSensorState));
+  }
+
+  bool operator==(const VRHMDSensorState& other) const {
+    return inputFrameID == other.inputFrameID &&
+           timestamp == other.timestamp;
+  }
+
+  bool operator!=(const VRHMDSensorState& other) const {
+    return !(*this == other);
+  }
+};
+
+// The maximum number of frames of latency that we would expect before we
+// should give up applying pose prediction.
+// If latency is greater than one second, then the experience is not likely
+// to be corrected by pose prediction.  Setting this value too
+// high may result in unnecessary memory allocation.
+// As the current fastest refresh rate is 90hz, 100 is selected as a
+// conservative value.
+static const int kVRMaxLatencyFrames = 100;
+
+// We assign VR presentations to groups with a bitmask.
+// Currently, we will only display either content or chrome.
+// Later, we will have more groups to support VR home spaces and
+// multitasking environments.
+// These values are not exposed to regular content and only affect
+// chrome-only API's.  They may be changed at any time.
+static const uint32_t kVRGroupNone = 0;
+static const uint32_t kVRGroupContent = 1 << 0;
+static const uint32_t kVRGroupChrome = 1 << 1;
+static const uint32_t kVRGroupAll = 0xffffffff;
+
 struct VRDisplayInfo
 {
   VRDeviceType GetType() const { return mType; }
@@ -137,9 +194,12 @@ struct VRDisplayInfo
   const Point3D& GetEyeTranslation(uint32_t whichEye) const { return mEyeTranslation[whichEye]; }
   const VRFieldOfView& GetEyeFOV(uint32_t whichEye) const { return mEyeFOV[whichEye]; }
   bool GetIsConnected() const { return mIsConnected; }
-  bool GetIsPresenting() const { return mIsPresenting; }
+  bool GetIsMounted() const { return mIsMounted; }
+  uint32_t GetPresentingGroups() const { return mPresentingGroups; }
+  uint32_t GetGroupMask() const { return mGroupMask; }
   const Size& GetStageSize() const { return mStageSize; }
   const Matrix4x4& GetSittingToStandingTransform() const { return mSittingToStandingTransform; }
+  uint32_t GetFrameId() const { return mFrameId; }
 
   enum Eye {
     Eye_Left,
@@ -155,64 +215,61 @@ struct VRDisplayInfo
   Point3D mEyeTranslation[VRDisplayInfo::NumEyes];
   IntSize mEyeResolution;
   bool mIsConnected;
-  bool mIsPresenting;
+  bool mIsMounted;
+  uint32_t mPresentingGroups;
+  uint32_t mGroupMask;
   Size mStageSize;
   Matrix4x4 mSittingToStandingTransform;
+  uint32_t mFrameId;
+  VRHMDSensorState mLastSensorState[kVRMaxLatencyFrames];
 
   bool operator==(const VRDisplayInfo& other) const {
+    for (size_t i = 0; i < kVRMaxLatencyFrames; i++) {
+      if (mLastSensorState[i] != other.mLastSensorState[i]) {
+        return false;
+      }
+    }
     return mType == other.mType &&
            mDisplayID == other.mDisplayID &&
            mDisplayName == other.mDisplayName &&
            mCapabilityFlags == other.mCapabilityFlags &&
            mEyeResolution == other.mEyeResolution &&
            mIsConnected == other.mIsConnected &&
-           mIsPresenting == other.mIsPresenting &&
+           mIsMounted == other.mIsMounted &&
+           mPresentingGroups == other.mPresentingGroups &&
+           mGroupMask == other.mGroupMask &&
            mEyeFOV[0] == other.mEyeFOV[0] &&
            mEyeFOV[1] == other.mEyeFOV[1] &&
            mEyeTranslation[0] == other.mEyeTranslation[0] &&
            mEyeTranslation[1] == other.mEyeTranslation[1] &&
            mStageSize == other.mStageSize &&
-           mSittingToStandingTransform == other.mSittingToStandingTransform;
+           mSittingToStandingTransform == other.mSittingToStandingTransform &&
+           mFrameId == other.mFrameId;
   }
 
   bool operator!=(const VRDisplayInfo& other) const {
     return !(*this == other);
   }
-};
 
-struct VRHMDSensorState {
-  double timestamp;
-  int32_t inputFrameID;
-  VRDisplayCapabilityFlags flags;
-  float orientation[4];
-  float position[3];
-  float angularVelocity[3];
-  float angularAcceleration[3];
-  float linearVelocity[3];
-  float linearAcceleration[3];
-
-  void Clear() {
-    memset(this, 0, sizeof(VRHMDSensorState));
+  const VRHMDSensorState& GetSensorState() const
+  {
+    return mLastSensorState[mFrameId % kVRMaxLatencyFrames];
   }
 };
 
-class VRDisplayManager {
-public:
-  static uint32_t AllocateDisplayID();
+struct VRSubmitFrameResultInfo
+{
+  VRSubmitFrameResultInfo()
+   : mFrameNum(0),
+     mWidth(0),
+     mHeight(0)
+  {}
 
-protected:
-  static Atomic<uint32_t> sDisplayBase;
-
-public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRDisplayManager)
-
-  virtual bool Init() = 0;
-  virtual void Destroy() = 0;
-  virtual void GetHMDs(nsTArray<RefPtr<VRDisplayHost>>& aHMDResult) = 0;
-
-protected:
-  VRDisplayManager() { }
-  virtual ~VRDisplayManager() { }
+  nsCString mBase64Image;
+  SurfaceFormat mFormat;
+  uint32_t mFrameNum;
+  uint32_t mWidth;
+  uint32_t mHeight;
 };
 
 struct VRControllerInfo
@@ -221,23 +278,32 @@ struct VRControllerInfo
   uint32_t GetControllerID() const { return mControllerID; }
   const nsCString& GetControllerName() const { return mControllerName; }
   dom::GamepadMappingType GetMappingType() const { return mMappingType; }
+  uint32_t GetDisplayID() const { return mDisplayID; }
+  dom::GamepadHand GetHand() const { return mHand; }
   uint32_t GetNumButtons() const { return mNumButtons; }
   uint32_t GetNumAxes() const { return mNumAxes; }
+  uint32_t GetNumHaptics() const { return mNumHaptics; }
 
   uint32_t mControllerID;
   VRDeviceType mType;
   nsCString mControllerName;
   dom::GamepadMappingType mMappingType;
+  uint32_t mDisplayID;
+  dom::GamepadHand mHand;
   uint32_t mNumButtons;
   uint32_t mNumAxes;
+  uint32_t mNumHaptics;
 
   bool operator==(const VRControllerInfo& other) const {
     return mType == other.mType &&
            mControllerID == other.mControllerID &&
            mControllerName == other.mControllerName &&
            mMappingType == other.mMappingType &&
+           mDisplayID == other.mDisplayID &&
+           mHand == other.mHand &&
            mNumButtons == other.mNumButtons &&
-           mNumAxes == other.mNumAxes;
+           mNumAxes == other.mNumAxes &&
+           mNumHaptics == other.mNumHaptics;
   }
 
   bool operator!=(const VRControllerInfo& other) const {
@@ -245,40 +311,42 @@ struct VRControllerInfo
   }
 };
 
-class VRControllerManager {
+class VRSystemManager {
 public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRControllerManager)
-
+  static uint32_t AllocateDisplayID();
   static uint32_t AllocateControllerID();
-  virtual bool Init() = 0;
+
+protected:
+  static Atomic<uint32_t> sDisplayBase;
+  static Atomic<uint32_t> sControllerBase;
+
+public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRSystemManager)
+
   virtual void Destroy() = 0;
+  virtual void Shutdown() = 0;
+  virtual bool GetHMDs(nsTArray<RefPtr<VRDisplayHost>>& aHMDResult) = 0;
+  virtual bool GetIsPresenting() = 0;
   virtual void HandleInput() = 0;
   virtual void GetControllers(nsTArray<RefPtr<VRControllerHost>>& aControllerResult) = 0;
-  virtual void ScanForDevices() = 0;
-  virtual void RemoveDevices() = 0;
-  void NewButtonEvent(uint32_t aIndex, uint32_t aButton, bool aPressed);
+  virtual void ScanForControllers() = 0;
+  virtual void RemoveControllers() = 0;
+  virtual void VibrateHaptic(uint32_t aControllerIdx, uint32_t aHapticIndex,
+                             double aIntensity, double aDuration, uint32_t aPromiseID) = 0;
+  virtual void StopVibrateHaptic(uint32_t aControllerIdx) = 0;
+  void NewButtonEvent(uint32_t aIndex, uint32_t aButton, bool aPressed, bool aTouched,
+                      double aValue);
   void NewAxisMove(uint32_t aIndex, uint32_t aAxis, double aValue);
   void NewPoseState(uint32_t aIndex, const dom::GamepadPoseState& aPose);
-  void AddGamepad(const char* aID, dom::GamepadMappingType aMapping,
-                  dom::GamepadHand aHand, uint32_t aNumButtons, uint32_t aNumAxes);
+  void NewHandChangeEvent(uint32_t aIndex, const dom::GamepadHand aHand);
+  void AddGamepad(const VRControllerInfo& controllerInfo);
   void RemoveGamepad(uint32_t aIndex);
 
 protected:
-  VRControllerManager() : mInstalled(false), mControllerCount(0) {}
-  virtual ~VRControllerManager() {}
+  VRSystemManager() : mControllerCount(0) { }
+  virtual ~VRSystemManager() { }
 
-  bool mInstalled;
   uint32_t mControllerCount;
-  static Atomic<uint32_t> sControllerBase;
-
-private:
-  virtual void HandleButtonPress(uint32_t aControllerIdx,
-                                 uint64_t aButtonPressed) = 0;
-  virtual void HandleAxisMove(uint32_t aControllerIdx, uint32_t aAxis,
-                              float aValue) = 0;
-  virtual void HandlePoseTracking(uint32_t aControllerIdx,
-                                  const dom::GamepadPoseState& aPose,
-                                  VRControllerHost* aController) = 0;
 };
 
 } // namespace gfx

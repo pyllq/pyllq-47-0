@@ -12,16 +12,19 @@ add_task(function* () {
   let { tab, monitor } = yield initNetMonitor(CUSTOM_GET_URL);
 
   info("Starting test... ");
-  let { panelWin } = monitor;
-  let { document, NetMonitorView } = panelWin;
-  let { RequestsMenu } = NetMonitorView;
+  let { document, store, windowRequire } = monitor.panelWin;
+  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+  let {
+    getDisplayedRequests,
+    getSortedRequests,
+  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
+
+  store.dispatch(Actions.batchEnable(false));
 
   const REQUESTS = [
     [ "hls-m3u8", /^#EXTM3U/ ],
     [ "mpeg-dash", /^<\?xml/ ]
   ];
-
-  RequestsMenu.lazyUpdate = false;
 
   let wait = waitForNetworkEvents(monitor, REQUESTS.length);
   for (let [fmt] of REQUESTS) {
@@ -33,52 +36,53 @@ add_task(function* () {
   yield wait;
 
   REQUESTS.forEach(([ fmt ], i) => {
-    verifyRequestItemTarget(RequestsMenu, RequestsMenu.getItemAtIndex(i),
-      "GET", CONTENT_TYPE_SJS + "?fmt=" + fmt, {
+    verifyRequestItemTarget(
+      document,
+      getDisplayedRequests(store.getState()),
+      getSortedRequests(store.getState()).get(i),
+      "GET",
+      CONTENT_TYPE_SJS + "?fmt=" + fmt,
+      {
         status: 200,
         statusText: "OK"
       });
   });
 
-  wait = waitForDOM(document, "#response-tabpanel");
-  EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.getElementById("details-pane-toggle"));
-  EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.querySelectorAll("#details-pane tab")[3]);
+  wait = waitForDOM(document, "#response-panel");
+  EventUtils.sendMouseEvent({ type: "click" },
+    document.querySelector(".network-details-panel-toggle"));
+  EventUtils.sendMouseEvent({ type: "click" },
+    document.querySelector("#response-tab"));
   yield wait;
 
-  RequestsMenu.selectedIndex = -1;
+  store.dispatch(Actions.selectRequest(null));
 
-  yield selectIndexAndWaitForEditor(0);
+  yield selectIndexAndWaitForSourceEditor(0);
   // the hls-m3u8 part
   testEditorContent(REQUESTS[0]);
 
-  yield selectIndexAndWaitForEditor(1);
+  yield selectIndexAndWaitForSourceEditor(1);
   // the mpeg-dash part
   testEditorContent(REQUESTS[1]);
 
   return teardown(monitor);
 
-  function* selectIndexAndWaitForEditor(index) {
-    let editor = document.querySelector("#response-tabpanel .editor-mount iframe");
+  function* selectIndexAndWaitForSourceEditor(index) {
+    let editor = document.querySelector("#response-panel .CodeMirror-code");
     if (!editor) {
-      let waitDOM = waitForDOM(document, "#response-tabpanel .editor-mount iframe");
-      RequestsMenu.selectedIndex = index;
-      [editor] = yield waitDOM;
-      yield once(editor, "DOMContentLoaded");
+      let waitDOM = waitForDOM(document, "#response-panel .CodeMirror-code");
+      EventUtils.sendMouseEvent({ type: "mousedown" },
+        document.querySelectorAll(".request-list-item")[index]);
+      document.querySelector("#response-tab").click();
+      yield waitDOM;
     } else {
-      RequestsMenu.selectedIndex = index;
+      EventUtils.sendMouseEvent({ type: "mousedown" },
+        document.querySelectorAll(".request-list-item")[index]);
     }
-
-    yield waitForDOM(editor.contentDocument, ".CodeMirror-code");
   }
 
   function testEditorContent([ fmt, textRe ]) {
-    let editor = document.querySelector("#response-tabpanel .editor-mount iframe");
-    let text = editor.contentDocument
-          .querySelector(".CodeMirror-line").textContent;
-
-    ok(text.match(textRe),
+    ok(document.querySelector(".CodeMirror-line").textContent.match(textRe),
       "The text shown in the source editor for " + fmt + " is correct.");
   }
 });

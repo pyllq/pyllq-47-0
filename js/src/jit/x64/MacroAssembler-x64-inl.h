@@ -772,6 +772,13 @@ MacroAssembler::branchTestMagic(Condition cond, const Address& valaddr, JSWhyMag
     cmpPtr(valaddr, ImmWord(magic));
     j(cond, label);
 }
+
+void
+MacroAssembler::branchToComputedAddress(const BaseIndex& address)
+{
+    jmp(Operand(address));
+}
+
 // ========================================================================
 // Truncate floating point.
 
@@ -829,22 +836,6 @@ MacroAssembler::truncateDoubleToUInt64(Address src, Address dest, Register temp,
     storePtr(temp, dest);
 
     bind(&done);
-}
-
-// ========================================================================
-// wasm support
-
-template <class L>
-void
-MacroAssembler::wasmBoundsCheck(Condition cond, Register index, L label)
-{
-    MOZ_CRASH("x64 should never emit a bounds check");
-}
-
-void
-MacroAssembler::wasmPatchBoundsCheck(uint8_t* patchAt, uint32_t limit)
-{
-    MOZ_CRASH("x64 should never emit a bounds check");
 }
 
 //}}} check_macroassembler_style

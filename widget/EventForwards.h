@@ -150,6 +150,8 @@ class WidgetEventTime;
 class NativeEventData;
 
 // TextEvents.h
+enum class AccessKeyType;
+
 struct AlternativeCharCode;
 struct ShortcutKeyCandidate;
 
@@ -163,6 +165,7 @@ enum class TextRangeType : RawTextRangeType;
 struct TextRangeStyle;
 struct TextRange;
 
+class EditCommands;
 class TextRangeArray;
 
 // FontRange.h

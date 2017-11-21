@@ -9,10 +9,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/SizePrintfMacros.h"
 #include "mozilla/Sprintf.h"
-
-#include <algorithm>
 
 #include "jsprf.h"
 
@@ -21,10 +18,11 @@
 #include "jit/BaselineJIT.h"
 #include "jit/JitSpewer.h"
 #include "js/Vector.h"
-#include "vm/SPSProfiler.h"
+#include "vm/GeckoProfiler.h"
 
 #include "jsscriptinlines.h"
 
+#include "vm/GeckoProfiler-inl.h"
 #include "vm/TypeInference-inl.h"
 
 using mozilla::Maybe;
@@ -333,7 +331,7 @@ JitcodeGlobalEntry::createScriptString(JSContext* cx, JSScript* script, size_t* 
     size_t linenoLength = 0;
     char linenoStr[15];
     if (hasName || (script->functionNonDelazifying() || script->isForEval())) {
-        linenoLength = SprintfLiteral(linenoStr, "%" PRIuSIZE, script->lineno());
+        linenoLength = SprintfLiteral(linenoStr, "%zu", script->lineno());
         hasLineno = true;
     }
 
@@ -453,8 +451,7 @@ JitcodeGlobalTable::lookupForSamplerInfallible(void* ptr, JSRuntime* rt, uint32_
     // barrier is not needed. Any JS frames sampled during the sweep phase of
     // the GC must be on stack, and on-stack frames must already be marked at
     // the beginning of the sweep phase. It's not possible to assert this here
-    // as we may not be running on the main thread when called from the gecko
-    // profiler.
+    // as we may be off main thread when called from the gecko profiler.
 
     return *entry;
 }
@@ -510,7 +507,7 @@ JitcodeGlobalTable::addEntry(const JitcodeGlobalEntry& entry, JSRuntime* rt)
     newEntry->tower_ = newTower;
 
     // Suppress profiler sampling while skiplist is being mutated.
-    AutoSuppressProfilerSampling suppressSampling(rt);
+    AutoSuppressProfilerSampling suppressSampling(TlsContext.get());
 
     // Link up entry with forward entries taken from tower.
     for (int level = newTower->height() - 1; level >= 0; level--) {
@@ -530,6 +527,12 @@ JitcodeGlobalTable::addEntry(const JitcodeGlobalEntry& entry, JSRuntime* rt)
     }
     skiplistSize_++;
     // verifySkiplist(); - disabled for release.
+
+    // Any entries that may directly contain nursery pointers must be marked
+    // during a minor GC to update those pointers.
+    if (entry.canHoldNurseryPointers())
+        addToNurseryList(&newEntry->ionEntry());
+
     return true;
 }
 
@@ -537,7 +540,10 @@ void
 JitcodeGlobalTable::removeEntry(JitcodeGlobalEntry& entry, JitcodeGlobalEntry** prevTower,
                                 JSRuntime* rt)
 {
-    MOZ_ASSERT(!rt->isProfilerSamplingEnabled());
+    MOZ_ASSERT(!TlsContext.get()->isProfilerSamplingEnabled());
+
+    if (entry.canHoldNurseryPointers())
+        removeFromNurseryList(&entry.ionEntry());
 
     // Unlink query entry.
     for (int level = entry.tower_->height() - 1; level >= 0; level--) {
@@ -645,14 +651,14 @@ JitcodeGlobalTable::generateTowerHeight()
     rand_ ^= mozilla::RotateLeft(rand_, 5) ^ mozilla::RotateLeft(rand_, 24);
     rand_ += 0x37798849;
 
-    // Return number of lowbit zeros in new randval.
+    // Return 1 + number of lowbit zeros in new randval, capped at MAX_HEIGHT.
     unsigned result = 0;
-    for (unsigned i = 0; i < 32; i++) {
+    for (unsigned i = 0; i < JitcodeSkiplistTower::MAX_HEIGHT - 1; i++) {
         if ((rand_ >> i) & 0x1)
             break;
         result++;
     }
-    return (std::max)(1U, result);
+    return result + 1;
 }
 
 JitcodeSkiplistTower*
@@ -716,9 +722,13 @@ JitcodeGlobalTable::verifySkiplist()
 void
 JitcodeGlobalTable::setAllEntriesAsExpired(JSRuntime* rt)
 {
-    AutoSuppressProfilerSampling suppressSampling(rt);
-    for (Range r(*this); !r.empty(); r.popFront())
-        r.front()->setAsExpired();
+    AutoSuppressProfilerSampling suppressSampling(TlsContext.get());
+    for (Range r(*this); !r.empty(); r.popFront()) {
+        auto entry = r.front();
+        if (entry->canHoldNurseryPointers())
+            removeFromNurseryList(&entry->ionEntry());
+        entry->setAsExpired();
+    }
 }
 
 struct Unconditionally
@@ -728,16 +738,21 @@ struct Unconditionally
 };
 
 void
-JitcodeGlobalTable::trace(JSTracer* trc)
+JitcodeGlobalTable::traceForMinorGC(JSTracer* trc)
 {
-    // Trace all entries unconditionally. This is done during minor collection
-    // to tenure and update object pointers.
+    // Trace only entries that can directly contain nursery pointers.
 
-    MOZ_ASSERT(trc->runtime()->spsProfiler.enabled());
+    MOZ_ASSERT(trc->runtime()->geckoProfiler().enabled());
+    MOZ_ASSERT(JS::CurrentThreadIsHeapMinorCollecting());
 
-    AutoSuppressProfilerSampling suppressSampling(trc->runtime());
-    for (Range r(*this); !r.empty(); r.popFront())
-        r.front()->trace<Unconditionally>(trc);
+    AutoSuppressProfilerSampling suppressSampling(TlsContext.get());
+    JitcodeGlobalEntry::IonEntry* entry = nurseryEntries_;
+    while (entry) {
+        entry->trace<Unconditionally>(trc);
+        JitcodeGlobalEntry::IonEntry* prev = entry;
+        entry = entry->nextNursery_;
+        removeFromNurseryList(prev);
+    }
 }
 
 struct IfUnmarked
@@ -777,14 +792,14 @@ JitcodeGlobalTable::markIteratively(GCMarker* marker)
     // The approach above obviates the need for read barriers. The assumption
     // above is checked in JitcodeGlobalTable::lookupForSampler.
 
-    MOZ_ASSERT(!marker->runtime()->isHeapMinorCollecting());
+    MOZ_ASSERT(!JS::CurrentThreadIsHeapMinorCollecting());
 
-    AutoSuppressProfilerSampling suppressSampling(marker->runtime());
+    AutoSuppressProfilerSampling suppressSampling(TlsContext.get());
     uint32_t gen = marker->runtime()->profilerSampleBufferGen();
     uint32_t lapCount = marker->runtime()->profilerSampleBufferLapCount();
 
     // If the profiler is off, all entries are considered to be expired.
-    if (!marker->runtime()->spsProfiler.enabled())
+    if (!marker->runtime()->geckoProfiler().enabled())
         gen = UINT32_MAX;
 
     bool markedAny = false;
@@ -799,6 +814,8 @@ JitcodeGlobalTable::markIteratively(GCMarker* marker)
         // types used by optimizations and scripts used for pc to line number
         // mapping, alive as well.
         if (!entry->isSampled(gen, lapCount)) {
+            if (entry->canHoldNurseryPointers())
+                removeFromNurseryList(&entry->ionEntry());
             entry->setAsExpired();
             if (!entry->baseEntry().isJitcodeMarkedFromAnyThread(marker->runtime()))
                 continue;
@@ -818,7 +835,7 @@ JitcodeGlobalTable::markIteratively(GCMarker* marker)
 void
 JitcodeGlobalTable::sweep(JSRuntime* rt)
 {
-    AutoSuppressProfilerSampling suppressSampling(rt);
+    AutoSuppressProfilerSampling suppressSampling(TlsContext.get());
     for (Enum e(*this, rt); !e.empty(); e.popFront()) {
         JitcodeGlobalEntry* entry = e.front();
 
@@ -846,8 +863,7 @@ JitcodeGlobalEntry::BaseEntry::traceJitcode(JSTracer* trc)
 bool
 JitcodeGlobalEntry::BaseEntry::isJitcodeMarkedFromAnyThread(JSRuntime* rt)
 {
-    return IsMarkedUnbarriered(rt, &jitcode_) ||
-           jitcode_->arena()->allocatedDuringIncremental;
+    return IsMarkedUnbarriered(rt, &jitcode_);
 }
 
 bool
@@ -876,8 +892,7 @@ JitcodeGlobalEntry::BaselineEntry::sweepChildren()
 bool
 JitcodeGlobalEntry::BaselineEntry::isMarkedFromAnyThread(JSRuntime* rt)
 {
-    return IsMarkedUnbarriered(rt, &script_) ||
-           script_->arena()->allocatedDuringIncremental;
+    return IsMarkedUnbarriered(rt, &script_);
 }
 
 template <class ShouldTraceProvider>
@@ -945,11 +960,8 @@ bool
 JitcodeGlobalEntry::IonEntry::isMarkedFromAnyThread(JSRuntime* rt)
 {
     for (unsigned i = 0; i < numScripts(); i++) {
-        if (!IsMarkedUnbarriered(rt, &sizedScriptList()->pairs[i].script) &&
-            !sizedScriptList()->pairs[i].script->arena()->allocatedDuringIncremental)
-        {
+        if (!IsMarkedUnbarriered(rt, &sizedScriptList()->pairs[i].script))
             return false;
-        }
     }
 
     if (!optsAllTypes_)
@@ -958,11 +970,8 @@ JitcodeGlobalEntry::IonEntry::isMarkedFromAnyThread(JSRuntime* rt)
     for (IonTrackedTypeWithAddendum* iter = optsAllTypes_->begin();
          iter != optsAllTypes_->end(); iter++)
     {
-        if (!TypeSet::IsTypeMarked(rt, &iter->type) &&
-            !TypeSet::IsTypeAllocatedDuringIncremental(iter->type))
-        {
+        if (!TypeSet::IsTypeMarked(rt, &iter->type))
             return false;
-        }
     }
 
     return true;
@@ -1542,13 +1551,13 @@ JitcodeIonTable::WriteIonTable(CompactBufferWriter& writer,
     MOZ_ASSERT(writer.length() == 0);
     MOZ_ASSERT(scriptListSize > 0);
 
-    JitSpew(JitSpew_Profiling, "Writing native to bytecode map for %s:%" PRIuSIZE " (%" PRIuSIZE " entries)",
+    JitSpew(JitSpew_Profiling, "Writing native to bytecode map for %s:%zu (%zu entries)",
             scriptList[0]->filename(), scriptList[0]->lineno(),
             mozilla::PointerRangeSize(start, end));
 
     JitSpew(JitSpew_Profiling, "  ScriptList of size %d", int(scriptListSize));
     for (uint32_t i = 0; i < scriptListSize; i++) {
-        JitSpew(JitSpew_Profiling, "  Script %d - %s:%" PRIuSIZE,
+        JitSpew(JitSpew_Profiling, "  Script %d - %s:%zu",
                 int(i), scriptList[i]->filename(), scriptList[i]->lineno());
     }
 
@@ -1637,7 +1646,7 @@ JS::ForEachProfiledFrameOp::FrameHandle::FrameHandle(JSRuntime* rt, js::jit::Jit
     }
 }
 
-JS::ProfilingFrameIterator::FrameKind
+JS_PUBLIC_API(JS::ProfilingFrameIterator::FrameKind)
 JS::ForEachProfiledFrameOp::FrameHandle::frameKind() const
 {
     if (entry_.isBaseline())
@@ -1648,15 +1657,15 @@ JS::ForEachProfiledFrameOp::FrameHandle::frameKind() const
 JS_PUBLIC_API(void)
 JS::ForEachProfiledFrame(JSContext* cx, void* addr, ForEachProfiledFrameOp& op)
 {
-    js::jit::JitcodeGlobalTable* table = cx->jitRuntime()->getJitcodeGlobalTable();
+    js::jit::JitcodeGlobalTable* table = cx->runtime()->jitRuntime()->getJitcodeGlobalTable();
     js::jit::JitcodeGlobalEntry& entry = table->lookupInfallible(addr);
 
     // Extract the stack for the entry.  Assume maximum inlining depth is <64
     const char* labels[64];
-    uint32_t depth = entry.callStackAtAddr(cx, addr, labels, 64);
+    uint32_t depth = entry.callStackAtAddr(cx->runtime(), addr, labels, 64);
     MOZ_ASSERT(depth < 64);
     for (uint32_t i = depth; i != 0; i--) {
-        JS::ForEachProfiledFrameOp::FrameHandle handle(cx, entry, addr, labels[i - 1], i - 1);
+        JS::ForEachProfiledFrameOp::FrameHandle handle(cx->runtime(), entry, addr, labels[i - 1], i - 1);
         op(handle);
     }
 }

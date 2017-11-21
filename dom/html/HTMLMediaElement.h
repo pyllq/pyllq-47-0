@@ -23,6 +23,7 @@
 #include "mozilla/StateWatching.h"
 #include "nsGkAtoms.h"
 #include "PrincipalChangeObserver.h"
+#include "nsStubMutationObserver.h"
 
 // X.h on Linux #defines CurrentTime as 0L, so we have to #undef it here.
 #ifdef CurrentTime
@@ -42,6 +43,7 @@ typedef uint8_t AudibleState;
 
 namespace mozilla {
 class AbstractThread;
+class ChannelMediaDecoder;
 class DecoderDoctorDiagnostics;
 class DOMMediaStream;
 class ErrorResult;
@@ -63,6 +65,7 @@ class nsIChannel;
 class nsIHttpChannel;
 class nsILoadGroup;
 class nsIRunnable;
+class nsISerialEventTarget;
 class nsITimer;
 class nsRange;
 
@@ -83,7 +86,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
                          public nsIDOMHTMLMediaElement,
                          public MediaDecoderOwner,
                          public PrincipalChangeObserver<DOMMediaStream>,
-                         public SupportsWeakPtr<HTMLMediaElement>
+                         public SupportsWeakPtr<HTMLMediaElement>,
+                         public nsStubMutationObserver
 {
 public:
   typedef mozilla::TimeStamp TimeStamp;
@@ -95,12 +99,16 @@ public:
   typedef mozilla::MetadataTags MetadataTags;
 
   MOZ_DECLARE_WEAKREFERENCE_TYPENAME(HTMLMediaElement)
+  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
+  NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
   CORSMode GetCORSMode() {
     return mCORSMode;
   }
 
   explicit HTMLMediaElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
+
+  void ReportCanPlayTelemetry();
 
   /**
    * This is used when the browser is constructing a video element to play
@@ -124,21 +132,6 @@ public:
                               nsIAtom* aAttribute,
                               const nsAString& aValue,
                               nsAttrValue& aResult) override;
-  // SetAttr override.  C++ is stupid, so have to override both
-  // overloaded methods.
-  nsresult SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
-                   const nsAString& aValue, bool aNotify)
-  {
-    return SetAttr(aNameSpaceID, aName, nullptr, aValue, aNotify);
-  }
-  virtual nsresult SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
-                           nsIAtom* aPrefix, const nsAString& aValue,
-                           bool aNotify) override;
-  virtual nsresult UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttr,
-                             bool aNotify) override;
-  virtual nsresult AfterSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
-                                const nsAttrValue* aValue,
-                                bool aNotify) override;
 
   virtual nsresult BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                               nsIContent* aBindingParent,
@@ -174,6 +167,11 @@ public:
   // Called by the video decoder object, on the main thread, when the
   // resource has a decode error during metadata loading or decoding.
   virtual void DecodeError(const MediaResult& aError) final override;
+
+  // Called by the decoder object, on the main thread, when the
+  // resource has a decode issue during metadata loading or decoding, but can
+  // continue decoding.
+  virtual void DecodeWarning(const MediaResult& aError) final override;
 
   // Return true if error attribute is not null.
   virtual bool HasError() const final override;
@@ -282,6 +280,8 @@ public:
   // called to notify that the principal of the decoder's media resource has changed.
   void NotifyDecoderPrincipalChanged() final override;
 
+  void GetEMEInfo(nsString& aEMEInfo);
+
   // An interface for observing principal changes on the media elements
   // MediaDecoder. This will also be notified if the active CORSMode changes.
   class DecoderPrincipalChangeObserver
@@ -331,7 +331,7 @@ public:
    * Called when there's been an error fetching the resource. This decides
    * whether it's appropriate to fire an error event.
    */
-  void NotifyLoadError();
+  void NotifyLoadError(const nsACString& aErrorDetails = nsCString());
 
   /**
    * Called by one of our associated MediaTrackLists (audio/video) when an
@@ -378,7 +378,7 @@ public:
    */
   bool GetPlayedOrSeeked() const { return mHasPlayedOrSeeked; }
 
-  nsresult CopyInnerTo(Element* aDest);
+  nsresult CopyInnerTo(Element* aDest, bool aPreallocateChildren);
 
   /**
    * Sets the Accept header on the HTTP channel to the required
@@ -604,9 +604,25 @@ public:
   // data. Used for debugging purposes.
   void GetMozDebugReaderData(nsAString& aString);
 
+  // Returns a promise which will be resolved after collecting debugging
+  // data from decoder/reader/MDSM. Used for debugging purposes.
+  already_AddRefed<Promise> MozRequestDebugInfo(ErrorResult& aRv);
+
   void MozDumpDebugInfo();
 
+  // For use by mochitests. Enabling pref "media.test.video-suspend"
   void SetVisible(bool aVisible);
+
+  // For use by mochitests. Enabling pref "media.test.video-suspend"
+  bool HasSuspendTaint() const;
+
+  // Synchronously, return the next video frame and mark the element unable to
+  // participate in decode suspending.
+  //
+  // This function is synchronous for cases where decoding has been suspended
+  // and JS needs a frame to use in, eg., nsLayoutUtils::SurfaceFromElement()
+  // via drawImage().
+  already_AddRefed<layers::Image> GetCurrentImage();
 
   already_AddRefed<DOMMediaStream> GetSrcObject() const;
   void SetSrcObject(DOMMediaStream& aValue);
@@ -638,7 +654,7 @@ public:
   void DispatchEncrypted(const nsTArray<uint8_t>& aInitData,
                          const nsAString& aInitDataType) override;
 
-  bool IsEventAttributeName(nsIAtom* aName) override;
+  bool IsEventAttributeNameInternal(nsIAtom* aName) override;
 
   // Returns the principal of the "top level" document; the origin displayed
   // in the URL bar of the browser window.
@@ -646,7 +662,7 @@ public:
 
   bool ContainsRestrictedContent();
 
-  void CannotDecryptWaitingForKey();
+  void NotifyWaitingForKey() override;
 
   bool MozAutoplayEnabled() const
   {
@@ -669,13 +685,6 @@ public:
                       ErrorResult& aRv);
 
   double MozFragmentEnd();
-
-  AudioChannel MozAudioChannelType() const
-  {
-    return mAudioChannel;
-  }
-
-  void SetMozAudioChannelType(AudioChannel aValue, ErrorResult& aRv);
 
   AudioTrackList* AudioTracks();
 
@@ -728,15 +737,14 @@ public:
   // that will soon be gone.
   bool IsBeingDestroyed();
 
-  IMPL_EVENT_HANDLER(mozinterruptbegin)
-  IMPL_EVENT_HANDLER(mozinterruptend)
-
   // These are used for testing only
   float ComputedVolume() const;
   bool ComputedMuted() const;
   nsSuspendedTypes ComputedSuspended() const;
 
   void SetMediaInfo(const MediaInfo& aInfo);
+
+  virtual AbstractThread* AbstractMainThread() const final override;
 
   // Telemetry: to record the usage of a {visible / invisible} video element as
   // the source of {drawImage(), createPattern(), createImageBitmap() and
@@ -748,6 +756,30 @@ public:
     CAPTURE_STREAM,
   };
   void MarkAsContentSource(CallerAPI aAPI);
+
+  nsIDocument* GetDocument() const override;
+
+  void ConstructMediaTracks(const MediaInfo* aInfo) override;
+
+  void RemoveMediaTracks() override;
+
+  already_AddRefed<GMPCrashHelper> CreateGMPCrashHelper() override;
+
+  // The promise resolving/rejection is queued as a "micro-task" which will be
+  // handled immediately after the current JS task and before any pending JS
+  // tasks.
+  // At the time we are going to resolve/reject a promise, the "seeking" event
+  // task should already be queued but might yet be processed, so we queue one
+  // more task to file the promise resolving/rejection micro-tasks
+  // asynchronously to make sure that the micro-tasks are processed after the
+  // "seeking" event task.
+  void AsyncResolveSeekDOMPromiseIfExists() override;
+  void AsyncRejectSeekDOMPromiseIfExists() override;
+
+  nsISerialEventTarget* MainThreadEventTarget()
+  {
+    return mMainThreadEventTarget;
+  }
 
 protected:
   virtual ~HTMLMediaElement();
@@ -918,7 +950,7 @@ protected:
    * element.
    * mLoadingSrc must already be set.
    */
-  nsresult InitializeDecoderAsClone(MediaDecoder* aOriginal);
+  nsresult InitializeDecoderAsClone(ChannelMediaDecoder* aOriginal);
 
   /**
    * Initialize a decoder to load the given channel. The decoder's stream
@@ -932,9 +964,7 @@ protected:
    * Finish setting up the decoder after Load() has been called on it.
    * Called by InitializeDecoderForChannel/InitializeDecoderAsClone.
    */
-  nsresult FinishDecoderSetup(MediaDecoder* aDecoder,
-                              MediaResource* aStream,
-                              nsIStreamListener **aListener);
+  nsresult FinishDecoderSetup(MediaDecoder* aDecoder);
 
   /**
    * Call this after setting up mLoadingSrc and mDecoder.
@@ -1177,8 +1207,6 @@ protected:
     return this;
   }
 
-  virtual AbstractThread* AbstractMainThread() const final override;
-
   // Return true if decoding should be paused
   virtual bool GetPaused() final override
   {
@@ -1207,9 +1235,6 @@ protected:
   void ReportEMETelemetry();
 
   void ReportTelemetry();
-
-  // Check the permissions for audiochannel.
-  bool CheckAudioChannelPermissions(const nsAString& aType);
 
   // Seeks to aTime seconds. aSeekType can be Exact to seek to exactly the
   // seek target, or PrevSyncPoint if a quicker but less precise seek is
@@ -1247,6 +1272,9 @@ protected:
   // Anything we need to check after played success and not related with spec.
   void UpdateCustomPolicyAfterPlayed();
 
+  // True if this element can be captured, false otherwise.
+  bool CanBeCaptured(bool aCaptureAudio);
+
   class nsAsyncEventRunner;
   class nsNotifyAboutPlayingRunner;
   class nsResolveOrRejectPendingPlayPromisesRunner;
@@ -1276,9 +1304,28 @@ protected:
 
   already_AddRefed<Promise> CreateDOMPromise(ErrorResult& aRv) const;
 
+  // Pass information for deciding the video decode mode to decoder.
+  void NotifyDecoderActivityChanges() const;
+
+  // Mark the decoder owned by the element as tainted so that the
+  // suspend-video-decoder is disabled.
+  void MarkAsTainted();
+
+  virtual nsresult AfterSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
+                                const nsAttrValue* aValue,
+                                const nsAttrValue* aOldValue,
+                                bool aNotify) override;
+  virtual nsresult OnAttrSetButNotChanged(int32_t aNamespaceID, nsIAtom* aName,
+                                          const nsAttrValueOrString& aValue,
+                                          bool aNotify) override;
+
   // The current decoder. Load() has been called on this decoder.
   // At most one of mDecoder and mSrcStream can be non-null.
   RefPtr<MediaDecoder> mDecoder;
+
+  // The DocGroup-specific nsISerialEventTarget of this HTML element on the main
+  // thread.
+  nsCOMPtr<nsISerialEventTarget> mMainThreadEventTarget;
 
   // The DocGroup-specific AbstractThread::MainThread() of this HTML element.
   RefPtr<AbstractThread> mAbstractMainThread;
@@ -1346,8 +1393,10 @@ protected:
   uint32_t mCurrentLoadID;
 
   // Points to the child source elements, used to iterate through the children
-  // when selecting a resource to load.
-  RefPtr<nsRange> mSourcePointer;
+  // when selecting a resource to load.  This is the index of the child element
+  // that is the current 'candidate' in:
+  // https://html.spec.whatwg.org/multipage/media.html#concept-media-load-algorithm
+  uint32_t mSourcePointer;
 
   // Points to the document whose load we're blocking. This is the document
   // we're bound to when loading starts.
@@ -1575,6 +1624,10 @@ protected:
   // True if a same-origin check has been done for the media element and resource.
   bool mMediaSecurityVerified;
 
+  // True if we should set nsIClassOfService::UrgentStart to the channel to
+  // get the response ASAP for better user responsiveness.
+  bool mUseUrgentStartForChannel = false;
+
   // The CORS mode when loading the media element
   CORSMode mCORSMode;
 
@@ -1679,6 +1732,16 @@ public:
     uint32_t mCount;
   };
 private:
+  /**
+   * This function is called by AfterSetAttr and OnAttrSetButNotChanged.
+   * It will not be called if the value is being unset.
+   *
+   * @param aNamespaceID the namespace of the attr being set
+   * @param aName the localname of the attribute being set
+   * @param aNotify Whether we plan to notify document observers.
+   */
+  void AfterMaybeChangeAttr(int32_t aNamespaceID, nsIAtom* aName, bool aNotify);
+
   // Total time a video has spent playing.
   TimeDurationAccumulator mPlayTime;
 
@@ -1703,6 +1766,14 @@ private:
   // True if the audio track is not silent.
   bool mIsAudioTrackAudible;
 
+  // True if media element has been marked as 'tainted' and can't
+  // participate in video decoder suspending.
+  bool mHasSuspendTaint;
+
+  // True if audio tracks and video tracks are constructed and added into the
+  // track list, false if all tracks are removed from the track list.
+  bool mMediaTracksConstructed;
+
   Visibility mVisibilityState;
 
   UniquePtr<ErrorSink> mErrorSink;
@@ -1722,7 +1793,16 @@ private:
   // We keep track of these because the load algorithm resolves/rejects all
   // already-dispatched pending play promises.
   nsTArray<nsResolveOrRejectPendingPlayPromisesRunner*> mPendingPlayPromisesRunners;
+
+  // A pending seek promise which is created at Seek() method call and is
+  // resolved/rejected at AsyncResolveSeekDOMPromiseIfExists()/
+  // AsyncRejectSeekDOMPromiseIfExists() methods.
+  RefPtr<dom::Promise> mSeekDOMPromise;
 };
+
+// Check if the context is chrome or has the debugger or tabs permission
+bool
+HasDebuggerOrTabsPrivilege(JSContext* aCx, JSObject* aObj);
 
 } // namespace dom
 } // namespace mozilla

@@ -245,6 +245,11 @@ NS_IMETHODIMP nsExtProtocolChannel::SetLoadFlags(nsLoadFlags aLoadFlags)
   return NS_OK;
 }
 
+NS_IMETHODIMP nsExtProtocolChannel::GetIsDocument(bool *aIsDocument)
+{
+  return NS_GetIsDocumentChannel(this, aIsDocument);
+}
+
 NS_IMETHODIMP nsExtProtocolChannel::GetContentType(nsACString &aContentType)
 {
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -400,6 +405,14 @@ NS_IMETHODIMP nsExtProtocolChannel::SetParentListener(HttpChannelParentListener*
 }
 
 NS_IMETHODIMP nsExtProtocolChannel::NotifyTrackingProtectionDisabled()
+{
+  // nothing to do
+  return NS_OK;
+}
+
+NS_IMETHODIMP nsExtProtocolChannel::SetClassifierMatchedInfo(const nsACString& aList,
+                                                             const nsACString& aProvider,
+                                                             const nsACString& aPrefix)
 {
   // nothing to do
   return NS_OK;

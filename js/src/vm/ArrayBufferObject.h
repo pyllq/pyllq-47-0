@@ -254,14 +254,9 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
     // initialize()d to become a real, content-visible ArrayBufferObject.
     static ArrayBufferObject* createEmpty(JSContext* cx);
 
-    template<typename T>
-    static bool createTypedArrayFromBufferImpl(JSContext* cx, const CallArgs& args);
-    template<typename T>
-    static bool createTypedArrayFromBuffer(JSContext* cx, unsigned argc, Value* vp);
-
-    static void copyData(Handle<ArrayBufferObject*> toBuffer,
-                         Handle<ArrayBufferObject*> fromBuffer,
-                         uint32_t fromIndex, uint32_t count);
+    static void copyData(Handle<ArrayBufferObject*> toBuffer, uint32_t toIndex,
+                         Handle<ArrayBufferObject*> fromBuffer, uint32_t fromIndex,
+                         uint32_t count);
 
     static void trace(JSTracer* trc, JSObject* obj);
     static void objectMoved(JSObject* obj, const JSObject* old);
@@ -336,7 +331,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
 
     // WebAssembly support:
     static ArrayBufferObject* createForWasm(JSContext* cx, uint32_t initialSize,
-                                            mozilla::Maybe<uint32_t> maxSize);
+                                            const mozilla::Maybe<uint32_t>& maxSize);
     static MOZ_MUST_USE bool prepareForAsmJS(JSContext* cx, Handle<ArrayBufferObject*> buffer,
                                              bool needGuard);
     size_t wasmMappedSize() const;
@@ -603,6 +598,10 @@ class InnerViewTable
     // to reflect moved objects.
     void sweep();
     void sweepAfterMinorGC();
+
+    bool needsSweep() const {
+        return map.needsSweep();
+    }
 
     bool needsSweepAfterMinorGC() const {
         return !nurseryKeys.empty() || !nurseryKeysValid;

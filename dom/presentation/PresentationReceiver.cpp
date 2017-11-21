@@ -69,7 +69,7 @@ PresentationReceiver::Init()
 
 void PresentationReceiver::Shutdown()
 {
-  PRES_DEBUG("receiver shutdown:windowId[%d]\n", mWindowId);
+  PRES_DEBUG("receiver shutdown:windowId[%" PRId64 "]\n", mWindowId);
 
   // Unregister listener for incoming sessions.
   nsCOMPtr<nsIPresentationService> service =
@@ -93,7 +93,7 @@ NS_IMETHODIMP
 PresentationReceiver::NotifySessionConnect(uint64_t aWindowId,
                                            const nsAString& aSessionId)
 {
-  PRES_DEBUG("receiver session connect:id[%s], windowId[%x]\n",
+  PRES_DEBUG("receiver session connect:id[%s], windowId[%" PRIx64 "]\n",
              NS_ConvertUTF16toUTF8(aSessionId).get(), aWindowId);
 
   if (NS_WARN_IF(!mOwner)) {
@@ -135,10 +135,9 @@ PresentationReceiver::GetConnectionList(ErrorResult& aRv)
     }
 
     RefPtr<PresentationReceiver> self = this;
-    nsresult rv =
-      NS_DispatchToMainThread(NS_NewRunnableFunction([self] () -> void {
-        self->CreateConnectionList();
-      }));
+    nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "dom::PresentationReceiver::GetConnectionList",
+      [self]() -> void { self->CreateConnectionList(); }));
     if (NS_FAILED(rv)) {
       aRv.Throw(rv);
       return nullptr;

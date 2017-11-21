@@ -25,7 +25,7 @@ this.NarrateTestUtils = {
   FORWARD: "#narrate-skip-next",
 
   isVisible(element) {
-    let style = element.ownerDocument.defaultView.getComputedStyle(element, "");
+    let style = element.ownerGlobal.getComputedStyle(element);
     if (style.display == "none") {
       return false;
     } else if (style.visibility != "visible") {
@@ -103,7 +103,7 @@ this.NarrateTestUtils = {
       if (window.document.body.classList.contains("loaded")) {
         resolve();
       } else {
-        Services.obs.addObserver(observeReady, "AboutReader:Ready", false);
+        Services.obs.addObserver(observeReady, "AboutReader:Ready");
       }
     });
   },
@@ -121,7 +121,7 @@ this.NarrateTestUtils = {
         resolve(Preferences.get(pref));
       }
 
-      Services.prefs.addObserver(pref, observeChange, false);
+      Services.prefs.addObserver(pref, observeChange);
     });
   },
 

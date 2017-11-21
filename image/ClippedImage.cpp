@@ -313,7 +313,7 @@ ClippedImage::GetFrameInternal(const nsIntSize& aSize,
       new gfxCallbackDrawable(drawTileCallback, aSize);
 
     // Actually draw. The callback will end up invoking DrawSingleTile.
-    gfxUtils::DrawPixelSnapped(ctx, drawable, aSize,
+    gfxUtils::DrawPixelSnapped(ctx, drawable, SizeDouble(aSize),
                                ImageRegion::Create(aSize),
                                SurfaceFormat::B8G8R8A8,
                                SamplingFilter::LINEAR,
@@ -404,7 +404,7 @@ ClippedImage::Draw(gfxContext* aContext,
       new gfxSurfaceDrawable(surface, aSize);
 
     // Draw.
-    gfxUtils::DrawPixelSnapped(aContext, drawable, aSize, aRegion,
+    gfxUtils::DrawPixelSnapped(aContext, drawable, SizeDouble(aSize), aRegion,
                                SurfaceFormat::B8G8R8A8, aSamplingFilter,
                                aOpacity);
 
@@ -467,13 +467,17 @@ ClippedImage::DrawSingleTile(gfxContext* aContext,
     // The size in pixels at which the output will ultimately be drawn is
     // irrelevant here since the purpose of the SVG viewport size is to
     // determine what *region* of the SVG document will be drawn.
-    CSSIntSize vSize(aOldContext.GetViewportSize());
-    vSize.width = ceil(vSize.width * double(innerSize.width) / mClip.width);
-    vSize.height =
-      ceil(vSize.height * double(innerSize.height) / mClip.height);
-
-    return SVGImageContext(vSize,
-                           aOldContext.GetPreserveAspectRatio());
+    SVGImageContext context(aOldContext);
+    auto oldViewport = aOldContext.GetViewportSize();
+    if (oldViewport) {
+      CSSIntSize newViewport;
+      newViewport.width =
+        ceil(oldViewport->width * double(innerSize.width) / mClip.width);
+      newViewport.height =
+        ceil(oldViewport->height * double(innerSize.height) / mClip.height);
+      context.SetViewportSize(Some(newViewport));
+    }
+    return context;
   };
 
   return InnerImage()->Draw(aContext, size, region,

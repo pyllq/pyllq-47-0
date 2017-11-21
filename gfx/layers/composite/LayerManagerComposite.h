@@ -7,6 +7,7 @@
 #define GFX_LayerManagerComposite_H
 
 #include <stdint.h>                     // for int32_t, uint32_t
+#include "CompositableHost.h"           // for CompositableHost, ImageCompositeNotificationInfo
 #include "GLDefs.h"                     // for GLenum
 #include "Layers.h"
 #include "Units.h"                      // for ParentLayerIntRect
@@ -49,9 +50,9 @@ namespace layers {
 
 class CanvasLayerComposite;
 class ColorLayerComposite;
-class CompositableHost;
 class Compositor;
 class ContainerLayerComposite;
+class Diagnostics;
 struct EffectChain;
 class ImageLayer;
 class ImageLayerComposite;
@@ -62,13 +63,11 @@ class TextRenderer;
 class CompositingRenderTarget;
 struct FPSState;
 class PaintCounter;
+class LayerMLGPU;
+class LayerManagerMLGPU;
+class UiCompositorControllerParent;
 
 static const int kVisualWarningDuration = 150; // ms
-
-struct ImageCompositeNotificationInfo {
-  base::ProcessId mImageBridgeProcessId;
-  ImageCompositeNotification mNotification;
-};
 
 // An implementation of LayerManager that acts as a pair with ClientLayerManager
 // and is mirrored across IPDL. This gets managed/updated by LayerTransactionParent.
@@ -101,16 +100,10 @@ public:
     MOZ_CRASH("GFX: Call on compositor, not LayerManagerComposite");
   }
 
-  virtual LayersBackend GetBackendType() override
-  {
-    MOZ_CRASH("GFX: Shouldn't be called for composited layer manager");
-  }
   virtual void GetBackendName(nsAString& name) override
   {
     MOZ_CRASH("GFX: Shouldn't be called for composited layer manager");
   }
-  virtual TextureFactoryIdentifier GetTextureFactoryIdentifier() = 0;
-
 
   virtual void ForcePresent() = 0;
   virtual void AddInvalidRegion(const nsIntRegion& aRegion) = 0;
@@ -123,19 +116,34 @@ public:
   virtual void BeginTransactionWithDrawTarget(gfx::DrawTarget* aTarget,
                                               const gfx::IntRect& aRect) = 0;
   virtual Compositor* GetCompositor() const = 0;
+  virtual TextureSourceProvider* GetTextureSourceProvider() const = 0;
   virtual void EndTransaction(const TimeStamp& aTimeStamp,
                               EndTransactionFlags aFlags = END_DEFAULT) = 0;
   virtual void UpdateRenderBounds(const gfx::IntRect& aRect) {}
+  virtual void SetDiagnosticTypes(DiagnosticTypes aDiagnostics) {}
 
-  // Called by CompositorBridgeParent when a new compositor has been created due
-  // to a device reset. The layer manager must clear any cached resources
-  // attached to the old compositor, and make a best effort at ignoring
-  // layer or texture updates against the old compositor.
-  virtual void ChangeCompositor(Compositor* aNewCompositor) = 0;
+  virtual HostLayerManager* AsHostLayerManager() override {
+    return this;
+  }
+  virtual LayerManagerMLGPU* AsLayerManagerMLGPU() {
+    return nullptr;
+  }
 
   void ExtractImageCompositeNotifications(nsTArray<ImageCompositeNotificationInfo>* aNotifications)
   {
     aNotifications->AppendElements(Move(mImageCompositeNotifications));
+  }
+
+  void AppendImageCompositeNotification(const ImageCompositeNotificationInfo& aNotification)
+  {
+    // Only send composite notifications when we're drawing to the screen,
+    // because that's what they mean.
+    // Also when we're not drawing to the screen, DidComposite will not be
+    // called to extract and send these notifications, so they might linger
+    // and contain stale ImageContainerParent pointers.
+    if (IsCompositingToScreen()) {
+      mImageCompositeNotifications.AppendElement(aNotification);
+    }
   }
 
   /**
@@ -165,8 +173,47 @@ public:
   // overlay.
   void SetWindowOverlayChanged() { mWindowOverlayChanged = true; }
 
-
   void SetPaintTime(const TimeDuration& aPaintTime) { mLastPaintTime = aPaintTime; }
+
+  virtual bool AlwaysScheduleComposite() const {
+    return false;
+  }
+  virtual bool IsCompositingToScreen() const {
+    return false;
+  }
+
+  void RecordPaintTimes(const PaintTiming& aTiming);
+  void RecordUpdateTime(float aValue);
+
+  TimeStamp GetCompositionTime() const {
+    return mCompositionTime;
+  }
+  void SetCompositionTime(TimeStamp aTimeStamp) {
+    mCompositionTime = aTimeStamp;
+    if (!mCompositionTime.IsNull() && !mCompositeUntilTime.IsNull() &&
+        mCompositionTime >= mCompositeUntilTime) {
+      mCompositeUntilTime = TimeStamp();
+    }
+  }
+  void CompositeUntil(TimeStamp aTimeStamp) {
+    if (mCompositeUntilTime.IsNull() ||
+        mCompositeUntilTime < aTimeStamp) {
+      mCompositeUntilTime = aTimeStamp;
+    }
+  }
+  TimeStamp GetCompositeUntilTime() const {
+    return mCompositeUntilTime;
+  }
+
+  // We maintaining a global mapping from ID to CompositorBridgeParent for
+  // async compositables.
+  uint32_t GetCompositorBridgeID() const {
+    return mCompositorBridgeID;
+  }
+  void SetCompositorBridgeID(uint32_t aID) {
+    MOZ_ASSERT(mCompositorBridgeID == 0, "The compositor ID must be set only once.");
+    mCompositorBridgeID = aID;
+  }
 
 protected:
   bool mDebugOverlayWantsNextFrame;
@@ -175,10 +222,27 @@ protected:
   // true if the last frame was deemed 'too complicated' to be rendered.
   float mWarningLevel;
   mozilla::TimeStamp mWarnTime;
+  UniquePtr<Diagnostics> mDiagnostics;
+  uint32_t mCompositorBridgeID;
 
   bool mWindowOverlayChanged;
   TimeDuration mLastPaintTime;
   TimeStamp mRenderStartTime;
+
+  // Render time for the current composition.
+  TimeStamp mCompositionTime;
+
+  // When nonnull, during rendering, some compositable indicated that it will
+  // change its rendering at this time. In order not to miss it, we composite
+  // on every vsync until this time occurs (this is the latest such time).
+  TimeStamp mCompositeUntilTime;
+#if defined(MOZ_WIDGET_ANDROID)
+public:
+  // Used by UiCompositorControllerParent to set itself as the target for the
+  // contents of the frame buffer after a composite.
+  // Implemented in LayerManagerComposite
+  virtual void RequestScreenPixels(UiCompositorControllerParent* aController) {}
+#endif // defined(MOZ_WIDGET_ANDROID)
 };
 
 // A layer manager implementation that uses the Compositor API
@@ -254,6 +318,9 @@ public:
     CreateOptimalMaskDrawTarget(const IntSize &aSize) override;
 
   virtual const char* Name() const override { return ""; }
+  virtual bool IsCompositingToScreen() const override;
+
+  bool AlwaysScheduleComposite() const override;
 
   /**
    * Post-processes layers before composition. This performs the following:
@@ -266,10 +333,19 @@ public:
    *   - Recomputes visible regions to account for async transforms.
    *     Each layer accumulates into |aVisibleRegion| its post-transform
    *     (including async transforms) visible region.
+   *
+   *   - aRenderTargetClip is the exact clip required for aLayer, in the coordinates
+   *     of the nearest render target (the same as GetEffectiveTransform).
+   *
+   *   - aClipFromAncestors is the approximate combined clip from all ancestors, in
+   *     the coordinate space of our parent, but maybe be an overestimate in the
+   *     presence of complex transforms.
    */
+  void PostProcessLayers(nsIntRegion& aOpaqueRegion);
   void PostProcessLayers(Layer* aLayer,
                          nsIntRegion& aOpaqueRegion,
                          LayerIntRegion& aVisibleRegion,
+                         const Maybe<RenderTargetIntRect>& aRenderTargetClip,
                          const Maybe<ParentLayerIntRect>& aClipFromAncestors);
 
   /**
@@ -327,16 +403,12 @@ public:
     return mVisibleRegions.Get(aGuid);
   }
 
-  Compositor* GetCompositor() const override
-  {
+  Compositor* GetCompositor() const override {
     return mCompositor;
   }
-
-  // Called by CompositorBridgeParent when a new compositor has been created due
-  // to a device reset. The layer manager must clear any cached resources
-  // attached to the old compositor, and make a best effort at ignoring
-  // layer or texture updates against the old compositor.
-  void ChangeCompositor(Compositor* aNewCompositor) override;
+  TextureSourceProvider* GetTextureSourceProvider() const override {
+    return mCompositor;
+  }
 
   void NotifyShadowTreeTransaction() override;
 
@@ -352,22 +424,14 @@ public:
   bool AsyncPanZoomEnabled() const override;
 
 public:
-  void AppendImageCompositeNotification(const ImageCompositeNotificationInfo& aNotification)
-  {
-    // Only send composite notifications when we're drawing to the screen,
-    // because that's what they mean.
-    // Also when we're not drawing to the screen, DidComposite will not be
-    // called to extract and send these notifications, so they might linger
-    // and contain stale ImageContainerParent pointers.
-    if (!mCompositor->GetTargetContext()) {
-      mImageCompositeNotifications.AppendElement(aNotification);
-    }
-  }
-
-public:
-  virtual TextureFactoryIdentifier GetTextureFactoryIdentifier() override
-  {
+  virtual TextureFactoryIdentifier GetTextureFactoryIdentifier() override {
     return mCompositor->GetTextureFactoryIdentifier();
+  }
+  virtual LayersBackend GetBackendType() override {
+    return mCompositor ? mCompositor->GetBackendType() : LayersBackend::LAYERS_NONE;
+  }
+  virtual void SetDiagnosticTypes(DiagnosticTypes aDiagnostics) override {
+    mCompositor->SetDiagnosticTypes(aDiagnostics);
   }
 
   void ForcePresent() override { mCompositor->ForcePresent(); }
@@ -391,6 +455,13 @@ private:
   void Render(const nsIntRegion& aInvalidRegion, const nsIntRegion& aOpaqueRegion);
 #if defined(MOZ_WIDGET_ANDROID)
   void RenderToPresentationSurface();
+  // Shifts the content down so the toolbar does not cover it.
+  // Returns the Y shift of the content in screen pixels
+  ScreenCoord GetContentShiftForToolbar();
+  // Renders the static snapshot after the content has been rendered.
+  void RenderToolbar();
+  // Used by robocop tests to get a snapshot of the frame buffer.
+  void HandlePixelsTarget();
 #endif
 
   /**
@@ -411,8 +482,6 @@ private:
                                bool aInvertEffect,
                                float aContrastEffect);
 
-  void ChangeCompositorInternal(Compositor* aNewCompositor);
-
   bool mUnusedApzTransformWarning;
   bool mDisabledApzWarning;
   RefPtr<Compositor> mCompositor;
@@ -430,14 +499,11 @@ private:
                            CSSIntRegion> VisibleRegions;
   VisibleRegions mVisibleRegions;
 
-  UniquePtr<FPSState> mFPS;
-
   bool mInTransaction;
   bool mIsCompositorReady;
 
   RefPtr<CompositingRenderTarget> mTwoPassTmpTarget;
   RefPtr<TextRenderer> mTextRenderer;
-  bool mGeometryChanged;
 
 #ifdef USE_SKIA
   /**
@@ -446,6 +512,15 @@ private:
   void DrawPaintTimes(Compositor* aCompositor);
   RefPtr<PaintCounter> mPaintCounter;
 #endif
+#if defined(MOZ_WIDGET_ANDROID)
+public:
+  virtual void RequestScreenPixels(UiCompositorControllerParent* aController) override
+  {
+    mScreenPixelsTarget = aController;
+  }
+private:
+  UiCompositorControllerParent* mScreenPixelsTarget;
+#endif // defined(MOZ_WIDGET_ANDROID)
 };
 
 /**
@@ -480,6 +555,8 @@ public:
 
   virtual Layer* GetLayer() = 0;
 
+  virtual LayerMLGPU* AsLayerMLGPU() { return nullptr; }
+
   virtual bool SetCompositableHost(CompositableHost*)
   {
     // We must handle this gracefully, see bug 967824
@@ -498,6 +575,10 @@ public:
   void SetShadowVisibleRegion(const LayerIntRegion& aRegion)
   {
     mShadowVisibleRegion = aRegion;
+  }
+  void SetShadowVisibleRegion(LayerIntRegion&& aRegion)
+  {
+    mShadowVisibleRegion = Move(aRegion);
   }
 
   void SetShadowOpacity(float aOpacity)
@@ -526,17 +607,12 @@ public:
   // These getters can be used anytime.
   float GetShadowOpacity() { return mShadowOpacity; }
   const Maybe<ParentLayerIntRect>& GetShadowClipRect() { return mShadowClipRect; }
-  const LayerIntRegion& GetShadowVisibleRegion() { return mShadowVisibleRegion; }
+  const LayerIntRegion& GetShadowVisibleRegion() const { return mShadowVisibleRegion; }
   const gfx::Matrix4x4& GetShadowBaseTransform() { return mShadowTransform; }
   gfx::Matrix4x4 GetShadowTransform();
   bool GetShadowTransformSetByAnimation() { return mShadowTransformSetByAnimation; }
   bool GetShadowOpacitySetByAnimation() { return mShadowOpacitySetByAnimation; }
-
-  /**
-   * Return true if a checkerboarding background color needs to be drawn
-   * for this layer.
-   */
-  virtual bool NeedToDrawCheckerboarding(gfx::Color* aOutCheckerboardingColor = nullptr) { return false; }
+  LayerIntRegion&& GetShadowVisibleRegion() { return Move(mShadowVisibleRegion); }
 
 protected:
   HostLayerManager* mCompositorManager;
@@ -636,8 +712,6 @@ public:
    * a subset of the shadow visible region.
    */
   virtual nsIntRegion GetFullyRenderedRegion();
-
-  virtual bool NeedToDrawCheckerboarding(gfx::Color* aOutCheckerboardingColor = nullptr);
 
 protected:
   LayerManagerComposite* mCompositeManager;

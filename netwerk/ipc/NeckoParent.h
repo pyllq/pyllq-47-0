@@ -104,6 +104,10 @@ protected:
       const HttpChannelCreationArgs& aOpenArgs) override;
   virtual bool DeallocPHttpChannelParent(PHttpChannelParent*) override;
 
+  virtual PStunAddrsRequestParent* AllocPStunAddrsRequestParent() override;
+  virtual bool
+    DeallocPStunAddrsRequestParent(PStunAddrsRequestParent* aActor) override;
+
   virtual PAltDataOutputStreamParent* AllocPAltDataOutputStreamParent(
     const nsCString& type, PHttpChannelParent* channel) override;
   virtual bool DeallocPAltDataOutputStreamParent(
@@ -148,10 +152,12 @@ protected:
                                                             const nsCString& aFilter) override;
   virtual bool DeallocPUDPSocketParent(PUDPSocketParent*) override;
   virtual PDNSRequestParent* AllocPDNSRequestParent(const nsCString& aHost,
+                                                    const OriginAttributes& aOriginAttributes,
                                                     const uint32_t& aFlags,
                                                     const nsCString& aNetworkInterface) override;
   virtual mozilla::ipc::IPCResult RecvPDNSRequestConstructor(PDNSRequestParent* actor,
                                                              const nsCString& hostName,
+                                                             const OriginAttributes& aOriginAttributes,
                                                              const uint32_t& flags,
                                                              const nsCString& aNetworkInterface) override;
   virtual bool DeallocPDNSRequestParent(PDNSRequestParent*) override;
@@ -159,8 +165,10 @@ protected:
                                                          const Principal& aPrincipal,
                                                          const bool& aAnonymous) override;
   virtual mozilla::ipc::IPCResult RecvHTMLDNSPrefetch(const nsString& hostname,
+                                                      const OriginAttributes& aOriginAttributes,
                                                       const uint16_t& flags) override;
   virtual mozilla::ipc::IPCResult RecvCancelHTMLDNSPrefetch(const nsString& hostname,
+                                                            const OriginAttributes& aOriginAttributes,
                                                             const uint16_t& flags,
                                                             const nsresult& reason) override;
   virtual PWebSocketEventListenerParent*
@@ -172,6 +180,20 @@ protected:
   virtual bool DeallocPDataChannelParent(PDataChannelParent* parent) override;
 
   virtual mozilla::ipc::IPCResult RecvPDataChannelConstructor(PDataChannelParent* aActor,
+                                                              const uint32_t& channelId) override;
+
+  virtual PSimpleChannelParent*
+    AllocPSimpleChannelParent(const uint32_t& channelId) override;
+  virtual bool DeallocPSimpleChannelParent(PSimpleChannelParent* parent) override;
+
+  virtual mozilla::ipc::IPCResult RecvPSimpleChannelConstructor(PSimpleChannelParent* aActor,
+                                                              const uint32_t& channelId) override;
+
+  virtual PFileChannelParent*
+    AllocPFileChannelParent(const uint32_t& channelId) override;
+  virtual bool DeallocPFileChannelParent(PFileChannelParent* parent) override;
+
+  virtual mozilla::ipc::IPCResult RecvPFileChannelConstructor(PFileChannelParent* aActor,
                                                               const uint32_t& channelId) override;
 
   virtual PRtspControllerParent* AllocPRtspControllerParent() override;
@@ -209,16 +231,25 @@ protected:
   virtual mozilla::ipc::IPCResult RecvPredPredict(const ipc::OptionalURIParams& aTargetURI,
                                                   const ipc::OptionalURIParams& aSourceURI,
                                                   const PredictorPredictReason& aReason,
-                                                  const IPC::SerializedLoadContext& aLoadContext,
+                                                  const OriginAttributes& aOriginAttributes,
                                                   const bool& hasVerifier) override;
 
   virtual mozilla::ipc::IPCResult RecvPredLearn(const ipc::URIParams& aTargetURI,
                                                 const ipc::OptionalURIParams& aSourceURI,
                                                 const PredictorPredictReason& aReason,
-                                                const IPC::SerializedLoadContext& aLoadContext) override;
+                                                const OriginAttributes& aOriginAttributes) override;
   virtual mozilla::ipc::IPCResult RecvPredReset() override;
 
-  virtual mozilla::ipc::IPCResult RecvRemoveRequestContext(const nsCString& rcid) override;
+  virtual mozilla::ipc::IPCResult RecvRemoveRequestContext(const uint64_t& rcid) override;
+
+  /* WebExtensions */
+  virtual mozilla::ipc::IPCResult
+    RecvGetExtensionStream(const URIParams& aURI,
+                           GetExtensionStreamResolver&& aResolve) override;
+
+  virtual mozilla::ipc::IPCResult
+    RecvGetExtensionFD(const URIParams& aURI,
+                       GetExtensionFDResolver&& aResolve) override;
 };
 
 } // namespace net

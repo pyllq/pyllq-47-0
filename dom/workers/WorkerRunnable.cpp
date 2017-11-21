@@ -559,10 +559,12 @@ WorkerControlRunnable::DispatchInternal()
 
 NS_IMPL_ISUPPORTS_INHERITED0(WorkerControlRunnable, WorkerRunnable)
 
-WorkerMainThreadRunnable::WorkerMainThreadRunnable(WorkerPrivate* aWorkerPrivate,
-                                                   const nsACString& aTelemetryKey)
-: mWorkerPrivate(aWorkerPrivate)
-, mTelemetryKey(aTelemetryKey)
+WorkerMainThreadRunnable::WorkerMainThreadRunnable(
+  WorkerPrivate* aWorkerPrivate,
+  const nsACString& aTelemetryKey)
+  : mozilla::Runnable("dom::workers::WorkerMainThreadRunnable")
+  , mWorkerPrivate(aWorkerPrivate)
+  , mTelemetryKey(aTelemetryKey)
 {
   mWorkerPrivate->AssertIsOnWorkerThread();
 }
@@ -587,14 +589,17 @@ WorkerMainThreadRunnable::Dispatch(Status aFailStatus, ErrorResult& aRv)
   MOZ_ASSERT(NS_SUCCEEDED(rv),
              "Should only fail after xpcom-shutdown-threads and we're gone by then");
 
-  if (!syncLoop.Run()) {
-    aRv.ThrowUncatchableException();
-  }
+  bool success = syncLoop.Run();
 
   Telemetry::Accumulate(Telemetry::SYNC_WORKER_OPERATION, mTelemetryKey,
                         static_cast<uint32_t>((TimeStamp::NowLoRes() - startTime)
-                                                .ToMilliseconds()));
+                                              .ToMilliseconds()));
+
   Unused << startTime; // Shut the compiler up.
+
+  if (!success) {
+    aRv.ThrowUncatchableException();
+  }
 }
 
 NS_IMETHODIMP
@@ -658,8 +663,10 @@ WorkerSameThreadRunnable::PostDispatch(WorkerPrivate* aWorkerPrivate,
   }
 }
 
-WorkerProxyToMainThreadRunnable::WorkerProxyToMainThreadRunnable(WorkerPrivate* aWorkerPrivate)
-  : mWorkerPrivate(aWorkerPrivate)
+WorkerProxyToMainThreadRunnable::WorkerProxyToMainThreadRunnable(
+  WorkerPrivate* aWorkerPrivate)
+  : mozilla::Runnable("dom::workers::WorkerProxyToMainThreadRunnable")
+  , mWorkerPrivate(aWorkerPrivate)
 {
   MOZ_ASSERT(mWorkerPrivate);
   mWorkerPrivate->AssertIsOnWorkerThread();
@@ -674,13 +681,13 @@ WorkerProxyToMainThreadRunnable::Dispatch()
   mWorkerPrivate->AssertIsOnWorkerThread();
 
   if (NS_WARN_IF(!HoldWorker())) {
-    RunBackOnWorkerThread();
+    RunBackOnWorkerThreadForCleanup();
     return false;
   }
 
   if (NS_WARN_IF(NS_FAILED(mWorkerPrivate->DispatchToMainThread(this)))) {
     ReleaseWorker();
-    RunBackOnWorkerThread();
+    RunBackOnWorkerThreadForCleanup();
     return false;
   }
 
@@ -712,7 +719,8 @@ WorkerProxyToMainThreadRunnable::PostDispatchOnMainThread()
       MOZ_ASSERT(aRunnable);
     }
 
-    // We must call RunBackOnWorkerThread() also if the runnable is canceled.
+    // We must call RunBackOnWorkerThreadForCleanup() also if the runnable is
+    // canceled.
     nsresult
     Cancel() override
     {
@@ -727,7 +735,7 @@ WorkerProxyToMainThreadRunnable::PostDispatchOnMainThread()
       aWorkerPrivate->AssertIsOnWorkerThread();
 
       if (mRunnable) {
-        mRunnable->RunBackOnWorkerThread();
+        mRunnable->RunBackOnWorkerThreadForCleanup();
 
         // Let's release the worker thread.
         mRunnable->ReleaseWorker();

@@ -9,6 +9,7 @@
 
 #include "cubeb/cubeb.h"
 #include "cubeb_log.h"
+#include "cubeb_assert.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -27,9 +28,6 @@
 #if defined(__cplusplus)
 extern "C" {
 #endif
-
-/* Crash the caller.  */
-void cubeb_crash() CLANG_ANALYZER_NORETURN;
 
 #if defined(__cplusplus)
 }
@@ -53,7 +51,9 @@ struct cubeb_ops {
   int (* get_preferred_sample_rate)(cubeb * context, uint32_t * rate);
   int (* get_preferred_channel_layout)(cubeb * context, cubeb_channel_layout * layout);
   int (* enumerate_devices)(cubeb * context, cubeb_device_type type,
-                            cubeb_device_collection ** collection);
+                            cubeb_device_collection * collection);
+  int (* device_collection_destroy)(cubeb * context,
+                                    cubeb_device_collection * collection);
   void (* destroy)(cubeb * context);
   int (* stream_init)(cubeb * context,
                       cubeb_stream ** stream,
@@ -69,6 +69,7 @@ struct cubeb_ops {
   void (* stream_destroy)(cubeb_stream * stream);
   int (* stream_start)(cubeb_stream * stream);
   int (* stream_stop)(cubeb_stream * stream);
+  int (* stream_reset_default_device)(cubeb_stream * stream);
   int (* stream_get_position)(cubeb_stream * stream, uint64_t * position);
   int (* stream_get_latency)(cubeb_stream * stream, uint32_t * latency);
   int (* stream_set_volume)(cubeb_stream * stream, float volumes);
@@ -84,12 +85,5 @@ struct cubeb_ops {
                                              cubeb_device_collection_changed_callback callback,
                                              void * user_ptr);
 };
-
-#define XASSERT(expr) do {                                                     \
-    if (!(expr)) {                                                             \
-      fprintf(stderr, "%s:%d - fatal error: %s\n", __FILE__, __LINE__, #expr); \
-      cubeb_crash();                                                           \
-    }                                                                          \
-  } while (0)
 
 #endif /* CUBEB_INTERNAL_0eb56756_4e20_4404_a76d_42bf88cd15a5 */

@@ -6,20 +6,25 @@
 
 UNIFIED_SOURCES += [
     'Helpers.cpp',
+    'TestArenaAllocator.cpp',
     'TestAtoms.cpp',
     'TestAutoPtr.cpp',
     'TestAutoRef.cpp',
     'TestBase64.cpp',
     'TestCallTemplates.cpp',
     'TestCloneInputStream.cpp',
-    'TestCOMArray.cpp',
     'TestCOMPtrEq.cpp',
     'TestCRT.cpp',
     'TestEncoding.cpp',
     'TestEscapeURL.cpp',
+    'TestEventTargetQI.cpp',
     'TestExpirationTracker.cpp',
     'TestFile.cpp',
+    'TestGCPostBarriers.cpp',
     'TestID.cpp',
+    'TestMozPromise.cpp',
+    'TestMultiplexInputStream.cpp',
+    'TestNsDeque.cpp',
     'TestNSPRLogModulesParser.cpp',
     'TestObserverArray.cpp',
     'TestObserverService.cpp',
@@ -27,6 +32,8 @@ UNIFIED_SOURCES += [
     'TestPLDHash.cpp',
     'TestPriorityQueue.cpp',
     'TestRacingServiceManager.cpp',
+    'TestRecursiveMutex.cpp',
+    'TestRWLock.cpp',
     'TestSlicedInputStream.cpp',
     'TestSnappyStreams.cpp',
     'TestStateWatching.cpp',
@@ -36,7 +43,9 @@ UNIFIED_SOURCES += [
     'TestSynchronization.cpp',
     'TestTArray.cpp',
     'TestTArray2.cpp',
+    'TestTaskQueue.cpp',
     'TestTextFormatter.cpp',
+    'TestThreadManager.cpp',
     'TestThreadPool.cpp',
     'TestThreadPoolListener.cpp',
     'TestThreads.cpp',
@@ -65,6 +74,7 @@ if CONFIG['WRAP_STL_INCLUDES'] and not CONFIG['CLANG_CL']:
 # the global namespace for other files.
 SOURCES += [
     'TestAllocReplacement.cpp',
+    'TestCOMArray.cpp',
     'TestCOMPtr.cpp', # Redefines IFoo and IBar
     'TestHashtables.cpp', # Redefines IFoo
     'TestNsRefPtr.cpp', # Redefines Foo
@@ -75,3 +85,5 @@ LOCAL_INCLUDES += [
 ]
 
 FINAL_LIBRARY = 'xul-gtest'
+
+include('/ipc/chromium/chromium-config.mozbuild')

@@ -42,17 +42,25 @@ public:
 
   static void UpdateGMPCapabilities(nsTArray<mozilla::dom::GMPCapabilityData>&& aCapabilities);
 
+  void BeginShutdown();
+
 protected:
   void InitializePlugins(AbstractThread*) override
   {
     // Nothing to do here.
   }
 
-  virtual RefPtr<GetGMPContentParentPromise>
-  GetContentParent(GMPCrashHelper* aHelper,
-                   const nsACString& aNodeId,
-                   const nsCString& aAPI,
-                   const nsTArray<nsCString>& aTags) override;
+  virtual RefPtr<GetGMPContentParentPromise> GetContentParent(
+    GMPCrashHelper* aHelper,
+    const nsACString& aNodeIdString,
+    const nsCString& aAPI,
+    const nsTArray<nsCString>& aTags) override;
+
+  RefPtr<GetGMPContentParentPromise> GetContentParent(
+    GMPCrashHelper* aHelper,
+    const NodeId& aNodeId,
+    const nsCString& aAPI,
+    const nsTArray<nsCString>& aTags) override;
 
 private:
   friend class OpenPGMPServiceChild;
@@ -70,16 +78,18 @@ public:
   explicit GMPServiceChild();
   virtual ~GMPServiceChild();
 
-  PGMPContentParent* AllocPGMPContentParent(Transport* aTransport,
-                                            ProcessId aOtherPid) override;
+  already_AddRefed<GMPContentParent> GetBridgedGMPContentParent(ProcessId aOtherPid,
+                                                                ipc::Endpoint<PGMPContentParent>&& endpoint);
 
-  void GetBridgedGMPContentParent(ProcessId aOtherPid,
-                                  GMPContentParent** aGMPContentParent);
   void RemoveGMPContentParent(GMPContentParent* aGMPContentParent);
 
   void GetAlreadyBridgedTo(nsTArray<ProcessId>& aAlreadyBridgedTo);
 
-  static PGMPServiceChild* Create(Transport* aTransport, ProcessId aOtherPid);
+  static bool Create(Endpoint<PGMPServiceChild>&& aGMPService);
+
+  ipc::IPCResult RecvBeginShutdown() override;
+
+  bool HaveContentParents() const;
 
 private:
   nsRefPtrHashtable<nsUint64HashKey, GMPContentParent> mContentParents;

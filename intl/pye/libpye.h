@@ -21,6 +21,7 @@ class DLL_PUBLIC pyeObject
 {
 public:
     static int initFactory(const char *szDir) { return 0; }
+    static void pauseEngineServer() {}
     static void NewDocument(int id) {}
     static void setOption(int option, int value) {}
     static int getOption() {return 0; }    

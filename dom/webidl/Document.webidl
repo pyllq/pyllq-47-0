@@ -17,6 +17,9 @@ enum VisibilityState { "hidden", "visible", "prerender" };
 /* https://dom.spec.whatwg.org/#dictdef-elementcreationoptions */
 dictionary ElementCreationOptions {
   DOMString is;
+
+  [ChromeOnly]
+  DOMString pseudo;
 };
 
 /* http://dom.spec.whatwg.org/#interface-document */
@@ -65,12 +68,12 @@ interface Document : Node {
   [NewObject, Throws]
   ProcessingInstruction createProcessingInstruction(DOMString target, DOMString data);
 
-  [Throws]
+  [CEReactions, Throws]
   Node importNode(Node node, optional boolean deep = false);
-  [Throws]
+  [CEReactions, Throws]
   Node adoptNode(Node node);
 
-  [NewObject, Throws]
+  [NewObject, Throws, NeedsCallerType]
   Event createEvent(DOMString interface);
 
   [NewObject, Throws]
@@ -108,9 +111,9 @@ partial interface Document {
 
   // DOM tree accessors
   //(Not proxy yet)getter object (DOMString name);
-  [SetterThrows, Pure]
+  [CEReactions, SetterThrows, Pure]
            attribute DOMString title;
-  [Pure]
+  [CEReactions, Pure]
            attribute DOMString dir;
   //(HTML only)         attribute HTMLElement? body;
   //(HTML only)readonly attribute HTMLHeadElement? head;
@@ -151,7 +154,6 @@ partial interface Document {
   [LenientThis] attribute EventHandler onreadystatechange;
 
   // Gecko extensions?
-                attribute EventHandler onwheel;
                 attribute EventHandler onbeforescriptexecute;
                 attribute EventHandler onafterscriptexecute;
 
@@ -254,11 +256,7 @@ partial interface Document {
 // https://w3c.github.io/pointerlock/#extensions-to-the-documentorshadowroot-mixin
 partial interface Document {
   readonly attribute Element? pointerLockElement;
-  [BinaryName="pointerLockElement", Pref="pointer-lock-api.prefixed.enabled"]
-  readonly attribute Element? mozPointerLockElement;
   void exitPointerLock();
-  [BinaryName="exitPointerLock", Pref="pointer-lock-api.prefixed.enabled"]
-  void mozExitPointerLock();
 
   // Event handlers
   attribute EventHandler onpointerlockchange;
@@ -273,9 +271,11 @@ partial interface Document {
 };
 
 // http://dvcs.w3.org/hg/webperf/raw-file/tip/specs/PageVisibility/Overview.html#sec-document-interface
+// https://w3c.github.io/page-visibility/#extensions-to-the-document-interface
 partial interface Document {
   readonly attribute boolean hidden;
   readonly attribute VisibilityState visibilityState;
+           attribute EventHandler onvisibilitychange;
 };
 
 // http://dev.w3.org/csswg/cssom/#extensions-to-the-document-interface
@@ -382,6 +382,10 @@ partial interface Document {
   [ChromeOnly] readonly attribute DOMString contentLanguage;
 
   [ChromeOnly] readonly attribute nsILoadGroup? documentLoadGroup;
+
+  // Blocks the initial document parser until the given promise is settled.
+  [ChromeOnly, Throws]
+  Promise<any> blockParsing(Promise<any> promise);
 
   // like documentURI, except that for error pages, it returns the URI we were
   // trying to load when we hit an error, rather than the error page's own URI.

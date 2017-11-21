@@ -22,42 +22,42 @@
 namespace js {
 namespace jit {
 
-static constexpr Register zero = { Registers::zero };
-static constexpr Register at = { Registers::at };
-static constexpr Register v0 = { Registers::v0 };
-static constexpr Register v1 = { Registers::v1 };
-static constexpr Register a0 = { Registers::a0 };
-static constexpr Register a1 = { Registers::a1 };
-static constexpr Register a2 = { Registers::a2 };
-static constexpr Register a3 = { Registers::a3 };
-static constexpr Register a4 = { Registers::ta0 };
-static constexpr Register a5 = { Registers::ta1 };
-static constexpr Register a6 = { Registers::ta2 };
-static constexpr Register a7 = { Registers::ta3 };
-static constexpr Register t0 = { Registers::t0 };
-static constexpr Register t1 = { Registers::t1 };
-static constexpr Register t2 = { Registers::t2 };
-static constexpr Register t3 = { Registers::t3 };
-static constexpr Register t4 = { Registers::ta0 };
-static constexpr Register t5 = { Registers::ta1 };
-static constexpr Register t6 = { Registers::ta2 };
-static constexpr Register t7 = { Registers::ta3 };
-static constexpr Register s0 = { Registers::s0 };
-static constexpr Register s1 = { Registers::s1 };
-static constexpr Register s2 = { Registers::s2 };
-static constexpr Register s3 = { Registers::s3 };
-static constexpr Register s4 = { Registers::s4 };
-static constexpr Register s5 = { Registers::s5 };
-static constexpr Register s6 = { Registers::s6 };
-static constexpr Register s7 = { Registers::s7 };
-static constexpr Register t8 = { Registers::t8 };
-static constexpr Register t9 = { Registers::t9 };
-static constexpr Register k0 = { Registers::k0 };
-static constexpr Register k1 = { Registers::k1 };
-static constexpr Register gp = { Registers::gp };
-static constexpr Register sp = { Registers::sp };
-static constexpr Register fp = { Registers::fp };
-static constexpr Register ra = { Registers::ra };
+static constexpr Register zero { Registers::zero };
+static constexpr Register at { Registers::at };
+static constexpr Register v0 { Registers::v0 };
+static constexpr Register v1 { Registers::v1 };
+static constexpr Register a0 { Registers::a0 };
+static constexpr Register a1 { Registers::a1 };
+static constexpr Register a2 { Registers::a2 };
+static constexpr Register a3 { Registers::a3 };
+static constexpr Register a4 { Registers::ta0 };
+static constexpr Register a5 { Registers::ta1 };
+static constexpr Register a6 { Registers::ta2 };
+static constexpr Register a7 { Registers::ta3 };
+static constexpr Register t0 { Registers::t0 };
+static constexpr Register t1 { Registers::t1 };
+static constexpr Register t2 { Registers::t2 };
+static constexpr Register t3 { Registers::t3 };
+static constexpr Register t4 { Registers::ta0 };
+static constexpr Register t5 { Registers::ta1 };
+static constexpr Register t6 { Registers::ta2 };
+static constexpr Register t7 { Registers::ta3 };
+static constexpr Register s0 { Registers::s0 };
+static constexpr Register s1 { Registers::s1 };
+static constexpr Register s2 { Registers::s2 };
+static constexpr Register s3 { Registers::s3 };
+static constexpr Register s4 { Registers::s4 };
+static constexpr Register s5 { Registers::s5 };
+static constexpr Register s6 { Registers::s6 };
+static constexpr Register s7 { Registers::s7 };
+static constexpr Register t8 { Registers::t8 };
+static constexpr Register t9 { Registers::t9 };
+static constexpr Register k0 { Registers::k0 };
+static constexpr Register k1 { Registers::k1 };
+static constexpr Register gp { Registers::gp };
+static constexpr Register sp { Registers::sp };
+static constexpr Register fp { Registers::fp };
+static constexpr Register ra { Registers::ra };
 
 static constexpr Register ScratchRegister = at;
 static constexpr Register SecondScratchReg = t8;
@@ -98,7 +98,7 @@ static constexpr Register HeapReg = s7; // used by Odin
 
 static constexpr Register PreBarrierReg = a1;
 
-static constexpr Register InvalidReg = { Registers::invalid_reg };
+static constexpr Register InvalidReg { Registers::invalid_reg };
 static constexpr FloatRegister InvalidFloatReg;
 
 static constexpr Register StackPointer = sp;
@@ -730,7 +730,7 @@ PatchJump(CodeLocationJump& jump_, CodeLocationLabel label,
           ReprotectCode reprotect = DontReprotect);
 
 void
-PatchBackedge(CodeLocationJump& jump_, CodeLocationLabel label, JitRuntime::BackedgeTarget target);
+PatchBackedge(CodeLocationJump& jump_, CodeLocationLabel label, JitZoneGroup::BackedgeTarget target);
 
 typedef js::jit::AssemblerBuffer<1024, Instruction> MIPSBuffer;
 
@@ -877,7 +877,6 @@ class AssemblerMIPSShared : public AssemblerShared
 
     CompactBufferWriter jumpRelocations_;
     CompactBufferWriter dataRelocations_;
-    CompactBufferWriter preBarriers_;
 
     MIPSBufferWithExecutableCopy m_buffer;
 
@@ -903,18 +902,9 @@ class AssemblerMIPSShared : public AssemblerShared
             dataRelocations_.writeUnsigned(nextOffset().getOffset());
         }
     }
-    void writePrebarrierOffset(CodeOffset label) {
-        preBarriers_.writeUnsigned(label.offset());
-    }
 
   public:
     bool oom() const;
-
-    void disableProtection() {}
-    void enableProtection() {}
-    void setLowerBoundForProtection(size_t) {}
-    void unprotectRegion(unsigned char*, size_t) {}
-    void reprotectRegion(unsigned char*, size_t) {}
 
     void setPrinter(Sprinter* sp) {
     }
@@ -931,14 +921,12 @@ class AssemblerMIPSShared : public AssemblerShared
     void executableCopy(void* buffer, bool flushICache = true);
     void copyJumpRelocationTable(uint8_t* dest);
     void copyDataRelocationTable(uint8_t* dest);
-    void copyPreBarrierTable(uint8_t* dest);
 
     // Size of the instruction stream, in bytes.
     size_t size() const;
     // Size of the jump relocation table, in bytes.
     size_t jumpRelocationTableBytes() const;
     size_t dataRelocationTableBytes() const;
-    size_t preBarrierTableBytes() const;
 
     // Size of the data table, in bytes.
     size_t bytesNeeded() const;
@@ -1236,6 +1224,10 @@ class AssemblerMIPSShared : public AssemblerShared
     }
     static bool SupportsSimd() {
         return js::jit::SupportsSimd;
+    }
+
+    static bool HasRoundInstruction(RoundingMode mode) {
+        return false;
     }
 
   protected:

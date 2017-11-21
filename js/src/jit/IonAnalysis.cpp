@@ -6,7 +6,6 @@
 
 #include "jit/IonAnalysis.h"
 
-#include "mozilla/SizePrintfMacros.h"
 
 #include "jit/AliasAnalysis.h"
 #include "jit/BaselineInspector.h"
@@ -196,6 +195,8 @@ FlagPhiInputsAsHavingRemovedUses(MIRGenerator* mir, MBasicBlock* block, MBasicBl
 static bool
 FlagAllOperandsAsHavingRemovedUses(MIRGenerator* mir, MBasicBlock* block)
 {
+    const CompileInfo& info = block->info();
+
     // Flag all instructions operands as having removed uses.
     MInstructionIterator end = block->end();
     for (MInstructionIterator it = block->begin(); it != end; it++) {
@@ -210,13 +211,10 @@ FlagAllOperandsAsHavingRemovedUses(MIRGenerator* mir, MBasicBlock* block)
         if (MResumePoint* rp = ins->resumePoint()) {
             // Note: no need to iterate over the caller's of the resume point as
             // this is the same as the entry resume point.
+            MOZ_ASSERT(&rp->block()->info() == &info);
             for (size_t i = 0, e = rp->numOperands(); i < e; i++) {
-                if (mir->shouldCancel("FlagAllOperandsAsHavingRemovedUses inner loop"))
-                    return false;
-
-                if (!rp->isObservableOperand(i))
-                    continue;
-                rp->getOperand(i)->setUseRemovedUnchecked();
+                if (info.isObservableSlot(i))
+                    rp->getOperand(i)->setUseRemovedUnchecked();
             }
         }
     }
@@ -227,11 +225,12 @@ FlagAllOperandsAsHavingRemovedUses(MIRGenerator* mir, MBasicBlock* block)
         if (mir->shouldCancel("FlagAllOperandsAsHavingRemovedUses loop 2"))
             return false;
 
+        const CompileInfo& info = rp->block()->info();
         for (size_t i = 0, e = rp->numOperands(); i < e; i++) {
-            if (!rp->isObservableOperand(i))
-                continue;
-            rp->getOperand(i)->setUseRemovedUnchecked();
+            if (info.isObservableSlot(i))
+                rp->getOperand(i)->setUseRemovedUnchecked();
         }
+
         rp = rp->caller();
     }
 
@@ -447,10 +446,10 @@ jit::PruneUnusedBranches(MIRGenerator* mir, MIRGraph& graph)
                 shouldBailout = false;
 
             JitSpew(JitSpew_Prune, "info: block %d,"
-                    " predCount: %" PRIuSIZE ", domInst: %" PRIuSIZE
-                    ", span: %" PRIuSIZE ", effectful: %" PRIuSIZE ", "
-                    " isLoopExit: %s, numSuccessorsOfPred: %" PRIuSIZE "."
-                    " (score: %" PRIuSIZE ", shouldBailout: %s)",
+                    " predCount: %zu, domInst: %zu"
+                    ", span: %zu, effectful: %zu, "
+                    " isLoopExit: %s, numSuccessorsOfPred: %zu."
+                    " (score: %zu, shouldBailout: %s)",
                     block->id(), predCount, numDominatedInst, branchSpan, numEffectfulInst,
                     isLoopExit ? "true" : "false", numSuccessorsOfPreds,
                     score, shouldBailout ? "true" : "false");
@@ -1001,16 +1000,22 @@ jit::EliminateDeadResumePointOperands(MIRGenerator* mir, MIRGraph& graph)
         if (mir->shouldCancel("Eliminate Dead Resume Point Operands (main loop)"))
             return false;
 
-        if (MResumePoint* rp = block->entryResumePoint())
+        if (MResumePoint* rp = block->entryResumePoint()) {
+            if (!graph.alloc().ensureBallast())
+                return false;
             EliminateTriviallyDeadResumePointOperands(graph, rp);
+        }
 
         // The logic below can get confused on infinite loops.
         if (block->isLoopHeader() && block->backedge() == *block)
             continue;
 
         for (MInstructionIterator ins = block->begin(); ins != block->end(); ins++) {
-            if (MResumePoint* rp = ins->resumePoint())
+            if (MResumePoint* rp = ins->resumePoint()) {
+                if (!graph.alloc().ensureBallast())
+                    return false;
                 EliminateTriviallyDeadResumePointOperands(graph, rp);
+            }
 
             // No benefit to replacing constant operands with other constants.
             if (ins->isConstant())
@@ -1732,6 +1737,9 @@ TypeAnalyzer::insertConversions()
                 phi->type() == MIRType::MagicOptimizedOut ||
                 phi->type() == MIRType::MagicUninitializedLexical)
             {
+                if (!alloc().ensureBallast())
+                    return false;
+
                 replaceRedundantPhi(phi);
                 block->discardPhi(phi);
             } else {
@@ -2300,11 +2308,7 @@ jit::AccountForCFGChanges(MIRGenerator* mir, MIRGraph& graph, bool updateAliasAn
 
     // If needed, update alias analysis dependencies.
     if (updateAliasAnalysis) {
-        TraceLoggerThread* logger;
-        if (GetJitContext()->onMainThread())
-            logger = TraceLoggerForMainThread(GetJitContext()->runtime);
-        else
-            logger = TraceLoggerForCurrentThread();
+        TraceLoggerThread* logger = TraceLoggerForCurrentThread();
         AutoTraceLog log(logger, TraceLogger_AliasAnalysis);
 
         if (JitOptions.disableFlowAA) {
@@ -2649,7 +2653,7 @@ CheckOperand(const MNode* consumer, const MUse* use, int32_t* usesBalance)
     Fprinter print(stderr);
     print.printf("==Check Operand\n");
     use->producer()->dump(print);
-    print.printf("  index: %" PRIuSIZE "\n", use->consumer()->indexOf(use));
+    print.printf("  index: %zu\n", use->consumer()->indexOf(use));
     use->consumer()->dump(print);
     print.printf("==End\n");
 #endif
@@ -2668,7 +2672,7 @@ CheckUse(const MDefinition* producer, const MUse* use, int32_t* usesBalance)
     Fprinter print(stderr);
     print.printf("==Check Use\n");
     use->producer()->dump(print);
-    print.printf("  index: %" PRIuSIZE "\n", use->consumer()->indexOf(use));
+    print.printf("  index: %zu\n", use->consumer()->indexOf(use));
     use->consumer()->dump(print);
     print.printf("==End\n");
 #endif
@@ -2703,9 +2707,12 @@ AssertOperandsBeforeSafeInsertTop(MResumePoint* resume)
 #endif // DEBUG
 
 void
-jit::AssertBasicGraphCoherency(MIRGraph& graph)
+jit::AssertBasicGraphCoherency(MIRGraph& graph, bool force)
 {
 #ifdef DEBUG
+    if (!JitOptions.fullDebugChecks && !force)
+        return;
+
     MOZ_ASSERT(graph.entryBlock()->numPredecessors() == 0);
     MOZ_ASSERT(graph.entryBlock()->phisEmpty());
     MOZ_ASSERT(!graph.entryBlock()->unreachable());
@@ -2888,12 +2895,14 @@ AssertDominatorTree(MIRGraph& graph)
 #endif
 
 void
-jit::AssertGraphCoherency(MIRGraph& graph)
+jit::AssertGraphCoherency(MIRGraph& graph, bool force)
 {
 #ifdef DEBUG
     if (!JitOptions.checkGraphConsistency)
         return;
-    AssertBasicGraphCoherency(graph);
+    if (!JitOptions.fullDebugChecks && !force)
+        return;
+    AssertBasicGraphCoherency(graph, force);
     AssertReversePostorder(graph);
 #endif
 }
@@ -2977,7 +2986,7 @@ AssertResumePointDominatedByOperands(MResumePoint* resume)
 #endif // DEBUG
 
 void
-jit::AssertExtendedGraphCoherency(MIRGraph& graph, bool underValueNumberer)
+jit::AssertExtendedGraphCoherency(MIRGraph& graph, bool underValueNumberer, bool force)
 {
     // Checks the basic GraphCoherency but also other conditions that
     // do not hold immediately (such as the fact that critical edges
@@ -2986,8 +2995,10 @@ jit::AssertExtendedGraphCoherency(MIRGraph& graph, bool underValueNumberer)
 #ifdef DEBUG
     if (!JitOptions.checkGraphConsistency)
         return;
+    if (!JitOptions.fullDebugChecks && !force)
+        return;
 
-    AssertGraphCoherency(graph);
+    AssertGraphCoherency(graph, force);
 
     AssertDominatorTree(graph);
 
@@ -3037,12 +3048,6 @@ jit::AssertExtendedGraphCoherency(MIRGraph& graph, bool underValueNumberer)
         for (MPhiIterator iter(block->phisBegin()), end(block->phisEnd()); iter != end; ++iter) {
             MPhi* phi = *iter;
             for (size_t i = 0, e = phi->numOperands(); i < e; ++i) {
-                // We sometimes see a phi with a magic-optimized-arguments
-                // operand defined in the normal entry block, while the phi is
-                // also reachable from the OSR entry (auto-regress/bug779818.js)
-                if (phi->getOperand(i)->type() == MIRType::MagicOptimizedArguments)
-                    continue;
-
                 MOZ_ASSERT(phi->getOperand(i)->block()->dominates(block->getPredecessor(i)),
                            "Phi input is not dominated by its operand");
             }
@@ -4076,7 +4081,7 @@ AnalyzePoppedThis(JSContext* cx, ObjectGroup* group,
         // Add the property to the object, being careful not to update type information.
         DebugOnly<unsigned> slotSpan = baseobj->slotSpan();
         MOZ_ASSERT(!baseobj->containsPure(id));
-        if (!baseobj->addDataProperty(cx, id, baseobj->slotSpan(), JSPROP_ENUMERATE))
+        if (!NativeObject::addDataProperty(cx, baseobj, id, baseobj->slotSpan(), JSPROP_ENUMERATE))
             return false;
         MOZ_ASSERT(baseobj->slotSpan() != slotSpan);
         MOZ_ASSERT(!baseobj->inDictionaryMode());
@@ -4174,8 +4179,8 @@ jit::AnalyzeNewScriptDefiniteProperties(JSContext* cx, HandleFunction fun,
     if (script->length() > MAX_SCRIPT_SIZE)
         return true;
 
-    TraceLoggerThread* logger = TraceLoggerForMainThread(cx->runtime());
-    TraceLoggerEvent event(logger, TraceLogger_AnnotateScripts, script);
+    TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
+    TraceLoggerEvent event(TraceLogger_AnnotateScripts, script);
     AutoTraceLog logScript(logger, event);
     AutoTraceLog logCompile(logger, TraceLogger_IonAnalysis);
 
@@ -4411,8 +4416,14 @@ jit::AnalyzeArgumentsUsage(JSContext* cx, JSScript* scriptArg)
     // direct eval is present.
     //
     // FIXME: Don't build arguments for ES6 generator expressions.
-    if (scriptArg->isDebuggee() || script->isGenerator() || script->bindingsAccessedDynamically())
+    if (scriptArg->isDebuggee() ||
+        script->isStarGenerator() ||
+        script->isLegacyGenerator() ||
+        script->isAsync() ||
+        script->bindingsAccessedDynamically())
+    {
         return true;
+    }
 
     if (!jit::IsIonEnabled(cx))
         return true;
@@ -4424,8 +4435,8 @@ jit::AnalyzeArgumentsUsage(JSContext* cx, JSScript* scriptArg)
     if (!script->ensureHasTypes(cx))
         return false;
 
-    TraceLoggerThread* logger = TraceLoggerForMainThread(cx->runtime());
-    TraceLoggerEvent event(logger, TraceLogger_AnnotateScripts, script);
+    TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
+    TraceLoggerEvent event(TraceLogger_AnnotateScripts, script);
     AutoTraceLog logScript(logger, event);
     AutoTraceLog logCompile(logger, TraceLogger_IonAnalysis);
 

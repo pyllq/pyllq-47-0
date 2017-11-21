@@ -19,6 +19,7 @@
 #include "gc/Statistics.h"
 #include "jit/ExecutableAllocator.h"
 #include "jit/Ion.h"
+#include "jit/JitCommon.h"
 #include "js/Utility.h"
 #if ENABLE_INTL_API
 #include "unicode/uclean.h"
@@ -29,11 +30,13 @@
 #include "vm/Runtime.h"
 #include "vm/Time.h"
 #include "vm/TraceLogging.h"
+#include "vtune/VTuneWrapper.h"
+#include "wasm/WasmBuiltins.h"
 #include "wasm/WasmInstance.h"
 
 using JS::detail::InitState;
 using JS::detail::libraryInitState;
-using js::FutexRuntime;
+using js::FutexThread;
 
 InitState JS::detail::libraryInitState;
 
@@ -85,19 +88,17 @@ JS::detail::InitWithFailureDiagnostic(bool isDebugBuild)
     // and crashes if that fails, i.e. because we're out of memory. To prevent
     // that from happening at some later time, get it out of the way during
     // startup.
-    bool ignored;
-    mozilla::TimeStamp::ProcessCreation(ignored);
+    mozilla::TimeStamp::ProcessCreation();
 
 #ifdef DEBUG
     CheckMessageParameterCounts();
 #endif
 
-    using js::TlsPerThreadData;
-    RETURN_IF_FAIL(TlsPerThreadData.init());
+    RETURN_IF_FAIL(js::TlsContext.init());
 
 #if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
     RETURN_IF_FAIL(js::oom::InitThreadType());
-    js::oom::SetThreadType(js::oom::THREAD_TYPE_MAIN);
+    js::oom::SetThreadType(js::oom::THREAD_TYPE_COOPERATING);
 #endif
 
     RETURN_IF_FAIL(js::Mutex::Init());
@@ -105,6 +106,7 @@ JS::detail::InitWithFailureDiagnostic(bool isDebugBuild)
     RETURN_IF_FAIL(js::wasm::InitInstanceStaticData());
 
     js::gc::InitMemorySubsystem(); // Ensure gc::SystemPageSize() works.
+
     RETURN_IF_FAIL(js::jit::InitProcessExecutableMemory());
 
     MOZ_ALWAYS_TRUE(js::MemoryProtectionExceptionHandler::install());
@@ -112,6 +114,10 @@ JS::detail::InitWithFailureDiagnostic(bool isDebugBuild)
     RETURN_IF_FAIL(js::jit::InitializeIon());
 
     RETURN_IF_FAIL(js::InitDateTimeState());
+
+#ifdef MOZ_VTUNE
+    RETURN_IF_FAIL(js::vtune::Initialize());
+#endif
 
 #if EXPOSE_INTL_API
     UErrorCode err = U_ZERO_ERROR;
@@ -121,8 +127,12 @@ JS::detail::InitWithFailureDiagnostic(bool isDebugBuild)
 #endif // EXPOSE_INTL_API
 
     RETURN_IF_FAIL(js::CreateHelperThreadsState());
-    RETURN_IF_FAIL(FutexRuntime::initialize());
+    RETURN_IF_FAIL(FutexThread::initialize());
     RETURN_IF_FAIL(js::gcstats::Statistics::initialize());
+
+#ifdef JS_SIMULATOR
+    RETURN_IF_FAIL(js::jit::SimulatorProcess::initialize());
+#endif
 
     libraryInitState = InitState::Running;
     return nullptr;
@@ -145,9 +155,13 @@ JS_ShutDown(void)
     }
 #endif
 
-    FutexRuntime::destroy();
+    FutexThread::destroy();
 
     js::DestroyHelperThreadsState();
+
+#ifdef JS_SIMULATOR
+    js::jit::SimulatorProcess::destroy();
+#endif
 
 #ifdef JS_TRACE_LOGGING
     js::DestroyTraceLoggerThreadState();
@@ -175,10 +189,16 @@ JS_ShutDown(void)
     u_cleanup();
 #endif // EXPOSE_INTL_API
 
+#ifdef MOZ_VTUNE
+    js::vtune::Shutdown();
+#endif // MOZ_VTUNE
+
     js::FinishDateTimeState();
 
-    if (!JSRuntime::hasLiveRuntimes())
+    if (!JSRuntime::hasLiveRuntimes()) {
+        js::wasm::ReleaseBuiltinThunks();
         js::jit::ReleaseProcessExecutableMemory();
+    }
 
     libraryInitState = InitState::ShutDown;
 }

@@ -18,12 +18,12 @@ PageError.displayName = "PageError";
 PageError.propTypes = {
   message: PropTypes.object.isRequired,
   open: PropTypes.bool,
-  indent: PropTypes.number.isRequired,
+  timestampsVisible: PropTypes.bool.isRequired,
+  serviceContainer: PropTypes.object,
 };
 
 PageError.defaultProps = {
   open: false,
-  indent: 0,
 };
 
 function PageError(props) {
@@ -32,22 +32,31 @@ function PageError(props) {
     message,
     open,
     serviceContainer,
-    indent,
+    timestampsVisible,
   } = props;
   const {
     id: messageId,
+    indent,
     source,
     type,
     level,
-    messageText: messageBody,
+    messageText,
     repeat,
     stacktrace,
     frame,
     exceptionDocURL,
     timeStamp,
+    notes,
   } = message;
 
-  const childProps = {
+  let messageBody;
+  if (typeof messageText === "string") {
+    messageBody = messageText;
+  } else if (typeof messageText === "object" && messageText.type === "longString") {
+    messageBody = `${message.messageText.initial}…`;
+  }
+
+  return Message({
     dispatch,
     messageId,
     open,
@@ -64,8 +73,9 @@ function PageError(props) {
     serviceContainer,
     exceptionDocURL,
     timeStamp,
-  };
-  return Message(childProps);
+    notes,
+    timestampsVisible,
+  });
 }
 
 module.exports = PageError;

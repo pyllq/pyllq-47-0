@@ -164,7 +164,7 @@ private:
                                                   uint32_t aLength,
                                                   ErrorResult& aRv);
 
-  void AppendDataCompletedWithSuccess(SourceBufferTask::AppendBufferResult aResult);
+  void AppendDataCompletedWithSuccess(const SourceBufferTask::AppendBufferResult& aResult);
   void AppendDataErrored(const MediaResult& aError);
 
   RefPtr<MediaSource> mMediaSource;
@@ -182,6 +182,8 @@ private:
   const MediaContainerType mType;
 
   RefPtr<TimeRanges> mBuffered;
+
+  MozPromiseRequestHolder<MediaSource::ActiveCompletionPromise> mCompletionPromise;
 };
 
 } // namespace dom

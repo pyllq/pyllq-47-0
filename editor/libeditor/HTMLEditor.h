@@ -8,20 +8,20 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/CSSEditUtils.h"
+#include "mozilla/ManualNAC.h"
 #include "mozilla/StyleSheet.h"
 #include "mozilla/TextEditor.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/File.h"
 
 #include "nsAttrName.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIContentFilter.h"
 #include "nsICSSLoaderObserver.h"
 #include "nsIDocumentObserver.h"
 #include "nsIDOMElement.h"
 #include "nsIDOMEventListener.h"
-#include "nsIEditor.h"
 #include "nsIEditorMailSupport.h"
 #include "nsIEditorStyleSheets.h"
 #include "nsIEditorUtils.h"
@@ -29,7 +29,6 @@
 #include "nsIHTMLAbsPosEditor.h"
 #include "nsIHTMLEditor.h"
 #include "nsIHTMLInlineTableEditor.h"
-#include "nsIHTMLObjectResizeListener.h"
 #include "nsIHTMLObjectResizer.h"
 #include "nsISelectionListener.h"
 #include "nsITableEditor.h"
@@ -38,9 +37,9 @@
 #include "nsTArray.h"
 
 class nsDocumentFragment;
-class nsIDOMKeyEvent;
 class nsITransferable;
 class nsIClipboard;
+class nsIDOMMouseEvent;
 class nsILinkHandler;
 class nsTableWrapperFrame;
 class nsIDOMRange;
@@ -61,6 +60,8 @@ class DocumentFragment;
 namespace widget {
 struct IMEState;
 } // namespace widget
+
+enum class ParagraphSeparator { div, p, br };
 
 /**
  * The HTML editor implementation.<br>
@@ -100,6 +101,9 @@ public:
 
   HTMLEditor();
 
+  virtual HTMLEditor* AsHTMLEditor() override { return this; }
+  virtual const HTMLEditor* AsHTMLEditor() const override { return this; }
+
   bool GetReturnInParagraphCreatesNewParagraph();
   Element* GetSelectionContainer();
 
@@ -107,9 +111,9 @@ public:
   NS_IMETHOD GetPreferredIMEState(widget::IMEState* aState) override;
 
   // TextEditor overrides
-  NS_IMETHOD GetIsDocumentEditable(bool* aIsDocumentEditable) override;
   NS_IMETHOD BeginningOfDocument() override;
-  virtual nsresult HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent) override;
+  virtual nsresult HandleKeyPressEvent(
+                     WidgetKeyboardEvent* aKeyboardEvent) override;
   virtual already_AddRefed<nsIContent> GetFocusedContent() override;
   virtual already_AddRefed<nsIContent> GetFocusedContentForIME() override;
   virtual bool IsActiveInDOMWindow() override;
@@ -117,7 +121,7 @@ public:
   virtual Element* GetEditorRoot() override;
   virtual already_AddRefed<nsIContent> FindSelectionRoot(
                                          nsINode *aNode) override;
-  virtual bool IsAcceptableInputEvent(nsIDOMEvent* aEvent) override;
+  virtual bool IsAcceptableInputEvent(WidgetGUIEvent* aGUIEvent) override;
   virtual already_AddRefed<nsIContent> GetInputEventTargetContent() override;
   virtual bool IsEditable(nsINode* aNode) override;
   using EditorBase::IsEditable;
@@ -131,6 +135,8 @@ public:
                                             bool aSuppressTransaction) override;
   using EditorBase::RemoveAttributeOrEquivalent;
   using EditorBase::SetAttributeOrEquivalent;
+
+  nsresult MouseMove(nsIDOMMouseEvent* aMouseEvent);
 
   // nsStubMutationObserver overrides
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
@@ -161,92 +167,18 @@ public:
   NS_IMETHOD GetHTMLBackgroundColorState(bool* aMixed, nsAString& outColor);
 
   // nsIEditorStyleSheets methods
-  NS_IMETHOD AddStyleSheet(const nsAString& aURL) override;
-  NS_IMETHOD ReplaceStyleSheet(const nsAString& aURL) override;
-  NS_IMETHOD RemoveStyleSheet(const nsAString &aURL) override;
-
-  NS_IMETHOD AddOverrideStyleSheet(const nsAString& aURL) override;
-  NS_IMETHOD ReplaceOverrideStyleSheet(const nsAString& aURL) override;
-  NS_IMETHOD RemoveOverrideStyleSheet(const nsAString &aURL) override;
-
-  NS_IMETHOD EnableStyleSheet(const nsAString& aURL, bool aEnable) override;
+  NS_DECL_NSIEDITORSTYLESHEETS
 
   // nsIEditorMailSupport methods
   NS_DECL_NSIEDITORMAILSUPPORT
 
   // nsITableEditor methods
-  NS_IMETHOD InsertTableCell(int32_t aNumber, bool aAfter) override;
-  NS_IMETHOD InsertTableColumn(int32_t aNumber, bool aAfter) override;
-  NS_IMETHOD InsertTableRow(int32_t aNumber, bool aAfter) override;
-  NS_IMETHOD DeleteTable() override;
-  NS_IMETHOD DeleteTableCell(int32_t aNumber) override;
-  NS_IMETHOD DeleteTableCellContents() override;
-  NS_IMETHOD DeleteTableColumn(int32_t aNumber) override;
-  NS_IMETHOD DeleteTableRow(int32_t aNumber) override;
-  NS_IMETHOD SelectTableCell() override;
-  NS_IMETHOD SelectBlockOfCells(nsIDOMElement* aStartCell,
-                                nsIDOMElement* aEndCell) override;
-  NS_IMETHOD SelectTableRow() override;
-  NS_IMETHOD SelectTableColumn() override;
-  NS_IMETHOD SelectTable() override;
-  NS_IMETHOD SelectAllTableCells() override;
-  NS_IMETHOD SwitchTableCellHeaderType(nsIDOMElement* aSourceCell,
-                                       nsIDOMElement** aNewCell) override;
-  NS_IMETHOD JoinTableCells(bool aMergeNonContiguousContents) override;
-  NS_IMETHOD SplitTableCell() override;
-  NS_IMETHOD NormalizeTable(nsIDOMElement* aTable) override;
-  NS_IMETHOD GetCellIndexes(nsIDOMElement* aCell,
-                            int32_t* aRowIndex, int32_t* aColIndex) override;
-  NS_IMETHOD GetTableSize(nsIDOMElement* aTable,
-                          int32_t* aRowCount, int32_t* aColCount) override;
-  NS_IMETHOD GetCellAt(nsIDOMElement* aTable, int32_t aRowIndex,
-                       int32_t aColIndex, nsIDOMElement **aCell) override;
-  NS_IMETHOD GetCellDataAt(nsIDOMElement* aTable,
-                           int32_t aRowIndex, int32_t aColIndex,
-                           nsIDOMElement** aCell,
-                           int32_t* aStartRowIndex, int32_t* aStartColIndex,
-                           int32_t* aRowSpan, int32_t* aColSpan,
-                           int32_t* aActualRowSpan, int32_t* aActualColSpan,
-                           bool* aIsSelected) override;
-  NS_IMETHOD GetFirstRow(nsIDOMElement* aTableElement,
-                         nsIDOMNode** aRowNode) override;
-  NS_IMETHOD GetNextRow(nsIDOMNode* aCurrentRowNode,
-                        nsIDOMNode** aRowNode) override;
+  NS_DECL_NSITABLEEDITOR
+
   nsresult GetLastCellInRow(nsIDOMNode* aRowNode,
                             nsIDOMNode** aCellNode);
 
-  NS_IMETHOD SetSelectionAfterTableEdit(nsIDOMElement* aTable, int32_t aRow,
-                                        int32_t aCol, int32_t aDirection,
-                                        bool aSelected) override;
-  NS_IMETHOD GetSelectedOrParentTableElement(
-               nsAString& aTagName, int32_t* aSelectedCount,
-               nsIDOMElement** aTableElement) override;
-  NS_IMETHOD GetSelectedCellsType(nsIDOMElement* aElement,
-                                  uint32_t* aSelectionType) override;
-
   nsresult GetCellFromRange(nsRange* aRange, nsIDOMElement** aCell);
-
-  /**
-   * Finds the first selected cell in first range of selection
-   * This is in the *order of selection*, not order in the table
-   * (i.e., each cell added to selection is added in another range
-   *  in the selection's rangelist, independent of location in table)
-   * aRange is optional: returns the range around the cell.
-   */
-  NS_IMETHOD GetFirstSelectedCell(nsIDOMRange** aRange,
-                                  nsIDOMElement** aCell) override;
-  /**
-   * Get next cell until no more are found. Always use GetFirstSelected cell
-   * first aRange is optional: returns the range around the cell.
-   */
-  NS_IMETHOD GetNextSelectedCell(nsIDOMRange** aRange,
-                                 nsIDOMElement** aCell) override;
-
-  /**
-   * Upper-left-most selected cell in table.
-   */
-  NS_IMETHOD GetFirstSelectedCellInTable(int32_t* aRowIndex, int32_t* aColIndex,
-                                         nsIDOMElement** aCell) override;
 
   // Miscellaneous
 
@@ -276,7 +208,7 @@ public:
                                   int32_t* outOffset = 0);
 
   // Overrides of EditorBase interface methods
-  nsresult EndUpdateViewBatch() override;
+  virtual nsresult EndUpdateViewBatch() override;
 
   NS_IMETHOD Init(nsIDOMDocument* aDoc, nsIContent* aRoot,
                   nsISelectionController* aSelCon, uint32_t aFlags,
@@ -364,8 +296,6 @@ public:
 
   NS_IMETHOD SelectAll() override;
 
-  NS_IMETHOD GetRootElement(nsIDOMElement** aRootElement) override;
-
   // nsICSSLoaderObserver
   NS_IMETHOD StyleSheetLoaded(StyleSheet* aSheet,
                               bool aWasAlternate, nsresult aStatus) override;
@@ -445,6 +375,15 @@ public:
             !aElement->GetAttrNameAt(0)->Equals(nsGkAtoms::mozdirty));
   }
 
+  ParagraphSeparator GetDefaultParagraphSeparator() const
+  {
+    return mDefaultParagraphSeparator;
+  }
+  void SetDefaultParagraphSeparator(ParagraphSeparator aSep)
+  {
+    mDefaultParagraphSeparator = aSep;
+  }
+
 protected:
   class BlobReader final : public nsIEditorBlobListener
   {
@@ -478,7 +417,7 @@ protected:
   virtual void RemoveEventListeners() override;
 
   bool ShouldReplaceRootElement();
-  void ResetRootElementAndEventTarget();
+  void NotifyRootChanged();
   nsresult GetBodyElement(nsIDOMHTMLElement** aBody);
 
   /**
@@ -500,6 +439,8 @@ protected:
                nsIDOMNode* aNode, int32_t aOffset,
                nsCOMPtr<nsIDOMNode>* outBRNode,
                nsIEditor::EDirection aSelect = nsIEditor::eNone) override;
+
+  nsresult InsertBR(nsCOMPtr<nsIDOMNode>* outBRNode);
 
   // Table Editing (implemented in nsTableEditor.cpp)
 
@@ -669,12 +610,12 @@ protected:
                                     nsIDOMNode *aDestinationNode,
                                     int32_t aDestinationOffset,
                                     bool aDoDeleteSelection);
-  nsresult InsertFromDataTransfer(dom::DataTransfer* aDataTransfer,
-                                  int32_t aIndex,
-                                  nsIDOMDocument* aSourceDoc,
-                                  nsIDOMNode* aDestinationNode,
-                                  int32_t aDestOffset,
-                                  bool aDoDeleteSelection) override;
+  virtual nsresult InsertFromDataTransfer(dom::DataTransfer* aDataTransfer,
+                                          int32_t aIndex,
+                                          nsIDOMDocument* aSourceDoc,
+                                          nsIDOMNode* aDestinationNode,
+                                          int32_t aDestOffset,
+                                          bool aDoDeleteSelection) override;
   bool HavePrivateHTMLFlavor(nsIClipboard* clipboard );
   nsresult ParseCFHTML(nsCString& aCfhtml, char16_t** aStuffToPaste,
                        char16_t** aCfcontext);
@@ -706,9 +647,9 @@ protected:
                          dom::DocumentFragment** aFragment, bool aTrustedInput);
   void CreateListOfNodesToPaste(dom::DocumentFragment& aFragment,
                                 nsTArray<OwningNonNull<nsINode>>& outNodeList,
-                                nsINode* aStartNode,
+                                nsINode* aStartContainer,
                                 int32_t aStartOffset,
-                                nsINode* aEndNode,
+                                nsINode* aEndContainer,
                                 int32_t aEndOffset);
   nsresult CreateTagStack(nsTArray<nsString>& aTagStack,
                           nsIDOMNode* aNode);
@@ -732,7 +673,7 @@ protected:
   /**
    * Small utility routine to test if a break node is visible to user.
    */
-  bool IsVisBreak(nsINode* aNode);
+  bool IsVisibleBRElement(nsINode* aNode);
 
   /**
    * Utility routine to possibly adjust the insertion position when
@@ -741,11 +682,6 @@ protected:
   void NormalizeEOLInsertPosition(nsINode* firstNodeToInsert,
                                   nsCOMPtr<nsIDOMNode>* insertParentNode,
                                   int32_t* insertOffset);
-
-  /**
-   * Small utility routine to test the eEditorReadonly bit.
-   */
-  bool IsModifiable();
 
   /**
    * Helpers for block transformations.
@@ -900,7 +836,7 @@ protected:
   bool mCRInParagraphCreatesParagraph;
 
   bool mCSSAware;
-  nsAutoPtr<CSSEditUtils> mCSSEditUtils;
+  UniquePtr<CSSEditUtils> mCSSEditUtils;
 
   // Used by GetFirstSelectedCell and GetNextSelectedCell
   int32_t  mSelectedCellIndex;
@@ -920,11 +856,9 @@ protected:
   void RemoveListenerAndDeleteRef(const nsAString& aEvent,
                                   nsIDOMEventListener* aListener,
                                   bool aUseCapture,
-                                  Element* aElement,
-                                  nsIContent* aParentContent,
+                                  ManualNACPtr aElement,
                                   nsIPresShell* aShell);
-  void DeleteRefToAnonymousNode(nsIContent* aContent,
-                                nsIContent* aParentContent,
+  void DeleteRefToAnonymousNode(ManualNACPtr aContent,
                                 nsIPresShell* aShell);
 
   nsresult ShowResizersInner(nsIDOMElement *aResizedElement);
@@ -946,6 +880,8 @@ protected:
                            nsIContent* aContainer,
                            nsIContent* aChild);
 
+  void UpdateRootElement();
+
   // resizing
   bool mIsObjectResizingEnabled;
   bool mIsResizing;
@@ -965,27 +901,25 @@ protected:
   bool mIsInlineTableEditingEnabled;
 
   // resizing
-  nsCOMPtr<Element> mTopLeftHandle;
-  nsCOMPtr<Element> mTopHandle;
-  nsCOMPtr<Element> mTopRightHandle;
-  nsCOMPtr<Element> mLeftHandle;
-  nsCOMPtr<Element> mRightHandle;
-  nsCOMPtr<Element> mBottomLeftHandle;
-  nsCOMPtr<Element> mBottomHandle;
-  nsCOMPtr<Element> mBottomRightHandle;
+  ManualNACPtr mTopLeftHandle;
+  ManualNACPtr mTopHandle;
+  ManualNACPtr mTopRightHandle;
+  ManualNACPtr mLeftHandle;
+  ManualNACPtr mRightHandle;
+  ManualNACPtr mBottomLeftHandle;
+  ManualNACPtr mBottomHandle;
+  ManualNACPtr mBottomRightHandle;
 
   nsCOMPtr<Element> mActivatedHandle;
 
-  nsCOMPtr<Element> mResizingShadow;
-  nsCOMPtr<Element> mResizingInfo;
+  ManualNACPtr mResizingShadow;
+  ManualNACPtr mResizingInfo;
 
   nsCOMPtr<Element> mResizedObject;
 
   nsCOMPtr<nsIDOMEventListener>  mMouseMotionListenerP;
   nsCOMPtr<nsISelectionListener> mSelectionListenerP;
   nsCOMPtr<nsIDOMEventListener>  mResizeEventListenerP;
-
-  nsTArray<OwningNonNull<nsIHTMLObjectResizeListener>> mObjectResizeEventListeners;
 
   int32_t mOriginalX;
   int32_t mOriginalY;
@@ -1010,18 +944,17 @@ protected:
 
   nsresult SetAllResizersPosition();
 
-  already_AddRefed<Element> CreateResizer(int16_t aLocation,
-                                          nsIDOMNode* aParentNode);
+  ManualNACPtr CreateResizer(int16_t aLocation, nsIDOMNode* aParentNode);
   void SetAnonymousElementPosition(int32_t aX, int32_t aY,
                                    Element* aResizer);
 
-  already_AddRefed<Element> CreateShadow(nsIDOMNode* aParentNode,
-                                         nsIDOMElement* aOriginalObject);
+  ManualNACPtr CreateShadow(nsIDOMNode* aParentNode,
+                            nsIDOMElement* aOriginalObject);
   nsresult SetShadowPosition(Element* aShadow, Element* aOriginalObject,
                              int32_t aOriginalObjectX,
                              int32_t aOriginalObjectY);
 
-  already_AddRefed<Element> CreateResizingInfo(nsIDOMNode* aParentNode);
+  ManualNACPtr CreateResizingInfo(nsIDOMNode* aParentNode);
   nsresult SetResizingInfoPosition(int32_t aX, int32_t aY,
                                    int32_t aW, int32_t aH);
 
@@ -1050,12 +983,12 @@ protected:
   int32_t mPositionedObjectBorderTop;
 
   nsCOMPtr<Element> mAbsolutelyPositionedObject;
-  nsCOMPtr<Element> mGrabber;
-  nsCOMPtr<Element> mPositioningShadow;
+  ManualNACPtr mGrabber;
+  ManualNACPtr mPositioningShadow;
 
   int32_t mGridSize;
 
-  already_AddRefed<Element> CreateGrabber(nsINode* aParentNode);
+  ManualNACPtr CreateGrabber(nsINode* aParentNode);
   nsresult StartMoving(nsIDOMElement* aHandle);
   nsresult SetFinalPosition(int32_t aX, int32_t aY);
   void AddPositioningOffset(int32_t& aX, int32_t& aY);
@@ -1068,18 +1001,20 @@ protected:
   // inline table editing
   nsCOMPtr<nsIDOMElement> mInlineEditedCell;
 
-  RefPtr<Element> mAddColumnBeforeButton;
-  RefPtr<Element> mRemoveColumnButton;
-  RefPtr<Element> mAddColumnAfterButton;
+  ManualNACPtr mAddColumnBeforeButton;
+  ManualNACPtr mRemoveColumnButton;
+  ManualNACPtr mAddColumnAfterButton;
 
-  RefPtr<Element> mAddRowBeforeButton;
-  RefPtr<Element> mRemoveRowButton;
-  RefPtr<Element> mAddRowAfterButton;
+  ManualNACPtr mAddRowBeforeButton;
+  ManualNACPtr mRemoveRowButton;
+  ManualNACPtr mAddRowAfterButton;
 
   void AddMouseClickListener(Element* aElement);
   void RemoveMouseClickListener(Element* aElement);
 
   nsCOMPtr<nsILinkHandler> mLinkHandler;
+
+  ParagraphSeparator mDefaultParagraphSeparator;
 
 public:
   friend class HTMLEditorEventListener;
@@ -1118,11 +1053,10 @@ private:
    *                              is to be added to the created anonymous
    *                              element
    */
-  already_AddRefed<Element> CreateAnonymousElement(
-                              nsIAtom* aTag,
-                              nsIDOMNode* aParentNode,
-                              const nsAString& aAnonClass,
-                              bool aIsCreatedHidden);
+  ManualNACPtr CreateAnonymousElement(nsIAtom* aTag,
+                                      nsIDOMNode* aParentNode,
+                                      const nsAString& aAnonClass,
+                                      bool aIsCreatedHidden);
 };
 
 } // namespace mozilla

@@ -139,6 +139,8 @@ nsCSSPseudoClasses::MatchesElement(Type aType, const dom::Element* aElement)
   switch (aType) {
     case CSSPseudoClassType::mozNativeAnonymous:
       return Some(aElement->IsInNativeAnonymousSubtree());
+    case CSSPseudoClassType::mozUseShadowTreeRoot:
+      return Some(aElement->IsRootOfUseElementShadowTree());
     case CSSPseudoClassType::mozTableBorderNonzero: {
       if (!aElement->IsHTMLElement(nsGkAtoms::table)) {
         return Some(false);
@@ -148,8 +150,8 @@ nsCSSPseudoClasses::MatchesElement(Type aType, const dom::Element* aElement)
                           val->GetIntegerValue() != 0));
     }
     case CSSPseudoClassType::mozBrowserFrame: {
-      nsCOMPtr<nsIMozBrowserFrame> browserFrame =
-        do_QueryInterface(const_cast<Element*>(aElement));
+      nsIMozBrowserFrame* browserFrame =
+        const_cast<Element*>(aElement)->GetAsMozBrowserFrame();
       return Some(browserFrame && browserFrame->GetReallyIsBrowser());
     }
     default:

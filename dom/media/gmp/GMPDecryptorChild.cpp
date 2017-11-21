@@ -20,9 +20,12 @@
 namespace mozilla {
 namespace gmp {
 
+static uint32_t sDecryptorCount = 1;
+
 GMPDecryptorChild::GMPDecryptorChild(GMPContentChild* aPlugin)
   : mSession(nullptr)
   , mPlugin(aPlugin)
+  , mDecryptorId(sDecryptorCount++)
 {
   MOZ_ASSERT(mPlugin);
 }
@@ -73,7 +76,7 @@ GMPDecryptorChild::Init(GMPDecryptor* aSession)
   // the child process, but not necessarily across all gecko processes. However,
   // since GMPDecryptors are segregated by node ID/origin, we shouldn't end up
   // with clashes in the content process.
-  SendSetDecryptorId(Id());
+  SendSetDecryptorId(DecryptorId());
 }
 
 void
@@ -193,10 +196,12 @@ GMPDecryptorChild::Decrypted(GMPBuffer* aBuffer, GMPErr aResult)
   if (!ON_GMP_THREAD()) {
     // We should run this whole method on the GMP thread since the buffer needs
     // to be deleted after the SendDecrypted call.
-    mPlugin->GMPMessageLoop()->PostTask(NewRunnableMethod
-                                        <GMPBuffer*, GMPErr>(this,
-                                                             &GMPDecryptorChild::Decrypted,
-                                                             aBuffer, aResult));
+    mPlugin->GMPMessageLoop()->PostTask(
+      NewRunnableMethod<GMPBuffer*, GMPErr>("gmp::GMPDecryptorChild::Decrypted",
+                                            this,
+                                            &GMPDecryptorChild::Decrypted,
+                                            aBuffer,
+                                            aResult));
     return;
   }
 

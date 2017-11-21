@@ -13,6 +13,9 @@ from distutils.version import LooseVersion
 
 def get_tool_path(tool):
     """Obtain the path of `tool`."""
+    if os.path.isabs(tool) and os.path.exists(tool):
+        return tool
+
     # We use subprocess in places, which expects a Win32 executable or
     # batch script. On some versions of MozillaBuild, we have "hg.exe",
     # "hg.bat," and "hg" (a Python script). "which" will happily return the
@@ -26,8 +29,8 @@ def get_tool_path(tool):
         except which.WhichError as e:
             print(e)
 
-    raise Exception('Unable to obtain %s path. Try running ' +
-                    '|mach bootstrap| to ensure your environment is up to ' +
+    raise Exception('Unable to obtain %s path. Try running '
+                    '|mach bootstrap| to ensure your environment is up to '
                     'date.' % tool)
 
 class Repository(object):
@@ -61,19 +64,39 @@ class Repository(object):
         working copy.'''
         raise NotImplementedError
 
+    def get_added_files(self):
+        '''Return a list of files that are added in this repository's
+        working copy.'''
+        raise NotImplementedError
+
     def add_remove_files(self, path):
         '''Add and remove files under `path` in this repository's working copy.
         '''
         raise NotImplementedError
 
+    def forget_add_remove_files(self, path):
+        '''Undo the effects of a previous add_remove_files call for `path`.
+        '''
+        raise NotImplementedError
+
+    def get_files_in_working_directory(self):
+        """Obtain a list of managed files in the working directory."""
+        raise NotImplementedError
+
+
 class HgRepository(Repository):
     '''An implementation of `Repository` for Mercurial repositories.'''
-    def __init__(self, path):
-        super(HgRepository, self).__init__(path, 'hg')
+    def __init__(self, path, hg='hg'):
+        super(HgRepository, self).__init__(path, tool=hg)
         self._env[b'HGPLAIN'] = b'1'
 
     def get_modified_files(self):
-        return [line.strip().split()[1] for line in self._run('status', '--modified').splitlines()]
+        # Use --no-status to print just the filename.
+        return self._run('status', '--modified', '--no-status').splitlines()
+
+    def get_added_files(self):
+        # Use --no-status to print just the filename.
+        return self._run('status', '--added', '--no-status').splitlines()
 
     def add_remove_files(self, path):
         args = ['addremove', path]
@@ -81,17 +104,39 @@ class HgRepository(Repository):
             args = ['--config', 'extensions.automv='] + args
         self._run(*args)
 
+    def forget_add_remove_files(self, path):
+        self._run('forget', path)
+
+    def get_files_in_working_directory(self):
+        # Can return backslashes on Windows. Normalize to forward slashes.
+        return list(p.replace('\\', '/') for p in
+                    self._run('files', '-0').split('\0'))
+
+
 class GitRepository(Repository):
     '''An implementation of `Repository` for Git repositories.'''
-    def __init__(self, path):
-        super(GitRepository, self).__init__(path, 'git')
+    def __init__(self, path, git='git'):
+        super(GitRepository, self).__init__(path, tool=git)
 
     def get_modified_files(self):
-        # This is a little wonky, but it's good enough for this purpose.
-        return [bits[1] for bits in map(lambda line: line.strip().split(), self._run('status', '--porcelain').splitlines()) if 'M' in bits[0]]
+        return self._run('diff', '--diff-filter=M', '--name-only').splitlines()
+
+    def get_added_files(self):
+        return self._run('diff', '--diff-filter=A', '--name-only').splitlines()
 
     def add_remove_files(self, path):
         self._run('add', path)
+
+    def forget_add_remove_files(self, path):
+        self._run('reset', path)
+
+    def get_files_in_working_directory(self):
+        return self._run('ls-files', '-z').split('\0')
+
+
+class InvalidRepoPath(Exception):
+    """Represents a failure to find a VCS repo at a specified path."""
+
 
 def get_repository_object(path):
     '''Get a repository object for the repository at `path`.
@@ -102,4 +147,63 @@ def get_repository_object(path):
     elif os.path.exists(os.path.join(path, '.git')):
         return GitRepository(path)
     else:
-        raise Exception('Unknown VCS, or not a source checkout: %s' % path)
+        raise InvalidRepoPath('Unknown VCS, or not a source checkout: %s' %
+                              path)
+
+
+class MissingVCSInfo(Exception):
+    """Represents a general failure to resolve a VCS interface."""
+
+
+class MissingConfigureInfo(MissingVCSInfo):
+    """Represents error finding VCS info from configure data."""
+
+
+def get_repository_from_env():
+    """Obtain a repository object by looking at the environment.
+
+    If inside a build environment (denoted by presence of a ``buildconfig``
+    module), VCS info is obtained from it, as found via configure. This allows
+    us to respect what was passed into configure. Otherwise, we fall back to
+    scanning the filesystem.
+    """
+    try:
+        import buildconfig
+
+        flavor = buildconfig.substs.get('VCS_CHECKOUT_TYPE')
+
+        # If in build mode, only use what configure found. That way we ensure
+        # that everything in the build system can be controlled via configure.
+        if not flavor:
+            raise MissingConfigureInfo('could not find VCS_CHECKOUT_TYPE '
+                                       'in build config; check configure '
+                                       'output and verify it could find a '
+                                       'VCS binary')
+
+        if flavor == 'hg':
+            return HgRepository(buildconfig.topsrcdir,
+                                hg=buildconfig.substs['HG'])
+        elif flavor == 'git':
+            return GitRepository(buildconfig.topsrcdir,
+                                 git=buildconfig.subst['GIT'])
+        else:
+            raise MissingVCSInfo('unknown VCS_CHECKOUT_TYPE value: %s' % flavor)
+
+    except ImportError:
+        pass
+
+    def ancestors(path):
+        while path:
+            yield path
+            path, child = os.path.split(path)
+            if child == '':
+                break
+
+    for path in ancestors(os.getcwd()):
+        try:
+            return get_repository_object(path)
+        except InvalidRepoPath:
+            continue
+
+    raise MissingVCSInfo('Could not find Mercurial or Git checkout for %s' %
+                         os.getcwd())

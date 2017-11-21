@@ -29,9 +29,9 @@ class AnalyserNodeEngine final : public AudioNodeEngine
   class TransferBuffer final : public Runnable
   {
   public:
-    TransferBuffer(AudioNodeStream* aStream,
-                   const AudioChunk& aChunk)
-      : mStream(aStream)
+    TransferBuffer(AudioNodeStream* aStream, const AudioChunk& aChunk)
+      : Runnable("dom::AnalyserNodeEngine::TransferBuffer")
+      , mStream(aStream)
       , mChunk(aChunk)
     {
     }
@@ -85,7 +85,7 @@ public:
 
     RefPtr<TransferBuffer> transfer =
       new TransferBuffer(aStream, aInput.AsAudioChunk());
-    NS_DispatchToMainThread(transfer);
+    mAbstractMainThread->Dispatch(transfer.forget());
   }
 
   virtual bool IsActive() const override
@@ -245,7 +245,9 @@ AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray)
   size_t length = std::min(size_t(aArray.Length()), mOutputBuffer.Length());
 
   for (size_t i = 0; i < length; ++i) {
-    buffer[i] = WebAudioUtils::ConvertLinearToDecibels(mOutputBuffer[i], mMinDecibels);
+    buffer[i] =
+      WebAudioUtils::ConvertLinearToDecibels(mOutputBuffer[i],
+                                             -std::numeric_limits<float>::infinity());
   }
 }
 

@@ -19,7 +19,7 @@
 #include "nsIScriptSecurityManager.h"
 #include "nsNetUtil.h"
 #include "nsComponentManagerUtils.h"
-#include "nsNullPrincipal.h"
+#include "NullPrincipal.h"
 #include "nsContentUtils.h"
 #include "nsIParserUtils.h"
 #include "nsIDocument.h"
@@ -152,6 +152,7 @@ nsIAtom** const kAttributesHTML[] = {
   &nsGkAtoms::accesskey,
   &nsGkAtoms::action,
   &nsGkAtoms::alt,
+  &nsGkAtoms::as,
   &nsGkAtoms::autocomplete,
   &nsGkAtoms::autofocus,
   &nsGkAtoms::autoplay,
@@ -1281,6 +1282,10 @@ nsTreeSanitizer::SanitizeURL(mozilla::dom::Element* aElement,
   static const char* kWhitespace = "\n\r\t\b";
   const nsAString& v =
     nsContentUtils::TrimCharsInSet(kWhitespace, value);
+  // Fragment-only url cannot be harmful.
+  if (!v.IsEmpty() && v.First() == u'#') {
+    return false;
+  }
 
   nsIScriptSecurityManager* secMan = nsContentUtils::GetSecurityManager();
   uint32_t flags = nsIScriptSecurityManager::DISALLOW_INHERIT_PRINCIPAL;
@@ -1288,7 +1293,7 @@ nsTreeSanitizer::SanitizeURL(mozilla::dom::Element* aElement,
   nsCOMPtr<nsIURI> baseURI = aElement->GetBaseURI();
   nsCOMPtr<nsIURI> attrURI;
   nsresult rv = NS_NewURI(getter_AddRefs(attrURI), v, nullptr, baseURI);
-  if (NS_SUCCEEDED(rv)) { 
+  if (NS_SUCCEEDED(rv)) {
     if (mCidEmbedsOnly &&
         kNameSpaceID_None == aNamespace) {
       if (nsGkAtoms::src == aLocalName || nsGkAtoms::background == aLocalName) {
@@ -1518,7 +1523,7 @@ nsTreeSanitizer::InitializeStatics()
     sAttributesMathML->PutEntry(*kAttributesMathML[i]);
   }
 
-  nsCOMPtr<nsIPrincipal> principal = nsNullPrincipal::Create();
+  nsCOMPtr<nsIPrincipal> principal = NullPrincipal::Create();
   principal.forget(&sNullPrincipal);
 }
 

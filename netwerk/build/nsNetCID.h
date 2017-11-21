@@ -50,7 +50,7 @@
 
 // service implementing nsIProxyAutoConfig.
 #define NS_PROXYAUTOCONFIG_CONTRACTID \
-    "@mozilla.org/network/proxy-auto-config;1" 
+    "@mozilla.org/network/proxy-auto-config;1"
 #define NS_PROXYAUTOCONFIG_CID                       \
 { /* 63ac8c66-1dd2-11b2-b070-84d00d3eaece */         \
     0x63ac8c66,                                      \
@@ -391,16 +391,6 @@
     {0x8c, 0xda, 0x00, 0x60, 0xb0, 0xfc, 0x14, 0xa3} \
 }
 
-#define NS_PARTIALLOCALFILEINPUTSTREAM_CONTRACTID \
-    "@mozilla.org/network/partial-file-input-stream;1"
-#define NS_PARTIALLOCALFILEINPUTSTREAM_CID           \
-{ /* 8738afd6-162a-418d-a99b-75b3a6b10a56 */         \
-    0x8738afd6,                                      \
-    0x162a,                                          \
-    0x418d,                                          \
-    {0xa9, 0x9b, 0x75, 0xb3, 0xa6, 0xb1, 0x0a, 0x56} \
-}
-
 #define NS_BUFFEREDINPUTSTREAM_CONTRACTID \
     "@mozilla.org/network/buffered-input-stream;1"
 #define NS_BUFFEREDINPUTSTREAM_CID                   \
@@ -647,6 +637,18 @@
     {0x97, 0xa7, 0x06, 0xaf, 0x5e, 0x6d, 0x84, 0xc4}    \
 }
 
+// Background channel registrar used for pairing HttpChannelParent
+// and its background channel
+#define NS_BACKGROUNDCHANNELREGISTRAR_CONTRACTID \
+    "@mozilla.org/network/background-channel-registrar;1"
+#define NS_BACKGROUNDCHANNELREGISTRAR_CID \
+{ /* 6907788a-17cc-4c2a-a7c5-59ad2d9cc079 */          \
+    0x6907788a,                                       \
+    0x17cc,                                           \
+    0x4c2a,                                           \
+    { 0xa7, 0xc5, 0x59, 0xad, 0x2d, 0x9c, 0xc0, 0x79} \
+}
+
 /******************************************************************************
  * netwerk/protocol/ftp/ classes
  */
@@ -838,7 +840,7 @@
  * netwerk/mime classes
  */
 
-// {1F4DBCF7-245C-4c8c-943D-8A1DA0495E8A} 
+// {1F4DBCF7-245C-4c8c-943D-8A1DA0495E8A}
 #define NS_MIMEHEADERPARAM_CID                         \
 {   0x1f4dbcf7,                                        \
     0x245c,                                            \

@@ -20,6 +20,7 @@ EXPORTS += [
     'nsSVGEffects.h',
     'nsSVGFilterInstance.h',
     'nsSVGForeignObjectFrame.h',
+    'nsSVGImageFrame.h',
     'nsSVGIntegrationUtils.h',
     'nsSVGUtils.h',
     'SVGImageContext.h',
@@ -52,21 +53,20 @@ UNIFIED_SOURCES += [
     'nsSVGPatternFrame.cpp',
     'nsSVGStopFrame.cpp',
     'nsSVGSwitchFrame.cpp',
+    'nsSVGSymbolFrame.cpp',
     'nsSVGUseFrame.cpp',
     'nsSVGUtils.cpp',
+    'nsSVGViewportFrame.cpp',
     'SVGContextPaint.cpp',
     'SVGFEContainerFrame.cpp',
     'SVGFEImageFrame.cpp',
     'SVGFELeafFrame.cpp',
     'SVGFEUnstyledLeafFrame.cpp',
     'SVGGeometryFrame.cpp',
+    'SVGImageContext.cpp',
     'SVGTextFrame.cpp',
     'SVGViewFrame.cpp',
 ]
-
-if CONFIG['CPU_ARCH'] == 'arm' and CONFIG['BUILD_ARM_NEON']:
-    SOURCES += ['nsSVGMaskFrameNEON.cpp']
-    SOURCES['nsSVGMaskFrameNEON.cpp'].flags += CONFIG['NEON_FLAGS']
 
 FINAL_LIBRARY = 'xul'
 LOCAL_INCLUDES += [

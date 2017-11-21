@@ -1,5 +1,9 @@
 == CSS21-t1502-no-inherited-font-family.xhtml CSS21-t1502-no-inherited-font-family-ref.xhtml
 
+# tests for bug 1394311 (case-insensitive lang tag processing)
+pref(font.default.zh-CN,"serif") pref(font.default.zh-TW,"serif") pref(font.default.ja,"serif") pref(font.default.ko,"serif") == 1394311.htm 1394311-ref.htm
+pref(font.default.zh-CN,"sans-serif") pref(font.default.zh-TW,"sans-serif") pref(font.default.ja,"sans-serif") pref(font.default.ko,"sans-serif") == 1394311.htm 1394311-ref.htm
+
 # basic tests for bug 538730
 != synthetic-bold-1.html synthetic-bold-1-ref.html
 != synthetic-bold-2.html synthetic-bold-2-ref.html
@@ -50,7 +54,7 @@ random-if(cocoaWidget) != impact-bold.html impact.html # bug 539418
 == localized-family-names-004.html localized-family-names-004-ref.html
 
 # family names with escaped spaces shouldn't match the names without the spaces
-fails-if(gtkWidget) == familyname-escapedidents.html familyname-escapedidents-ref.html # bug 1309425, bug 1328771
+fails-if(gtkWidget&&!styloVsGecko) == familyname-escapedidents.html familyname-escapedidents-ref.html # bug 1309425, bug 1328771
 
 # weight mapping tests
 HTTP(..) == normalmedium.html normalmedium-ref.html
@@ -117,9 +121,9 @@ skip-if(!cocoaWidget) HTTP(..) != apple-symbols-1.html apple-symbols-1-notref.ht
 # regression with full-width digits display in UI elements. Disable
 # tests until these problems are corrected.
 # random-if(!OSX) == system-generic-fallback-1.html system-generic-fallback-1-ref.html
-# random-if(!OSX||OSX<1008) == system-generic-fallback-2.html system-generic-fallback-2-ref.html
-# random-if(!OSX||OSX<1008) == system-generic-fallback-3.html system-generic-fallback-3-ref.html
-# random-if(!OSX||OSX<1008) == system-generic-fallback-4.html system-generic-fallback-4-ref.html
+# random-if(!OSX) == system-generic-fallback-2.html system-generic-fallback-2-ref.html
+# random-if(!OSX) == system-generic-fallback-3.html system-generic-fallback-3-ref.html
+# random-if(!OSX) == system-generic-fallback-4.html system-generic-fallback-4-ref.html
 # random-if(!OSX) != system-generic-fallback-ko.html system-generic-fallback-ja.html
 # random-if(!OSX) != system-generic-fallback-zh-tw.html system-generic-fallback-ja.html
 # random-if(!OSX) != system-generic-fallback-zh-cn.html system-generic-fallback-ja.html

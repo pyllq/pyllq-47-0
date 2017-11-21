@@ -4,7 +4,11 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+with Files('**'):
+    BUG_COMPONENT = ('Core', 'Networking: HTTP')
+
 XPIDL_SOURCES += [
+    'nsIBackgroundChannelRegistrar.idl',
     'nsIHstsPrimingCallback.idl',
     'nsIHttpActivityObserver.idl',
     'nsIHttpAuthenticableChannel.idl',
@@ -17,6 +21,7 @@ XPIDL_SOURCES += [
     'nsIHttpEventSink.idl',
     'nsIHttpHeaderVisitor.idl',
     'nsIHttpProtocolHandler.idl',
+    'nsIRaceCacheWithNetwork.idl',
     'nsIWellKnownOpportunisticUtils.idl',
 ]
 
@@ -34,6 +39,9 @@ EXPORTS += [
 EXPORTS.mozilla.net += [
     'AltDataOutputStreamChild.h',
     'AltDataOutputStreamParent.h',
+    'HttpAuthUtils.h',
+    'HttpBackgroundChannelChild.h',
+    'HttpBackgroundChannelParent.h',
     'HttpBaseChannel.h',
     'HttpChannelChild.h',
     'HttpChannelParent.h',
@@ -44,18 +52,16 @@ EXPORTS.mozilla.net += [
     'TimingStruct.h',
 ]
 
-# ASpdySession.cpp and nsHttpAuthCache cannot be built in unified mode because
-# they use plarena.h.
 SOURCES += [
-    'AlternateServices.cpp',
-    'ASpdySession.cpp',
-    'nsHttpAuthCache.cpp',
     'nsHttpChannelAuthProvider.cpp', # redefines GetAuthType
 ]
 
 UNIFIED_SOURCES += [
     'AltDataOutputStreamChild.cpp',
     'AltDataOutputStreamParent.cpp',
+    'AlternateServices.cpp',
+    'ASpdySession.cpp',
+    'BackgroundChannelRegistrar.cpp',
     'CacheControlParser.cpp',
     'ConnectionDiagnostics.cpp',
     'HSTSPrimerListener.cpp',
@@ -63,6 +69,9 @@ UNIFIED_SOURCES += [
     'Http2Push.cpp',
     'Http2Session.cpp',
     'Http2Stream.cpp',
+    'HttpAuthUtils.cpp',
+    'HttpBackgroundChannelChild.cpp',
+    'HttpBackgroundChannelParent.cpp',
     'HttpBaseChannel.cpp',
     'HttpChannelChild.cpp',
     'HttpChannelParent.cpp',
@@ -72,6 +81,7 @@ UNIFIED_SOURCES += [
     'nsCORSListenerProxy.cpp',
     'nsHttp.cpp',
     'nsHttpActivityDistributor.cpp',
+    'nsHttpAuthCache.cpp',
     'nsHttpAuthManager.cpp',
     'nsHttpBasicAuth.cpp',
     'nsHttpChannel.cpp',
@@ -82,7 +92,6 @@ UNIFIED_SOURCES += [
     'nsHttpDigestAuth.cpp',
     'nsHttpHeaderArray.cpp',
     'nsHttpNTLMAuth.cpp',
-    'nsHttpPipeline.cpp',
     'nsHttpRequestHead.cpp',
     'nsHttpResponseHead.cpp',
     'nsHttpTransaction.cpp',
@@ -98,6 +107,7 @@ SOURCES += [
 
 IPDL_SOURCES += [
     'PAltDataOutputStream.ipdl',
+    'PHttpBackgroundChannel.ipdl',
     'PHttpChannel.ipdl',
 ]
 
@@ -116,6 +126,14 @@ LOCAL_INCLUDES += [
 ]
 
 EXTRA_COMPONENTS += [
+    'UAOverridesBootstrapper.js',
+    'UAOverridesBootstrapper.manifest',
     'WellKnownOpportunisticUtils.js',
     'WellKnownOpportunisticUtils.manifest',
 ]
+
+if CONFIG['OS_TARGET'] == 'Darwin':
+    if CONFIG['HOST_MAJOR_VERSION'] == '15':
+        DEFINES.update(
+            HAS_CONNECTX=True,
+        )

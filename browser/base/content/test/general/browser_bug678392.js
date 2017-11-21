@@ -35,10 +35,9 @@ function test() {
 }
 
 function load(aTab, aUrl, aCallback) {
-  aTab.linkedBrowser.addEventListener("load", function onload(aEvent) {
-    aEvent.currentTarget.removeEventListener("load", onload, true);
+  aTab.linkedBrowser.addEventListener("load", function(aEvent) {
     waitForFocus(aCallback, content);
-  }, true);
+  }, {capture: true, once: true});
   aTab.linkedBrowser.loadURI(aUrl);
 }
 
@@ -161,7 +160,7 @@ function test2() {
       is(gHistorySwipeAnimation._trackedSnapshots.length, 2, "Length of " +
          "snapshot array is equal to 2 after loading two pages");
       let prevTab = tab;
-      tab = gBrowser.addTab("about:newtab");
+      tab = BrowserTestUtils.addTab(gBrowser, "about:newtab");
       gBrowser.selectedTab = tab;
       load(tab, HTTPROOT + "browser_bug678392-2.html" /* initial page */,
            function() {

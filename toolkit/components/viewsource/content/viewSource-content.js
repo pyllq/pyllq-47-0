@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/frame-script */
+
 var { utils: Cu, interfaces: Ci, classes: Cc } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "BrowserUtils",
-  "resource://gre/modules/BrowserUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm");
 
@@ -328,7 +328,7 @@ var ViewSourceContent = {
     let shEntrySource = pageDescriptor.QueryInterface(Ci.nsISHEntry);
     let shEntry = Cc["@mozilla.org/browser/session-history-entry;1"]
                     .createInstance(Ci.nsISHEntry);
-    shEntry.setURI(BrowserUtils.makeURI(viewSrcURL, null, null));
+    shEntry.setURI(Services.io.newURI(viewSrcURL));
     shEntry.setTitle(viewSrcURL);
     let systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
     shEntry.triggeringPrincipal = systemPrincipal;
@@ -456,7 +456,7 @@ var ViewSourceContent = {
     };
 
     subject.wrappedJSObject = subject;
-    Services.obs.notifyObservers(subject, "content-contextmenu", null);
+    Services.obs.notifyObservers(subject, "content-contextmenu");
 
     let node = event.target;
 

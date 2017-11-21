@@ -24,7 +24,7 @@ var SidebarUtils = {
       // respectively.)  Therefore, we make sure to exclude the blank area
       // before the tree item icon (that is, to the left or right of it in
       // LTR and RTL modes, respectively) from the click target area.
-      var isRTL = window.getComputedStyle(aTree, null).direction == "rtl";
+      var isRTL = window.getComputedStyle(aTree).direction == "rtl";
       if (isRTL)
         mouseInGutter = aEvent.clientX > rect.x;
       else
@@ -52,17 +52,15 @@ var SidebarUtils = {
       // do this *before* attempting to load the link since openURL uses
       // selection as an indication of which link to load.
       tbo.view.selection.select(cell.row);
-      PlacesUIUtils.openNodeWithEvent(aTree.selectedNode, aEvent, aTree);
+      PlacesUIUtils.openNodeWithEvent(aTree.selectedNode, aEvent);
     }
   },
 
   handleTreeKeyPress: function SU_handleTreeKeyPress(aEvent) {
-    // XXX Bug 627901: Post Fx4, this method should take a tree parameter.
-    let tree = aEvent.target;
-    let node = tree.selectedNode;
+    let node = aEvent.target.selectedNode;
     if (node) {
       if (aEvent.keyCode == KeyEvent.DOM_VK_RETURN)
-        PlacesUIUtils.openNodeWithEvent(node, aEvent, tree);
+        PlacesUIUtils.openNodeWithEvent(node, aEvent);
     }
   },
 

@@ -18,7 +18,7 @@ var firstLoad = true;
 
 // Add some URLs to the malware database.
 // Note that we intentionally don't touch test-phish-simple, and will
-// use the URL registered by addMozEntries().  Otherwise, classifierHelper.resetDB()
+// use the URL registered by addMozEntries().  Otherwise, classifierHelper.resetDatabase()
 // will reset this table, and waitForInit() can't find the known phishing
 // URL in test-phish-simple, breaking the tests following this one.
 var testData = [
@@ -136,14 +136,21 @@ function testService() {
       }
       let test = testURLs.shift();
       let tables = "test-malware-simple,test-unwanted-simple,test-phish-simple,test-track-simple,test-block-simple";
-      let uri = ios.newURI(test.url, null, null);
+      let uri = ios.newURI(test.url);
       let prin = ssm.createCodebasePrincipal(uri, {});
       is(service.classifyLocal(uri, tables), test.table,
          `Successful synchronous classification of ${test.url} with TP=${test.trackingProtection}`);
-      let result = service.classify(prin, test.trackingProtection, function(errorCode) {
+      let result = SpecialPowers.doUrlClassify(prin, null, test.trackingProtection, function(errorCode) {
         is(errorCode, test.result,
            `Successful asynchronous classification of ${test.url} with TP=${test.trackingProtection}`);
-        runNextTest();
+
+        // Same as classifyLocal except for the 'async' call.
+        SpecialPowers.doUrlClassifyLocal(uri, tables, function(errorCode, tables) {
+          is(tables, test.table,
+             `Successful asynchronous local classification of ${test.url} with TP=${test.trackingProtection}`);
+          runNextTest();
+        });
+
       });
     }
     runNextTest(resolve);

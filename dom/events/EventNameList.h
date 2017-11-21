@@ -164,6 +164,14 @@ EVENT(change,
       eFormChange,
       EventNameType_HTMLXUL,
       eBasicEventClass)
+EVENT(CheckboxStateChange,
+      eFormCheckboxStateChange,
+      EventNameType_None,
+      eBasicEventClass)
+EVENT(RadioStateChange,
+      eFormRadioStateChange,
+      EventNameType_None,
+      eBasicEventClass)
 EVENT(auxclick,
       eMouseAuxClick,
       EventNameType_All,
@@ -174,7 +182,7 @@ EVENT(click,
       eMouseEventClass)
 EVENT(close,
       eClose,
-      EventNameType_HTML,
+      EventNameType_HTMLXUL,
       eBasicEventClass)
 EVENT(contextmenu,
       eContextMenu,
@@ -551,7 +559,7 @@ WINDOW_EVENT(online,
              eOnline,
              EventNameType_XUL | EventNameType_HTMLBodyOrFramesetOnly,
              eBasicEventClass)
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
 WINDOW_EVENT(orientationchange,
              eOrientationChange,
              EventNameType_HTMLBodyOrFramesetOnly,
@@ -605,6 +613,14 @@ WINDOW_ONLY_EVENT(userproximity,
                   eBasicEventClass)
 WINDOW_ONLY_EVENT(devicelight,
                   eDeviceLight,
+                  EventNameType_None,
+                  eBasicEventClass)
+WINDOW_ONLY_EVENT(vrdisplayactivate,
+                  eVRDisplayActivate,
+                  EventNameType_None,
+                  eBasicEventClass)
+WINDOW_ONLY_EVENT(vrdisplaydeactivate,
+                  eVRDisplayDeactivate,
                   EventNameType_None,
                   eBasicEventClass)
 WINDOW_ONLY_EVENT(vrdisplayconnect,
@@ -666,6 +682,11 @@ DOCUMENT_ONLY_EVENT(selectionchange,
                     eSelectionChange,
                     EventNameType_HTMLXUL,
                     eBasicEventClass)
+DOCUMENT_ONLY_EVENT(visibilitychange,
+                    eVisibilityChange,
+                    EventNameType_HTMLXUL,
+                    eBasicEventClass)
+
 
 NON_IDL_EVENT(MozMouseHittest,
               eMouseHitTest,
@@ -768,10 +789,6 @@ NON_IDL_EVENT(command,
               eXULCommand,
               EventNameType_XUL,
               eInputEventClass)
-NON_IDL_EVENT(close,
-              eWindowClose,
-              EventNameType_XUL,
-              eBasicEventClass)
 NON_IDL_EVENT(popupshowing,
               eXULPopupShowing,
               EventNameType_XUL,
@@ -827,19 +844,6 @@ NON_IDL_EVENT(SVGScroll,
               EventNameType_None,
               eBasicEventClass)
 
-NON_IDL_EVENT(SVGZoom,
-              eSVGZoom,
-              EventNameType_None,
-              eSVGZoomEventClass)
-
-// Only map the ID to the real event name when MESSAGE_TO_EVENT is defined.
-#ifndef MESSAGE_TO_EVENT
-// This is a bit hackish, but SVG's event names are weird.
-NON_IDL_EVENT(zoom,
-              eSVGZoom,
-              EventNameType_SVGSVG,
-              eBasicEventClass)
-#endif
 // Only map the ID to the real event name when MESSAGE_TO_EVENT is defined.
 #ifndef MESSAGE_TO_EVENT
 NON_IDL_EVENT(begin,
@@ -998,6 +1002,10 @@ EVENT(animationend,
       eAnimationEventClass)
 EVENT(animationiteration,
       eAnimationIteration,
+      EventNameType_All,
+      eAnimationEventClass)
+EVENT(animationcancel,
+      eAnimationCancel,
       EventNameType_All,
       eAnimationEventClass)
 

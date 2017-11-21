@@ -25,9 +25,8 @@ function test() {
         ok(false, "Alert window opened");
         let win = aSubject.QueryInterface(Ci.nsIDOMEventTarget);
         win.addEventListener("load", function() {
-          win.removeEventListener("load", arguments.callee);
           win.close();
-        });
+        }, {once: true});
         executeSoon(finish);
       }
     }
@@ -35,7 +34,7 @@ function test() {
 
   Services.ww.registerNotification(windowObserver);
 
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
+  let tab = gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
 
   let listener = {
     onStateChange: function onLocationChange(webProgress, req, flags, status) {

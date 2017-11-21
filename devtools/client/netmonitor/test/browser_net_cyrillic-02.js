@@ -12,31 +12,36 @@ add_task(function* () {
   let { tab, monitor } = yield initNetMonitor(CYRILLIC_URL);
   info("Starting test... ");
 
-  let { document, NetMonitorView } = monitor.panelWin;
-  let { RequestsMenu } = NetMonitorView;
-
-  RequestsMenu.lazyUpdate = false;
+  let { document, store, windowRequire } = monitor.panelWin;
+  let {
+    getDisplayedRequests,
+    getSortedRequests,
+  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
 
   let wait = waitForNetworkEvents(monitor, 1);
   tab.linkedBrowser.reload();
   yield wait;
 
-  verifyRequestItemTarget(RequestsMenu, RequestsMenu.getItemAtIndex(0),
-    "GET", CYRILLIC_URL, {
+  verifyRequestItemTarget(
+    document,
+    getDisplayedRequests(store.getState()),
+    getSortedRequests(store.getState()).get(0),
+    "GET",
+    CYRILLIC_URL,
+    {
       status: 200,
       statusText: "OK"
     });
 
-  wait = waitForDOM(document, "#response-tabpanel .editor-mount iframe");
+  wait = waitForDOM(document, "#headers-panel");
   EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.getElementById("details-pane-toggle"));
-  EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.querySelectorAll("#details-pane tab")[3]);
-  let [editor] = yield wait;
-  yield once(editor, "DOMContentLoaded");
-  yield waitForDOM(editor.contentDocument, ".CodeMirror-code");
-  let text = editor.contentDocument
-          .querySelector(".CodeMirror-code").textContent;
+    document.querySelectorAll(".request-list-item")[0]);
+  yield wait;
+  wait = waitForDOM(document, "#response-panel .CodeMirror-code");
+  EventUtils.sendMouseEvent({ type: "click" },
+    document.querySelector("#response-tab"));
+  yield wait;
+  let text = document.querySelector(".CodeMirror-lines").textContent;
 
   ok(text.includes("\u0411\u0440\u0430\u0442\u0430\u043d"),
     "The text shown in the source editor is correct.");

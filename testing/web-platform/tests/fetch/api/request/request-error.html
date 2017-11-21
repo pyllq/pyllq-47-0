@@ -37,11 +37,6 @@
       },"RequestInit's referrer is invalid");
 
       test(function() {
-        assert_throws(new TypeError() , function() { new Request("", {"referrer" : "http://test.url"}); },
-          "Expect TypeError exception");
-      },"RequestInit's referrer has invalid origin")
-
-      test(function() {
         assert_throws(new TypeError() , function() { new Request("", {"method" : "IN VALID"}); },
           "Expect TypeError exception");
       }, "RequestInit's method is invalid");

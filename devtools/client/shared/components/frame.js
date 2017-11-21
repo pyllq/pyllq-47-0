@@ -50,60 +50,47 @@ module.exports = createClass({
   },
 
   componentWillMount() {
-    const sourceMapService = this.props.sourceMapService;
-    if (sourceMapService) {
-      const source = this.getSource();
-      sourceMapService.subscribe(source, this.onSourceUpdated);
+    if (this.props.sourceMapService) {
+      const { source, line, column } = this.props.frame;
+      this.props.sourceMapService.subscribe(source, line, column,
+                                            this._locationChanged);
     }
   },
 
   componentWillUnmount() {
-    const sourceMapService = this.props.sourceMapService;
-    if (sourceMapService) {
-      const source = this.getSource();
-      sourceMapService.unsubscribe(source, this.onSourceUpdated);
+    if (this.props.sourceMapService) {
+      const { source, line, column } = this.props.frame;
+      this.props.sourceMapService.unsubscribe(source, line, column,
+                                              this._locationChanged);
     }
   },
 
-  /**
-   * Component method to update the FrameView when a resolved location is available
-   * @param event
-   * @param location
-   */
-  onSourceUpdated(event, location, resolvedLocation) {
-    const frame = this.getFrame(resolvedLocation);
-    this.setState({
-      frame,
-      isSourceMapped: true,
-    });
+  _locationChanged(isSourceMapped, url, line, column) {
+    let newState = {
+      isSourceMapped,
+    };
+    if (isSourceMapped) {
+      newState.frame = {
+        source: url,
+        line,
+        column,
+        functionDisplayName: this.props.frame.functionDisplayName,
+      };
+    }
+
+    this.setState(newState);
   },
 
   /**
-   * Utility method to convert the Frame object to the
-   * Source Object model required by SourceMapService
-   * @param frame
-   * @returns {{url: *, line: *, column: *}}
+   * Utility method to convert the Frame object model to the
+   * object model required by the onClick callback.
+   * @param Frame frame
+   * @returns {{url: *, line: *, column: *, functionDisplayName: *}}
    */
-  getSource(frame) {
-    frame = frame || this.props.frame;
+  getSourceForClick(frame) {
     const { source, line, column } = frame;
     return {
       url: source,
-      line,
-      column,
-    };
-  },
-
-  /**
-   * Utility method to convert the Source object model to the
-   * Frame object model required by FrameView class.
-   * @param source
-   * @returns {{source: *, line: *, column: *, functionDisplayName: *}}
-   */
-  getFrame(source) {
-    const { url, line, column } = source;
-    return {
-      source: url,
       line,
       column,
       functionDisplayName: this.props.frame.functionDisplayName,
@@ -121,7 +108,7 @@ module.exports = createClass({
       showFullSourceUrl
     } = this.props;
 
-    if (this.state && this.state.isSourceMapped) {
+    if (this.state && this.state.isSourceMapped && this.state.frame) {
       frame = this.state.frame;
       isSourceMapped = this.state.isSourceMapped;
     } else {
@@ -169,8 +156,10 @@ module.exports = createClass({
 
       if (functionDisplayName) {
         elements.push(
-          dom.span({ className: "frame-link-function-display-name" },
-            functionDisplayName),
+          dom.span({
+            key: "function-display-name",
+            className: "frame-link-function-display-name",
+          }, functionDisplayName),
           " "
         );
       }
@@ -184,6 +173,7 @@ module.exports = createClass({
     }
 
     sourceElements.push(dom.span({
+      key: "filename",
       className: "frame-link-filename",
     }, displaySource));
 
@@ -200,12 +190,16 @@ module.exports = createClass({
         attributes["data-column"] = column;
       }
 
-      sourceElements.push(dom.span({ className: "frame-link-line" }, lineInfo));
+      sourceElements.push(dom.span({
+        key: "line",
+        className: "frame-link-line"
+      }, lineInfo));
     }
 
     // Inner el is useful for achieving ellipsis on the left and correct LTR/RTL
     // ordering. See CSS styles for frame-link-source-[inner] and bug 1290056.
     let sourceInnerEl = dom.span({
+      key: "source-inner",
       className: "frame-link-source-inner",
       title: isLinkable ?
         l10n.getFormatStr("frame.viewsourceindebugger", tooltip) : tooltip,
@@ -217,7 +211,7 @@ module.exports = createClass({
       sourceEl = dom.a({
         onClick: e => {
           e.preventDefault();
-          onClick(this.getSource(frame));
+          onClick(this.getSourceForClick(frame));
         },
         href: source,
         className: "frame-link-source",
@@ -225,13 +219,18 @@ module.exports = createClass({
       }, sourceInnerEl);
     } else {
       sourceEl = dom.span({
+        key: "source",
         className: "frame-link-source",
       }, sourceInnerEl);
     }
     elements.push(sourceEl);
 
     if (showHost && host) {
-      elements.push(" ", dom.span({ className: "frame-link-host" }, host));
+      elements.push(" ");
+      elements.push(dom.span({
+        key: "host",
+        className: "frame-link-host",
+      }, host));
     }
 
     return dom.span(attributes, ...elements);

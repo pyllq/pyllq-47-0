@@ -11,11 +11,9 @@ this.EXPORTED_SYMBOLS = ["FxAccountsProfileClient", "FxAccountsProfileClientErro
 
 const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
-Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
 Cu.import("resource://gre/modules/FxAccounts.jsm");
-Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://services-common/rest.js");
 
 Cu.importGlobalProperties(["URL"]);
@@ -82,14 +80,14 @@ this.FxAccountsProfileClient.prototype = {
    *         Rejects: {FxAccountsProfileClientError} Profile client error.
    * @private
    */
-  _createRequest: Task.async(function* (path, method = "GET", etag = null) {
+  async _createRequest(path, method = "GET", etag = null) {
     let token = this.token;
     if (!token) {
       // tokens are cached, so getting them each request is cheap.
-      token = yield this.fxa.getOAuthToken(this.oauthOptions);
+      token = await this.fxa.getOAuthToken(this.oauthOptions);
     }
     try {
-      return (yield this._rawRequest(path, method, token, etag));
+      return (await this._rawRequest(path, method, token, etag));
     } catch (ex) {
       if (!(ex instanceof FxAccountsProfileClientError) || ex.code != 401) {
         throw ex;
@@ -100,22 +98,22 @@ this.FxAccountsProfileClient.prototype = {
       }
       // it's an auth error - assume our token expired and retry.
       log.info("Fetching the profile returned a 401 - revoking our token and retrying");
-      yield this.fxa.removeCachedOAuthToken({token});
-      token = yield this.fxa.getOAuthToken(this.oauthOptions);
+      await this.fxa.removeCachedOAuthToken({token});
+      token = await this.fxa.getOAuthToken(this.oauthOptions);
       // and try with the new token - if that also fails then we fail after
       // revoking the token.
       try {
-        return (yield this._rawRequest(path, method, token, etag));
+        return (await this._rawRequest(path, method, token, etag));
       } catch (ex) {
         if (!(ex instanceof FxAccountsProfileClientError) || ex.code != 401) {
           throw ex;
         }
         log.info("Retry fetching the profile still returned a 401 - revoking our token and failing");
-        yield this.fxa.removeCachedOAuthToken({token});
+        await this.fxa.removeCachedOAuthToken({token});
         throw ex;
       }
     }
-  }),
+  },
 
   /**
    * Remote "raw" request helper - doesn't handle auth errors and tokens.
@@ -127,7 +125,8 @@ this.FxAccountsProfileClient.prototype = {
    * @param {String} token
    * @param {String} etag
    * @return Promise
-   *         Resolves: {body: Object, etag: Object} Successful response from the Profile server.
+   *         Resolves: {body: Object, etag: Object} Successful response from the Profile server
+                        or null if 304 is hit (same ETag).
    *         Rejects: {FxAccountsProfileClientError} Profile client error.
    * @private
    */
@@ -145,33 +144,40 @@ this.FxAccountsProfileClient.prototype = {
 
       request.onComplete = function(error) {
         if (error) {
-          return reject(new FxAccountsProfileClientError({
+          reject(new FxAccountsProfileClientError({
             error: ERROR_NETWORK,
             errno: ERRNO_NETWORK,
             message: error.toString(),
           }));
+          return;
         }
 
         let body = null;
         try {
+          if (request.response.status == 304) {
+            resolve(null);
+            return;
+          }
           body = JSON.parse(request.response.body);
         } catch (e) {
-          return reject(new FxAccountsProfileClientError({
+          reject(new FxAccountsProfileClientError({
             error: ERROR_PARSE,
             errno: ERRNO_PARSE,
             code: request.response.status,
             message: request.response.body,
           }));
+          return;
         }
 
         // "response.success" means status code is 200
         if (request.response.success) {
-          return resolve({
+          resolve({
             body,
             etag: request.response.headers["etag"]
           });
+          return;
         }
-        return reject(new FxAccountsProfileClientError({
+        reject(new FxAccountsProfileClientError({
           error: body.error || ERROR_UNKNOWN,
           errno: body.errno || ERRNO_UNKNOWN_ERROR,
           code: request.response.status,
@@ -183,7 +189,7 @@ this.FxAccountsProfileClient.prototype = {
         request.get();
       } else {
         // method not supported
-        return reject(new FxAccountsProfileClientError({
+        reject(new FxAccountsProfileClientError({
           error: ERROR_NETWORK,
           errno: ERRNO_NETWORK,
           code: ERROR_CODE_METHOD_NOT_ALLOWED,

@@ -81,20 +81,10 @@ WatchpointMap::watch(JSContext* cx, HandleObject obj, HandleId id,
 }
 
 void
-WatchpointMap::unwatch(JSObject* obj, jsid id,
-                       JSWatchPointHandler* handlerp, JSObject** closurep)
+WatchpointMap::unwatch(JSObject* obj, jsid id)
 {
-    if (Map::Ptr p = map.lookup(WatchKey(obj, id))) {
-        if (handlerp)
-            *handlerp = p->value().handler;
-        if (closurep) {
-            // Read barrier to prevent an incorrectly gray closure from escaping the
-            // watchpoint. See the comment before UnmarkGrayChildren in gc/Marking.cpp
-            JS::ExposeObjectToActiveJS(p->value().closure);
-            *closurep = p->value().closure;
-        }
+    if (Map::Ptr p = map.lookup(WatchKey(obj, id)))
         map.remove(p);
-    }
 }
 
 void
@@ -203,6 +193,9 @@ WatchpointMap::trace(JSTracer* trc)
 /* static */ void
 WatchpointMap::sweepAll(JSRuntime* rt)
 {
+    // This is called during compacting GC. Watchpoint closure pointers can be
+    // cross-compartment so we have to sweep all watchpoint maps, not just those
+    // owned by compartments we are compacting.
     for (GCCompartmentsIter c(rt); !c.done(); c.next()) {
         if (WatchpointMap* wpmap = c->watchpointMap)
             wpmap->sweep();
@@ -227,7 +220,7 @@ WatchpointMap::sweep()
 void
 WatchpointMap::traceAll(WeakMapTracer* trc)
 {
-    JSRuntime* rt = trc->context;
+    JSRuntime* rt = trc->runtime;
     for (CompartmentsIter comp(rt, SkipAtoms); !comp.done(); comp.next()) {
         if (WatchpointMap* wpmap = comp->watchpointMap)
             wpmap->trace(trc);

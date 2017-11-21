@@ -451,7 +451,7 @@ class MozbuildObject(ProcessExecutionMixin):
             srcdir=False, allow_parallel=True, line_handler=None,
             append_env=None, explicit_env=None, ignore_errors=False,
             ensure_exit_code=0, silent=True, print_directory=True,
-            pass_thru=False, num_jobs=0):
+            pass_thru=False, num_jobs=0, keep_going=False):
         """Invoke make.
 
         directory -- Relative directory to look for Makefile in.
@@ -512,6 +512,9 @@ class MozbuildObject(ProcessExecutionMixin):
         # these to measure progress.
         if print_directory:
             args.append('-w')
+
+        if keep_going:
+            args.append('-k')
 
         if isinstance(target, list):
             args.extend(target)
@@ -624,6 +627,10 @@ class MozbuildObject(ProcessExecutionMixin):
         self.virtualenv_manager.activate()
 
 
+    def _set_log_level(self, verbose):
+        self.log_manager.terminal_handler.setLevel(logging.INFO if not verbose else logging.DEBUG)
+
+
 class MachCommandBase(MozbuildObject):
     """Base class for mach command providers that wish to be MozbuildObjects.
 
@@ -653,13 +660,7 @@ class MachCommandBase(MozbuildObject):
                 # of the wrong objdir when the current objdir is ambiguous.
                 config_topobjdir = dummy.resolve_mozconfig_topobjdir()
 
-                try:
-                    universal_bin = dummy.substs.get('UNIVERSAL_BINARY')
-                except:
-                    universal_bin = False
-
-                if config_topobjdir and not (samepath(topobjdir, config_topobjdir) or
-                        universal_bin and topobjdir.startswith(config_topobjdir)):
+                if config_topobjdir and not samepath(topobjdir, config_topobjdir):
                     raise ObjdirMismatchException(topobjdir, config_topobjdir)
         except BuildEnvironmentNotFoundException:
             pass
@@ -741,37 +742,6 @@ class MachCommandConditions(object):
         return False
 
     @staticmethod
-    def is_mulet(cls):
-        """Must have a Mulet build."""
-        if hasattr(cls, 'substs'):
-            return cls.substs.get('MOZ_BUILD_APP') == 'b2g/dev'
-        return False
-
-    @staticmethod
-    def is_b2g(cls):
-        """Must have a B2G build."""
-        if hasattr(cls, 'substs'):
-            return cls.substs.get('MOZ_WIDGET_TOOLKIT') == 'gonk'
-        return False
-
-    @staticmethod
-    def is_b2g_desktop(cls):
-        """Must have a B2G desktop build."""
-        if hasattr(cls, 'substs'):
-            return cls.substs.get('MOZ_BUILD_APP') == 'b2g' and \
-                   cls.substs.get('MOZ_WIDGET_TOOLKIT') != 'gonk'
-        return False
-
-    @staticmethod
-    def is_emulator(cls):
-        """Must have a B2G build with an emulator configured."""
-        try:
-            return MachCommandConditions.is_b2g(cls) and \
-                   cls.device_name.startswith('emulator')
-        except AttributeError:
-            return False
-
-    @staticmethod
     def is_android(cls):
         """Must have an Android build."""
         if hasattr(cls, 'substs'):
@@ -781,18 +751,17 @@ class MachCommandConditions(object):
     @staticmethod
     def is_hg(cls):
         """Must have a mercurial source checkout."""
-        if hasattr(cls, 'substs'):
-            top_srcdir = cls.substs.get('top_srcdir')
-            return top_srcdir and os.path.isdir(os.path.join(top_srcdir, '.hg'))
-        return False
+        return getattr(cls, 'substs', {}).get('VCS_CHECKOUT_TYPE') == 'hg'
 
     @staticmethod
     def is_git(cls):
         """Must have a git source checkout."""
-        if hasattr(cls, 'substs'):
-            top_srcdir = cls.substs.get('top_srcdir')
-            return top_srcdir and os.path.isdir(os.path.join(top_srcdir, '.git'))
-        return False
+        return getattr(cls, 'substs', {}).get('VCS_CHECKOUT_TYPE') == 'git'
+
+    @staticmethod
+    def is_artifact_build(cls):
+        """Must be an artifact build."""
+        return getattr(cls, 'substs', {}).get('MOZ_ARTIFACT_BUILDS')
 
 
 class PathArgument(object):

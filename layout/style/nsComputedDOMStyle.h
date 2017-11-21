@@ -74,10 +74,16 @@ public:
     eAll // Includes all stylesheets
   };
 
+  enum AnimationFlag {
+    eWithAnimation,
+    eWithoutAnimation,
+  };
+
   nsComputedDOMStyle(mozilla::dom::Element* aElement,
                      const nsAString& aPseudoElt,
                      nsIPresShell* aPresShell,
-                     StyleType aStyleType);
+                     StyleType aStyleType,
+                     AnimationFlag aFlag = eWithAnimation);
 
   virtual nsINode *GetParentObject() override
   {
@@ -85,28 +91,38 @@ public:
   }
 
   static already_AddRefed<nsStyleContext>
-  GetStyleContextForElement(mozilla::dom::Element* aElement, nsIAtom* aPseudo,
-                            nsIPresShell* aPresShell,
-                            StyleType aStyleType = eAll);
-
-  enum AnimationFlag {
-    eWithAnimation,
-    eWithoutAnimation,
-  };
-  // Similar to the above but ignoring animation rules and with StyleType::eAll.
-  static already_AddRefed<nsStyleContext>
-  GetStyleContextForElementWithoutAnimation(mozilla::dom::Element* aElement,
-                                            nsIAtom* aPseudo,
-                                            nsIPresShell* aPresShell);
+  GetStyleContext(mozilla::dom::Element* aElement, nsIAtom* aPseudo,
+                  nsIPresShell* aPresShell,
+                  StyleType aStyleType = eAll);
 
   static already_AddRefed<nsStyleContext>
-  GetStyleContextForElementNoFlush(mozilla::dom::Element* aElement,
+  GetStyleContextNoFlush(mozilla::dom::Element* aElement,
+                         nsIAtom* aPseudo,
+                         nsIPresShell* aPresShell,
+                         StyleType aStyleType = eAll)
+  {
+    return DoGetStyleContextNoFlush(aElement,
+                                    aPseudo,
+                                    aPresShell,
+                                    aStyleType,
+                                    eWithAnimation);
+  }
+
+  static already_AddRefed<nsStyleContext>
+  GetUnanimatedStyleContextNoFlush(mozilla::dom::Element* aElement,
                                    nsIAtom* aPseudo,
                                    nsIPresShell* aPresShell,
-                                   StyleType aStyleType = eAll);
+                                   StyleType aStyleType = eAll)
+  {
+    return DoGetStyleContextNoFlush(aElement,
+                                    aPseudo,
+                                    aPresShell,
+                                    aStyleType,
+                                    eWithoutAnimation);
+  }
 
   static nsIPresShell*
-  GetPresShellForContent(nsIContent* aContent);
+  GetPresShellForContent(const nsIContent* aContent);
 
   // Helper for nsDOMWindowUtils::GetVisitedDependentComputedStyle
   void SetExposeVisitedStyle(bool aExpose) {
@@ -121,6 +137,7 @@ public:
   virtual nsresult SetCSSDeclaration(mozilla::DeclarationBlock*) override;
   virtual nsIDocument* DocToUpdate() override;
   virtual void GetCSSParsingEnvironment(CSSParsingEnvironment& aCSSParseEnv) override;
+  nsDOMCSSDeclaration::ServoCSSParsingEnvironment GetServoCSSParsingEnvironment() const final;
 
   static already_AddRefed<nsROCSSPrimitiveValue>
     MatrixToCSSValue(const mozilla::gfx::Matrix4x4& aMatrix);
@@ -151,15 +168,16 @@ private:
 
   // Helper functions called by UpdateCurrentStyleSources.
   void ClearStyleContext();
-  void SetResolvedStyleContext(RefPtr<nsStyleContext>&& aContext);
-  void SetFrameStyleContext(nsStyleContext* aContext);
+  void SetResolvedStyleContext(RefPtr<nsStyleContext>&& aContext,
+                               uint64_t aGeneration);
+  void SetFrameStyleContext(nsStyleContext* aContext, uint64_t aGeneration);
 
   static already_AddRefed<nsStyleContext>
-  DoGetStyleContextForElementNoFlush(mozilla::dom::Element* aElement,
-                                     nsIAtom* aPseudo,
-                                     nsIPresShell* aPresShell,
-                                     StyleType aStyleType,
-                                     AnimationFlag aAnimationFlag);
+  DoGetStyleContextNoFlush(mozilla::dom::Element* aElement,
+                           nsIAtom* aPseudo,
+                           nsIPresShell* aPresShell,
+                           StyleType aStyleType,
+                           AnimationFlag aAnimationFlag);
 
 #define STYLE_STRUCT(name_, checkdata_cb_)                              \
   const nsStyle##name_ * Style##name_() {                               \
@@ -193,7 +211,11 @@ private:
 
   already_AddRefed<CSSValue> GetMarginWidthFor(mozilla::Side aSide);
 
+  already_AddRefed<CSSValue> GetFallbackValue(const nsStyleSVGPaint* aPaint);
+
   already_AddRefed<CSSValue> GetSVGPaintFor(bool aFill);
+
+  already_AddRefed<CSSValue> GetTransformValue(nsCSSValueSharedList* aSpecifiedTransform);
 
   // Appends all aLineNames (may be empty) space-separated to aResult.
   void AppendGridLineNames(nsString& aResult,
@@ -434,10 +456,12 @@ private:
   already_AddRefed<CSSValue> DoGetTextEmphasisPosition();
   already_AddRefed<CSSValue> DoGetTextEmphasisStyle();
   already_AddRefed<CSSValue> DoGetTextIndent();
+  already_AddRefed<CSSValue> DoGetTextJustify();
   already_AddRefed<CSSValue> DoGetTextOrientation();
   already_AddRefed<CSSValue> DoGetTextOverflow();
-  already_AddRefed<CSSValue> DoGetTextTransform();
   already_AddRefed<CSSValue> DoGetTextShadow();
+  already_AddRefed<CSSValue> DoGetTextSizeAdjust();
+  already_AddRefed<CSSValue> DoGetTextTransform();
   already_AddRefed<CSSValue> DoGetLetterSpacing();
   already_AddRefed<CSSValue> DoGetWordSpacing();
   already_AddRefed<CSSValue> DoGetWhiteSpace();
@@ -445,7 +469,6 @@ private:
   already_AddRefed<CSSValue> DoGetOverflowWrap();
   already_AddRefed<CSSValue> DoGetHyphens();
   already_AddRefed<CSSValue> DoGetTabSize();
-  already_AddRefed<CSSValue> DoGetTextSizeAdjust();
   already_AddRefed<CSSValue> DoGetWebkitTextFillColor();
   already_AddRefed<CSSValue> DoGetWebkitTextStrokeColor();
   already_AddRefed<CSSValue> DoGetWebkitTextStrokeWidth();
@@ -508,10 +531,14 @@ private:
   already_AddRefed<CSSValue> DoGetUserModify();
   already_AddRefed<CSSValue> DoGetUserSelect();
   already_AddRefed<CSSValue> DoGetWindowDragging();
+  already_AddRefed<CSSValue> DoGetWindowOpacity();
+  already_AddRefed<CSSValue> DoGetWindowTransform();
+  already_AddRefed<CSSValue> DoGetWindowTransformOrigin();
 
   /* Column properties */
   already_AddRefed<CSSValue> DoGetColumnCount();
   already_AddRefed<CSSValue> DoGetColumnFill();
+  already_AddRefed<CSSValue> DoGetColumnSpan();
   already_AddRefed<CSSValue> DoGetColumnWidth();
   already_AddRefed<CSSValue> DoGetColumnGap();
   already_AddRefed<CSSValue> DoGetColumnRuleWidth();
@@ -592,6 +619,8 @@ private:
   already_AddRefed<CSSValue> DoGetMaskType();
   already_AddRefed<CSSValue> DoGetPaintOrder();
 
+  already_AddRefed<CSSValue> DoGetContextProperties();
+
   /* Custom properties */
   already_AddRefed<CSSValue> DoGetCustomProperty(const nsAString& aPropertyName);
 
@@ -647,6 +676,12 @@ private:
                               nscoord aDefaultValue,
                               bool aClampNegativeCalc);
 
+  /**
+   * Append coord values from four sides. It omits values when possible.
+   */
+  void AppendFourSideCoordValues(nsDOMCSSValueList* aList,
+                                 const nsStyleSides& aValues);
+
   bool GetCBContentWidth(nscoord& aWidth);
   bool GetCBContentHeight(nscoord& aWidth);
   bool GetScrollFrameContentWidth(nscoord& aWidth);
@@ -661,9 +696,8 @@ private:
   already_AddRefed<CSSValue> CreatePrimitiveValueForStyleFilter(
     const nsStyleFilter& aStyleFilter);
 
-  template<typename ReferenceBox>
   already_AddRefed<CSSValue>
-  GetShapeSource(const mozilla::StyleShapeSource<ReferenceBox>& aShapeSource,
+  GetShapeSource(const mozilla::StyleShapeSource& aShapeSource,
                  const KTableEntry aBoxKeywordTable[]);
 
   template<typename ReferenceBox>
@@ -746,6 +780,11 @@ private:
    */
   bool mResolvedStyleContext;
 
+  /**
+   * Whether we include animation rules in the computed style.
+   */
+  AnimationFlag mAnimationFlag;
+
 #ifdef DEBUG
   bool mFlushedPendingReflows;
 #endif
@@ -756,6 +795,8 @@ NS_NewComputedDOMStyle(mozilla::dom::Element* aElement,
                        const nsAString& aPseudoElt,
                        nsIPresShell* aPresShell,
                        nsComputedDOMStyle::StyleType aStyleType =
-                         nsComputedDOMStyle::eAll);
+                         nsComputedDOMStyle::eAll,
+                       nsComputedDOMStyle::AnimationFlag aFlag =
+                         nsComputedDOMStyle::eWithAnimation);
 
 #endif /* nsComputedDOMStyle_h__ */

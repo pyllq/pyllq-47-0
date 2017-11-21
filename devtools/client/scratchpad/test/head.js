@@ -18,7 +18,7 @@ const promise = require("promise");
 var gScratchpadWindow; // Reference to the Scratchpad chrome window object
 
 flags.testing = true;
-SimpleTest.registerCleanupFunction(() => {
+registerCleanupFunction(() => {
   flags.testing = false;
 });
 
@@ -89,12 +89,11 @@ function openTabAndScratchpad(aOptions = {})
 {
   waitForExplicitFinish();
   return new promise(resolve => {
-    gBrowser.selectedTab = gBrowser.addTab();
+    gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
     let {selectedBrowser} = gBrowser;
-    selectedBrowser.addEventListener("load", function onLoad() {
-      selectedBrowser.removeEventListener("load", onLoad, true);
+    selectedBrowser.addEventListener("load", function () {
       openScratchpad((win, sp) => resolve([win, sp]), aOptions);
-    }, true);
+    }, {capture: true, once: true});
     content.location = "data:text/html;charset=utf8," + (aOptions.tabContent || "");
   });
 }

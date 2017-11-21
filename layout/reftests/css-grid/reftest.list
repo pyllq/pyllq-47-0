@@ -1,7 +1,7 @@
 default-preferences pref(layout.css.grid.enabled,true)
 
-fails == grid-whitespace-handling-1a.xhtml grid-whitespace-handling-1-ref.xhtml
-fails == grid-whitespace-handling-1b.xhtml grid-whitespace-handling-1-ref.xhtml
+fails-if(!styloVsGecko) == grid-whitespace-handling-1a.xhtml grid-whitespace-handling-1-ref.xhtml
+fails-if(!styloVsGecko) skip-if(styloVsGecko) == grid-whitespace-handling-1b.xhtml grid-whitespace-handling-1-ref.xhtml
 == grid-whitespace-handling-2.xhtml  grid-whitespace-handling-2-ref.xhtml
 == grid-placement-definite-001.html grid-placement-definite-001-ref.html
 == grid-placement-definite-002.html grid-placement-definite-002-ref.html
@@ -116,6 +116,12 @@ skip-if(Android) == grid-auto-min-sizing-percent-001.html grid-auto-min-sizing-p
 == grid-item-auto-min-size-clamp-005.html grid-item-auto-min-size-clamp-005-ref.html
 == grid-item-auto-min-size-clamp-006.html grid-item-auto-min-size-clamp-006-ref.html
 == grid-item-auto-min-size-clamp-007.html grid-item-auto-min-size-clamp-007-ref.html
+== grid-item-overflow-stretch-001.html grid-item-overflow-stretch-001-ref.html
+== grid-item-overflow-stretch-002.html grid-item-overflow-stretch-002-ref.html
+== grid-item-overflow-stretch-003.html grid-item-overflow-stretch-003-ref.html
+== grid-item-overflow-stretch-004.html grid-item-overflow-stretch-004-ref.html
+== grid-item-overflow-stretch-005.html grid-item-overflow-stretch-005-ref.html
+== grid-item-overflow-stretch-006.html grid-item-overflow-stretch-006-ref.html
 == grid-item-canvas-001.html grid-item-canvas-001-ref.html
 skip-if(Android) == grid-item-button-001.html grid-item-button-001-ref.html
 == grid-item-table-stretch-001.html grid-item-table-stretch-001-ref.html

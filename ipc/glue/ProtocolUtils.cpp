@@ -11,12 +11,15 @@
 #include <errno.h>
 #endif
 
+#include "mozilla/IntegerPrintfMacros.h"
+
 #include "mozilla/ipc/ProtocolUtils.h"
 
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/Transport.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/SystemGroup.h"
 #include "mozilla/Unused.h"
 #include "nsPrintfCString.h"
 
@@ -73,6 +76,7 @@ public:
                 NestedLevel aNestedLevel = NOT_NESTED)
     : IPC::Message(MSG_ROUTING_CONTROL, // these only go to top-level actors
                    CHANNEL_OPENED_MESSAGE_TYPE,
+                   0,
                    aNestedLevel)
   {
     IPC::WriteParam(this, aDescriptor);
@@ -232,7 +236,7 @@ AnnotateSystemError()
   if (error) {
     CrashReporter::AnnotateCrashReport(
       NS_LITERAL_CSTRING("IPCSystemError"),
-      nsPrintfCString("%lld", error));
+      nsPrintfCString("%" PRId64, error));
   }
 }
 #endif
@@ -345,9 +349,17 @@ UnionTypeReadError(const char* aUnionName)
   NS_RUNTIMEABORT(message.get());
 }
 
-void ArrayLengthReadError(const char* aElementName)
+void
+ArrayLengthReadError(const char* aElementName)
 {
   nsPrintfCString message("error deserializing length of %s[]", aElementName);
+  NS_RUNTIMEABORT(message.get());
+}
+
+void
+SentinelReadError(const char* aClassName)
+{
+  nsPrintfCString message("incorrect sentinel when reading %s", aClassName);
   NS_RUNTIMEABORT(message.get());
 }
 
@@ -537,10 +549,42 @@ IProtocol::SetEventTargetForActor(IProtocol* aActor, nsIEventTarget* aEventTarge
 }
 
 void
+IProtocol::ReplaceEventTargetForActor(IProtocol* aActor,
+                                      nsIEventTarget* aEventTarget)
+{
+  // Ensure the actor has been registered.
+  MOZ_ASSERT(aActor->Manager());
+  ReplaceEventTargetForActorInternal(aActor, aEventTarget);
+}
+
+void
 IProtocol::SetEventTargetForActorInternal(IProtocol* aActor,
                                           nsIEventTarget* aEventTarget)
 {
   Manager()->SetEventTargetForActorInternal(aActor, aEventTarget);
+}
+
+void
+IProtocol::ReplaceEventTargetForActorInternal(IProtocol* aActor,
+                                              nsIEventTarget* aEventTarget)
+{
+  Manager()->ReplaceEventTargetForActorInternal(aActor, aEventTarget);
+}
+
+nsIEventTarget*
+IProtocol::GetActorEventTarget()
+{
+  // We should only call this function when this actor has been registered and
+  // is not unregistered yet.
+  MOZ_RELEASE_ASSERT(mId != kNullActorId && mId != kFreedActorId);
+  RefPtr<nsIEventTarget> target = Manager()->GetActorEventTargetInternal(this);
+  return target;
+}
+
+already_AddRefed<nsIEventTarget>
+IProtocol::GetActorEventTargetInternal(IProtocol* aActor)
+{
+  return Manager()->GetActorEventTargetInternal(aActor);
 }
 
 IToplevelProtocol::IToplevelProtocol(ProtocolId aProtoId, Side aSide)
@@ -600,7 +644,16 @@ IToplevelProtocol::Open(MessageChannel* aChannel,
                         mozilla::ipc::Side aSide)
 {
   SetOtherProcessId(base::GetCurrentProcId());
-  return GetIPCChannel()->Open(aChannel, aMessageLoop, aSide);
+  return GetIPCChannel()->Open(aChannel, aMessageLoop->SerialEventTarget(), aSide);
+}
+
+bool
+IToplevelProtocol::Open(MessageChannel* aChannel,
+                        nsIEventTarget* aEventTarget,
+                        mozilla::ipc::Side aSide)
+{
+  SetOtherProcessId(base::GetCurrentProcId());
+  return GetIPCChannel()->Open(aChannel, aEventTarget, aSide);
 }
 
 void
@@ -773,9 +826,18 @@ IToplevelProtocol::ShmemDestroyed(const Message& aMsg)
 already_AddRefed<nsIEventTarget>
 IToplevelProtocol::GetMessageEventTarget(const Message& aMsg)
 {
+  if (IsMainThreadProtocol() && SystemGroup::Initialized()) {
+    if (aMsg.type() == SHMEM_CREATED_MESSAGE_TYPE ||
+        aMsg.type() == SHMEM_DESTROYED_MESSAGE_TYPE) {
+      return do_AddRef(SystemGroup::EventTargetFor(TaskCategory::Other));
+    }
+  }
+
   int32_t route = aMsg.routing_id();
 
-  MutexAutoLock lock(mEventTargetMutex);
+  Maybe<MutexAutoLock> lock;
+  lock.emplace(mEventTargetMutex);
+
   nsCOMPtr<nsIEventTarget> target = mEventTargetMap.Lookup(route);
 
   if (aMsg.is_constructor()) {
@@ -794,13 +856,18 @@ IToplevelProtocol::GetMessageEventTarget(const Message& aMsg)
     }
 
     mEventTargetMap.AddWithID(target, handle.mId);
+  } else if (!target) {
+    // We don't need the lock after this point.
+    lock.reset();
+
+    target = GetSpecificMessageEventTarget(aMsg);
   }
 
   return target.forget();
 }
 
 already_AddRefed<nsIEventTarget>
-IToplevelProtocol::GetActorEventTarget(IProtocol* aActor)
+IToplevelProtocol::GetActorEventTargetInternal(IProtocol* aActor)
 {
   MOZ_RELEASE_ASSERT(aActor->Id() != kNullActorId && aActor->Id() != kFreedActorId);
 
@@ -809,10 +876,26 @@ IToplevelProtocol::GetActorEventTarget(IProtocol* aActor)
   return target.forget();
 }
 
+already_AddRefed<nsIEventTarget>
+IToplevelProtocol::GetActorEventTarget(IProtocol* aActor)
+{
+  return GetActorEventTargetInternal(aActor);
+}
+
+nsIEventTarget*
+IToplevelProtocol::GetActorEventTarget()
+{
+  // The EventTarget of a ToplevelProtocol shall never be set.
+  return nullptr;
+}
+
 void
 IToplevelProtocol::SetEventTargetForActorInternal(IProtocol* aActor,
                                                   nsIEventTarget* aEventTarget)
 {
+  // The EventTarget of a ToplevelProtocol shall never be set.
+  MOZ_RELEASE_ASSERT(aActor != this);
+
   // We should only call this function on actors that haven't been used for IPC
   // code yet. Otherwise we'll be posting stuff to the wrong event target before
   // we're called.
@@ -825,6 +908,22 @@ IToplevelProtocol::SetEventTargetForActorInternal(IProtocol* aActor,
 
   MutexAutoLock lock(mEventTargetMutex);
   mEventTargetMap.AddWithID(aEventTarget, id);
+}
+
+void
+IToplevelProtocol::ReplaceEventTargetForActorInternal(
+  IProtocol* aActor,
+  nsIEventTarget* aEventTarget)
+{
+  // The EventTarget of a ToplevelProtocol shall never be set.
+  MOZ_RELEASE_ASSERT(aActor != this);
+
+  int32_t id = aActor->Id();
+  // The ID of the actor should have existed.
+  MOZ_RELEASE_ASSERT(id!= kNullActorId && id!= kFreedActorId);
+
+  MutexAutoLock lock(mEventTargetMutex);
+  mEventTargetMap.ReplaceWithID(aEventTarget, id);
 }
 
 } // namespace ipc

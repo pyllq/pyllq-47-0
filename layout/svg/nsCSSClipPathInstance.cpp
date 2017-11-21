@@ -7,6 +7,7 @@
 #include "nsCSSClipPathInstance.h"
 
 #include "gfx2DGlue.h"
+#include "gfxContext.h"
 #include "gfxPlatform.h"
 #include "mozilla/dom/SVGSVGElement.h"
 #include "mozilla/gfx/2D.h"
@@ -14,7 +15,7 @@
 #include "mozilla/ShapeUtils.h"
 #include "nsCSSRendering.h"
 #include "nsIFrame.h"
-#include "nsRenderingContext.h"
+#include "nsLayoutUtils.h"
 #include "nsRuleNode.h"
 #include "nsSVGElement.h"
 #include "nsSVGUtils.h"
@@ -135,32 +136,12 @@ nsCSSClipPathInstance::CreateClipPathEllipse(DrawTarget* aDrawTarget,
 
   nsPoint center =
     ShapeUtils::ComputeCircleOrEllipseCenter(basicShape, aRefBox);
-
-  const nsTArray<nsStyleCoord>& coords = basicShape->Coordinates();
-  MOZ_ASSERT(coords.Length() == 2, "wrong number of arguments");
-  nscoord rx = 0, ry = 0;
-  if (coords[0].GetUnit() == eStyleUnit_Enumerated) {
-    rx = ShapeUtils::ComputeShapeRadius(coords[0].GetEnumValue<StyleShapeRadius>(),
-                                        center.x,
-                                        aRefBox.x,
-                                        aRefBox.x + aRefBox.width);
-  } else {
-    rx = nsRuleNode::ComputeCoordPercentCalc(coords[0], aRefBox.width);
-  }
-  if (coords[1].GetUnit() == eStyleUnit_Enumerated) {
-    ry = ShapeUtils::ComputeShapeRadius(coords[1].GetEnumValue<StyleShapeRadius>(),
-                                        center.y,
-                                        aRefBox.y,
-                                        aRefBox.y + aRefBox.height);
-  } else {
-    ry = nsRuleNode::ComputeCoordPercentCalc(coords[1], aRefBox.height);
-  }
-
+  nsSize radii = ShapeUtils::ComputeEllipseRadii(basicShape, center, aRefBox);
   nscoord appUnitsPerDevPixel =
     mTargetFrame->PresContext()->AppUnitsPerDevPixel();
   EllipseToBezier(builder.get(),
                   Point(center.x, center.y) / appUnitsPerDevPixel,
-                  Size(rx, ry) / appUnitsPerDevPixel);
+                  Size(radii.width, radii.height) / appUnitsPerDevPixel);
   builder->Close();
   return builder->Finish();
 }
@@ -170,23 +151,22 @@ nsCSSClipPathInstance::CreateClipPathPolygon(DrawTarget* aDrawTarget,
                                              const nsRect& aRefBox)
 {
   StyleBasicShape* basicShape = mClipPathStyle.GetBasicShape();
-  const nsTArray<nsStyleCoord>& coords = basicShape->Coordinates();
-  MOZ_ASSERT(coords.Length() % 2 == 0 &&
-             coords.Length() >= 2, "wrong number of arguments");
-
   FillRule fillRule = basicShape->GetFillRule() == StyleFillRule::Nonzero ?
                         FillRule::FILL_WINDING : FillRule::FILL_EVEN_ODD;
   RefPtr<PathBuilder> builder = aDrawTarget->CreatePathBuilder(fillRule);
 
-  nscoord x = nsRuleNode::ComputeCoordPercentCalc(coords[0], aRefBox.width);
-  nscoord y = nsRuleNode::ComputeCoordPercentCalc(coords[1], aRefBox.height);
-  nscoord appUnitsPerDevPixel =
-    mTargetFrame->PresContext()->AppUnitsPerDevPixel();
-  builder->MoveTo(Point(aRefBox.x + x, aRefBox.y + y) / appUnitsPerDevPixel);
-  for (size_t i = 2; i < coords.Length(); i += 2) {
-    x = nsRuleNode::ComputeCoordPercentCalc(coords[i], aRefBox.width);
-    y = nsRuleNode::ComputeCoordPercentCalc(coords[i + 1], aRefBox.height);
-    builder->LineTo(Point(aRefBox.x + x, aRefBox.y + y) / appUnitsPerDevPixel);
+  nsTArray<nsPoint> vertices =
+    ShapeUtils::ComputePolygonVertices(basicShape, aRefBox);
+  if (vertices.IsEmpty()) {
+    MOZ_ASSERT_UNREACHABLE(
+      "ComputePolygonVertices() should've given us some vertices!");
+  } else {
+    nscoord appUnitsPerDevPixel =
+      mTargetFrame->PresContext()->AppUnitsPerDevPixel();
+    builder->MoveTo(NSPointToPoint(vertices[0], appUnitsPerDevPixel));
+    for (size_t i = 1; i < vertices.Length(); ++i) {
+      builder->LineTo(NSPointToPoint(vertices[i], appUnitsPerDevPixel));
+    }
   }
   builder->Close();
   return builder->Finish();
@@ -197,28 +177,18 @@ nsCSSClipPathInstance::CreateClipPathInset(DrawTarget* aDrawTarget,
                                            const nsRect& aRefBox)
 {
   StyleBasicShape* basicShape = mClipPathStyle.GetBasicShape();
-  const nsTArray<nsStyleCoord>& coords = basicShape->Coordinates();
-  MOZ_ASSERT(coords.Length() == 4, "wrong number of arguments");
 
   RefPtr<PathBuilder> builder = aDrawTarget->CreatePathBuilder();
 
   nscoord appUnitsPerDevPixel =
     mTargetFrame->PresContext()->AppUnitsPerDevPixel();
 
-  nsMargin inset(nsRuleNode::ComputeCoordPercentCalc(coords[0], aRefBox.height),
-                 nsRuleNode::ComputeCoordPercentCalc(coords[1], aRefBox.width),
-                 nsRuleNode::ComputeCoordPercentCalc(coords[2], aRefBox.height),
-                 nsRuleNode::ComputeCoordPercentCalc(coords[3], aRefBox.width));
-
-  nsRect insetRect(aRefBox);
-  insetRect.Deflate(inset);
+  nsRect insetRect = ShapeUtils::ComputeInsetRect(basicShape, aRefBox);
   const Rect insetRectPixels = NSRectToRect(insetRect, appUnitsPerDevPixel);
-  const nsStyleCorners& radius = basicShape->GetRadius();
-
   nscoord appUnitsRadii[8];
 
-  if (nsIFrame::ComputeBorderRadii(radius, insetRect.Size(), aRefBox.Size(),
-                                   Sides(), appUnitsRadii)) {
+  if (ShapeUtils::ComputeInsetRadii(basicShape, insetRect, aRefBox,
+                                    appUnitsRadii)) {
     RectCornerRadii corners;
     nsCSSRendering::ComputePixelRadii(appUnitsRadii,
                                       appUnitsPerDevPixel, &corners);

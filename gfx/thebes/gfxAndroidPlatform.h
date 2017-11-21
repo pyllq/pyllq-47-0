@@ -6,7 +6,6 @@
 #ifndef GFX_PLATFORM_ANDROID_H
 #define GFX_PLATFORM_ANDROID_H
 
-#include "gfxFT2Fonts.h"
 #include "gfxPlatform.h"
 #include "gfxUserFontSet.h"
 #include "nsCOMPtr.h"
@@ -41,7 +40,6 @@ public:
     void GetSystemFontList(InfallibleTArray<FontListEntry>* retValue);
 
     // platform implementations of font functions
-    virtual bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags) override;
     virtual gfxPlatformFontList* CreatePlatformFontList() override;
 
     virtual void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,

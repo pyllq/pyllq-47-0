@@ -52,9 +52,10 @@ function nsFilePicker() {
   /* attributes */
   this.mDefaultString = "";
   this.mFilterIndex = 0;
-  this.mFilterTitles = new Array();
-  this.mFilters = new Array();
+  this.mFilterTitles = [];
+  this.mFilters = [];
   this.mDisplayDirectory = null;
+  this.mDisplaySpecialDirectory = null;
   if (lastDirectory) {
     try {
       var dir = Components.classes[LOCAL_FILE_CONTRACTID].createInstance(nsILocalFile);
@@ -87,6 +88,14 @@ nsFilePicker.prototype = {
                .QueryInterface(nsILocalFile);
   },
 
+  /* attribute AString displaySpecialDirectory; */
+  set displaySpecialDirectory(a) {
+    this.mDisplaySpecialDirectory = a;
+  },
+  get displaySpecialDirectory() {
+    return this.mDisplaySpecialDirectory;
+  },
+
   /* readonly attribute nsILocalFile file; */
   get file() { return this.mFilesEnumerator.mFiles[0]; },
 
@@ -104,35 +113,6 @@ nsFilePicker.prototype = {
     if (!this.mFilesEnumerator) {
       return null;
     }
-
-    if (!this.mDOMFilesEnumerator) {
-      this.mDOMFilesEnumerator = {
-        QueryInterface: XPCOMUtils.generateQI([Components.interfaces.nsISimpleEnumerator]),
-
-        mFiles: [],
-        mIndex: 0,
-
-        hasMoreElements() {
-          return (this.mIndex < this.mFiles.length);
-        },
-
-        getNext() {
-          if (this.mIndex >= this.mFiles.length) {
-            throw Components.results.NS_ERROR_FAILURE;
-          }
-          return this.mFiles[this.mIndex++];
-        }
-      };
-
-      var utils = this.mParentWindow.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-                                    .getInterface(Components.interfaces.nsIDOMWindowUtils);
-
-      for (var i = 0; i < this.mFilesEnumerator.mFiles.length; ++i) {
-        var file = utils.wrapDOMFile(this.mFilesEnumerator.mFiles[i]);
-        this.mDOMFilesEnumerator.mFiles.push(file);
-      }
-    }
-
     return this.mDOMFilesEnumerator;
   },
 
@@ -230,16 +210,54 @@ nsFilePicker.prototype = {
   open(aFilePickerShownCallback) {
     var tm = Components.classes["@mozilla.org/thread-manager;1"]
                        .getService(Components.interfaces.nsIThreadManager);
-    tm.mainThread.dispatch(function() {
+    tm.dispatchToMainThread(() => {
       let result = Components.interfaces.nsIFilePicker.returnCancel;
       try {
         result = this.show();
       } catch (ex) {
       }
-      if (aFilePickerShownCallback) {
-        aFilePickerShownCallback.done(result);
+
+      let promises = [];
+
+      // Let's create the DOMFileEnumerator right now because it requires some
+      // async operation.
+      if (this.mFilesEnumerator) {
+        this.mDOMFilesEnumerator = {
+          QueryInterface: XPCOMUtils.generateQI([Components.interfaces.nsISimpleEnumerator]),
+
+          mFiles: [],
+          mIndex: 0,
+
+          hasMoreElements() {
+            return (this.mIndex < this.mFiles.length);
+          },
+
+          getNext() {
+            if (this.mIndex >= this.mFiles.length) {
+              throw Components.results.NS_ERROR_FAILURE;
+            }
+            return this.mFiles[this.mIndex++];
+          }
+        };
+
+        for (let i = 0; i < this.mFilesEnumerator.mFiles.length; ++i) {
+          if (this.mFilesEnumerator.mFiles[i].exists()) {
+            let promise =
+              this.mParentWindow.File.createFromNsIFile(
+                this.mFilesEnumerator.mFiles[i]).then(file => {
+                  this.mDOMFilesEnumerator.mFiles.push(file);
+                });
+            promises.push(promise);
+          }
+        }
       }
-    }.bind(this), Components.interfaces.nsIThread.DISPATCH_NORMAL);
+
+      Promise.all(promises).then(() => {
+        if (aFilePickerShownCallback) {
+          aFilePickerShownCallback.done(result);
+        }
+      });
+    });
   },
 
   show() {
@@ -247,6 +265,7 @@ nsFilePicker.prototype = {
     o.title = this.mTitle;
     o.mode = this.mMode;
     o.displayDirectory = this.mDisplayDirectory;
+    o.displaySpecialDirectory = this.mDisplaySpecialDirectory;
     o.defaultString = this.mDefaultString;
     o.filterIndex = this.mFilterIndex;
     o.filters = {};
@@ -312,7 +331,7 @@ function srGetStrBundle(path) {
 
   strBundle = strBundleService.createBundle(path);
   if (!strBundle) {
-	dump("\n--** strBundle createInstance failed **--\n");
+    dump("\n--** strBundle createInstance failed **--\n");
   }
   return strBundle;
 }

@@ -19,8 +19,8 @@
 #include "nsIURI.h"
 #include "nsJSUtils.h"
 #include "nsNetUtil.h"
-#include "nsNullPrincipal.h"
-#include "nsPrincipal.h"
+#include "NullPrincipal.h"
+#include "ExpandedPrincipal.h"
 #include "WrapperFactory.h"
 #include "xpcprivate.h"
 #include "xpc_make_class.h"
@@ -35,6 +35,8 @@
 #include "mozilla/dom/IndexedDatabaseManager.h"
 #include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/FileBinding.h"
+#include "mozilla/dom/MessageChannelBinding.h"
+#include "mozilla/dom/MessagePortBinding.h"
 #include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/RequestBinding.h"
 #include "mozilla/dom/ResponseBinding.h"
@@ -80,8 +82,6 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(SandboxPrivate)
   NS_INTERFACE_MAP_ENTRY(nsIGlobalObject)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
 NS_INTERFACE_MAP_END
-
-const char kScriptSecurityManagerContractID[] = NS_SCRIPTSECURITYMANAGER_CONTRACTID;
 
 class nsXPCComponents_utils_Sandbox : public nsIXPCComponents_utils_Sandbox,
                                       public nsIXPCScriptable
@@ -197,6 +197,7 @@ SandboxImport(JSContext* cx, unsigned argc, Value* vp)
             return false;
         }
     }
+    JS_MarkCrossZoneIdValue(cx, StringValue(funname));
 
     RootedId id(cx);
     if (!JS_StringToId(cx, funname, &id))
@@ -288,9 +289,12 @@ SandboxFetch(JSContext* cx, JS::HandleObject scope, const CallArgs& args)
     if (!global) {
         return false;
     }
+    dom::CallerType callerType = nsContentUtils::IsSystemCaller(cx) ?
+        dom::CallerType::System : dom::CallerType::NonSystem;
     ErrorResult rv;
     RefPtr<dom::Promise> response =
-        FetchRequest(global, Constify(request), Constify(options), rv);
+        FetchRequest(global, Constify(request), Constify(options),
+                     callerType, rv);
     if (rv.MaybeSetPendingException(cx)) {
         return false;
     }
@@ -411,7 +415,7 @@ sandbox_finalize(js::FreeOp* fop, JSObject* obj)
         return;
     }
 
-    static_cast<SandboxPrivate*>(sop)->ForgetGlobalObject();
+    static_cast<SandboxPrivate*>(sop)->ForgetGlobalObject(obj);
     DestroyProtoAndIfaceCache(obj);
     DeferredFinalize(sop);
 }
@@ -483,7 +487,7 @@ sandbox_addProperty(JSContext* cx, HandleObject obj, HandleId id, HandleValue v)
     // Whenever JS_EnumerateStandardClasses is called, it defines the
     // "undefined" property, even if it's already defined. We don't want to do
     // anything in that case.
-    if (id == XPCJSContext::Get()->GetStringID(XPCJSContext::IDX_UNDEFINED))
+    if (id == XPCJSRuntime::Get()->GetStringID(XPCJSContext::IDX_UNDEFINED))
         return true;
 
     // Avoid recursively triggering sandbox_addProperty in the
@@ -542,7 +546,7 @@ sandbox_addProperty(JSContext* cx, HandleObject obj, HandleId id, HandleValue v)
 
 static const js::ClassOps SandboxClassOps = {
     nullptr, nullptr, nullptr, nullptr,
-    JS_EnumerateStandardClasses, JS_ResolveStandardClass,
+    nullptr, JS_NewEnumerateStandardClasses, JS_ResolveStandardClass,
     JS_MayResolveStandardClass,
     sandbox_finalize,
     nullptr, nullptr, nullptr, JS_GlobalObjectTraceHook,
@@ -567,7 +571,7 @@ static const js::Class SandboxClass = {
 // to do the work for this class.
 static const js::ClassOps SandboxWriteToProtoClassOps = {
     sandbox_addProperty, nullptr, nullptr, nullptr,
-    JS_EnumerateStandardClasses, JS_ResolveStandardClass,
+    nullptr, JS_NewEnumerateStandardClasses, JS_ResolveStandardClass,
     JS_MayResolveStandardClass,
     sandbox_finalize,
     nullptr, nullptr, nullptr, JS_GlobalObjectTraceHook,
@@ -712,8 +716,8 @@ WrapCallable(JSContext* cx, HandleObject callable, HandleObject sandboxProtoProx
     JSObject* obj = js::NewProxyObject(cx, &xpc::sandboxCallableProxyHandler,
                                        priv, nullptr, options);
     if (obj) {
-        js::SetProxyExtra(obj, SandboxCallableProxyHandler::SandboxProxySlot,
-                          ObjectValue(*sandboxProtoProxy));
+        js::SetProxyReservedSlot(obj, SandboxCallableProxyHandler::SandboxProxySlot,
+                                 ObjectValue(*sandboxProtoProxy));
     }
 
     return obj;
@@ -869,11 +873,10 @@ xpc::SandboxProxyHandler::getOwnEnumerablePropertyKeys(JSContext* cx,
     return BaseProxyHandler::getOwnEnumerablePropertyKeys(cx, proxy, props);
 }
 
-bool
-xpc::SandboxProxyHandler::enumerate(JSContext* cx, JS::Handle<JSObject*> proxy,
-                                    JS::MutableHandle<JSObject*> objp) const
+JSObject*
+xpc::SandboxProxyHandler::enumerate(JSContext* cx, JS::Handle<JSObject*> proxy) const
 {
-    return BaseProxyHandler::enumerate(cx, proxy, objp);
+    return BaseProxyHandler::enumerate(cx, proxy);
 }
 
 bool
@@ -930,6 +933,8 @@ xpc::GlobalProperties::Parse(JSContext* cx, JS::HandleObject obj)
             caches = true;
         } else if (!strcmp(name.ptr(), "FileReader")) {
             fileReader = true;
+        } else if (!strcmp(name.ptr(), "MessageChannel")) {
+            messageChannel = true;
         } else {
             JS_ReportErrorUTF8(cx, "Unknown property name: %s", name.ptr());
             return false;
@@ -1007,6 +1012,11 @@ xpc::GlobalProperties::Define(JSContext* cx, JS::HandleObject obj)
     if (fileReader && !dom::FileReaderBinding::GetConstructorObject(cx))
         return false;
 
+    if (messageChannel &&
+        (!dom::MessageChannelBinding::GetConstructorObject(cx) ||
+         !dom::MessagePortBinding::GetConstructorObject(cx)))
+        return false;
+
     return true;
 }
 
@@ -1045,7 +1055,7 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
         if (sop) {
             principal = sop->GetPrincipal();
         } else {
-            RefPtr<nsNullPrincipal> nullPrin = nsNullPrincipal::Create();
+            RefPtr<NullPrincipal> nullPrin = NullPrincipal::Create();
             principal = nullPrin;
         }
     }
@@ -1063,11 +1073,11 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
         creationOptions.setSharedMemoryAndAtomicsEnabled(true);
 
     if (options.sameZoneAs)
-        creationOptions.setSameZoneAs(js::UncheckedUnwrap(options.sameZoneAs));
+        creationOptions.setExistingZone(js::UncheckedUnwrap(options.sameZoneAs));
     else if (options.freshZone)
-        creationOptions.setZone(JS::FreshZone);
+        creationOptions.setNewZoneInSystemZoneGroup();
     else
-        creationOptions.setZone(JS::SystemZone);
+        creationOptions.setSystemZone();
 
     creationOptions.setInvisibleToDebugger(options.invisibleToDebugger)
                    .setTrace(TraceXPCGlobal);
@@ -1284,8 +1294,7 @@ GetPrincipalOrSOP(JSContext* cx, HandleObject from, nsISupports** out)
     MOZ_ASSERT(out);
     *out = nullptr;
 
-    nsXPConnect* xpc = nsXPConnect::XPConnect();
-    nsISupports* native = xpc->GetNativeOfWrapper(cx, from);
+    nsCOMPtr<nsISupports> native = xpc::UnwrapReflectorToISupports(from);
 
     if (nsCOMPtr<nsIScriptObjectPrincipal> sop = do_QueryInterface(native)) {
         sop.forget(out);
@@ -1435,8 +1444,8 @@ GetExpandedPrincipal(JSContext* cx, HandleObject arrayObj,
         }
     }
 
-    nsCOMPtr<nsIExpandedPrincipal> result =
-        new nsExpandedPrincipal(allowedDomains, attrs.ref());
+    RefPtr<ExpandedPrincipal> result =
+        ExpandedPrincipal::Create(allowedDomains, attrs.ref());
     result.forget(out);
     return true;
 }
@@ -1694,15 +1703,13 @@ AssembleSandboxMemoryReporterName(JSContext* cx, nsCString& sandboxName)
     if (sandboxName.IsEmpty())
         sandboxName = NS_LITERAL_CSTRING("[anonymous sandbox]");
 
-    nsXPConnect* xpc = nsXPConnect::XPConnect();
     // Get the xpconnect native call context.
-    nsAXPCNativeCallContext* cc = nullptr;
-    xpc->GetCurrentNativeCallContext(&cc);
+    XPCCallContext* cc = XPCJSContext::Get()->GetCallContext();
     NS_ENSURE_TRUE(cc, NS_ERROR_INVALID_ARG);
 
     // Get the current source info from xpc.
     nsCOMPtr<nsIStackFrame> frame;
-    xpc->GetCurrentJSStack(getter_AddRefs(frame));
+    nsXPConnect::XPConnect()->GetCurrentJSStack(getter_AddRefs(frame));
 
     // Append the caller's location information.
     if (frame) {
@@ -1780,7 +1787,7 @@ nsXPCComponents_utils_Sandbox::CallOrConstruct(nsIXPConnectWrappedNative* wrappe
         }
     } else if (args[0].isNull()) {
         // Null means that we just pass prinOrSop = nullptr, and get an
-        // nsNullPrincipal.
+        // NullPrincipal.
         ok = true;
     }
 

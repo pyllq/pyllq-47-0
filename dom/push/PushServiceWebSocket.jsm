@@ -12,7 +12,6 @@ const Cr = Components.results;
 
 Cu.import("resource://gre/modules/AppConstants.jsm");
 Cu.import("resource://gre/modules/Preferences.jsm");
-Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -639,7 +638,6 @@ this.PushServiceWebSocket = {
         appServerKey: tmp.record.appServerKey,
         ctime: Date.now(),
       });
-      Services.telemetry.getHistogramById("PUSH_API_SUBSCRIBE_WS_TIME").add(Date.now() - tmp.ctime);
       tmp.resolve(record);
     } else {
       console.error("handleRegisterReply: Unexpected server response", reply);

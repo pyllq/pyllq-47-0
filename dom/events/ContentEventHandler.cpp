@@ -164,8 +164,8 @@ ContentEventHandler::InitRootContent(Selection* aNormalSelection)
   // selection range still keeps storing the nodes.  If the active element of
   // the deactive window is <input> or <textarea>, we can compute the
   // selection root from them.
-  nsINode* startNode = range->GetStartParent();
-  nsINode* endNode = range->GetEndParent();
+  nsINode* startNode = range->GetStartContainer();
+  nsINode* endNode = range->GetEndContainer();
   if (NS_WARN_IF(!startNode) || NS_WARN_IF(!endNode)) {
     return NS_ERROR_FAILURE;
   }
@@ -424,7 +424,7 @@ static bool IsMozBR(nsIContent* aContent)
   return aContent->IsHTMLElement(nsGkAtoms::br) && !IsContentBR(aContent);
 }
 
-static void ConvertToNativeNewlines(nsAFlatString& aString)
+static void ConvertToNativeNewlines(nsString& aString)
 {
 #if defined(XP_WIN)
   aString.ReplaceSubstring(NS_LITERAL_STRING("\n"), NS_LITERAL_STRING("\r\n"));
@@ -664,7 +664,7 @@ ContentEventHandler::ShouldBreakLineBefore(nsIContent* aContent,
 
 nsresult
 ContentEventHandler::GenerateFlatTextContent(nsIContent* aContent,
-                                             nsAFlatString& aString,
+                                             nsString& aString,
                                              LineBreakType aLineBreakType)
 {
   MOZ_ASSERT(aString.IsEmpty());
@@ -680,7 +680,7 @@ ContentEventHandler::GenerateFlatTextContent(nsIContent* aContent,
 
 nsresult
 ContentEventHandler::GenerateFlatTextContent(nsRange* aRange,
-                                             nsAFlatString& aString,
+                                             nsString& aString,
                                              LineBreakType aLineBreakType)
 {
   MOZ_ASSERT(aString.IsEmpty());
@@ -689,8 +689,8 @@ ContentEventHandler::GenerateFlatTextContent(nsRange* aRange,
     return NS_OK;
   }
 
-  nsINode* startNode = aRange->GetStartParent();
-  nsINode* endNode = aRange->GetEndParent();
+  nsINode* startNode = aRange->GetStartContainer();
+  nsINode* endNode = aRange->GetEndContainer();
   if (NS_WARN_IF(!startNode) || NS_WARN_IF(!endNode)) {
     return NS_ERROR_FAILURE;
   }
@@ -776,13 +776,18 @@ ContentEventHandler::AppendFontRanges(FontRangeArray& aFontRanges,
   }
 
   int32_t baseOffset = aBaseOffset;
-  nsTextFrame* curr = do_QueryFrame(frame);
-  MOZ_ASSERT(curr, "Not a text frame");
+#ifdef DEBUG
+  {
+    nsTextFrame* text = do_QueryFrame(frame);
+    MOZ_ASSERT(text, "Not a text frame");
+  }
+#endif
+  auto* curr = static_cast<nsTextFrame*>(frame);
   while (curr) {
     int32_t frameXPStart = std::max(curr->GetContentOffset(), aXPStartOffset);
     int32_t frameXPEnd = std::min(curr->GetContentEnd(), aXPEndOffset);
     if (frameXPStart >= frameXPEnd) {
-      curr = static_cast<nsTextFrame*>(curr->GetNextContinuation());
+      curr = curr->GetNextContinuation();
       continue;
     }
 
@@ -791,11 +796,11 @@ ContentEventHandler::AppendFontRanges(FontRangeArray& aFontRanges,
 
     nsTextFrame* next = nullptr;
     if (frameXPEnd < aXPEndOffset) {
-      next = static_cast<nsTextFrame*>(curr->GetNextContinuation());
+      next = curr->GetNextContinuation();
       while (next && next->GetTextRun(nsTextFrame::eInflated) == textRun) {
         frameXPEnd = std::min(next->GetContentEnd(), aXPEndOffset);
         next = frameXPEnd < aXPEndOffset ?
-          static_cast<nsTextFrame*>(next->GetNextContinuation()) : nullptr;
+          next->GetNextContinuation() : nullptr;
       }
     }
 
@@ -858,8 +863,8 @@ ContentEventHandler::GenerateFlatFontRanges(nsRange* aRange,
     return NS_OK;
   }
 
-  nsINode* startNode = aRange->GetStartParent();
-  nsINode* endNode = aRange->GetEndParent();
+  nsINode* startNode = aRange->GetStartContainer();
+  nsINode* endNode = aRange->GetEndContainer();
   if (NS_WARN_IF(!startNode) || NS_WARN_IF(!endNode)) {
     return NS_ERROR_FAILURE;
   }
@@ -934,31 +939,41 @@ ContentEventHandler::ExpandToClusterBoundary(nsIContent* aContent,
     aForward ? CARET_ASSOCIATE_BEFORE : CARET_ASSOCIATE_AFTER;
   nsIFrame* frame = fs->GetFrameForNodeOffset(aContent, int32_t(*aXPOffset),
                                               hint, &offsetInFrame);
-  if (!frame) {
-    // This content doesn't have any frames, we only can check surrogate pair...
-    const nsTextFragment* text = aContent->GetText();
-    NS_ENSURE_TRUE(text, NS_ERROR_FAILURE);
-    if (NS_IS_LOW_SURROGATE(text->CharAt(*aXPOffset)) &&
-        NS_IS_HIGH_SURROGATE(text->CharAt(*aXPOffset - 1))) {
-      *aXPOffset += aForward ? 1 : -1;
+  if (frame) {
+    int32_t startOffset, endOffset;
+    nsresult rv = frame->GetOffsets(startOffset, endOffset);
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (*aXPOffset == static_cast<uint32_t>(startOffset) ||
+        *aXPOffset == static_cast<uint32_t>(endOffset)) {
+      return NS_OK;
     }
-    return NS_OK;
+    if (!frame->IsTextFrame()) {
+      return NS_ERROR_FAILURE;
+    }
+    nsTextFrame* textFrame = static_cast<nsTextFrame*>(frame);
+    int32_t newOffsetInFrame = *aXPOffset - startOffset;
+    newOffsetInFrame += aForward ? -1 : 1;
+    // PeekOffsetCharacter() should respect cluster but ignore user-select
+    // style.  If it returns "FOUND", we should use the result.  Otherwise,
+    // we shouldn't use the result because the offset was moved to reversed
+    // direction.
+    nsTextFrame::PeekOffsetCharacterOptions options;
+    options.mRespectClusters = true;
+    options.mIgnoreUserStyleAll = true;
+    if (textFrame->PeekOffsetCharacter(aForward, &newOffsetInFrame,
+                                       options) == nsIFrame::FOUND) {
+      *aXPOffset = startOffset + newOffsetInFrame;
+      return NS_OK;
+    }
   }
-  int32_t startOffset, endOffset;
-  nsresult rv = frame->GetOffsets(startOffset, endOffset);
-  NS_ENSURE_SUCCESS(rv, rv);
-  if (*aXPOffset == static_cast<uint32_t>(startOffset) ||
-      *aXPOffset == static_cast<uint32_t>(endOffset)) {
-    return NS_OK;
+
+  // If the frame isn't available, we only can check surrogate pair...
+  const nsTextFragment* text = aContent->GetText();
+  NS_ENSURE_TRUE(text, NS_ERROR_FAILURE);
+  if (NS_IS_LOW_SURROGATE(text->CharAt(*aXPOffset)) &&
+      NS_IS_HIGH_SURROGATE(text->CharAt(*aXPOffset - 1))) {
+    *aXPOffset += aForward ? 1 : -1;
   }
-  if (frame->GetType() != nsGkAtoms::textFrame) {
-    return NS_ERROR_FAILURE;
-  }
-  nsTextFrame* textFrame = static_cast<nsTextFrame*>(frame);
-  int32_t newOffsetInFrame = *aXPOffset - startOffset;
-  newOffsetInFrame += aForward ? -1 : 1;
-  textFrame->PeekOffsetCharacter(aForward, &newOffsetInFrame);
-  *aXPOffset = startOffset + newOffsetInFrame;
   return NS_OK;
 }
 
@@ -980,11 +995,7 @@ ContentEventHandler::SetRangeFromFlatTextOffset(nsRange* aRange,
 
   // Special case like <br contenteditable>
   if (!mRootContent->HasChildren()) {
-    nsresult rv = aRange->SetStart(mRootContent, 0);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-    rv = aRange->SetEnd(mRootContent, 0);
+    nsresult rv = aRange->CollapseTo(mRootContent, 0);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -1295,8 +1306,8 @@ ContentEventHandler::OnQuerySelectedText(WidgetQueryContentEvent* aEvent)
     return NS_OK;
   }
 
-  nsINode* const startNode = mFirstSelectedRange->GetStartParent();
-  nsINode* const endNode = mFirstSelectedRange->GetEndParent();
+  nsINode* const startNode = mFirstSelectedRange->GetStartContainer();
+  nsINode* const endNode = mFirstSelectedRange->GetEndContainer();
 
   // Make sure the selection is within the root content range.
   if (!nsContentUtils::ContentIsDescendantOf(startNode, mRootContent) ||
@@ -1353,7 +1364,7 @@ ContentEventHandler::OnQuerySelectedText(WidgetQueryContentEvent* aEvent)
     NS_ASSERTION(mFirstSelectedRange->Collapsed(),
       "When mSelection doesn't have selection, mFirstSelectedRange must be "
       "collapsed");
-    anchorNode = focusNode = mFirstSelectedRange->GetStartParent();
+    anchorNode = focusNode = mFirstSelectedRange->GetStartContainer();
     if (NS_WARN_IF(!anchorNode)) {
       return NS_ERROR_FAILURE;
     }
@@ -1497,7 +1508,7 @@ ContentEventHandler::GetFirstFrameInRangeForTextRect(nsRange* aRange)
       // If the range starts at the end of a text node, we need to find
       // next node which causes text.
       int32_t offsetInNode =
-        node == aRange->GetStartParent() ? aRange->StartOffset() : 0;
+        node == aRange->GetStartContainer() ? aRange->StartOffset() : 0;
       if (static_cast<uint32_t>(offsetInNode) < node->Length()) {
         nodePosition.mNode = node;
         nodePosition.mOffset = offsetInNode;
@@ -1532,7 +1543,7 @@ ContentEventHandler::GetLastFrameInRangeForTextRect(nsRange* aRange)
   nsCOMPtr<nsIContentIterator> iter = NS_NewPreContentIterator();
   iter->Init(aRange);
 
-  nsINode* endNode = aRange->GetEndParent();
+  nsINode* endNode = aRange->GetEndContainer();
   uint32_t endOffset = static_cast<uint32_t>(aRange->EndOffset());
   // If the end point is start of a text node or specified by its parent and
   // index, the node shouldn't be included into the range.  For example,
@@ -1556,7 +1567,7 @@ ContentEventHandler::GetLastFrameInRangeForTextRect(nsRange* aRange)
     // endNode is same as start node of the range, the text node shouldn't be
     // next of range end even if the offset is 0.  This could occur with empty
     // text node.
-    if (!endOffset && aRange->GetStartParent() != endNode) {
+    if (!endOffset && aRange->GetStartContainer() != endNode) {
       nextNodeOfRangeEnd = endNode;
     }
   } else if (endOffset < endNode->GetChildCount()) {
@@ -1575,7 +1586,7 @@ ContentEventHandler::GetLastFrameInRangeForTextRect(nsRange* aRange)
 
     if (node->IsNodeOfType(nsINode::eTEXT)) {
       nodePosition.mNode = node;
-      if (node == aRange->GetEndParent()) {
+      if (node == aRange->GetEndContainer()) {
         nodePosition.mOffset = aRange->EndOffset();
       } else {
         nodePosition.mOffset = node->Length();
@@ -1612,7 +1623,7 @@ ContentEventHandler::GetLastFrameInRangeForTextRect(nsRange* aRange)
   // If the last frame is a text frame, we need to check if the range actually
   // includes at least one character in the range.  Therefore, if it's not a
   // text frame, we need to do nothing anymore.
-  if (lastFrame->GetType() != nsGkAtoms::textFrame) {
+  if (!lastFrame->IsTextFrame()) {
     return FrameAndNodeOffset(lastFrame, nodePosition.mOffset);
   }
 
@@ -1650,7 +1661,7 @@ ContentEventHandler::GetLineBreakerRectBefore(nsIFrame* aFrame)
   // If it's not a <br> frame, this method computes the line breaker's rect
   // outside the frame.  Therefore, we need to compute with parent frame's
   // font metrics in such case.
-  if (aFrame->GetType() != nsGkAtoms::brFrame && aFrame->GetParent()) {
+  if (!aFrame->IsBrFrame() && aFrame->GetParent()) {
     frameForFontMetrics = aFrame->GetParent();
   }
 
@@ -1685,7 +1696,7 @@ ContentEventHandler::GetLineBreakerRectBefore(nsIFrame* aFrame)
   // the line break is before its open tag.  For example, case of
   // |<div><p>some text</p></div>|, caret is before <p> element and in <div>
   // element, the caret should be left of top-left corner of <p> element like:
-  // 
+  //
   // +-<div>-------------------  <div>'s border box
   // | I +-<p>-----------------  <p>'s border box
   // | I |
@@ -1695,7 +1706,7 @@ ContentEventHandler::GetLineBreakerRectBefore(nsIFrame* aFrame)
   //
   // However, this is a hack for unusual scenario.  This hack shouldn't be
   // used as far as possible.
-  if (aFrame->GetType() != nsGkAtoms::brFrame) {
+  if (!aFrame->IsBrFrame()) {
     if (kWritingMode.IsVertical()) {
       if (kWritingMode.IsLineInverted()) {
         // above of top-left corner of aFrame.
@@ -1868,7 +1879,7 @@ ContentEventHandler::OnQueryTextRectArray(WidgetQueryContentEvent* aEvent)
 
     // If the first frame is a text frame, the result should be computed with
     // the frame's API.
-    if (firstFrame->GetType() == nsGkAtoms::textFrame) {
+    if (firstFrame->IsTextFrame()) {
       rv = firstFrame->GetCharacterRectsInRange(firstFrame.mOffsetInNode,
                                                 kEndOffset - offset, charRects);
       if (NS_WARN_IF(NS_FAILED(rv)) || NS_WARN_IF(charRects.IsEmpty())) {
@@ -1895,7 +1906,8 @@ ContentEventHandler::OnQueryTextRectArray(WidgetQueryContentEvent* aEvent)
           return rv;
         }
         startsBetweenLineBreaker =
-          range->GetStartParent() == rangeToPrevOffset->GetStartParent() &&
+          range->GetStartContainer() ==
+            rangeToPrevOffset->GetStartContainer() &&
           range->StartOffset() == rangeToPrevOffset->StartOffset();
       }
     }
@@ -1934,8 +1946,7 @@ ContentEventHandler::OnQueryTextRectArray(WidgetQueryContentEvent* aEvent)
       // compute it with the cached last character's rect.  (However, don't
       // use this path if it's a <br> frame because trusting <br> frame's rect
       // is better than guessing the rect from the previous character.)
-      if (firstFrame->GetType() != nsGkAtoms::brFrame &&
-          aEvent->mInput.mOffset != offset) {
+      if (!firstFrame->IsBrFrame() && aEvent->mInput.mOffset != offset) {
         baseFrame = lastFrame;
         brRect = lastCharRect;
         if (!wasLineBreaker) {
@@ -1953,7 +1964,7 @@ ContentEventHandler::OnQueryTextRectArray(WidgetQueryContentEvent* aEvent)
       // If it's not a <br> frame and it's the first character rect at the
       // queried range, we need to the previous character of the start of
       // the queried range if there is a text node.
-      else if (firstFrame->GetType() != nsGkAtoms::brFrame && lastTextContent) {
+      else if (!firstFrame->IsBrFrame() && lastTextContent) {
         FrameRelativeRect brRectRelativeToLastTextFrame =
           GuessLineBreakerRectAfter(lastTextContent);
         if (NS_WARN_IF(!brRectRelativeToLastTextFrame.IsValid())) {
@@ -2159,7 +2170,7 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
     }
 
     // Look for the last frame which should be included text rects.
-    ErrorResult erv;
+    IgnoredErrorResult erv;
     range->SelectNodeContents(*mRootContent, erv);
     if (NS_WARN_IF(erv.Failed())) {
       return NS_ERROR_UNEXPECTED;
@@ -2176,11 +2187,11 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
       FrameRelativeRect relativeRect;
       // If there is a <br> frame at the end, it represents an empty line at
       // the end with moz-<br> or content <br> in a block level element.
-      if (lastFrame->GetType() == nsGkAtoms::brFrame) {
+      if (lastFrame->IsBrFrame()) {
         relativeRect = GetLineBreakerRectBefore(lastFrame);
       }
       // If there is a text frame at the end, use its information.
-      else if (lastFrame->GetType() == nsGkAtoms::textFrame) {
+      else if (lastFrame->IsTextFrame()) {
         relativeRect = GuessLineBreakerRectAfter(lastFrame->GetContent());
       }
       // If there is an empty frame which is neither a text frame nor a <br>
@@ -2229,7 +2240,7 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
   // If the first frame is a text frame, the result should be computed with
   // the frame's rect but not including the rect before start point of the
   // queried range.
-  if (firstFrame->GetType() == nsGkAtoms::textFrame) {
+  if (firstFrame->IsTextFrame()) {
     rect.SetRect(nsPoint(0, 0), firstFrame->GetRect().Size());
     rv = ConvertToRootRelativeOffset(firstFrame, rect);
     if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -2271,7 +2282,7 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
   // Therefore, if the first frame isn't a <br> frame and there is a text
   // node before the first node in the queried range, we should compute the
   // first rect with the previous character's rect.
-  else if (firstFrame->GetType() != nsGkAtoms::brFrame && lastTextContent) {
+  else if (!firstFrame->IsBrFrame() && lastTextContent) {
     FrameRelativeRect brRectAfterLastChar =
       GuessLineBreakerRectAfter(lastTextContent);
     if (NS_WARN_IF(!brRectAfterLastChar.IsValid())) {
@@ -2337,8 +2348,7 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
         // can return exactly correct rect only for <br> frame for now.  On the
         // other hand, GetLineBreakRectBefore() returns guessed caret rect for
         // the other frames.  We shouldn't include such odd rect to the result.
-        if (primaryFrame->GetType() == nsGkAtoms::textFrame ||
-            primaryFrame->GetType() == nsGkAtoms::brFrame) {
+        if (primaryFrame->IsTextFrame() || primaryFrame->IsBrFrame()) {
           frame = primaryFrame;
         }
       } while (!frame && !iter->IsDone());
@@ -2346,10 +2356,10 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
         break;
       }
     }
-    if (frame->GetType() == nsGkAtoms::textFrame) {
+    if (frame->IsTextFrame()) {
       frameRect.SetRect(nsPoint(0, 0), frame->GetRect().Size());
     } else {
-      MOZ_ASSERT(frame->GetType() == nsGkAtoms::brFrame);
+      MOZ_ASSERT(frame->IsBrFrame());
       FrameRelativeRect relativeRect = GetLineBreakerRectBefore(frame);
       if (NS_WARN_IF(!relativeRect.IsValid())) {
         return NS_ERROR_FAILURE;
@@ -2381,7 +2391,7 @@ ContentEventHandler::OnQueryTextRect(WidgetQueryContentEvent* aEvent)
   }
 
   // Shrink the last frame for cutting off the text after the query range.
-  if (lastFrame->GetType() == nsGkAtoms::textFrame) {
+  if (lastFrame->IsTextFrame()) {
     lastFrame->GetPointFromOffset(lastFrame.mOffsetInNode, &ptOffset);
     if (lastFrame->GetWritingMode().IsVertical()) {
       frameRect.height -= lastFrame->GetRect().height - ptOffset.y;
@@ -2589,7 +2599,7 @@ ContentEventHandler::OnQueryCharacterAtPoint(WidgetQueryContentEvent* aEvent)
     return rv;
   }
 
-  if (targetFrame->GetType() != nsGkAtoms::textFrame) {
+  if (!targetFrame->IsTextFrame()) {
     // There is no character at the point but there is tentative caret point.
     aEvent->mSucceeded = true;
     return NS_OK;
@@ -2649,7 +2659,7 @@ ContentEventHandler::OnQueryDOMWidgetHittest(WidgetQueryContentEvent* aEvent)
 
   LayoutDeviceIntPoint eventLoc =
     aEvent->mRefPoint + aEvent->mWidget->WidgetToScreenOffset();
-  nsIntRect docFrameRect = docFrame->GetScreenRect(); // Returns CSS pixels
+  CSSIntRect docFrameRect = docFrame->GetScreenRect();
   CSSIntPoint eventLocCSS(
     mPresContext->DevPixelsToIntCSSPixels(eventLoc.x) - docFrameRect.x,
     mPresContext->DevPixelsToIntCSSPixels(eventLoc.y) - docFrameRect.y);
@@ -2831,7 +2841,7 @@ ContentEventHandler::GetStartOffset(nsRange* aRange,
   MOZ_ASSERT(aRange);
   return GetFlatTextLengthInRange(
            NodePosition(mRootContent, 0),
-           NodePosition(aRange->GetStartParent(), aRange->StartOffset()),
+           NodePosition(aRange->GetStartContainer(), aRange->StartOffset()),
            mRootContent, aOffset, aLineBreakType);
 }
 
@@ -2845,32 +2855,32 @@ ContentEventHandler::AdjustCollapsedRangeMaybeIntoTextNode(nsRange* aRange)
     return NS_ERROR_INVALID_ARG;
   }
 
-  nsCOMPtr<nsINode> parentNode = aRange->GetStartParent();
+  nsCOMPtr<nsINode> container = aRange->GetStartContainer();
   int32_t offsetInParentNode = aRange->StartOffset();
-  if (NS_WARN_IF(!parentNode) || NS_WARN_IF(offsetInParentNode < 0)) {
+  if (NS_WARN_IF(!container) || NS_WARN_IF(offsetInParentNode < 0)) {
     return NS_ERROR_INVALID_ARG;
   }
 
   // If the node is text node, we don't need to modify aRange.
-  if (parentNode->IsNodeOfType(nsINode::eTEXT)) {
+  if (container->IsNodeOfType(nsINode::eTEXT)) {
     return NS_OK;
   }
 
-  // If the parent is not a text node but it has a text node at the offset,
+  // If the container is not a text node but it has a text node at the offset,
   // we should adjust the range into the text node.
   // NOTE: This is emulating similar situation of EditorBase.
   nsINode* childNode = nullptr;
   int32_t offsetInChildNode = -1;
-  if (!offsetInParentNode && parentNode->HasChildren()) {
-    // If the range is the start of the parent, adjusted the range to the
+  if (!offsetInParentNode && container->HasChildren()) {
+    // If the range is the start of the container, adjusted the range to the
     // start of the first child.
-    childNode = parentNode->GetFirstChild();
+    childNode = container->GetFirstChild();
     offsetInChildNode = 0;
   } else if (static_cast<uint32_t>(offsetInParentNode) <
-               parentNode->GetChildCount()) {
+               container->GetChildCount()) {
     // If the range is next to a child node, adjust the range to the end of
     // the previous child.
-    childNode = parentNode->GetChildAt(offsetInParentNode - 1);
+    childNode = container->GetChildAt(offsetInParentNode - 1);
     offsetInChildNode = childNode->Length();
   }
 
@@ -2880,8 +2890,7 @@ ContentEventHandler::AdjustCollapsedRangeMaybeIntoTextNode(nsRange* aRange)
     return NS_OK;
   }
 
-  nsresult rv = aRange->Set(childNode, offsetInChildNode,
-                            childNode, offsetInChildNode);
+  nsresult rv = aRange->CollapseTo(childNode, offsetInChildNode);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -2898,7 +2907,7 @@ ContentEventHandler::GetStartFrameAndOffset(const nsRange* aRange,
   aFrame = nullptr;
   aOffsetInFrame = -1;
 
-  nsINode* node = aRange->GetStartParent();
+  nsINode* node = aRange->GetStartContainer();
   if (NS_WARN_IF(!node) ||
       NS_WARN_IF(!node->IsNodeOfType(nsINode::eCONTENT))) {
     return NS_ERROR_FAILURE;
@@ -3005,8 +3014,8 @@ ContentEventHandler::OnSelectionEvent(WidgetSelectionEvent* aEvent)
                                   aEvent->mExpandToClusterBoundary);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsINode* startNode = range->GetStartParent();
-  nsINode* endNode = range->GetEndParent();
+  nsINode* startNode = range->GetStartContainer();
+  nsINode* endNode = range->GetEndContainer();
   int32_t startNodeOffset = range->StartOffset();
   int32_t endNodeOffset = range->EndOffset();
   AdjustRangeForSelection(mRootContent, &startNode, &startNodeOffset);

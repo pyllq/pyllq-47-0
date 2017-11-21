@@ -17,11 +17,14 @@ class nsBaseWidget;
 
 namespace mozilla {
 class VsyncObserver;
+namespace gl {
+class GLContext;
+} // namespace gl
 namespace layers {
 class Compositor;
+class LayerManager;
 class LayerManagerComposite;
 class Compositor;
-class Composer2D;
 } // namespace layers
 namespace gfx {
 class DrawTarget;
@@ -58,8 +61,11 @@ class WidgetRenderingContext
 {
 public:
 #if defined(XP_MACOSX)
-  WidgetRenderingContext() : mLayerManager(nullptr) {}
+  WidgetRenderingContext()
+    : mLayerManager(nullptr)
+    , mGL(nullptr) {}
   layers::LayerManagerComposite* mLayerManager;
+  gl::GLContext* mGL;
 #elif defined(MOZ_WIDGET_ANDROID)
   WidgetRenderingContext() : mCompositor(nullptr) {}
   layers::Compositor* mCompositor;
@@ -72,7 +78,7 @@ public:
 class CompositorWidget
 {
 public:
-  NS_INLINE_DECL_REFCOUNTING(mozilla::widget::CompositorWidget)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(mozilla::widget::CompositorWidget)
 
   /**
    * Create an in-process compositor widget. aWidget may be ignored if the
@@ -195,17 +201,6 @@ public:
    */
   virtual uint32_t GetGLFrameBufferFormat();
 
-  /**
-   * If this widget has a more efficient composer available for its
-   * native framebuffer, return it.
-   *
-   * This can be called from a non-main thread, but that thread must
-   * hold a strong reference to this.
-   */
-  virtual layers::Composer2D* GetComposer2D() {
-    return nullptr;
-  }
-
   /*
    * Access the underlying nsIWidget. This method will be removed when the compositor no longer
    * depends on nsIWidget on any platform.
@@ -260,6 +255,13 @@ public:
    */
   const layers::CompositorOptions& GetCompositorOptions() {
     return mOptions;
+  }
+
+  /**
+   * Return true if the window is hidden and should not be composited.
+   */
+  virtual bool IsHidden() const {
+    return false;
   }
 
   /**

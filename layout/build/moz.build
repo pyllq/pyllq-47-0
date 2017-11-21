@@ -32,6 +32,7 @@ LOCAL_INCLUDES += [
     '/docshell/base',
     '/dom/audiochannel',
     '/dom/base',
+    '/dom/bindings',
     '/dom/canvas',
     '/dom/filesystem',
     '/dom/geolocation',
@@ -72,10 +73,6 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
     LOCAL_INCLUDES += [
         '/dom/system',
         '/dom/system/android',
-    ]
-elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
-    LOCAL_INCLUDES += [
-        '/dom/system/gonk',
     ]
 
 if CONFIG['MOZ_WEBSPEECH']:

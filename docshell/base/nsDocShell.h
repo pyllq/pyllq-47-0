@@ -44,6 +44,7 @@
 // Interfaces Needed
 #include "nsIDocCharset.h"
 #include "nsIInterfaceRequestor.h"
+#include "nsINamed.h"
 #include "nsIRefreshURI.h"
 #include "nsIWebNavigation.h"
 #include "nsIWebPageDescriptor.h"
@@ -62,6 +63,8 @@
 #include "nsIDeprecationWarner.h"
 
 namespace mozilla {
+class Encoding;
+enum class TaskCategory;
 namespace dom {
 class EventTarget;
 class PendingGlobalHistoryEntry;
@@ -94,6 +97,7 @@ class nsIURIFixup;
 class nsIURILoader;
 class nsIWebBrowserFind;
 class nsIWidget;
+class FramingChecker;
 
 /* internally used ViewMode types */
 enum ViewMode
@@ -103,12 +107,15 @@ enum ViewMode
 };
 
 class nsRefreshTimer : public nsITimerCallback
+                     , public nsINamed
 {
 public:
-  nsRefreshTimer();
+  nsRefreshTimer(nsDocShell* aDocShell, nsIURI* aURI, int32_t aDelay,
+                 bool aRepeat, bool aMetaRefresh);
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSITIMERCALLBACK
+  NS_DECL_NSINAMED
 
   int32_t GetDelay() { return mDelay ;}
 
@@ -152,13 +159,13 @@ class nsDocShell final
   , public mozilla::SupportsWeakPtr<nsDocShell>
 {
   friend class nsDSURIContentListener;
+  friend class FramingChecker;
+  using Encoding = mozilla::Encoding;
 
 public:
   MOZ_DECLARE_WEAKREFERENCE_TYPENAME(nsDocShell)
 
   nsDocShell();
-
-  NS_DECL_AND_IMPL_ZEROING_OPERATOR_NEW
 
   virtual nsresult Init() override;
 
@@ -234,8 +241,7 @@ public:
   NS_IMETHOD SetPrivateBrowsing(bool) override;
   NS_IMETHOD GetUseRemoteTabs(bool*) override;
   NS_IMETHOD SetRemoteTabs(bool) override;
-  NS_IMETHOD GetOriginAttributes(JS::MutableHandle<JS::Value>) override;
-  NS_IMETHOD IsTrackingProtectionOn(bool*) override;
+  NS_IMETHOD GetScriptableOriginAttributes(JS::MutableHandle<JS::Value>) override;
 
   // Restores a cached presentation from history (mLSHE).
   // This method swaps out the content viewer and simulates loads for
@@ -273,6 +279,8 @@ public:
     mInFrameSwap = aInSwap;
   }
   bool InFrameSwap();
+
+  const Encoding* GetForcedCharset() { return mForcedCharset; }
 
 private:
   bool CanSetOriginAttributes();
@@ -371,7 +379,9 @@ protected:
   // If aLoadReplace is true, LOAD_REPLACE flag will be set to the nsIChannel.
   nsresult DoURILoad(nsIURI* aURI,
                      nsIURI* aOriginalURI,
+                     mozilla::Maybe<nsCOMPtr<nsIURI>> const& aResultPrincipalURI,
                      bool aLoadReplace,
+                     bool aLoadFromExternal,
                      nsIURI* aReferrer,
                      bool aSendReferrer,
                      uint32_t aReferrerPolicy,
@@ -608,7 +618,7 @@ protected:
   nsresult RefreshURIFromQueue();
   NS_IMETHOD LoadErrorPage(nsIURI* aURI, const char16_t* aURL,
                            const char* aErrorPage,
-                           const char16_t* aErrorType,
+                           const char* aErrorType,
                            const char16_t* aDescription,
                            const char* aCSSClass,
                            nsIChannel* aFailedChannel);
@@ -740,9 +750,6 @@ protected:
   // Convenience method for getting our parent docshell. Can return null
   already_AddRefed<nsDocShell> GetParentDocshell();
 
-  // Check if aURI is about:newtab.
-  bool IsAboutNewtab(nsIURI* aURI);
-
 protected:
   nsresult GetCurScrollPos(int32_t aScrollOrientation, int32_t* aCurPos);
   nsresult SetCurScrollPosEx(int32_t aCurHorizontalPos,
@@ -779,7 +786,11 @@ public:
   {
   public:
     NS_DECL_NSIRUNNABLE
-    explicit RestorePresentationEvent(nsDocShell* aDs) : mDocShell(aDs) {}
+    explicit RestorePresentationEvent(nsDocShell* aDs)
+      : mozilla::Runnable("nsDocShell::RestorePresentationEvent")
+      , mDocShell(aDs)
+    {
+    }
     void Revoke() { mDocShell = nullptr; }
   private:
     RefPtr<nsDocShell> mDocShell;
@@ -809,6 +820,8 @@ protected:
   bool HasUnloadedParent();
 
   void UpdateGlobalHistoryTitle(nsIURI* aURI);
+
+  NS_IMETHOD_(void) GetOriginAttributes(mozilla::OriginAttributes& aAttrs) override;
 
   // Dimensions of the docshell
   nsIntRect mBounds;
@@ -962,6 +975,7 @@ protected:
   bool mIsAppTab : 1;
   bool mUseGlobalHistory : 1;
   bool mUseRemoteTabs : 1;
+  bool mUseTrackingProtection : 1;
   bool mDeviceSizeIsPageSize : 1;
   bool mWindowDraggingAllowed : 1;
   bool mInFrameSwap : 1;
@@ -1035,8 +1049,8 @@ protected:
   nsString mInterceptedDocumentId;
 
 private:
-  nsCString mForcedCharset;
-  nsCString mParentCharset;
+  const Encoding* mForcedCharset;
+  const Encoding* mParentCharset;
   int32_t mParentCharsetSource;
   nsCOMPtr<nsIPrincipal> mParentCharsetPrincipal;
   nsTObserverArray<nsWeakPtr> mPrivacyObservers;
@@ -1059,8 +1073,9 @@ private:
   // Separate function to do the actual name (i.e. not _top, _self etc.)
   // searching for FindItemWithName.
   nsresult DoFindItemWithName(const nsAString& aName,
-                              nsISupports* aRequestor,
+                              nsIDocShellTreeItem* aRequestor,
                               nsIDocShellTreeItem* aOriginalRequestor,
+                              bool aSkipTabGroup,
                               nsIDocShellTreeItem** aResult);
 
   // Helper assertion to enforce that mInPrivateBrowsing is in sync with
@@ -1070,6 +1085,17 @@ private:
   // Notify consumers of a search being loaded through the observer service:
   void MaybeNotifyKeywordSearchLoading(const nsString& aProvider,
                                        const nsString& aKeyword);
+
+  // Internal implementation of nsIDocShell::FirePageHideNotification.
+  // If aSkipCheckingDynEntries is true, it will not try to remove dynamic
+  // subframe entries. This is to avoid redundant RemoveDynEntries calls in all
+  // children docshells.
+  void FirePageHideNotificationInternal(bool aIsUnload,
+                                        bool aSkipCheckingDynEntries);
+
+  // Dispatch a runnable to the TabGroup associated to this docshell.
+  nsresult DispatchToTabGroup(mozilla::TaskCategory aCategory,
+                              already_AddRefed<nsIRunnable>&& aRunnable);
 
 #ifdef DEBUG
   // We're counting the number of |nsDocShells| to help find leaks

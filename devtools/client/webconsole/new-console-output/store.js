@@ -8,27 +8,33 @@ const {PrefState} = require("devtools/client/webconsole/new-console-output/reduc
 const {UiState} = require("devtools/client/webconsole/new-console-output/reducers/ui");
 const {
   applyMiddleware,
-  combineReducers,
   compose,
   createStore
 } = require("devtools/client/shared/vendor/redux");
 const { thunk } = require("devtools/client/shared/redux/middleware/thunk");
 const {
-  BATCH_ACTIONS,
+  BATCH_ACTIONS
+} = require("devtools/client/shared/redux/middleware/debounce");
+const {
+  MESSAGE_ADD,
+  MESSAGES_CLEAR,
+  REMOVED_ACTORS_CLEAR,
   PREFS,
 } = require("devtools/client/webconsole/new-console-output/constants");
 const { reducers } = require("./reducers/index");
 const Services = require("Services");
 
-function configureStore() {
+function configureStore(hud, options = {}) {
+  const logLimit = options.logLimit
+    || Math.max(Services.prefs.getIntPref("devtools.hud.loglimit"), 1);
+
   const initialState = {
-    prefs: new PrefState({
-      logLimit: Math.max(Services.prefs.getIntPref("devtools.hud.loglimit"), 1),
-    }),
+    prefs: new PrefState({ logLimit }),
     filters: new FilterState({
       error: Services.prefs.getBoolPref(PREFS.FILTER.ERROR),
       warn: Services.prefs.getBoolPref(PREFS.FILTER.WARN),
       info: Services.prefs.getBoolPref(PREFS.FILTER.INFO),
+      debug: Services.prefs.getBoolPref(PREFS.FILTER.DEBUG),
       log: Services.prefs.getBoolPref(PREFS.FILTER.LOG),
       css: Services.prefs.getBoolPref(PREFS.FILTER.CSS),
       net: Services.prefs.getBoolPref(PREFS.FILTER.NET),
@@ -40,10 +46,32 @@ function configureStore() {
   };
 
   return createStore(
-    combineReducers(reducers),
+    createRootReducer(),
     initialState,
-    compose(applyMiddleware(thunk), enableBatching())
+    compose(applyMiddleware(thunk), enableActorReleaser(hud), enableBatching())
   );
+}
+
+function createRootReducer() {
+  return function rootReducer(state, action) {
+    // We want to compute the new state for all properties except "messages".
+    const newState = [...Object.entries(reducers)].reduce((res, [key, reducer]) => {
+      if (key !== "messages") {
+        res[key] = reducer(state[key], action);
+      }
+      return res;
+    }, {});
+
+    return Object.assign(newState, {
+      // specifically pass the updated filters and prefs state as additional arguments.
+      messages: reducers.messages(
+        state.messages,
+        action,
+        newState.filters,
+        newState.prefs,
+      ),
+    });
+  };
 }
 
 /**
@@ -67,6 +95,45 @@ function enableBatching() {
 
     return next(batchingReducer, initialState, enhancer);
   };
+}
+
+/**
+ * This enhancer is responsible for releasing actors on the backend.
+ * When messages with arguments are removed from the store we should also
+ * clean up the backend.
+ */
+function enableActorReleaser(hud) {
+  return next => (reducer, initialState, enhancer) => {
+    function releaseActorsEnhancer(state, action) {
+      state = reducer(state, action);
+
+      let type = action.type;
+      let proxy = hud ? hud.proxy : null;
+      if (proxy && (type == MESSAGE_ADD || type == MESSAGES_CLEAR)) {
+        releaseActors(state.messages.removedActors, proxy);
+
+        // Reset `removedActors` in message reducer.
+        state = reducer(state, {
+          type: REMOVED_ACTORS_CLEAR
+        });
+      }
+
+      return state;
+    }
+
+    return next(releaseActorsEnhancer, initialState, enhancer);
+  };
+}
+
+/**
+ * Helper function for releasing backend actors.
+ */
+function releaseActors(removedActors, proxy) {
+  if (!proxy) {
+    return;
+  }
+
+  removedActors.forEach(actor => proxy.releaseActor(actor));
 }
 
 // Provide the store factory for test code so that each test is working with

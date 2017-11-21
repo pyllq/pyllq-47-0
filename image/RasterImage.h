@@ -160,13 +160,14 @@ public:
   NS_DECL_IMGICONTAINERDEBUG
 #endif
 
+  nsresult GetNativeSizes(nsTArray<gfx::IntSize>& aNativeSizes) const override;
   virtual nsresult StartAnimation() override;
   virtual nsresult StopAnimation() override;
 
   // Methods inherited from Image
-  virtual void OnSurfaceDiscarded() override;
+  virtual void OnSurfaceDiscarded(const SurfaceKey& aSurfaceKey) override;
 
-  virtual size_t SizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf)
+  virtual size_t SizeOfSourceWithComputedFallback(SizeOfState& aState)
     const override;
   virtual void CollectSizeOfSurfaces(nsTArray<SurfaceMemoryCounter>& aCounters,
                                      MallocSizeOf aMallocSizeOf) const override;
@@ -315,15 +316,6 @@ private:
 
   void UpdateImageContainer();
 
-  // We would like to just check if we have a zero lock count, but we can't do
-  // that for animated images because in EnsureAnimExists we lock the image and
-  // never unlock so that animated images always have their lock count >= 1. In
-  // that case we use our animation consumers count as a proxy for lock count.
-  bool IsUnlocked() {
-    return (mLockCount == 0 || (mAnimationState && mAnimationConsumers == 0));
-  }
-
-
   //////////////////////////////////////////////////////////////////////////////
   // Decoding.
   //////////////////////////////////////////////////////////////////////////////
@@ -372,15 +364,18 @@ private:
    * metadata decode proves to be wrong due to image corruption, the frames we
    * have may violate this class's invariants. Either way, we need to
    * immediately discard the invalid frames and redecode so that callers don't
-   * perceive that we've entered an invalid state. 
+   * perceive that we've entered an invalid state.
    *
    * RecoverFromInvalidFrames discards all existing frames and redecodes using
    * the provided @aSize and @aFlags.
    */
   void RecoverFromInvalidFrames(const nsIntSize& aSize, uint32_t aFlags);
 
+  void OnSurfaceDiscardedInternal(bool aAnimatedFramesDiscarded);
+
 private: // data
   nsIntSize                  mSize;
+  nsTArray<nsIntSize>        mNativeSizes;
   Orientation                mOrientation;
 
   /// If this has a value, we're waiting for SetSize() to send the load event.
@@ -423,11 +418,12 @@ private: // data
   NotNull<RefPtr<SourceBuffer>>  mSourceBuffer;
 
   // Boolean flags (clustered together to conserve space):
-  bool                       mHasSize:1;       // Has SetSize() been called?
-  bool                       mTransient:1;     // Is the image short-lived?
-  bool                       mSyncLoad:1;      // Are we loading synchronously?
-  bool                       mDiscardable:1;   // Is container discardable?
-  bool                       mHasSourceData:1; // Do we have source data?
+  bool                       mHasSize:1;        // Has SetSize() been called?
+  bool                       mTransient:1;      // Is the image short-lived?
+  bool                       mSyncLoad:1;       // Are we loading synchronously?
+  bool                       mDiscardable:1;    // Is container discardable?
+  bool                       mSomeSourceData:1; // Do we have some source data?
+  bool                       mAllSourceData:1;  // Do we have all the source data?
   bool                       mHasBeenDecoded:1; // Decoded at least once?
 
   // Whether we're waiting to start animation. If we get a StartAnimation() call

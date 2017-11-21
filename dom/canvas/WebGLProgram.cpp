@@ -599,7 +599,7 @@ WebGLProgram::GetActiveAttrib(GLuint index) const
     const auto& attribs = mMostRecentLinkInfo->attribs;
 
     if (index >= attribs.size()) {
-        mContext->ErrorInvalidValue("`index` (%i) must be less than %s (%i).",
+        mContext->ErrorInvalidValue("`index` (%i) must be less than %s (%zu).",
                                     index, "ACTIVE_ATTRIBS", attribs.size());
         return nullptr;
     }
@@ -620,7 +620,7 @@ WebGLProgram::GetActiveUniform(GLuint index) const
     const auto& uniforms = mMostRecentLinkInfo->uniforms;
 
     if (index >= uniforms.size()) {
-        mContext->ErrorInvalidValue("`index` (%i) must be less than %s (%i).",
+        mContext->ErrorInvalidValue("`index` (%i) must be less than %s (%zu).",
                                     index, "ACTIVE_UNIFORMS", uniforms.size());
         return nullptr;
     }

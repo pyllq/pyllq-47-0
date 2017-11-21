@@ -155,7 +155,7 @@ const char kPrefMaxSerilizedMsgSize[] = IDB_PREF_BRANCH_ROOT "maxSerializedMsgSi
 const char kPrefLoggingEnabled[] = IDB_PREF_LOGGING_BRANCH_ROOT "enabled";
 const char kPrefLoggingDetails[] = IDB_PREF_LOGGING_BRANCH_ROOT "details";
 
-#if defined(DEBUG) || defined(MOZ_ENABLE_PROFILER_SPS)
+#if defined(DEBUG) || defined(MOZ_GECKO_PROFILER)
 const char kPrefLoggingProfiler[] =
   IDB_PREF_LOGGING_BRANCH_ROOT "profiler-marks";
 #endif
@@ -417,7 +417,7 @@ IndexedDatabaseManager::Init()
 
   Preferences::RegisterCallback(LoggingModePrefChangedCallback,
                                 kPrefLoggingDetails);
-#ifdef MOZ_ENABLE_PROFILER_SPS
+#ifdef MOZ_GECKO_PROFILER
   Preferences::RegisterCallback(LoggingModePrefChangedCallback,
                                 kPrefLoggingProfiler);
 #endif
@@ -431,8 +431,8 @@ IndexedDatabaseManager::Init()
                                        kPrefMaxSerilizedMsgSize);
 
 #ifdef ENABLE_INTL_API
-  const nsAdoptingCString& acceptLang =
-    Preferences::GetLocalizedCString("intl.accept_languages");
+  nsAutoCString acceptLang;
+  Preferences::GetLocalizedCString("intl.accept_languages", acceptLang);
 
   // Split values on commas.
   nsCCharSeparatedTokenizer langTokenizer(acceptLang, ',');
@@ -483,7 +483,7 @@ IndexedDatabaseManager::Destroy()
 
   Preferences::UnregisterCallback(LoggingModePrefChangedCallback,
                                   kPrefLoggingDetails);
-#ifdef MOZ_ENABLE_PROFILER_SPS
+#ifdef MOZ_GECKO_PROFILER
   Preferences::UnregisterCallback(LoggingModePrefChangedCallback,
                                   kPrefLoggingProfiler);
 #endif
@@ -994,6 +994,11 @@ IndexedDatabaseManager::BlockAndGetFileReferences(
 
     BackgroundUtilsChild* actor = new BackgroundUtilsChild(this);
 
+    // We don't set event target for BackgroundUtilsChild because:
+    // 1. BackgroundUtilsChild is a singleton.
+    // 2. SendGetFileReferences is a sync operation to be returned asap if unlabeled.
+    // 3. The rest operations like DeleteMe/__delete__ only happens at shutdown.
+    // Hence, we should keep it unlabeled.
     mBackgroundActor =
       static_cast<BackgroundUtilsChild*>(
         bgActor->SendPBackgroundIndexedDBUtilsConstructor(actor));
@@ -1064,9 +1069,9 @@ IndexedDatabaseManager::LoggingModePrefChangedCallback(
   }
 
   bool useProfiler =
-#if defined(DEBUG) || defined(MOZ_ENABLE_PROFILER_SPS)
+#if defined(DEBUG) || defined(MOZ_GECKO_PROFILER)
     Preferences::GetBool(kPrefLoggingProfiler);
-#if !defined(MOZ_ENABLE_PROFILER_SPS)
+#if !defined(MOZ_GECKO_PROFILER)
   if (useProfiler) {
     NS_WARNING("IndexedDB cannot create profiler marks because this build does "
                "not have profiler extensions enabled!");
@@ -1102,7 +1107,8 @@ IndexedDatabaseManager::GetLocale()
 
 NS_IMPL_ADDREF(IndexedDatabaseManager)
 NS_IMPL_RELEASE_WITH_DESTROY(IndexedDatabaseManager, Destroy())
-NS_IMPL_QUERY_INTERFACE(IndexedDatabaseManager, nsIObserver, nsITimerCallback)
+NS_IMPL_QUERY_INTERFACE(IndexedDatabaseManager, nsIObserver, nsITimerCallback,
+                        nsINamed)
 
 NS_IMETHODIMP
 IndexedDatabaseManager::Observe(nsISupports* aSubject, const char* aTopic,
@@ -1155,6 +1161,13 @@ IndexedDatabaseManager::Notify(nsITimer* aTimer)
 
   mPendingDeleteInfos.Clear();
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+IndexedDatabaseManager::GetName(nsACString& aName)
+{
+  aName.AssignLiteral("IndexedDatabaseManager");
   return NS_OK;
 }
 
@@ -1361,7 +1374,6 @@ DeleteFilesRunnable::Open()
   quotaManager->OpenDirectory(mFileManager->Type(),
                               mFileManager->Group(),
                               mFileManager->Origin(),
-                              mFileManager->IsApp(),
                               Client::IDB,
                               /* aExclusive */ false,
                               this);

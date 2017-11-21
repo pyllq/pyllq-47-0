@@ -9,6 +9,7 @@
 #include "jsarray.h"
 #include "jscntxt.h"
 
+#include "jit/InlinableNatives.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/Stack.h"
 
@@ -26,7 +27,8 @@ Reflect_defineProperty(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject obj(cx, NonNullObject(cx, args.get(0)));
+    RootedObject obj(cx, NonNullObjectArg(cx, "`target`", "Reflect.defineProperty",
+                                          args.get(0)));
     if (!obj)
         return false;
 
@@ -56,7 +58,8 @@ Reflect_deleteProperty(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject target(cx, NonNullObject(cx, args.get(0)));
+    RootedObject target(cx, NonNullObjectArg(cx, "`target`", "Reflect.deleteProperty",
+                                             args.get(0)));
     if (!target)
         return false;
 
@@ -81,7 +84,7 @@ Reflect_get(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject obj(cx, NonNullObject(cx, args.get(0)));
+    RootedObject obj(cx, NonNullObjectArg(cx, "`target`", "Reflect.get", args.get(0)));
     if (!obj)
         return false;
 
@@ -104,7 +107,7 @@ Reflect_getOwnPropertyDescriptor(JSContext* cx, unsigned argc, Value* vp)
 {
     // Step 1.
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (!NonNullObject(cx, args.get(0)))
+    if (!NonNullObjectArg(cx, "`target`", "Reflect.getOwnPropertyDescriptor", args.get(0)))
         return false;
 
     // The other steps are identical to ES6 draft rev 32 (2015 Feb 2) 19.1.2.6
@@ -119,7 +122,8 @@ js::Reflect_getPrototypeOf(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject target(cx, NonNullObject(cx, args.get(0)));
+    RootedObject target(cx, NonNullObjectArg(cx, "`target`", "Reflect.getPrototypeOf",
+                                             args.get(0)));
     if (!target)
         return false;
 
@@ -138,7 +142,7 @@ js::Reflect_isExtensible(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject target(cx, NonNullObject(cx, args.get(0)));
+    RootedObject target(cx, NonNullObjectArg(cx, "`target`", "Reflect.isExtensible", args.get(0)));
     if (!target)
         return false;
 
@@ -157,7 +161,7 @@ Reflect_ownKeys(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    if (!NonNullObject(cx, args.get(0)))
+    if (!NonNullObjectArg(cx, "`target`", "Reflect.ownKeys", args.get(0)))
         return false;
 
     // Steps 2-4.
@@ -171,7 +175,8 @@ Reflect_preventExtensions(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject target(cx, NonNullObject(cx, args.get(0)));
+    RootedObject target(cx, NonNullObjectArg(cx, "`target`", "Reflect.preventExtensions",
+                                             args.get(0)));
     if (!target)
         return false;
 
@@ -190,7 +195,7 @@ Reflect_set(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject target(cx, NonNullObject(cx, args.get(0)));
+    RootedObject target(cx, NonNullObjectArg(cx, "`target`", "Reflect.set", args.get(0)));
     if (!target)
         return false;
 
@@ -224,7 +229,7 @@ Reflect_setPrototypeOf(JSContext* cx, unsigned argc, Value* vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     // Step 1.
-    RootedObject obj(cx, NonNullObject(cx, args.get(0)));
+    RootedObject obj(cx, NonNullObjectArg(cx, "`target`", "Reflect.setPrototypeOf", args.get(0)));
     if (!obj)
         return false;
 
@@ -252,7 +257,7 @@ static const JSFunctionSpec methods[] = {
     JS_FN("deleteProperty", Reflect_deleteProperty, 2, 0),
     JS_FN("get", Reflect_get, 2, 0),
     JS_FN("getOwnPropertyDescriptor", Reflect_getOwnPropertyDescriptor, 2, 0),
-    JS_FN("getPrototypeOf", Reflect_getPrototypeOf, 1, 0),
+    JS_INLINABLE_FN("getPrototypeOf", Reflect_getPrototypeOf, 1, 0, ReflectGetPrototypeOf),
     JS_SELF_HOSTED_FN("has", "Reflect_has", 2, 0),
     JS_FN("isExtensible", Reflect_isExtensible, 1, 0),
     JS_FN("ownKeys", Reflect_ownKeys, 1, 0),

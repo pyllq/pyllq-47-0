@@ -6,6 +6,7 @@
 
 #include "ServiceWorkerManagerParent.h"
 #include "ServiceWorkerManagerService.h"
+#include "ServiceWorkerUpdaterParent.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ServiceWorkerRegistrar.h"
 #include "mozilla/ipc/BackgroundParent.h"
@@ -29,7 +30,8 @@ class RegisterServiceWorkerCallback final : public Runnable
 public:
   RegisterServiceWorkerCallback(const ServiceWorkerRegistrationData& aData,
                                 uint64_t aParentID)
-    : mData(aData)
+    : Runnable("dom::workers::RegisterServiceWorkerCallback")
+    , mData(aData)
     , mParentID(aParentID)
   {
     AssertIsInMainProcess();
@@ -73,7 +75,8 @@ public:
   UnregisterServiceWorkerCallback(const PrincipalInfo& aPrincipalInfo,
                                   const nsString& aScope,
                                   uint64_t aParentID)
-    : mPrincipalInfo(aPrincipalInfo)
+    : Runnable("dom::workers::UnregisterServiceWorkerCallback")
+    , mPrincipalInfo(aPrincipalInfo)
     , mScope(aScope)
     , mParentID(aParentID)
   {
@@ -121,17 +124,18 @@ public:
   CheckPrincipalWithCallbackRunnable(already_AddRefed<ContentParent> aParent,
                                      const PrincipalInfo& aPrincipalInfo,
                                      Runnable* aCallback)
-    : mContentParent(aParent)
+    : Runnable("dom::workers::CheckPrincipalWithCallbackRunnable")
+    , mContentParent(aParent)
     , mPrincipalInfo(aPrincipalInfo)
     , mCallback(aCallback)
-    , mBackgroundThread(NS_GetCurrentThread())
+    , mBackgroundEventTarget(GetCurrentThreadEventTarget())
   {
     AssertIsInMainProcess();
     AssertIsOnBackgroundThread();
 
     MOZ_ASSERT(mContentParent);
     MOZ_ASSERT(mCallback);
-    MOZ_ASSERT(mBackgroundThread);
+    MOZ_ASSERT(mBackgroundEventTarget);
   }
 
   NS_IMETHOD Run() override
@@ -139,7 +143,7 @@ public:
     if (NS_IsMainThread()) {
       mContentParent = nullptr;
 
-      mBackgroundThread->Dispatch(this, NS_DISPATCH_NORMAL);
+      mBackgroundEventTarget->Dispatch(this, NS_DISPATCH_NORMAL);
       return NS_OK;
     }
 
@@ -154,7 +158,7 @@ private:
   RefPtr<ContentParent> mContentParent;
   PrincipalInfo mPrincipalInfo;
   RefPtr<Runnable> mCallback;
-  nsCOMPtr<nsIThread> mBackgroundThread;
+  nsCOMPtr<nsIEventTarget> mBackgroundEventTarget;
 };
 
 } // namespace
@@ -308,6 +312,38 @@ ServiceWorkerManagerParent::RecvShutdown()
 
   Unused << Send__delete__(this);
   return IPC_OK();
+}
+
+PServiceWorkerUpdaterParent*
+ServiceWorkerManagerParent::AllocPServiceWorkerUpdaterParent(const OriginAttributes& aOriginAttributes,
+                                                             const nsCString& aScope)
+{
+  AssertIsOnBackgroundThread();
+  return new ServiceWorkerUpdaterParent();
+}
+
+mozilla::ipc::IPCResult
+ServiceWorkerManagerParent::RecvPServiceWorkerUpdaterConstructor(PServiceWorkerUpdaterParent* aActor,
+                                                                 const OriginAttributes& aOriginAttributes,
+                                                                 const nsCString& aScope)
+{
+  AssertIsOnBackgroundThread();
+
+  if (NS_WARN_IF(!mService)) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  mService->ProcessUpdaterActor(static_cast<ServiceWorkerUpdaterParent*>(aActor),
+                                aOriginAttributes, aScope, mID);
+  return IPC_OK();
+}
+
+bool
+ServiceWorkerManagerParent::DeallocPServiceWorkerUpdaterParent(PServiceWorkerUpdaterParent* aActor)
+{
+  AssertIsOnBackgroundThread();
+  delete aActor;
+  return true;
 }
 
 void

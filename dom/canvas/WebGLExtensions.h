@@ -14,6 +14,7 @@
 #include "WebGLTypes.h"
 
 namespace mozilla {
+class ErrorResult;
 
 namespace dom {
 template<typename> struct Nullable;
@@ -124,6 +125,18 @@ class WebGLExtensionCompressedTextureS3TC
 public:
     explicit WebGLExtensionCompressedTextureS3TC(WebGLContext*);
     virtual ~WebGLExtensionCompressedTextureS3TC();
+
+    static bool IsSupported(const WebGLContext*);
+
+    DECL_WEBGL_EXTENSION_GOOP
+};
+
+class WebGLExtensionCompressedTextureS3TC_SRGB
+    : public WebGLExtensionBase
+{
+public:
+    explicit WebGLExtensionCompressedTextureS3TC_SRGB(WebGLContext*);
+    virtual ~WebGLExtensionCompressedTextureS3TC_SRGB();
 
     DECL_WEBGL_EXTENSION_GOOP
 };
@@ -399,6 +412,19 @@ public:
                            GLenum pname, JS::MutableHandleValue retval) const;
 
     static bool IsSupported(const WebGLContext*);
+
+    DECL_WEBGL_EXTENSION_GOOP
+};
+
+class WebGLExtensionMOZDebug final
+    : public WebGLExtensionBase
+{
+public:
+    explicit WebGLExtensionMOZDebug(WebGLContext* webgl);
+    virtual ~WebGLExtensionMOZDebug();
+
+    void GetParameter(JSContext* cx, GLenum pname,
+                      JS::MutableHandle<JS::Value> retval, ErrorResult& er) const;
 
     DECL_WEBGL_EXTENSION_GOOP
 };

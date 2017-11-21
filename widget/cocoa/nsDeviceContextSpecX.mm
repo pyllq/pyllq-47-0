@@ -64,15 +64,25 @@ NS_IMETHODIMP nsDeviceContextSpecX::Init(nsIWidget *aWidget,
   if (!settings)
     return NS_ERROR_NO_INTERFACE;
 
+  bool toFile;
+  settings->GetPrintToFile(&toFile);
+
+  bool toPrinter = !toFile && !aIsPrintPreview;
+  if (!toPrinter) {
+    double width, height;
+    settings->GetFilePageSize(&width, &height);
+    settings->SetCocoaPaperSize(width, height);
+  }
+
   mPrintSession = settings->GetPMPrintSession();
   ::PMRetain(mPrintSession);
   mPageFormat = settings->GetPMPageFormat();
   mPrintSettings = settings->GetPMPrintSettings();
 
 #ifdef MOZ_ENABLE_SKIA_PDF
-  const nsAdoptingString& printViaPdf =
-    mozilla::Preferences::GetString("print.print_via_pdf_encoder");
-  if (printViaPdf == NS_LITERAL_STRING("skia-pdf")) {
+  nsAutoString printViaPdf;
+  mozilla::Preferences::GetString("print.print_via_pdf_encoder", printViaPdf);
+  if (printViaPdf.EqualsLiteral("skia-pdf")) {
     // Annoyingly, PMPrinterPrintWithFile does not pay attention to the
     // kPMDestination* value set in the PMPrintSession; it always sends the PDF
     // to the specified printer.  This means that if we create the PDF using
@@ -183,11 +193,11 @@ NS_IMETHODIMP nsDeviceContextSpecX::EndDocument()
       if (status == noErr) {
         CFStringRef sourcePathRef =
           CFURLCopyFileSystemPath(pdfURL, kCFURLPOSIXPathStyle);
+        NSString* sourcePath = (NSString*) sourcePathRef;
+#ifdef DEBUG
         CFStringRef destPathRef =
           CFURLCopyFileSystemPath(destURL, kCFURLPOSIXPathStyle);
-        NSString* sourcePath = (NSString*) sourcePathRef;
         NSString* destPath = (NSString*) destPathRef;
-#ifdef DEBUG
         NSString* destPathExt = [destPath pathExtension];
         MOZ_ASSERT([destPathExt isEqualToString: @"pdf"],
                    "nsDeviceContextSpecX::Init only allows '.pdf' for now");
@@ -230,8 +240,10 @@ void nsDeviceContextSpecX::GetPaperRect(double* aTop, double* aLeft, double* aBo
     PMRect paperRect;
     ::PMGetAdjustedPaperRect(mPageFormat, &paperRect);
 
-    *aTop = paperRect.top, *aLeft = paperRect.left;
-    *aBottom = paperRect.bottom, *aRight = paperRect.right;
+    *aTop = paperRect.top;
+    *aLeft = paperRect.left;
+    *aBottom = paperRect.bottom;
+    *aRight = paperRect.right;
 
     NS_OBJC_END_TRY_ABORT_BLOCK;
 }

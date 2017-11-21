@@ -277,7 +277,7 @@ public:
   }
 };
 
-inline void
+inline void MOZ_FORMAT_PRINTF(2, 3)
 LoggingHelper(bool aUseProfiler, const char* aFmt, ...)
 {
   MOZ_ASSERT(IndexedDatabaseManager::GetLoggingMode() !=
@@ -305,7 +305,7 @@ LoggingHelper(bool aUseProfiler, const char* aFmt, ...)
     MOZ_LOG(logModule, logLevel, ("%s", message.get()));
 
     if (aUseProfiler) {
-      PROFILER_MARKER(message.get());
+      profiler_add_marker(message.get());
     }
   }
 }

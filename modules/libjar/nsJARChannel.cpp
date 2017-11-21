@@ -21,8 +21,8 @@
 #include "nsIPrincipal.h"
 #include "nsIFileURL.h"
 
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Telemetry.h"
 #include "nsITabChild.h"
 #include "private/pprio.h"
 #include "nsInputStreamPump.h"
@@ -209,7 +209,8 @@ nsJARChannel::nsJARChannel()
 
 nsJARChannel::~nsJARChannel()
 {
-    NS_ReleaseOnMainThread(mLoadInfo.forget());
+    NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mLoadInfo",
+                                      mLoadInfo.forget());
 
     // release owning reference to the jar handler
     nsJARProtocolHandler *handler = gJarHandler;
@@ -271,7 +272,9 @@ nsJARChannel::CreateJarInput(nsIZipReaderCache *jarCache, nsJARInputThunk **resu
     }
 
     nsCOMPtr<nsIZipReader> reader;
-    if (jarCache) {
+    if (mPreCachedJarReader) {
+      reader = mPreCachedJarReader;
+    } else if (jarCache) {
         MOZ_ASSERT(mJarFile);
         if (mInnerJarEntry.IsEmpty())
             rv = jarCache->GetZip(clonedFile, getter_AddRefs(reader));
@@ -325,7 +328,7 @@ nsJARChannel::CreateJarInput(nsIZipReaderCache *jarCache, nsJARInputThunk **resu
 nsresult
 nsJARChannel::LookupFile(bool aAllowAsync)
 {
-    LOG(("nsJARChannel::LookupFile [this=%x %s]\n", this, mSpec.get()));
+    LOG(("nsJARChannel::LookupFile [this=%p %s]\n", this, mSpec.get()));
 
     if (mJarFile)
         return NS_OK;
@@ -345,6 +348,12 @@ nsJARChannel::LookupFile(bool aAllowAsync)
     // does basic escaping by default, which breaks reading zipped files which
     // have e.g. spaces in their filenames.
     NS_UnescapeURL(mJarEntry);
+
+    if (mJarFileOverride) {
+        mJarFile = mJarFileOverride;
+        LOG(("nsJARChannel::LookupFile [this=%p] Overriding mJarFile\n", this));
+        return NS_OK;
+    }
 
     // try to get a nsIFile directly from the url, which will often succeed.
     {
@@ -483,6 +492,12 @@ nsJARChannel::SetLoadFlags(nsLoadFlags aLoadFlags)
 {
     mLoadFlags = aLoadFlags;
     return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJARChannel::GetIsDocument(bool *aIsDocument)
+{
+    return NS_GetIsDocumentChannel(this, aIsDocument);
 }
 
 NS_IMETHODIMP
@@ -707,7 +722,7 @@ nsJARChannel::SetContentLength(int64_t aContentLength)
 NS_IMETHODIMP
 nsJARChannel::Open(nsIInputStream **stream)
 {
-    LOG(("nsJARChannel::Open [this=%x]\n", this));
+    LOG(("nsJARChannel::Open [this=%p]\n", this));
 
     NS_ENSURE_TRUE(!mOpened, NS_ERROR_IN_PROGRESS);
     NS_ENSURE_TRUE(!mIsPending, NS_ERROR_IN_PROGRESS);
@@ -756,7 +771,7 @@ nsJARChannel::AsyncOpen(nsIStreamListener *listener, nsISupports *ctx)
                 nsContentUtils::IsSystemPrincipal(mLoadInfo->LoadingPrincipal())),
                "security flags in loadInfo but asyncOpen2() not called");
 
-    LOG(("nsJARChannel::AsyncOpen [this=%x]\n", this));
+    LOG(("nsJARChannel::AsyncOpen [this=%p]\n", this));
 
     NS_ENSURE_ARG_POINTER(listener);
     NS_ENSURE_TRUE(!mOpened, NS_ERROR_IN_PROGRESS);
@@ -796,12 +811,6 @@ nsJARChannel::AsyncOpen(nsIStreamListener *listener, nsISupports *ctx)
             mCallbacks = nullptr;
             mProgressSink = nullptr;
             return NS_ERROR_UNSAFE_CONTENT_TYPE;
-        }
-
-        static bool reportedRemoteJAR = false;
-        if (!reportedRemoteJAR) {
-            reportedRemoteJAR = true;
-            Telemetry::Accumulate(Telemetry::REMOTE_JAR_PROTOCOL_USED, 1);
         }
 
         // kick off an async download of the base URI...
@@ -885,6 +894,67 @@ nsJARChannel::GetJarFile(nsIFile **aFile)
 }
 
 NS_IMETHODIMP
+nsJARChannel::SetJarFile(nsIFile *aFile)
+{
+    if (mOpened) {
+        return NS_ERROR_IN_PROGRESS;
+    }
+    mJarFileOverride = aFile;
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJARChannel::EnsureCached(bool *aIsCached)
+{
+    nsresult rv;
+    *aIsCached = false;
+
+    if (mOpened) {
+        return NS_ERROR_ALREADY_OPENED;
+    }
+
+    if (mPreCachedJarReader) {
+        // We've already been called and found the JAR is cached
+        *aIsCached = true;
+        return NS_OK;
+    }
+
+    nsCOMPtr<nsIURI> innerFileURI;
+    rv = mJarURI->GetJARFile(getter_AddRefs(innerFileURI));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIFileURL> innerFileURL = do_QueryInterface(innerFileURI, &rv);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIFile> jarFile;
+    rv = innerFileURL->GetFile(getter_AddRefs(jarFile));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIProtocolHandler> handler;
+    rv = ioService->GetProtocolHandler("jar", getter_AddRefs(handler));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIJARProtocolHandler> jarHandler = do_QueryInterface(handler);
+    MOZ_ASSERT(jarHandler);
+
+    nsCOMPtr<nsIZipReaderCache> jarCache;
+    rv = jarHandler->GetJARCache(getter_AddRefs(jarCache));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    rv = jarCache->GetZipIfCached(jarFile, getter_AddRefs(mPreCachedJarReader));
+    if (rv == NS_ERROR_CACHE_KEY_NOT_FOUND) {
+        return NS_OK;
+    }
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    *aIsCached = true;
+    return NS_OK;
+}
+
+NS_IMETHODIMP
 nsJARChannel::GetZipEntry(nsIZipEntry **aZipEntry)
 {
     nsresult rv = LookupFile(false);
@@ -920,8 +990,8 @@ nsJARChannel::OnDownloadComplete(MemoryDownloader* aDownloader,
         uint32_t loadFlags;
         channel->GetLoadFlags(&loadFlags);
         if (loadFlags & LOAD_REPLACE) {
-            mLoadFlags |= LOAD_REPLACE;
-
+            // Update our URI to reflect any redirects that happen during
+            // the HTTP request.
             if (!mOriginalURI) {
                 SetOriginalURI(mJarURI);
             }
@@ -943,6 +1013,9 @@ nsJARChannel::OnDownloadComplete(MemoryDownloader* aDownloader,
     }
 
     if (NS_SUCCEEDED(status) && channel) {
+        // In case the load info object has changed during a redirect,
+        // grab it from the target channel.
+        channel->GetLoadInfo(getter_AddRefs(mLoadInfo));
         // Grab the security info from our base channel
         channel->GetSecurityInfo(getter_AddRefs(mSecurityInfo));
 
@@ -952,8 +1025,8 @@ nsJARChannel::OnDownloadComplete(MemoryDownloader* aDownloader,
             // send us a JAR file.  Check the server-supplied content type for
             // a JAR type.
             nsAutoCString header;
-            httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("Content-Type"),
-                                           header);
+            Unused << httpChannel->GetResponseHeader(
+              NS_LITERAL_CSTRING("Content-Type"), header);
             nsAutoCString contentType;
             nsAutoCString charset;
             NS_ParseResponseContentType(header, contentType, charset);
@@ -1016,7 +1089,7 @@ nsJARChannel::OnDownloadComplete(MemoryDownloader* aDownloader,
 NS_IMETHODIMP
 nsJARChannel::OnStartRequest(nsIRequest *req, nsISupports *ctx)
 {
-    LOG(("nsJARChannel::OnStartRequest [this=%x %s]\n", this, mSpec.get()));
+    LOG(("nsJARChannel::OnStartRequest [this=%p %s]\n", this, mSpec.get()));
 
     mRequest = req;
     nsresult rv = mListener->OnStartRequest(this, mListenerContext);
@@ -1028,8 +1101,8 @@ nsJARChannel::OnStartRequest(nsIRequest *req, nsISupports *ctx)
 NS_IMETHODIMP
 nsJARChannel::OnStopRequest(nsIRequest *req, nsISupports *ctx, nsresult status)
 {
-    LOG(("nsJARChannel::OnStopRequest [this=%x %s status=%x]\n",
-        this, mSpec.get(), status));
+    LOG(("nsJARChannel::OnStopRequest [this=%p %s status=%" PRIx32 "]\n",
+         this, mSpec.get(), static_cast<uint32_t>(status)));
 
     if (NS_SUCCEEDED(mStatus))
         mStatus = status;
@@ -1064,7 +1137,7 @@ nsJARChannel::OnDataAvailable(nsIRequest *req, nsISupports *ctx,
                                nsIInputStream *stream,
                                uint64_t offset, uint32_t count)
 {
-    LOG(("nsJARChannel::OnDataAvailable [this=%x %s]\n", this, mSpec.get()));
+    LOG(("nsJARChannel::OnDataAvailable [this=%p %s]\n", this, mSpec.get()));
 
     nsresult rv;
 
@@ -1078,7 +1151,8 @@ nsJARChannel::OnDataAvailable(nsIRequest *req, nsISupports *ctx,
             FireOnProgress(offset + count);
         } else {
             NS_DispatchToMainThread(NewRunnableMethod
-                                    <uint64_t>(this,
+                                    <uint64_t>("nsJARChannel::FireOnProgress",
+                                               this,
                                                &nsJARChannel::FireOnProgress,
                                                offset + count));
         }

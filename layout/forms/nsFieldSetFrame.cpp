@@ -5,26 +5,22 @@
 
 #include "nsFieldSetFrame.h"
 
-#include "mozilla/gfx/2D.h"
-#include "nsCSSAnonBoxes.h"
-#include "nsLayoutUtils.h"
-#include "nsLegendFrame.h"
-#include "nsCSSRendering.h"
 #include <algorithm>
-#include "nsIFrame.h"
-#include "nsPresContext.h"
-#include "mozilla/RestyleManager.h"
-#include "nsGkAtoms.h"
-#include "nsStyleConsts.h"
-#include "nsDisplayList.h"
-#include "nsRenderingContext.h"
-#include "nsIScrollableFrame.h"
+#include "gfxContext.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/Likely.h"
 #include "mozilla/Maybe.h"
+#include "nsCSSAnonBoxes.h"
+#include "nsCSSRendering.h"
+#include "nsDisplayList.h"
+#include "nsGkAtoms.h"
+#include "nsIFrameInlines.h"
+#include "nsLayoutUtils.h"
+#include "nsLegendFrame.h"
+#include "nsStyleConsts.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
-using namespace mozilla::image;
 using namespace mozilla::layout;
 
 nsContainerFrame*
@@ -36,16 +32,10 @@ NS_NewFieldSetFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(nsFieldSetFrame)
 
 nsFieldSetFrame::nsFieldSetFrame(nsStyleContext* aContext)
-  : nsContainerFrame(aContext)
+  : nsContainerFrame(aContext, kClassID)
   , mLegendRect(GetWritingMode())
 {
   mLegendSpace  = 0;
-}
-
-nsIAtom*
-nsFieldSetFrame::GetType() const
-{
-  return nsGkAtoms::fieldSetFrame;
 }
 
 nsRect
@@ -84,8 +74,7 @@ nsFieldSetFrame::GetLegend() const
     return nullptr;
   }
   MOZ_ASSERT(mFrames.FirstChild() &&
-             mFrames.FirstChild()->GetContentInsertionFrame()->GetType() ==
-               nsGkAtoms::legendFrame);
+             mFrames.FirstChild()->GetContentInsertionFrame()->IsLegendFrame());
   return mFrames.FirstChild();
 }
 
@@ -102,7 +91,7 @@ public:
   }
 #endif
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx) override;
+                     gfxContext* aCtx) override;
   virtual nsDisplayItemGeometry* AllocateGeometry(nsDisplayListBuilder* aBuilder) override;
   virtual void ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
                                          const nsDisplayItemGeometry* aGeometry,
@@ -113,9 +102,9 @@ public:
 
 void
 nsDisplayFieldSetBorder::Paint(nsDisplayListBuilder* aBuilder,
-                               nsRenderingContext* aCtx)
+                               gfxContext* aCtx)
 {
-  DrawResult result = static_cast<nsFieldSetFrame*>(mFrame)->
+  image::DrawResult result = static_cast<nsFieldSetFrame*>(mFrame)->
     PaintBorder(aBuilder, *aCtx, ToReferenceFrame(), mVisibleRect);
 
   nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
@@ -179,7 +168,7 @@ nsFieldSetFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 
     aLists.BorderBackground()->AppendNewToTop(new (aBuilder)
       nsDisplayFieldSetBorder(aBuilder, this));
-  
+
     DisplayOutlineUnconditional(aBuilder, aLists);
 
     DO_GLOBAL_REFLOW_COUNT_DSP("nsFieldSetFrame");
@@ -212,10 +201,10 @@ nsFieldSetFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
   contentDisplayItems.MoveTo(aLists);
 }
 
-DrawResult
+image::DrawResult
 nsFieldSetFrame::PaintBorder(
   nsDisplayListBuilder* aBuilder,
-  nsRenderingContext& aRenderingContext,
+  gfxContext& aRenderingContext,
   nsPoint aPt,
   const nsRect& aDirtyRect)
 {
@@ -266,14 +255,12 @@ nsFieldSetFrame::PaintBorder(
                      false);
     RefPtr<Path> clipPath = pathBuilder->Finish();
 
-    gfxContext* gfx = aRenderingContext.ThebesContext();
-
-    gfx->Save();
-    gfx->Clip(clipPath);
+    aRenderingContext.Save();
+    aRenderingContext.Clip(clipPath);
     result &=
       nsCSSRendering::PaintBorder(presContext, aRenderingContext, this,
                                   aDirtyRect, rect, mStyleContext, borderFlags);
-    gfx->Restore();
+    aRenderingContext.Restore();
   } else {
     result &=
       nsCSSRendering::PaintBorder(presContext, aRenderingContext, this,
@@ -285,7 +272,7 @@ nsFieldSetFrame::PaintBorder(
 }
 
 nscoord
-nsFieldSetFrame::GetIntrinsicISize(nsRenderingContext* aRenderingContext,
+nsFieldSetFrame::GetIntrinsicISize(gfxContext* aRenderingContext,
                                    nsLayoutUtils::IntrinsicISizeType aType)
 {
   nscoord legendWidth = 0;
@@ -309,7 +296,7 @@ nsFieldSetFrame::GetIntrinsicISize(nsRenderingContext* aRenderingContext,
 
 
 nscoord
-nsFieldSetFrame::GetMinISize(nsRenderingContext* aRenderingContext)
+nsFieldSetFrame::GetMinISize(gfxContext* aRenderingContext)
 {
   nscoord result = 0;
   DISPLAY_MIN_WIDTH(this, result);
@@ -319,7 +306,7 @@ nsFieldSetFrame::GetMinISize(nsRenderingContext* aRenderingContext)
 }
 
 nscoord
-nsFieldSetFrame::GetPrefISize(nsRenderingContext* aRenderingContext)
+nsFieldSetFrame::GetPrefISize(gfxContext* aRenderingContext)
 {
   nscoord result = 0;
   DISPLAY_PREF_WIDTH(this, result);
@@ -343,10 +330,10 @@ nsFieldSetFrame::Reflow(nsPresContext*           aPresContext,
                   "Should have a precomputed inline-size!");
 
   // Initialize OUT parameter
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   nsOverflowAreas ocBounds;
-  nsReflowStatus ocStatus = NS_FRAME_COMPLETE;
+  nsReflowStatus ocStatus;
   if (GetPrevInFlow()) {
     ReflowOverflowContainerChildren(aPresContext, aReflowInput, ocBounds, 0,
                                     ocStatus);
@@ -578,7 +565,7 @@ nsFieldSetFrame::Reflow(nsPresContext*           aPresContext,
 
   // Merge overflow container bounds and status.
   aDesiredSize.mOverflowAreas.UnionWith(ocBounds);
-  NS_MergeReflowStatusInto(&aStatus, ocStatus);
+  aStatus.MergeCompletionStatusFrom(ocStatus);
 
   FinishReflowWithAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput, aStatus);
 
@@ -628,9 +615,59 @@ nsFieldSetFrame::AccessibleType()
 #endif
 
 nscoord
-nsFieldSetFrame::GetLogicalBaseline(WritingMode aWritingMode) const
+nsFieldSetFrame::GetLogicalBaseline(WritingMode aWM) const
+{
+  switch (StyleDisplay()->mDisplay) {
+    case mozilla::StyleDisplay::Grid:
+    case mozilla::StyleDisplay::InlineGrid:
+    case mozilla::StyleDisplay::Flex:
+    case mozilla::StyleDisplay::InlineFlex:
+      return BaselineBOffset(aWM, BaselineSharingGroup::eFirst,
+                             AlignmentContext::eInline);
+    default:
+      return BSize(aWM) - BaselineBOffset(aWM, BaselineSharingGroup::eLast,
+                                          AlignmentContext::eInline);
+  }
+}
+
+bool
+nsFieldSetFrame::GetVerticalAlignBaseline(WritingMode aWM,
+                                          nscoord* aBaseline) const
 {
   nsIFrame* inner = GetInner();
-  return inner->BStart(aWritingMode, GetParent()->GetSize()) +
-    inner->GetLogicalBaseline(aWritingMode);
+  MOZ_ASSERT(!inner->GetWritingMode().IsOrthogonalTo(aWM));
+  if (!inner->GetVerticalAlignBaseline(aWM, aBaseline)) {
+    return false;
+  }
+  nscoord innerBStart = inner->BStart(aWM, GetSize());
+  *aBaseline += innerBStart;
+  return true;
 }
+
+bool
+nsFieldSetFrame::GetNaturalBaselineBOffset(WritingMode          aWM,
+                                           BaselineSharingGroup aBaselineGroup,
+                                           nscoord*             aBaseline) const
+{
+  nsIFrame* inner = GetInner();
+  MOZ_ASSERT(!inner->GetWritingMode().IsOrthogonalTo(aWM));
+  if (!inner->GetNaturalBaselineBOffset(aWM, aBaselineGroup, aBaseline)) {
+    return false;
+  }
+  nscoord innerBStart = inner->BStart(aWM, GetSize());
+  if (aBaselineGroup == BaselineSharingGroup::eFirst) {
+    *aBaseline += innerBStart;
+  } else {
+    *aBaseline += BSize(aWM) - (innerBStart + inner->BSize(aWM));
+  }
+  return true;
+}
+
+void
+nsFieldSetFrame::AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult)
+{
+  if (nsIFrame* kid = GetInner()) {
+    aResult.AppendElement(OwnedAnonBox(kid));
+  }
+}
+

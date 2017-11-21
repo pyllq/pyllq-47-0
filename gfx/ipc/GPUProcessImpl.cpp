@@ -7,6 +7,11 @@
 #include "mozilla/ipc/IOThreadChild.h"
 #include "nsXPCOM.h"
 
+#if defined(OS_WIN) && defined(MOZ_SANDBOX)
+#define TARGET_SANDBOX_EXPORTS
+#include "mozilla/sandboxTarget.h"
+#endif
+
 namespace mozilla {
 namespace gfx {
 
@@ -22,8 +27,12 @@ GPUProcessImpl::~GPUProcessImpl()
 }
 
 bool
-GPUProcessImpl::Init()
+GPUProcessImpl::Init(int aArgc, char* aArgv[])
 {
+#if defined(MOZ_SANDBOX) && defined(OS_WIN)
+  mozilla::SandboxTarget::Instance()->StartSandbox();
+#endif
+
   return mGPU.Init(ParentPid(),
                    IOThreadChild::message_loop(),
                    IOThreadChild::channel());

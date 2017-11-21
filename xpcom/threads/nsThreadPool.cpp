@@ -146,7 +146,7 @@ nsThreadPool::ShutdownThread(nsIThread* aThread)
   // shutdown requires this thread have an event loop (and it may not, see bug
   // 10204784).  The simplest way to cover all cases is to asynchronously
   // shutdown aThread from the main thread.
-  NS_DispatchToMainThread(NewRunnableMethod(aThread,
+  NS_DispatchToMainThread(NewRunnableMethod("nsIThread::AsyncShutdown", aThread,
                                             &nsIThread::AsyncShutdown));
 }
 
@@ -265,9 +265,9 @@ nsThreadPool::Dispatch(already_AddRefed<nsIRunnable> aEvent, uint32_t aFlags)
       new nsThreadSyncDispatch(thread, Move(aEvent));
     PutEvent(wrapper);
 
-    while (wrapper->IsPending()) {
-      NS_ProcessNextEvent(thread);
-    }
+    SpinEventLoopUntil([&, wrapper]() -> bool {
+        return !wrapper->IsPending();
+      }, thread);
   } else {
     NS_ASSERTION(aFlags == NS_DISPATCH_NORMAL ||
                  aFlags == NS_DISPATCH_AT_END, "unexpected dispatch flags");
@@ -280,6 +280,20 @@ NS_IMETHODIMP
 nsThreadPool::DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t)
 {
   return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP_(bool)
+nsThreadPool::IsOnCurrentThreadInfallible()
+{
+  MutexAutoLock lock(mMutex);
+
+  nsIThread* thread = NS_GetCurrentThread();
+  for (uint32_t i = 0; i < static_cast<uint32_t>(mThreads.Count()); ++i) {
+    if (mThreads[i] == thread) {
+      return true;
+    }
+  }
+  return false;
 }
 
 NS_IMETHODIMP

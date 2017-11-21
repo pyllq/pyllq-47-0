@@ -5,6 +5,7 @@
 "use strict";
 
 const { AddonManager } = require("resource://gre/modules/AddonManager.jsm");
+const { Management } = require("resource://gre/modules/Extension.jsm");
 const { createFactory, createClass, DOM: dom, PropTypes } =
   require("devtools/client/shared/vendor/react");
 const Services = require("Services");
@@ -23,6 +24,8 @@ const Strings = Services.strings.createBundle(
 const ExtensionIcon = "chrome://mozapps/skin/extensions/extensionGeneric.svg";
 const CHROME_ENABLED_PREF = "devtools.chrome.enabled";
 const REMOTE_ENABLED_PREF = "devtools.debugger.remote-enabled";
+const WEB_EXT_URL = "https://developer.mozilla.org/Add-ons" +
+                    "/WebExtensions/Getting_started_with_web-ext";
 
 module.exports = createClass({
   displayName: "AddonsPanel",
@@ -41,11 +44,14 @@ module.exports = createClass({
 
   componentDidMount() {
     AddonManager.addAddonListener(this);
+    // Listen to startup since that's when errors and warnings
+    // get populated on the extension.
+    Management.on("startup", this.updateAddonsList);
 
     Services.prefs.addObserver(CHROME_ENABLED_PREF,
-      this.updateDebugStatus, false);
+      this.updateDebugStatus);
     Services.prefs.addObserver(REMOTE_ENABLED_PREF,
-      this.updateDebugStatus, false);
+      this.updateDebugStatus);
 
     this.updateDebugStatus();
     this.updateAddonsList();
@@ -53,6 +59,8 @@ module.exports = createClass({
 
   componentWillUnmount() {
     AddonManager.removeAddonListener(this);
+    Management.off("startup", this.updateAddonsList);
+
     Services.prefs.removeObserver(CHROME_ENABLED_PREF,
       this.updateDebugStatus);
     Services.prefs.removeObserver(REMOTE_ENABLED_PREF,
@@ -76,7 +84,10 @@ module.exports = createClass({
             icon: addon.iconURL || ExtensionIcon,
             addonID: addon.id,
             addonActor: addon.actor,
-            temporarilyInstalled: addon.temporarilyInstalled
+            temporarilyInstalled: addon.temporarilyInstalled,
+            url: addon.url,
+            manifestURL: addon.manifestURL,
+            warnings: addon.warnings,
           };
         });
 
@@ -117,8 +128,12 @@ module.exports = createClass({
   render() {
     let { client, id } = this.props;
     let { debugDisabled, extensions: targets } = this.state;
-    let name = Strings.GetStringFromName("extensions");
+    let installedName = Strings.GetStringFromName("extensions");
+    let temporaryName = Strings.GetStringFromName("temporaryExtensions");
     let targetClass = AddonTarget;
+
+    const installedTargets = targets.filter((target) => !target.temporarilyInstalled);
+    const temporaryTargets = targets.filter((target) => target.temporarilyInstalled);
 
     return dom.div({
       id: id + "-panel",
@@ -131,11 +146,30 @@ module.exports = createClass({
       name: Strings.GetStringFromName("addons")
     }),
     AddonsControls({ debugDisabled }),
+    dom.div({ id: "temporary-addons" },
+      TargetList({
+        id: "temporary-extensions",
+        name: temporaryName,
+        targets: temporaryTargets,
+        client,
+        debugDisabled,
+        targetClass,
+        sort: true
+      }),
+      dom.div({ className: "addons-tip"},
+        dom.span({
+          className: "addons-web-ext-tip",
+        }, Strings.GetStringFromName("webExtTip")),
+        dom.a({ href: WEB_EXT_URL, target: "_blank" },
+          Strings.GetStringFromName("webExtTip.learnMore")
+        )
+      )
+    ),
     dom.div({ id: "addons" },
       TargetList({
         id: "extensions",
-        name,
-        targets,
+        name: installedName,
+        targets: installedTargets,
         client,
         debugDisabled,
         targetClass,

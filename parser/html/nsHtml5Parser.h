@@ -31,7 +31,6 @@ class nsHtml5Parser final : public nsIParser,
                             public nsSupportsWeakReference
 {
   public:
-    NS_DECL_AND_IMPL_ZEROING_OPERATOR_NEW
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
     NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsHtml5Parser, nsIParser)
@@ -68,18 +67,11 @@ class nsHtml5Parser final : public nsIParser,
      *  Call this method once you've created a parser, and want to instruct it
      *  about what charset to load
      *
-     *  @param   aCharset the charset of a document
+     *  @param   aEncoding the charset of a document
      *  @param   aCharsetSource the source of the charset
      */
-    NS_IMETHOD_(void) SetDocumentCharset(const nsACString& aCharset, int32_t aSource) override;
-
-    /**
-     * Don't call. For interface compat only.
-     */
-    NS_IMETHOD_(void) GetDocumentCharset(nsACString& aCharset, int32_t& aSource) override
-    {
-      NS_NOTREACHED("No one should call this.");
-    }
+    virtual void SetDocumentCharset(NotNull<const Encoding*> aEncoding,
+                                    int32_t aSource) override;
 
     /**
      * Get the channel associated with this parser
@@ -279,9 +271,10 @@ class nsHtml5Parser final : public nsIParser,
     bool                          mDocWriteSpeculativeLastWasCR;
 
     /**
-     * The parser is blocking on a script
+     * The parser is blocking on the load of an external script from a web
+     * page, or any number of extension content scripts.
      */
-    bool                          mBlocked;
+    uint32_t                      mBlocked;
 
     /**
      * Whether the document.write() speculator is already active.

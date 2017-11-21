@@ -224,7 +224,6 @@ public:
   double      GetAngleValueInRadians() const;
   float       GetFlexFractionValue() const;
   Calc*       GetCalcValue() const;
-  uint32_t    HashValue(uint32_t aHash) const;
   template<typename T,
            typename = typename std::enable_if<std::is_enum<T>::value>::type>
   T GetEnumValue() const
@@ -381,7 +380,7 @@ public:
   bool           operator==(const nsStyleCorners& aOther) const;
   bool           operator!=(const nsStyleCorners& aOther) const;
 
-  // aCorner is always one of NS_CORNER_* defined in nsStyleConsts.h
+  // aHalfCorner is always one of enum HalfCorner in gfx/2d/Types.h.
   inline nsStyleUnit GetUnit(uint8_t aHalfCorner) const;
 
   inline nsStyleCoord Get(uint8_t aHalfCorner) const;

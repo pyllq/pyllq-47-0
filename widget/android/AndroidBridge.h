@@ -153,8 +153,6 @@ public:
     // DeleteGlobalRef() when the context is no longer needed.
     jobject GetGlobalContextRef(void);
 
-    void HandleGeckoMessage(JSContext* cx, JS::HandleObject message);
-
     void GetCurrentBatteryInformation(hal::BatteryInformation* aBatteryInfo);
 
     void GetCurrentNetworkInformation(hal::NetworkInformation* aNetworkInfo);
@@ -226,15 +224,6 @@ protected:
     jni::Object::GlobalRef mMessageQueue;
     jfieldID mMessageQueueMessages;
     jmethodID mMessageQueueNext;
-
-private:
-    class DelayedTask;
-    nsTArray<DelayedTask> mUiTaskQueue;
-    mozilla::Mutex mUiTaskQueueLock;
-
-public:
-    void PostTaskToUiThread(already_AddRefed<nsIRunnable> aTask, int aDelayMs);
-    int64_t RunDelayedUiThreadTasks();
 };
 
 class AutoJNIClass {
@@ -407,9 +396,9 @@ private:
   void AddObservers();
   void RemoveObservers();
 
-  void UpdateAudioPlayingWindows(uint64_t aWindowId, bool aPlaying);
+  void UpdateAudioPlayingWindows(bool aPlaying);
 
-  nsTArray<uint64_t> mAudioPlayingWindows;
+  int32_t mAudibleWindowsNum;
   nsCOMPtr<nsIAndroidEventDispatcher> mEventDispatcher;
 
 protected:

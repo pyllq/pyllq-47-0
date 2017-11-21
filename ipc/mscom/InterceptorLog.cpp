@@ -10,6 +10,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/mscom/Registration.h"
+#include "mozilla/mscom/Utils.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
@@ -34,6 +35,7 @@
 using mozilla::DebugOnly;
 using mozilla::mscom::ArrayData;
 using mozilla::mscom::FindArrayData;
+using mozilla::mscom::IsValidGUID;
 using mozilla::Mutex;
 using mozilla::MutexAutoLock;
 using mozilla::NewNonOwningRunnableMethod;
@@ -76,6 +78,8 @@ private:
   void CloseFile();
   void AssertRunningOnLoggerThread();
   bool VariantToString(const VARIANT& aVariant, nsACString& aOut, LONG aIndex = 0);
+  bool TryParamAsGuid(REFIID aIid, ICallFrame* aCallFrame,
+                      const CALLFRAMEPARAMINFO& aParamInfo, nsACString& aLine);
   static double GetElapsedTime();
 
   nsCOMPtr<nsIFile>         mLogFileName;
@@ -129,7 +133,7 @@ Logger::Logger(const nsACString& aLeafBaseName)
   }
 
   nsCOMPtr<nsIRunnable> openRunnable(
-      NewNonOwningRunnableMethod(this, &Logger::OpenFile));
+    NewNonOwningRunnableMethod("Logger::OpenFile", this, &Logger::OpenFile));
   rv = NS_NewNamedThread("COM Intcpt Log", getter_AddRefs(mThread),
                          openRunnable);
   if (NS_FAILED(rv)) {
@@ -177,7 +181,8 @@ nsresult
 Logger::Shutdown()
 {
   MOZ_ASSERT(NS_IsMainThread());
-  nsresult rv = mThread->Dispatch(NewNonOwningRunnableMethod(this,
+  nsresult rv = mThread->Dispatch(NewNonOwningRunnableMethod("Logger::CloseFile",
+                                                             this,
                                                              &Logger::CloseFile),
                                   NS_DISPATCH_NORMAL);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Dispatch failed");
@@ -254,8 +259,7 @@ Logger::VariantToString(const VARIANT& aVariant, nsACString& aOut, LONG aIndex)
 Logger::GetElapsedTime()
 {
   TimeStamp ts = TimeStamp::Now();
-  bool inconsistent;
-  TimeDuration duration = ts - TimeStamp::ProcessCreation(inconsistent);
+  TimeDuration duration = ts - TimeStamp::ProcessCreation();
   return duration.ToMicroseconds();
 }
 
@@ -280,8 +284,34 @@ Logger::LogQI(HRESULT aResult, IUnknown* aTarget, REFIID aIid, IUnknown* aInterf
 
   MutexAutoLock lock(mMutex);
   mEntries.AppendElement(line);
-  mThread->Dispatch(NewNonOwningRunnableMethod(this, &Logger::Flush),
+  mThread->Dispatch(NewNonOwningRunnableMethod("Logger::Flush",
+                                               this, &Logger::Flush),
                     NS_DISPATCH_NORMAL);
+}
+
+bool
+Logger::TryParamAsGuid(REFIID aIid, ICallFrame* aCallFrame,
+                       const CALLFRAMEPARAMINFO& aParamInfo, nsACString& aLine)
+{
+  if (aIid != IID_IServiceProvider) {
+    return false;
+  }
+
+  GUID** guid = reinterpret_cast<GUID**>(
+                  static_cast<BYTE*>(aCallFrame->GetStackLocation()) +
+                  aParamInfo.stackOffset);
+
+  if (!IsValidGUID(**guid)) {
+    return false;
+  }
+
+  WCHAR buf[39] = {0};
+  if (!StringFromGUID2(**guid, buf, mozilla::ArrayLength(buf))) {
+    return false;
+  }
+
+  aLine.AppendPrintf("%S", buf);
+  return true;
 }
 
 void
@@ -349,7 +379,8 @@ Logger::LogEvent(ICallFrame* aCallFrame, IUnknown* aTargetInterface)
       } else {
         VariantToString(paramValue, line);
       }
-    } else {
+    } else if (hr != DISP_E_BADVARTYPE ||
+               !TryParamAsGuid(callInfo.iid, aCallFrame, paramInfo, line)) {
       line.AppendPrintf("(GetParam failed with HRESULT 0x%08X)", hr);
     }
     if (paramIndex < callInfo.cParams - 1) {
@@ -364,7 +395,8 @@ Logger::LogEvent(ICallFrame* aCallFrame, IUnknown* aTargetInterface)
   // (3) Enqueue event for logging
   MutexAutoLock lock(mMutex);
   mEntries.AppendElement(line);
-  mThread->Dispatch(NewNonOwningRunnableMethod(this, &Logger::Flush),
+  mThread->Dispatch(NewNonOwningRunnableMethod("Logger::Flush",
+                                               this, &Logger::Flush),
                     NS_DISPATCH_NORMAL);
 }
 

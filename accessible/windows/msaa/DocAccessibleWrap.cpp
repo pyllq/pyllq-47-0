@@ -53,7 +53,14 @@ DocAccessibleWrap::get_accParent(
   if (!ipcDoc) {
     return DocAccessible::get_accParent(ppdispParent);
   }
-  IAccessible* dispParent = ipcDoc->GetParentIAccessible();
+
+  // Emulated window proxy is only set for the top level content document when
+  // emulation is enabled.
+  IAccessible* dispParent = ipcDoc->GetEmulatedWindowIAccessible();
+  if (!dispParent) {
+    dispParent = ipcDoc->GetParentIAccessible();
+  }
+
   if (!dispParent) {
     return S_FALSE;
   }
@@ -120,9 +127,11 @@ DocAccessibleWrap::GetNativeWindow() const
 {
   if (XRE_IsContentProcess()) {
     DocAccessibleChild* ipcDoc = IPCDoc();
-    auto tab = static_cast<dom::TabChild*>(ipcDoc->Manager());
-    MOZ_ASSERT(tab);
-    return reinterpret_cast<HWND>(tab->GetNativeWindowHandle());
+    if (!ipcDoc) {
+      return nullptr;
+    }
+
+    return ipcDoc->GetNativeWindowHandle();
   } else if (mHWND) {
     return mHWND;
   }
@@ -154,13 +163,16 @@ DocAccessibleWrap::DoInitialUpdate()
         docShell->GetIsActive(&isActive);
       }
 
+      RefPtr<DocAccessibleWrap> self(this);
+      nsWinUtils::NativeWindowCreateProc onCreate([self](HWND aHwnd) -> void {
+        ::SetPropW(aHwnd, kPropNameDocAcc, reinterpret_cast<HANDLE>(self.get()));
+      });
+
       HWND parentWnd = reinterpret_cast<HWND>(rootDocument->GetNativeWindow());
       mHWND = nsWinUtils::CreateNativeWindow(kClassNameTabContent, parentWnd,
                                              rect.x, rect.y,
-                                             rect.width, rect.height, isActive);
-
-      ::SetPropW(static_cast<HWND>(mHWND), kPropNameDocAcc, (HANDLE)this);
-
+                                             rect.width, rect.height, isActive,
+                                             &onCreate);
     } else {
       DocAccessible* parentDocument = ParentDocument();
       if (parentDocument)

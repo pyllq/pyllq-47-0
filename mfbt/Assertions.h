@@ -214,22 +214,22 @@ static MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void MOZ_NoReturn(int aLine)
   TerminateProcess(GetCurrentProcess(), 3);
 }
 
-#  define MOZ_REALLY_CRASH() \
+#  define MOZ_REALLY_CRASH(line) \
      do { \
        __debugbreak(); \
-       MOZ_NoReturn(__LINE__); \
+       MOZ_NoReturn(line); \
      } while (0)
 #else
 #  ifdef __cplusplus
-#    define MOZ_REALLY_CRASH() \
+#    define MOZ_REALLY_CRASH(line) \
        do { \
-         *((volatile int*) NULL) = __LINE__; \
+         *((volatile int*) NULL) = line; \
          ::abort(); \
        } while (0)
 #  else
-#    define MOZ_REALLY_CRASH() \
+#    define MOZ_REALLY_CRASH(line) \
        do { \
-         *((volatile int*) NULL) = __LINE__; \
+         *((volatile int*) NULL) = line; \
          abort(); \
        } while (0)
 #  endif
@@ -260,16 +260,79 @@ static MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void MOZ_NoReturn(int aLine)
 #  define MOZ_CRASH(...) \
      do { \
        MOZ_CRASH_ANNOTATE("MOZ_CRASH(" __VA_ARGS__ ")"); \
-       MOZ_REALLY_CRASH(); \
+       MOZ_REALLY_CRASH(__LINE__); \
      } while (0)
 #else
 #  define MOZ_CRASH(...) \
      do { \
        MOZ_ReportCrash("" __VA_ARGS__, __FILE__, __LINE__); \
        MOZ_CRASH_ANNOTATE("MOZ_CRASH(" __VA_ARGS__ ")"); \
-       MOZ_REALLY_CRASH(); \
+       MOZ_REALLY_CRASH(__LINE__); \
      } while (0)
 #endif
+
+/*
+ * MOZ_CRASH_UNSAFE_OOL(explanation-string) can be used if the explanation
+ * string cannot be a string literal (but no other processing needs to be done
+ * on it). A regular MOZ_CRASH() is preferred wherever possible, as passing
+ * arbitrary strings from a potentially compromised process is not without risk.
+ * If the string being passed is the result of a printf-style function,
+ * consider using MOZ_CRASH_UNSAFE_PRINTF instead.
+ *
+ * @note This macro causes data collection because crash strings are annotated
+ * to crash-stats and are publicly visible. Firefox data stewards must do data
+ * review on usages of this macro.
+ */
+#ifndef DEBUG
+MFBT_API MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void
+MOZ_CrashOOL(int aLine, const char* aReason);
+#  define MOZ_CRASH_UNSAFE_OOL(reason) MOZ_CrashOOL(__LINE__, reason)
+#else
+MFBT_API MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void
+MOZ_CrashOOL(const char* aFilename, int aLine, const char* aReason);
+#  define MOZ_CRASH_UNSAFE_OOL(reason) MOZ_CrashOOL(__FILE__, __LINE__, reason)
+#endif
+
+static const size_t sPrintfMaxArgs = 4;
+static const size_t sPrintfCrashReasonSize = 1024;
+
+#ifndef DEBUG
+MFBT_API MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE MOZ_FORMAT_PRINTF(2, 3) void
+MOZ_CrashPrintf(int aLine, const char* aFormat, ...);
+#  define MOZ_CALL_CRASH_PRINTF(format, ...) \
+     MOZ_CrashPrintf(__LINE__, format, __VA_ARGS__)
+#else
+MFBT_API MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE MOZ_FORMAT_PRINTF(3, 4) void
+MOZ_CrashPrintf(const char* aFilename, int aLine, const char* aFormat, ...);
+#  define MOZ_CALL_CRASH_PRINTF(format, ...) \
+     MOZ_CrashPrintf(__FILE__, __LINE__, format, __VA_ARGS__)
+#endif
+
+/*
+ * MOZ_CRASH_UNSAFE_PRINTF(format, arg1 [, args]) can be used when more
+ * information is desired than a string literal can supply. The caller provides
+ * a printf-style format string, which must be a string literal and between
+ * 1 and 4 additional arguments. A regular MOZ_CRASH() is preferred wherever
+ * possible, as passing arbitrary strings to printf from a potentially
+ * compromised process is not without risk.
+ *
+ * @note This macro causes data collection because crash strings are annotated
+ * to crash-stats and are publicly visible. Firefox data stewards must do data
+ * review on usages of this macro.
+ */
+#define MOZ_CRASH_UNSAFE_PRINTF(format, ...) \
+   do { \
+     static_assert( \
+       MOZ_ARG_COUNT(__VA_ARGS__) > 0, \
+       "Did you forget arguments to MOZ_CRASH_UNSAFE_PRINTF? " \
+       "Or maybe you want MOZ_CRASH instead?"); \
+     static_assert( \
+       MOZ_ARG_COUNT(__VA_ARGS__) <= sPrintfMaxArgs, \
+       "Only up to 4 additional arguments are allowed!"); \
+     static_assert(sizeof(format) <= sPrintfCrashReasonSize, \
+       "The supplied format string is too long!"); \
+     MOZ_CALL_CRASH_PRINTF("" format, __VA_ARGS__); \
+   } while (0)
 
 MOZ_END_EXTERN_C
 
@@ -312,6 +375,9 @@ MOZ_END_EXTERN_C
  * This can cause user pain, so use it sparingly. If a MOZ_DIAGNOSTIC_ASSERT
  * is firing, it should promptly be converted to a MOZ_ASSERT while the failure
  * is being investigated, rather than letting users suffer.
+ *
+ * MOZ_DIAGNOSTIC_ASSERT_ENABLED is defined when MOZ_DIAGNOSTIC_ASSERT is like
+ * MOZ_RELEASE_ASSERT rather than MOZ_ASSERT.
  */
 
 /*
@@ -366,7 +432,7 @@ struct AssertionConditionType
     if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
       MOZ_REPORT_ASSERTION_FAILURE(#expr, __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ")"); \
-      MOZ_REALLY_CRASH(); \
+      MOZ_REALLY_CRASH(__LINE__); \
     } \
   } while (0)
 /* Now the two-argument form. */
@@ -376,7 +442,7 @@ struct AssertionConditionType
     if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
       MOZ_REPORT_ASSERTION_FAILURE(#expr " (" explain ")", __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ") (" explain ")"); \
-      MOZ_REALLY_CRASH(); \
+      MOZ_REALLY_CRASH(__LINE__); \
     } \
   } while (0)
 
@@ -392,10 +458,14 @@ struct AssertionConditionType
 #  define MOZ_ASSERT(...) do { } while (0)
 #endif /* DEBUG */
 
-#ifdef RELEASE_OR_BETA
-#  define MOZ_DIAGNOSTIC_ASSERT MOZ_ASSERT
-#else
+#if defined(NIGHTLY_BUILD) || defined(MOZ_DEV_EDITION)
 #  define MOZ_DIAGNOSTIC_ASSERT MOZ_RELEASE_ASSERT
+#  define MOZ_DIAGNOSTIC_ASSERT_ENABLED 1
+#else
+#  define MOZ_DIAGNOSTIC_ASSERT MOZ_ASSERT
+#  ifdef DEBUG
+#    define MOZ_DIAGNOSTIC_ASSERT_ENABLED 1
+#  endif
 #endif
 
 /*

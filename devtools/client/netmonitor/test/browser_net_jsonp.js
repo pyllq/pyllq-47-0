@@ -8,15 +8,19 @@
  */
 
 add_task(function* () {
-  let { L10N } = require("devtools/client/netmonitor/l10n");
+  let { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
 
   let { tab, monitor } = yield initNetMonitor(JSONP_URL);
   info("Starting test... ");
 
-  let { document, NetMonitorView } = monitor.panelWin;
-  let { RequestsMenu } = NetMonitorView;
+  let { document, store, windowRequire } = monitor.panelWin;
+  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+  let {
+    getDisplayedRequests,
+    getSortedRequests,
+  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
 
-  RequestsMenu.lazyUpdate = false;
+  store.dispatch(Actions.batchEnable(false));
 
   let wait = waitForNetworkEvents(monitor, 2);
   yield ContentTask.spawn(tab.linkedBrowser, {}, function* () {
@@ -24,8 +28,13 @@ add_task(function* () {
   });
   yield wait;
 
-  verifyRequestItemTarget(RequestsMenu, RequestsMenu.getItemAtIndex(0),
-    "GET", CONTENT_TYPE_SJS + "?fmt=jsonp&jsonp=$_0123Fun", {
+  verifyRequestItemTarget(
+    document,
+    getDisplayedRequests(store.getState()),
+    getSortedRequests(store.getState()).get(0),
+    "GET",
+    CONTENT_TYPE_SJS + "?fmt=jsonp&jsonp=$_0123Fun",
+    {
       status: 200,
       statusText: "OK",
       type: "json",
@@ -33,8 +42,13 @@ add_task(function* () {
       size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 41),
       time: true
     });
-  verifyRequestItemTarget(RequestsMenu, RequestsMenu.getItemAtIndex(1),
-    "GET", CONTENT_TYPE_SJS + "?fmt=jsonp2&jsonp=$_4567Sad", {
+  verifyRequestItemTarget(
+    document,
+    getDisplayedRequests(store.getState()),
+    getSortedRequests(store.getState()).get(1),
+    "GET",
+    CONTENT_TYPE_SJS + "?fmt=jsonp2&jsonp=$_4567Sad",
+    {
       status: 200,
       statusText: "OK",
       type: "json",
@@ -43,32 +57,33 @@ add_task(function* () {
       time: true
     });
 
-  wait = waitForDOM(document, "#response-tabpanel");
-  EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.getElementById("details-pane-toggle"));
-  EventUtils.sendMouseEvent({ type: "mousedown" },
-    document.querySelectorAll("#details-pane tab")[3]);
+  wait = waitForDOM(document, "#response-panel");
+  EventUtils.sendMouseEvent({ type: "click" },
+    document.querySelector(".network-details-panel-toggle"));
+  EventUtils.sendMouseEvent({ type: "click" },
+    document.querySelector("#response-tab"));
   yield wait;
 
-  testResponseTab("$_0123Fun", "\"Hello JSONP!\"");
+  testResponseTab("$_0123Fun", "Hello JSONP!");
 
-  wait = waitForDOM(document, "#response-tabpanel .tree-section");
-  RequestsMenu.selectedIndex = 1;
+  wait = waitForDOM(document, "#response-panel .tree-section");
+  EventUtils.sendMouseEvent({ type: "mousedown" },
+    document.querySelectorAll(".request-list-item")[1]);
   yield wait;
 
-  testResponseTab("$_4567Sad", "\"Hello weird JSONP!\"");
+  testResponseTab("$_4567Sad", "Hello weird JSONP!");
 
   yield teardown(monitor);
 
   function testResponseTab(func, greeting) {
-    let tabpanel = document.querySelectorAll("#details-pane tabpanel")[3];
+    let tabpanel = document.querySelector("#response-panel");
 
     is(tabpanel.querySelector(".response-error-header") === null, true,
       "The response error header doesn't have the intended visibility.");
     is(tabpanel.querySelector(".tree-section .treeLabel").textContent,
       L10N.getFormatStr("jsonpScopeName", func),
       "The response json view has the intened visibility and correct title.");
-    is(tabpanel.querySelector(".editor-mount iframe") === null, true,
+    is(tabpanel.querySelector(".CodeMirror-code") === null, true,
       "The response editor doesn't have the intended visibility.");
     is(tabpanel.querySelector(".responseImageBox") === null, true,
       "The response image box doesn't have the intended visibility.");

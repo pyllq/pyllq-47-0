@@ -31,6 +31,7 @@
 #include "LookupResult.h"
 #include "Orientation.h"
 #include "SVGDocumentWrapper.h"
+#include "SVGDrawingParameters.h"
 #include "nsIDOMEventListener.h"
 #include "SurfaceCache.h"
 #include "nsDocument.h"
@@ -254,11 +255,11 @@ NS_IMPL_ISUPPORTS(SVGLoadEventListener, nsIDOMEventListener)
 class SVGDrawingCallback : public gfxDrawingCallback {
 public:
   SVGDrawingCallback(SVGDocumentWrapper* aSVGDocumentWrapper,
-                     const IntRect& aViewport,
+                     const IntSize& aViewportSize,
                      const IntSize& aSize,
                      uint32_t aImageFlags)
     : mSVGDocumentWrapper(aSVGDocumentWrapper)
-    , mViewport(aViewport)
+    , mViewportSize(aViewportSize)
     , mSize(aSize)
     , mImageFlags(aImageFlags)
   { }
@@ -268,7 +269,7 @@ public:
                           const gfxMatrix& aTransform);
 private:
   RefPtr<SVGDocumentWrapper> mSVGDocumentWrapper;
-  const IntRect              mViewport;
+  const IntSize                mViewportSize;
   const IntSize                mSize;
   uint32_t                     mImageFlags;
 };
@@ -303,16 +304,15 @@ SVGDrawingCallback::operator()(gfxContext* aContext,
   }
   aContext->SetMatrix(
     aContext->CurrentMatrix().PreMultiply(matrix).
-                              Scale(double(mSize.width) / mViewport.width,
-                                    double(mSize.height) / mViewport.height));
+                              PreScale(double(mSize.width) / mViewportSize.width,
+                                       double(mSize.height) / mViewportSize.height));
 
   nsPresContext* presContext = presShell->GetPresContext();
   MOZ_ASSERT(presContext, "pres shell w/out pres context");
 
-  nsRect svgRect(presContext->DevPixelsToAppUnits(mViewport.x),
-                 presContext->DevPixelsToAppUnits(mViewport.y),
-                 presContext->DevPixelsToAppUnits(mViewport.width),
-                 presContext->DevPixelsToAppUnits(mViewport.height));
+  nsRect svgRect(0, 0,
+                 presContext->DevPixelsToAppUnits(mViewportSize.width),
+                 presContext->DevPixelsToAppUnits(mViewportSize.height));
 
   uint32_t renderDocFlags = nsIPresShell::RENDER_IGNORE_VIEWPORT_SCROLLING;
   if (!(mImageFlags & imgIContainer::FLAG_SYNC_DECODE)) {
@@ -380,7 +380,7 @@ VectorImage::Init(const char* aMimeType,
 }
 
 size_t
-VectorImage::SizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf) const
+VectorImage::SizeOfSourceWithComputedFallback(SizeOfState& aState) const
 {
   if (!mSVGDocumentWrapper) {
     return 0; // No document, so no memory used for the document.
@@ -391,7 +391,7 @@ VectorImage::SizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf) const
     return 0; // No document, so no memory used for the document.
   }
 
-  nsWindowSizes windowSizes(aMallocSizeOf);
+  nsWindowSizes windowSizes(aState);
   doc->DocAddSizeOfIncludingThis(&windowSizes);
 
   if (windowSizes.getTotalSize() == 0) {
@@ -427,7 +427,7 @@ VectorImage::OnImageDataComplete(nsIRequest* aRequest,
   if (NS_FAILED(aStatus)) {
     finalStatus = aStatus;
   }
-  
+
   Progress loadProgress = LoadCompleteProgress(aLastPart, mError, finalStatus);
 
   if (mIsFullyLoaded || mError) {
@@ -519,6 +519,13 @@ VectorImage::GetWidth(int32_t* aWidth)
   }
   *aWidth = rootElemWidth;
   return NS_OK;
+}
+
+//******************************************************************************
+nsresult
+VectorImage::GetNativeSizes(nsTArray<IntSize>& aNativeSizes) const
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 //******************************************************************************
@@ -769,43 +776,6 @@ VectorImage::GetImageContainer(LayerManager* aManager, uint32_t aFlags)
   return nullptr;
 }
 
-struct SVGDrawingParameters
-{
-  SVGDrawingParameters(gfxContext* aContext,
-                       const nsIntSize& aSize,
-                       const ImageRegion& aRegion,
-                       SamplingFilter aSamplingFilter,
-                       const Maybe<SVGImageContext>& aSVGContext,
-                       float aAnimationTime,
-                       uint32_t aFlags,
-                       float aOpacity)
-    : context(aContext)
-    , size(aSize.width, aSize.height)
-    , region(aRegion)
-    , samplingFilter(aSamplingFilter)
-    , svgContext(aSVGContext)
-    , viewportSize(aSize)
-    , animationTime(aAnimationTime)
-    , flags(aFlags)
-    , opacity(aSVGContext ? aSVGContext->GetGlobalOpacity() : aOpacity)
-  {
-    if (aSVGContext) {
-      CSSIntSize sz = aSVGContext->GetViewportSize();
-      viewportSize = nsIntSize(sz.width, sz.height); // XXX losing unit
-    }
-  }
-
-  gfxContext*                   context;
-  IntSize                       size;
-  ImageRegion                   region;
-  SamplingFilter                samplingFilter;
-  const Maybe<SVGImageContext>& svgContext;
-  nsIntSize                     viewportSize;
-  float                         animationTime;
-  uint32_t                      flags;
-  gfxFloat                      opacity;
-};
-
 //******************************************************************************
 NS_IMETHODIMP_(DrawResult)
 VectorImage::Draw(gfxContext* aContext,
@@ -833,44 +803,57 @@ VectorImage::Draw(gfxContext* aContext,
     return DrawResult::NOT_READY;
   }
 
-  if (mIsDrawing) {
-    NS_WARNING("Refusing to make re-entrant call to VectorImage::Draw");
-    return DrawResult::TEMPORARY_ERROR;
-  }
-
   if (mAnimationConsumers == 0) {
     SendOnUnlockedDraw(aFlags);
   }
 
-  AutoRestore<bool> autoRestoreIsDrawing(mIsDrawing);
-  mIsDrawing = true;
+  MOZ_ASSERT(!(aFlags & FLAG_FORCE_PRESERVEASPECTRATIO_NONE) ||
+             (aSVGContext && aSVGContext->GetViewportSize()),
+             "Viewport size is required when using "
+             "FLAG_FORCE_PRESERVEASPECTRATIO_NONE");
 
-  Maybe<SVGImageContext> svgContext;
-  // If FLAG_FORCE_PRESERVEASPECTRATIO_NONE bit is set, that mean we should
-  // overwrite SVG preserveAspectRatio attibute of this image with none, and
-  // always stretch this image to viewport non-uniformly.
-  // And we can do this only if the caller pass in the the SVG viewport, via
-  // aSVGContext.
-  if ((aFlags & FLAG_FORCE_PRESERVEASPECTRATIO_NONE) && aSVGContext.isSome()) {
-    Maybe<SVGPreserveAspectRatio> aspectRatio =
-      Some(SVGPreserveAspectRatio(SVG_PRESERVEASPECTRATIO_NONE,
-                                  SVG_MEETORSLICE_UNKNOWN));
-    svgContext =
-      Some(SVGImageContext(aSVGContext->GetViewportSize(),
-                           aspectRatio));
-  } else {
-    svgContext = aSVGContext;
+  bool overridePAR = (aFlags & FLAG_FORCE_PRESERVEASPECTRATIO_NONE) && aSVGContext;
+
+  bool haveContextPaint = aSVGContext && aSVGContext->GetContextPaint();
+  bool blockContextPaint = false;
+  if (haveContextPaint) {
+    nsCOMPtr<nsIURI> imageURI = mURI->ToIURI();
+    blockContextPaint = !SVGContextPaint::IsAllowedForImageFromURI(imageURI);
   }
 
-  float animTime =
-    (aWhichFrame == FRAME_FIRST) ? 0.0f
-                                 : mSVGDocumentWrapper->GetCurrentTime();
-  AutoSVGRenderingState autoSVGState(svgContext, animTime,
-                                     mSVGDocumentWrapper->GetRootSVGElem());
+  Maybe<SVGImageContext> newSVGContext;
+  if (overridePAR || blockContextPaint) {
+    // The key that we create for the image surface cache must match the way
+    // that the image will be painted, so we need to initialize a new matching
+    // SVGImageContext here in order to generate the correct key.
 
+    newSVGContext = aSVGContext; // copy
+
+    if (overridePAR) {
+      // The SVGImageContext must take account of the preserveAspectRatio
+      // overide:
+      MOZ_ASSERT(!aSVGContext->GetPreserveAspectRatio(),
+                 "FLAG_FORCE_PRESERVEASPECTRATIO_NONE is not expected if a "
+                 "preserveAspectRatio override is supplied");
+      Maybe<SVGPreserveAspectRatio> aspectRatio =
+        Some(SVGPreserveAspectRatio(SVG_PRESERVEASPECTRATIO_NONE,
+                                    SVG_MEETORSLICE_UNKNOWN));
+      newSVGContext->SetPreserveAspectRatio(aspectRatio);
+    }
+
+    if (blockContextPaint) {
+      // The SVGImageContext must not include context paint if the image is
+      // not allowed to use it:
+      newSVGContext->ClearContextPaint();
+    }
+  }
+
+  float animTime = (aWhichFrame == FRAME_FIRST)
+                     ? 0.0f : mSVGDocumentWrapper->GetCurrentTime();
 
   SVGDrawingParameters params(aContext, aSize, aRegion, aSamplingFilter,
-                              svgContext, animTime, aFlags, aOpacity);
+                              newSVGContext ? newSVGContext : aSVGContext,
+                              animTime, aFlags, aOpacity);
 
   // If we have an prerasterized version of this image that matches the
   // drawing parameters, use that.
@@ -878,6 +861,31 @@ VectorImage::Draw(gfxContext* aContext,
   if (svgDrawable) {
     Show(svgDrawable, params);
     return DrawResult::SUCCESS;
+  }
+
+  // else, we need to paint the image:
+
+  if (mIsDrawing) {
+    NS_WARNING("Refusing to make re-entrant call to VectorImage::Draw");
+    return DrawResult::TEMPORARY_ERROR;
+  }
+  AutoRestore<bool> autoRestoreIsDrawing(mIsDrawing);
+  mIsDrawing = true;
+
+  // Apply any 'preserveAspectRatio' override (if specified) to the root
+  // element:
+  AutoPreserveAspectRatioOverride autoPAR(newSVGContext ? newSVGContext : aSVGContext,
+                                          mSVGDocumentWrapper->GetRootSVGElem());
+
+  // Set the animation time:
+  AutoSVGTimeSetRestore autoSVGTime(mSVGDocumentWrapper->GetRootSVGElem(),
+                                    animTime);
+
+  // Set context paint (if specified) on the document:
+  Maybe<AutoSetRestoreSVGContextPaint> autoContextPaint;
+  if (haveContextPaint && !blockContextPaint) {
+    autoContextPaint.emplace(aSVGContext->GetContextPaint(),
+                             mSVGDocumentWrapper->GetDocument());
   }
 
   // We didn't get a hit in the surface cache, so we'll need to rerasterize.
@@ -927,7 +935,7 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams, BackendTy
 
   RefPtr<gfxDrawingCallback> cb =
     new SVGDrawingCallback(mSVGDocumentWrapper,
-                           IntRect(IntPoint(0, 0), aParams.viewportSize),
+                           aParams.viewportSize,
                            aParams.size,
                            aParams.flags);
 
@@ -993,7 +1001,9 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams, BackendTy
                                          GetMaxSizedIntRect());
   } else {
     NotNull<RefPtr<VectorImage>> image = WrapNotNull(this);
-    NS_DispatchToMainThread(NS_NewRunnableFunction([=]() -> void {
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+                              "ProgressTracker::SyncNotifyProgress",
+                              [=]() -> void {
       RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
       if (tracker) {
         tracker->SyncNotifyProgress(FLAG_FRAME_COMPLETE,
@@ -1009,11 +1019,25 @@ VectorImage::Show(gfxDrawable* aDrawable, const SVGDrawingParameters& aParams)
 {
   MOZ_ASSERT(aDrawable, "Should have a gfxDrawable by now");
   gfxUtils::DrawPixelSnapped(aParams.context, aDrawable,
-                             aParams.size,
+                             SizeDouble(aParams.size),
                              aParams.region,
                              SurfaceFormat::B8G8R8A8,
                              aParams.samplingFilter,
                              aParams.flags, aParams.opacity);
+
+#ifdef DEBUG
+  // Record the image drawing for startup performance testing.
+  if (NS_IsMainThread()) {
+    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+    NS_WARNING_ASSERTION(obs, "Can't get an observer service handle");
+    if (obs) {
+      nsCOMPtr<nsIURI> imageURI = mURI->ToIURI();
+      nsAutoCString spec;
+      imageURI->GetSpec(spec);
+      obs->NotifyObservers(nullptr, "image-drawing", NS_ConvertUTF8toUTF16(spec).get());
+    }
+  }
+#endif
 
   MOZ_ASSERT(mRenderingObserver, "Should have a rendering observer by now");
   mRenderingObserver->ResumeHonoringInvalidations();
@@ -1114,11 +1138,12 @@ VectorImage::RequestDiscard()
 }
 
 void
-VectorImage::OnSurfaceDiscarded()
+VectorImage::OnSurfaceDiscarded(const SurfaceKey& aSurfaceKey)
 {
   MOZ_ASSERT(mProgressTracker);
 
-  NS_DispatchToMainThread(NewRunnableMethod(mProgressTracker, &ProgressTracker::OnDiscard));
+  NS_DispatchToMainThread(NewRunnableMethod("ProgressTracker::OnDiscard",
+                                            mProgressTracker, &ProgressTracker::OnDiscard));
 }
 
 //******************************************************************************

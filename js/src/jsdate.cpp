@@ -18,6 +18,7 @@
 #include "jsdate.h"
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/Sprintf.h"
 
@@ -48,16 +49,21 @@
 
 using namespace js;
 
+using mozilla::Atomic;
 using mozilla::ArrayLength;
 using mozilla::IsFinite;
 using mozilla::IsNaN;
 using mozilla::NumbersAreIdentical;
+using mozilla::ReleaseAcquire;
 
 using JS::AutoCheckCannotGC;
 using JS::ClippedTime;
 using JS::GenericNaN;
 using JS::TimeClip;
 using JS::ToInteger;
+
+// When this value is non-zero, we'll round the time by this resolution.
+static Atomic<uint32_t, ReleaseAcquire> sResolutionUsec;
 
 /*
  * The JS 'Date' object is patterned after the Java 'Date' object.
@@ -399,6 +405,12 @@ JS::DayWithinYear(double time, double year)
     return ::DayWithinYear(time, year);
 }
 
+JS_PUBLIC_API(void)
+JS::SetTimeResolutionUsec(uint32_t resolution)
+{
+    sResolutionUsec = resolution;
+}
+
 /*
  * Find a year for which any given date will fall on the same weekday.
  *
@@ -586,23 +598,29 @@ RegionMatches(const char* s1, int s1off, const CharT* s2, int s2off, int count)
     return count == 0;
 }
 
-/* ES6 20.3.3.4. */
+// ES2017 draft rev (TODO: Add git hash when PR 642 is merged.)
+// 20.3.3.4
+// Date.UTC(year [, month [, date [, hours [, minutes [, seconds [, ms]]]]]])
 static bool
 date_UTC(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    // Steps 1-2.
+    // Step 1.
     double y;
     if (!ToNumber(cx, args.get(0), &y))
         return false;
 
-    // Steps 3-4.
+    // Step 2.
     double m;
-    if (!ToNumber(cx, args.get(1), &m))
-        return false;
+    if (args.length() >= 2) {
+        if (!ToNumber(cx, args[1], &m))
+            return false;
+    } else {
+        m = 0;
+    }
 
-    // Steps 5-6.
+    // Step 3.
     double dt;
     if (args.length() >= 3) {
         if (!ToNumber(cx, args[2], &dt))
@@ -611,7 +629,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
         dt = 1;
     }
 
-    // Steps 7-8.
+    // Step 4.
     double h;
     if (args.length() >= 4) {
         if (!ToNumber(cx, args[3], &h))
@@ -620,7 +638,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
         h = 0;
     }
 
-    // Steps 9-10.
+    // Step 5.
     double min;
     if (args.length() >= 5) {
         if (!ToNumber(cx, args[4], &min))
@@ -629,7 +647,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
         min = 0;
     }
 
-    // Steps 11-12.
+    // Step 6.
     double s;
     if (args.length() >= 6) {
         if (!ToNumber(cx, args[5], &s))
@@ -638,7 +656,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
         s = 0;
     }
 
-    // Steps 13-14.
+    // Step 7.
     double milli;
     if (args.length() >= 7) {
         if (!ToNumber(cx, args[6], &milli))
@@ -647,7 +665,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
         milli = 0;
     }
 
-    // Step 15.
+    // Step 8.
     double yr = y;
     if (!IsNaN(y)) {
         double yint = ToInteger(y);
@@ -655,7 +673,7 @@ date_UTC(JSContext* cx, unsigned argc, Value* vp)
             yr = 1900 + yint;
     }
 
-    // Step 16.
+    // Step 9.
     ClippedTime time = TimeClip(MakeDate(MakeDay(yr, m, dt), MakeTime(h, min, s, milli)));
     args.rval().set(TimeValue(time));
     return true;
@@ -1244,7 +1262,11 @@ date_parse(JSContext* cx, unsigned argc, Value* vp)
 static ClippedTime
 NowAsMillis()
 {
-    return TimeClip(static_cast<double>(PRMJ_Now()) / PRMJ_USEC_PER_MSEC);
+    double now = PRMJ_Now();
+    if (sResolutionUsec) {
+        now = floor(now / sResolutionUsec) * sResolutionUsec;
+    }
+    return TimeClip(now / PRMJ_USEC_PER_MSEC);
 }
 
 bool
@@ -2816,6 +2838,17 @@ date_toLocaleFormat_impl(JSContext* cx, const CallArgs& args)
 {
     Rooted<DateObject*> dateObj(cx, &args.thisv().toObject().as<DateObject>());
 
+#if EXPOSE_INTL_API
+    if (!cx->compartment()->warnedAboutDateToLocaleFormat) {
+        if (!JS_ReportErrorFlagsAndNumberASCII(cx, JSREPORT_WARNING, GetErrorMessage, nullptr,
+                                               JSMSG_DEPRECATED_TOLOCALEFORMAT))
+        {
+            return false;
+        }
+        cx->compartment()->warnedAboutDateToLocaleFormat = true;
+    }
+#endif
+
     if (args.length() == 0) {
         /*
          * Use '%#c' for windows, because '%c' is backward-compatible and non-y2k
@@ -2981,7 +3014,7 @@ date_toPrimitive(JSContext* cx, unsigned argc, Value* vp)
     JSType hint;
     if (!GetFirstArgumentAsTypeHint(cx, args, &hint))
         return false;
-    if (hint == JSTYPE_VOID)
+    if (hint == JSTYPE_UNDEFINED)
         hint = JSTYPE_STRING;
 
     args.rval().set(args.thisv());
@@ -3062,8 +3095,7 @@ NewDateObject(JSContext* cx, const CallArgs& args, ClippedTime t)
     MOZ_ASSERT(args.isConstructing());
 
     RootedObject proto(cx);
-    RootedObject newTarget(cx, &args.newTarget().toObject());
-    if (!GetPrototypeFromConstructor(cx, newTarget, &proto))
+    if (!GetPrototypeFromBuiltinConstructor(cx, args, &proto))
         return false;
 
     JSObject* obj = NewDateObjectMsec(cx, t, proto);

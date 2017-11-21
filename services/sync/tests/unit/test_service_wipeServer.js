@@ -4,7 +4,7 @@ Cu.import("resource://services-sync/resource.js");
 Cu.import("resource://testing-common/services/sync/fakeservices.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
-Svc.DefaultPrefs.set("registerEngines", "");
+Svc.Prefs.set("registerEngines", "");
 Cu.import("resource://services-sync/service.js");
 
 // configure the identity we use for this test.
@@ -32,7 +32,6 @@ FakeCollection.prototype = {
 };
 
 async function setUpTestFixtures(server) {
-  Service.serverURL = server.baseURI + "/";
   Service.clusterURL = server.baseURI + "/";
 
   await configureIdentity(identityConfig);
@@ -44,7 +43,7 @@ function run_test() {
   run_next_test();
 }
 
-add_identity_test(this, async function test_wipeServer_list_success() {
+add_task(async function test_wipeServer_list_success() {
   _("Service.wipeServer() deletes collections given as argument.");
 
   let steam_coll = new FakeCollection();
@@ -65,7 +64,7 @@ add_identity_test(this, async function test_wipeServer_list_success() {
     do_check_false(diesel_coll.deleted);
 
     _("wipeServer() will happily ignore the non-existent collection and use the timestamp of the last DELETE that was successful.");
-    let timestamp = Service.wipeServer(["steam", "diesel", "petrol"]);
+    let timestamp = await Service.wipeServer(["steam", "diesel", "petrol"]);
     do_check_eq(timestamp, diesel_coll.timestamp);
 
     _("wipeServer stopped deleting after encountering an error with the 'petrol' collection, thus only 'steam' has been deleted.");
@@ -78,7 +77,7 @@ add_identity_test(this, async function test_wipeServer_list_success() {
   }
 });
 
-add_identity_test(this, async function test_wipeServer_list_503() {
+add_task(async function test_wipeServer_list_503() {
   _("Service.wipeServer() deletes collections given as argument.");
 
   let steam_coll = new FakeCollection();
@@ -101,7 +100,7 @@ add_identity_test(this, async function test_wipeServer_list_503() {
     _("wipeServer() will happily ignore the non-existent collection, delete the 'steam' collection and abort after an receiving an error on the 'petrol' collection.");
     let error;
     try {
-      Service.wipeServer(["non-existent", "steam", "petrol", "diesel"]);
+      await Service.wipeServer(["non-existent", "steam", "petrol", "diesel"]);
       do_throw("Should have thrown!");
     } catch (ex) {
       error = ex;
@@ -119,7 +118,7 @@ add_identity_test(this, async function test_wipeServer_list_503() {
   }
 });
 
-add_identity_test(this, async function test_wipeServer_all_success() {
+add_task(async function test_wipeServer_all_success() {
   _("Service.wipeServer() deletes all the things.");
 
   /**
@@ -141,7 +140,7 @@ add_identity_test(this, async function test_wipeServer_all_success() {
 
   _("Try deletion.");
   await SyncTestingInfrastructure(server, "johndoe", "irrelevant");
-  let returnedTimestamp = Service.wipeServer();
+  let returnedTimestamp = await Service.wipeServer();
   do_check_true(deleted);
   do_check_eq(returnedTimestamp, serverTimestamp);
 
@@ -149,7 +148,7 @@ add_identity_test(this, async function test_wipeServer_all_success() {
   Svc.Prefs.resetBranch("");
 });
 
-add_identity_test(this, async function test_wipeServer_all_404() {
+add_task(async function test_wipeServer_all_404() {
   _("Service.wipeServer() accepts a 404.");
 
   /**
@@ -173,7 +172,7 @@ add_identity_test(this, async function test_wipeServer_all_404() {
 
   _("Try deletion.");
   await SyncTestingInfrastructure(server, "johndoe", "irrelevant");
-  let returnedTimestamp = Service.wipeServer();
+  let returnedTimestamp = await Service.wipeServer();
   do_check_true(deleted);
   do_check_eq(returnedTimestamp, serverTimestamp);
 
@@ -181,7 +180,7 @@ add_identity_test(this, async function test_wipeServer_all_404() {
   Svc.Prefs.resetBranch("");
 });
 
-add_identity_test(this, async function test_wipeServer_all_503() {
+add_task(async function test_wipeServer_all_503() {
   _("Service.wipeServer() throws if it encounters a non-200/404 response.");
 
   /**
@@ -202,7 +201,7 @@ add_identity_test(this, async function test_wipeServer_all_503() {
   let error;
   try {
     await SyncTestingInfrastructure(server, "johndoe", "irrelevant");
-    Service.wipeServer();
+    await Service.wipeServer();
     do_throw("Should have thrown!");
   } catch (ex) {
     error = ex;
@@ -213,17 +212,16 @@ add_identity_test(this, async function test_wipeServer_all_503() {
   Svc.Prefs.resetBranch("");
 });
 
-add_identity_test(this, async function test_wipeServer_all_connectionRefused() {
+add_task(async function test_wipeServer_all_connectionRefused() {
   _("Service.wipeServer() throws if it encounters a network problem.");
   let server = httpd_setup({});
   await setUpTestFixtures(server);
 
-  Service.serverURL = "http://localhost:4352/";
   Service.clusterURL = "http://localhost:4352/";
 
   _("Try deletion.");
   try {
-    Service.wipeServer();
+    await Service.wipeServer();
     do_throw("Should have thrown!");
   } catch (ex) {
     do_check_eq(ex.result, Cr.NS_ERROR_CONNECTION_REFUSED);

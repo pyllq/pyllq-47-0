@@ -14,10 +14,11 @@
   <iframe id="inner"></iframe>
   <a id="a" href="leaving_page_iframe.html"></a>
 
-  <script type="text/javascript;version=1.7">
-    onmessage = function(e) {
+  <script type="text/javascript">
+    /* import-globals-from helpers.js */
+    window.addEventListener("message", function(e) {
       ok(false, "gotmessage: " + e.data);
-    }
+    });
 
     function* testSteps()
     {
@@ -44,5 +45,5 @@
       finishTest();
     }
   </script>
-  <script type="text/javascript;version=1.7" src="helpers.js"></script>
+  <script type="text/javascript" src="helpers.js"></script>
 </html>

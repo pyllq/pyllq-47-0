@@ -26,6 +26,8 @@ nsresult NS_NewSVGUseElement(nsIContent **aResult,
                              already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+struct URLExtraData;
+
 namespace dom {
 
 typedef SVGGraphicsElement SVGUseElementBase;
@@ -66,7 +68,8 @@ public:
   virtual bool HasValidDimensions() const override;
 
   // nsIContent interface
-  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const override;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult,
+                         bool aPreallocateChildren) const override;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsIAtom* aAttribute) const override;
 
   // WebIDL
@@ -77,6 +80,7 @@ public:
   already_AddRefed<SVGAnimatedLength> Height();
 
   nsIURI* GetSourceDocURI();
+  URLExtraData* GetContentURLData() const { return mContentURLData; }
 
 protected:
   class SourceReference : public nsReferencedElement {
@@ -119,6 +123,7 @@ protected:
   nsCOMPtr<nsIContent> mOriginal; // if we've been cloned, our "real" copy
   nsCOMPtr<nsIContent> mClone;    // cloned tree
   SourceReference      mSource;   // observed element
+  RefPtr<URLExtraData> mContentURLData; // URL data for its anonymous content
 };
 
 } // namespace dom

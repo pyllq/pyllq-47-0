@@ -79,8 +79,6 @@ protected:
     virtual mozilla::ipc::IPCResult
     AnswerNPP_GetValue_NPPVpluginWantsAllNetworkStreams(bool* wantsAllStreams, NPError* rv) override;
     virtual mozilla::ipc::IPCResult
-    AnswerNPP_GetValue_NPPVpluginNeedsXEmbed(bool* needs, NPError* rv) override;
-    virtual mozilla::ipc::IPCResult
     AnswerNPP_GetValue_NPPVpluginScriptableNPObject(PPluginScriptableObjectChild** value,
                                                     NPError* result) override;
     virtual mozilla::ipc::IPCResult
@@ -167,12 +165,6 @@ protected:
             NPError* rv,
             uint16_t* stype) override;
 
-    virtual mozilla::ipc::IPCResult
-    RecvAsyncNPP_NewStream(
-        PBrowserStreamChild* actor,
-        const nsCString& mimeType,
-        const bool& seekable) override;
-
     virtual PBrowserStreamChild*
     AllocPBrowserStreamChild(const nsCString& url,
                              const uint32_t& length,
@@ -182,14 +174,6 @@ protected:
 
     virtual bool
     DeallocPBrowserStreamChild(PBrowserStreamChild* stream) override;
-
-    virtual PPluginStreamChild*
-    AllocPPluginStreamChild(const nsCString& mimeType,
-                            const nsCString& target,
-                            NPError* result) override;
-
-    virtual bool
-    DeallocPPluginStreamChild(PPluginStreamChild* stream) override;
 
     virtual PStreamNotifyChild*
     AllocPStreamNotifyChild(const nsCString& url, const nsCString& target,
@@ -209,15 +193,9 @@ protected:
     virtual mozilla::ipc::IPCResult
     RecvNPP_DidComposite() override;
 
-#if defined(MOZ_X11) && defined(XP_UNIX) && !defined(XP_MACOSX)
-    bool CreateWindow(const NPRemoteWindow& aWindow);
-    void DeleteWindow();
-#endif
-
 public:
     PluginInstanceChild(const NPPluginFuncs* aPluginIface,
                         const nsCString& aMimeType,
-                        const uint16_t& aMode,
                         const InfallibleTArray<nsCString>& aNames,
                         const InfallibleTArray<nsCString>& aValues);
 
@@ -351,7 +329,7 @@ private:
     static LONG_PTR WINAPI SetWindowLongPtrWHook(HWND hWnd,
                                                  int nIndex,
                                                  LONG_PTR newLong);
-                      
+
 #else
     static LONG WINAPI SetWindowLongAHook(HWND hWnd,
                                           int nIndex,
@@ -370,15 +348,13 @@ private:
     static BOOL WINAPI ImmNotifyIME(HIMC aIMC, DWORD aAction, DWORD aIndex,
                                     DWORD aValue);
 
-    class FlashThrottleAsyncMsg : public ChildAsyncCall
+    class FlashThrottleMsg : public CancelableRunnable
     {
       public:
-        FlashThrottleAsyncMsg();
-        FlashThrottleAsyncMsg(PluginInstanceChild* aInst, 
-                              HWND aWnd, UINT aMsg,
-                              WPARAM aWParam, LPARAM aLParam,
-                              bool isWindowed)
-          : ChildAsyncCall(aInst, nullptr, nullptr),
+        FlashThrottleMsg(PluginInstanceChild* aInstance, HWND aWnd, UINT aMsg,
+                         WPARAM aWParam, LPARAM aLParam, bool isWindowed)
+          : CancelableRunnable("FlashThrottleMsg"),
+          mInstance(aInstance),
           mWnd(aWnd),
           mMsg(aMsg),
           mWParam(aWParam),
@@ -387,6 +363,7 @@ private:
         {}
 
         NS_IMETHOD Run() override;
+        nsresult Cancel() override;
 
         WNDPROC GetProc();
         HWND GetWnd() { return mWnd; }
@@ -395,6 +372,7 @@ private:
         LPARAM GetLParam() { return mLParam; }
 
       private:
+        PluginInstanceChild* mInstance;
         HWND                 mWnd;
         UINT                 mMsg;
         WPARAM               mWParam;
@@ -407,7 +385,6 @@ private:
 #endif // #if defined(OS_WIN)
     const NPPluginFuncs* mPluginIface;
     nsCString                   mMimeType;
-    uint16_t                    mMode;
     InfallibleTArray<nsCString> mNames;
     InfallibleTArray<nsCString> mValues;
     NPP_t mData;
@@ -457,7 +434,6 @@ private:
 #if defined(MOZ_X11) && defined(XP_UNIX) && !defined(XP_MACOSX)
     NPSetWindowCallbackStruct mWsInfo;
 #ifdef MOZ_WIDGET_GTK
-    bool mXEmbed;
     XtClient mXtClient;
 #endif
 #elif defined(OS_WIN)
@@ -474,6 +450,9 @@ private:
 
     friend class ChildAsyncCall;
 
+#if defined(OS_WIN)
+    nsTArray<FlashThrottleMsg*> mPendingFlashThrottleMsgs;
+#endif
     Mutex mAsyncCallMutex;
     nsTArray<ChildAsyncCall*> mPendingAsyncCalls;
     nsTArray<nsAutoPtr<ChildTimer> > mTimers;
@@ -502,7 +481,7 @@ public:
     const NPCocoaEvent* getCurrentEvent() {
         return mCurrentEvent;
     }
-  
+
     bool CGDraw(CGContextRef ref, nsIntRect aUpdateRect);
 
 #if defined(__i386__)
@@ -608,7 +587,7 @@ private:
 #ifdef XP_MACOSX
     // Current IOSurface available for rendering
     // We can't use thebes gfxASurface like other platforms.
-    PluginUtilsOSX::nsDoubleBufferCARenderer mDoubleBufferCARenderer; 
+    PluginUtilsOSX::nsDoubleBufferCARenderer mDoubleBufferCARenderer;
 #endif
 
     // (Not to be confused with mBackSurface).  This is a recent copy

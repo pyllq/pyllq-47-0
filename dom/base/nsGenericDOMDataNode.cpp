@@ -496,6 +496,9 @@ nsGenericDOMDataNode::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     if (aParent->HasFlag(NODE_CHROME_ONLY_ACCESS)) {
       SetFlags(NODE_CHROME_ONLY_ACCESS);
     }
+    if (HasFlag(NODE_IS_ANONYMOUS_ROOT)) {
+      aParent->SetMayHaveAnonymousChildren();
+    }
     if (aParent->IsInShadowTree()) {
       ClearSubtreeRootPointer();
       SetFlags(NODE_IS_IN_SHADOW_TREE);
@@ -764,17 +767,6 @@ nsGenericDOMDataNode::SetXBLInsertionParent(nsIContent* aContent)
   }
 }
 
-CustomElementData *
-nsGenericDOMDataNode::GetCustomElementData() const
-{
-  return nullptr;
-}
-
-void
-nsGenericDOMDataNode::SetCustomElementData(CustomElementData* aData)
-{
-}
-
 bool
 nsGenericDOMDataNode::IsNodeOfType(uint32_t aFlags) const
 {
@@ -994,6 +986,21 @@ nsGenericDOMDataNode::AppendText(const char16_t* aBuffer,
 bool
 nsGenericDOMDataNode::TextIsOnlyWhitespace()
 {
+
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!ThreadSafeTextIsOnlyWhitespace()) {
+    UnsetFlags(NS_TEXT_IS_ONLY_WHITESPACE);
+    SetFlags(NS_CACHED_TEXT_IS_ONLY_WHITESPACE);
+    return false;
+  }
+
+  SetFlags(NS_CACHED_TEXT_IS_ONLY_WHITESPACE | NS_TEXT_IS_ONLY_WHITESPACE);
+  return true;
+}
+
+bool
+nsGenericDOMDataNode::ThreadSafeTextIsOnlyWhitespace() const
+{
   // FIXME: should this method take content language into account?
   if (mText.Is2b()) {
     // The fragment contains non-8bit characters and such characters
@@ -1012,15 +1019,12 @@ nsGenericDOMDataNode::TextIsOnlyWhitespace()
     char ch = *cp;
 
     if (!dom::IsSpaceCharacter(ch)) {
-      UnsetFlags(NS_TEXT_IS_ONLY_WHITESPACE);
-      SetFlags(NS_CACHED_TEXT_IS_ONLY_WHITESPACE);
       return false;
     }
 
     ++cp;
   }
 
-  SetFlags(NS_CACHED_TEXT_IS_ONLY_WHITESPACE | NS_TEXT_IS_ONLY_WHITESPACE);
   return true;
 }
 
@@ -1106,10 +1110,10 @@ nsGenericDOMDataNode::GetAttributeChangeHint(const nsIAtom* aAttribute,
 }
 
 size_t
-nsGenericDOMDataNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+nsGenericDOMDataNode::SizeOfExcludingThis(SizeOfState& aState) const
 {
-  size_t n = nsIContent::SizeOfExcludingThis(aMallocSizeOf);
-  n += mText.SizeOfExcludingThis(aMallocSizeOf);
+  size_t n = nsIContent::SizeOfExcludingThis(aState);
+  n += mText.SizeOfExcludingThis(aState.mMallocSizeOf);
   return n;
 }
 

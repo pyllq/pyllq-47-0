@@ -35,10 +35,12 @@
 #include "mozilla/Services.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/intl/LocaleService.h"
 
 #include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
+#include "nsDependentSubstring.h"
 #include "nsError.h"
 #include "nsNetCID.h"
 #include "nsReadableUtils.h"
@@ -46,12 +48,13 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
-#include "nsXPCOMStrings.h"
 
 #include "nsIContentPolicy.h"
+#include "nsICryptoHash.h"
 #include "nsILoadInfo.h"
 #include "nsContentUtils.h"
 #include "nsWeakReference.h"
+#include "nsIRedirectHistoryEntry.h"
 
 using mozilla::ArrayLength;
 using mozilla::BasePrincipal;
@@ -59,6 +62,7 @@ using mozilla::OriginAttributes;
 using mozilla::Preferences;
 using mozilla::TimeStamp;
 using mozilla::Telemetry::Accumulate;
+using mozilla::intl::LocaleService;
 using safe_browsing::ClientDownloadRequest;
 using safe_browsing::ClientDownloadRequest_CertificateChain;
 using safe_browsing::ClientDownloadRequest_Resource;
@@ -70,7 +74,6 @@ using safe_browsing::ClientDownloadRequest_SignatureInfo;
 #define PREF_SB_DOWNLOADS_ENABLED "browser.safebrowsing.downloads.enabled"
 #define PREF_SB_DOWNLOADS_REMOTE_ENABLED "browser.safebrowsing.downloads.remote.enabled"
 #define PREF_SB_DOWNLOADS_REMOTE_TIMEOUT "browser.safebrowsing.downloads.remote.timeout_ms"
-#define PREF_GENERAL_LOCALE "general.useragent.locale"
 #define PREF_DOWNLOAD_BLOCK_TABLE "urlclassifier.downloadBlockTable"
 #define PREF_DOWNLOAD_ALLOW_TABLE "urlclassifier.downloadAllowTable"
 
@@ -182,8 +185,11 @@ private:
                                  bool* aShouldBlock,
                                  uint32_t* aVerdict);
 
+  // Return the hex-encoded hash of the whole URI.
+  nsresult GetSpecHash(nsACString& aSpec, nsACString& hexEncodedHash);
+
   // Strip url parameters, fragments, and user@pass fields from the URI spec
-  // using nsIURL. If aURI is not an nsIURL, returns the original nsIURI.spec.
+  // using nsIURL. Hash data URIs and return blob URIs unfiltered.
   nsresult GetStrippedSpec(nsIURI* aUri, nsACString& spec);
 
   // Escape '/' and '%' in certificate attribute values.
@@ -292,8 +298,11 @@ PendingDBLookup::LookupSpec(const nsACString& aSpec,
   mAllowlistOnly = aAllowlistOnly;
   nsresult rv = LookupSpecInternal(aSpec);
   if (NS_FAILED(rv)) {
-    LOG(("Error in LookupSpecInternal"));
-    return mPendingLookup->OnComplete(false, NS_OK);
+    nsAutoCString errorName;
+    mozilla::GetErrorName(rv, errorName);
+    LOG(("Error in LookupSpecInternal() [rv = %s, this = %p]",
+         errorName.get(), this));
+    return mPendingLookup->LookupNext(); // ignore this lookup and move to next
   }
   // LookupSpecInternal has called nsIUrlClassifierCallback.lookup, which is
   // guaranteed to call HandleEvent.
@@ -326,12 +335,12 @@ PendingDBLookup::LookupSpecInternal(const nsACString& aSpec)
 
   nsAutoCString tables;
   nsAutoCString allowlist;
-  Preferences::GetCString(PREF_DOWNLOAD_ALLOW_TABLE, &allowlist);
+  Preferences::GetCString(PREF_DOWNLOAD_ALLOW_TABLE, allowlist);
   if (!allowlist.IsEmpty()) {
     tables.Append(allowlist);
   }
   nsAutoCString blocklist;
-  Preferences::GetCString(PREF_DOWNLOAD_BLOCK_TABLE, &blocklist);
+  Preferences::GetCString(PREF_DOWNLOAD_BLOCK_TABLE, blocklist);
   if (!mAllowlistOnly && !blocklist.IsEmpty()) {
     tables.Append(',');
     tables.Append(blocklist);
@@ -347,7 +356,7 @@ PendingDBLookup::HandleEvent(const nsACString& tables)
   // 2) PendingLookup::LookupNext if the URL does not match the blocklist.
   // Blocklisting trumps allowlisting.
   nsAutoCString blockList;
-  Preferences::GetCString(PREF_DOWNLOAD_BLOCK_TABLE, &blockList);
+  Preferences::GetCString(PREF_DOWNLOAD_BLOCK_TABLE, blockList);
   if (!mAllowlistOnly && FindInReadable(blockList, tables)) {
     mPendingLookup->mBlocklistCount++;
     Accumulate(mozilla::Telemetry::APPLICATION_REPUTATION_LOCAL, BLOCK_LIST);
@@ -357,7 +366,7 @@ PendingDBLookup::HandleEvent(const nsACString& tables)
   }
 
   nsAutoCString allowList;
-  Preferences::GetCString(PREF_DOWNLOAD_ALLOW_TABLE, &allowList);
+  Preferences::GetCString(PREF_DOWNLOAD_ALLOW_TABLE, allowList);
   if (FindInReadable(allowList, tables)) {
     mPendingLookup->mAllowlistCount++;
     Accumulate(mozilla::Telemetry::APPLICATION_REPUTATION_LOCAL, ALLOW_LIST);
@@ -392,7 +401,7 @@ PendingLookup::~PendingLookup()
   LOG(("Destroying pending lookup [this = %p]", this));
 }
 
-static const char16_t* kBinaryFileExtensions[] = {
+static const char16_t* const kBinaryFileExtensions[] = {
     // Extracted from the "File Type Policies" Chrome extension
     //u".001",
     //u".7z",
@@ -464,6 +473,8 @@ static const char16_t* kBinaryFileExtensions[] = {
     u".hlp", // Windows Help
     u".hqx", // Mac archive
     u".hta", // HTML trusted application
+    u".htm",
+    u".html",
     u".htt", // MS HTML template
     u".img", // Mac disk image
     u".imgpart", // Mac disk image
@@ -773,7 +784,7 @@ PendingLookup::LookupNext()
   // There are no more URIs to check against local list. If the file is
   // not eligible for remote lookup, bail.
   if (!IsBinaryFile()) {
-    LOG(("Not eligible for remote lookups [this=%x]", this));
+    LOG(("Not eligible for remote lookups [this=%p]", this));
     return OnComplete(false, NS_OK);
   }
   nsresult rv = SendRemoteQuery();
@@ -885,17 +896,19 @@ PendingLookup::GenerateWhitelistStringsForChain(
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIX509Cert> signer;
-  rv = certDB->ConstructX509(
+  nsDependentCSubstring signerDER(
     const_cast<char *>(aChain.element(0).certificate().data()),
-    aChain.element(0).certificate().size(), getter_AddRefs(signer));
+    aChain.element(0).certificate().size());
+  rv = certDB->ConstructX509(signerDER, getter_AddRefs(signer));
   NS_ENSURE_SUCCESS(rv, rv);
 
   for (int i = 1; i < aChain.element_size(); ++i) {
     // Get the issuer.
     nsCOMPtr<nsIX509Cert> issuer;
-    rv = certDB->ConstructX509(
+    nsDependentCSubstring issuerDER(
       const_cast<char *>(aChain.element(i).certificate().data()),
-      aChain.element(i).certificate().size(), getter_AddRefs(issuer));
+      aChain.element(i).certificate().size());
+    rv = certDB->ConstructX509(issuerDER, getter_AddRefs(issuer));
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = GenerateWhitelistStringsForPair(signer, issuer);
@@ -934,7 +947,11 @@ PendingLookup::AddRedirects(nsIArray* aRedirects)
     rv = iter->GetNext(getter_AddRefs(supports));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    nsCOMPtr<nsIPrincipal> principal = do_QueryInterface(supports, &rv);
+    nsCOMPtr<nsIRedirectHistoryEntry> redirectEntry = do_QueryInterface(supports, &rv);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsCOMPtr<nsIPrincipal> principal;
+    rv = redirectEntry->GetPrincipal(getter_AddRefs(principal));
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsCOMPtr<nsIURI> uri;
@@ -972,16 +989,82 @@ PendingLookup::StartLookup()
 }
 
 nsresult
-PendingLookup::GetStrippedSpec(nsIURI* aUri, nsACString& escaped)
+PendingLookup::GetSpecHash(nsACString& aSpec, nsACString& hexEncodedHash)
 {
-  // If aURI is not an nsIURL, we do not want to check the lists or send a
-  // remote query.
   nsresult rv;
-  nsCOMPtr<nsIURL> url = do_QueryInterface(aUri, &rv);
+
+  nsCOMPtr<nsICryptoHash> cryptoHash =
+    do_CreateInstance("@mozilla.org/security/hash;1", &rv);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = cryptoHash->Init(nsICryptoHash::SHA256);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = url->GetScheme(escaped);
+  rv = cryptoHash->Update(reinterpret_cast<const uint8_t*>(aSpec.BeginReading()),
+                          aSpec.Length());
   NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoCString binaryHash;
+  rv = cryptoHash->Finish(false, binaryHash);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // This needs to match HexEncode() in Chrome's
+  // src/base/strings/string_number_conversions.cc
+  static const char* const hex = "0123456789ABCDEF";
+  hexEncodedHash.SetCapacity(2 * binaryHash.Length());
+  for (size_t i = 0; i < binaryHash.Length(); ++i) {
+    auto c = static_cast<const unsigned char>(binaryHash[i]);
+    hexEncodedHash.Append(hex[(c >> 4) & 0x0F]);
+    hexEncodedHash.Append(hex[c & 0x0F]);
+  }
+
+  return NS_OK;
+}
+
+nsresult
+PendingLookup::GetStrippedSpec(nsIURI* aUri, nsACString& escaped)
+{
+  if (NS_WARN_IF(!aUri)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  nsresult rv;
+  rv = aUri->GetScheme(escaped);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (escaped.EqualsLiteral("blob")) {
+    aUri->GetSpec(escaped);
+    LOG(("PendingLookup::GetStrippedSpec(): blob URL left unstripped as '%s' [this = %p]",
+         PromiseFlatCString(escaped).get(), this));
+    return NS_OK;
+
+  } else if (escaped.EqualsLiteral("data")) {
+    // Replace URI with "data:<everything before comma>,SHA256(<whole URI>)"
+    aUri->GetSpec(escaped);
+    int32_t comma = escaped.FindChar(',');
+    if (comma > -1 &&
+        static_cast<nsCString::size_type>(comma) < escaped.Length() - 1) {
+      MOZ_ASSERT(comma > 4, "Data URIs start with 'data:'");
+      nsAutoCString hexEncodedHash;
+      rv = GetSpecHash(escaped, hexEncodedHash);
+      if (NS_SUCCEEDED(rv)) {
+        escaped.Truncate(comma + 1);
+        escaped.Append(hexEncodedHash);
+      }
+    }
+
+    LOG(("PendingLookup::GetStrippedSpec(): data URL stripped to '%s' [this = %p]",
+         PromiseFlatCString(escaped).get(), this));
+    return NS_OK;
+  }
+
+  // If aURI is not an nsIURL, we do not want to check the lists or send a
+  // remote query.
+  nsCOMPtr<nsIURL> url = do_QueryInterface(aUri, &rv);
+  if (NS_FAILED(rv)) {
+    LOG(("PendingLookup::GetStrippedSpec(): scheme '%s' is not supported [this = %p]",
+         PromiseFlatCString(escaped).get(), this));
+    return rv;
+  }
 
   nsCString temp;
   rv = url->GetHostPort(temp);
@@ -996,6 +1079,8 @@ PendingLookup::GetStrippedSpec(nsIURI* aUri, nsACString& escaped)
   // nsIUrl.filePath starts with '/'
   escaped.Append(temp);
 
+  LOG(("PendingLookup::GetStrippedSpec(): URL stripped to '%s' [this = %p]",
+       PromiseFlatCString(escaped).get(), this));
   return NS_OK;
 }
 
@@ -1074,7 +1159,7 @@ PendingLookup::OnComplete(bool shouldBlock, nsresult rv, uint32_t verdict)
   Accumulate(mozilla::Telemetry::APPLICATION_REPUTATION_SHOULD_BLOCK,
     shouldBlock);
   double t = (TimeStamp::Now() - mStartTime).ToMilliseconds();
-  LOG(("Application Reputation verdict is %lu, obtained in %f ms [this = %p]",
+  LOG(("Application Reputation verdict is %u, obtained in %f ms [this = %p]",
        verdict, t, this));
   if (shouldBlock) {
     LOG(("Application Reputation check failed, blocking bad binary [this = %p]",
@@ -1170,8 +1255,8 @@ PendingLookup::SendRemoteQueryInternal()
     return NS_ERROR_NOT_AVAILABLE;
   }
   // If the remote lookup URL is empty or absent, bail.
-  nsCString serviceUrl;
-  NS_ENSURE_SUCCESS(Preferences::GetCString(PREF_SB_APP_REP_URL, &serviceUrl),
+  nsAutoCString serviceUrl;
+  NS_ENSURE_SUCCESS(Preferences::GetCString(PREF_SB_APP_REP_URL, serviceUrl),
                     NS_ERROR_NOT_AVAILABLE);
   if (serviceUrl.IsEmpty()) {
     LOG(("Remote lookup URL is empty [this = %p]", this));
@@ -1183,26 +1268,23 @@ PendingLookup::SendRemoteQueryInternal()
   {
     nsAutoCString table;
     NS_ENSURE_SUCCESS(Preferences::GetCString(PREF_DOWNLOAD_BLOCK_TABLE,
-                                              &table),
+                                              table),
                       NS_ERROR_NOT_AVAILABLE);
     if (table.IsEmpty()) {
       LOG(("Blocklist is empty [this = %p]", this));
       return NS_ERROR_NOT_AVAILABLE;
     }
   }
-#ifdef XP_WIN
-  // The allowlist is only needed to do signature verification on Windows
   {
     nsAutoCString table;
     NS_ENSURE_SUCCESS(Preferences::GetCString(PREF_DOWNLOAD_ALLOW_TABLE,
-                                              &table),
+                                              table),
                       NS_ERROR_NOT_AVAILABLE);
     if (table.IsEmpty()) {
       LOG(("Allowlist is empty [this = %p]", this));
       return NS_ERROR_NOT_AVAILABLE;
     }
   }
-#endif
 
   LOG(("Sending remote query for application reputation [this = %p]",
        this));
@@ -1226,8 +1308,8 @@ PendingLookup::SendRemoteQueryInternal()
   mRequest.set_user_initiated(true);
 
   nsCString locale;
-  NS_ENSURE_SUCCESS(Preferences::GetCString(PREF_GENERAL_LOCALE, &locale),
-                    NS_ERROR_NOT_AVAILABLE);
+  rv = LocaleService::GetInstance()->GetAppLocaleAsLangTag(locale);
+  NS_ENSURE_SUCCESS(rv, rv);
   mRequest.set_locale(locale.get());
   nsCString sha256Hash;
   rv = mQuery->GetSha256Hash(sha256Hash);
@@ -1254,7 +1336,7 @@ PendingLookup::SendRemoteQueryInternal()
   if (!mRequest.SerializeToString(&serialized)) {
     return NS_ERROR_UNEXPECTED;
   }
-  LOG(("Serialized protocol buffer [this = %p]: (length=%d) %s", this,
+  LOG(("Serialized protocol buffer [this = %p]: (length=%zu) %s", this,
        serialized.length(), serialized.c_str()));
 
   // Set the input stream to the serialized protocol buffer

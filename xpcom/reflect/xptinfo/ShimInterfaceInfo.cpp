@@ -26,7 +26,6 @@
 #include "nsIDOMCSSValue.h"
 #include "nsIDOMCSSValueList.h"
 #include "nsIDOMCustomEvent.h"
-#include "nsIDOMDataContainerEvent.h"
 #ifdef MOZ_WEBRTC
 #include "nsIDOMDataChannel.h"
 #endif
@@ -48,7 +47,6 @@
 #include "nsIDOMGeoPositionError.h"
 #include "nsIDOMHistory.h"
 #include "nsIDOMHTMLAnchorElement.h"
-#include "nsIDOMHTMLAppletElement.h"
 #include "nsIDOMHTMLAreaElement.h"
 #include "nsIDOMHTMLBaseElement.h"
 #include "nsIDOMHTMLBodyElement.h"
@@ -158,7 +156,6 @@
 #ifdef MOZ_WEBRTC
 #include "mozilla/dom/DataChannelBinding.h"
 #endif
-#include "mozilla/dom/DataContainerEventBinding.h"
 #include "mozilla/dom/DataTransferBinding.h"
 #include "mozilla/dom/DOMCursorBinding.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
@@ -177,7 +174,6 @@
 #include "mozilla/dom/FormDataBinding.h"
 #include "mozilla/dom/HistoryBinding.h"
 #include "mozilla/dom/HTMLAnchorElementBinding.h"
-#include "mozilla/dom/HTMLAppletElementBinding.h"
 #include "mozilla/dom/HTMLAreaElementBinding.h"
 #include "mozilla/dom/HTMLBaseElementBinding.h"
 #include "mozilla/dom/HTMLBodyElementBinding.h"
@@ -346,7 +342,6 @@ const ComponentsInterfaceShimEntry kComponentsInterfaceShimMap[] =
 #ifdef MOZ_WEBRTC
   DEFINE_SHIM(DataChannel),
 #endif
-  DEFINE_SHIM(DataContainerEvent),
   DEFINE_SHIM(DataTransfer),
   DEFINE_SHIM(DOMCursor),
   DEFINE_SHIM(DOMException),
@@ -365,7 +360,6 @@ const ComponentsInterfaceShimEntry kComponentsInterfaceShimMap[] =
   DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIDOMGeoPositionError, PositionError),
   DEFINE_SHIM(History),
   DEFINE_SHIM(HTMLAnchorElement),
-  DEFINE_SHIM(HTMLAppletElement),
   DEFINE_SHIM(HTMLAreaElement),
   DEFINE_SHIM(HTMLBaseElement),
   DEFINE_SHIM(HTMLBodyElement),

@@ -4,6 +4,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+with Files('**'):
+    BUG_COMPONENT = ('Toolkit', 'General')
+
 # These component dirs are built for all apps (including suite)
 if CONFIG['MOZ_ENABLE_XREMOTE']:
     DIRS += ['remote']
@@ -18,6 +21,7 @@ DIRS += [
     'apppicker',
     'asyncshutdown',
     'browser',
+    'cloudstorage',
     'commandlines',
     'contentprefs',
     'contextualidentity',
@@ -28,10 +32,9 @@ DIRS += [
     'exthelper',
     'filewatcher',
     'finalizationwitness',
-    'formautofill',
     'find',
-    'gfx',
     'jsdownloads',
+    'jsoncpp/src/lib_json',
     'lz4',
     'mediasniffer',
     'microformats',
@@ -50,8 +53,8 @@ DIRS += [
     'reader',
     'remotebrowserutils',
     'reflect',
+    'resistfingerprinting',
     'securityreporter',
-    'sqlite',
     'startup',
     'statusfilter',
     'telemetry',
@@ -103,8 +106,14 @@ if CONFIG['OS_TARGET'] != 'Android':
 
 DIRS += ['build']
 
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
+    DIRS += ['gfx']
+
 if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'android':
     EXTRA_COMPONENTS += [
         'nsDefaultCLH.js',
         'nsDefaultCLH.manifest',
     ]
+
+if CONFIG['NIGHTLY_BUILD'] and CONFIG['MOZ_BUILD_APP'] == 'browser':
+    DIRS += ['payments']

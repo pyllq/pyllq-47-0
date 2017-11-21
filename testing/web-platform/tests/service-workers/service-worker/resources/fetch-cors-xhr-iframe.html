@@ -1,4 +1,4 @@
-<script src="../resources/get-host-info.sub.js"></script>
+<script src="/common/get-host-info.sub.js"></script>
 <script src="test-helpers.sub.js?pipe=sub"></script>
 <script>
 var path = base_path() + 'fetch-access-control.py';
@@ -25,7 +25,6 @@ function create_test_case_promise(url, with_credentials) {
       xhr.send();
     });
 }
-
 
 function create_test_promise(url, with_credentials, expected_result) {
   return new Promise(function(resolve, reject) {

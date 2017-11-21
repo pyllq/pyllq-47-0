@@ -1,4 +1,3 @@
-#filter substitution
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +6,12 @@
 this.EXPORTED_SYMBOLS = [];
 for (let [key, val] of Object.entries({
 
-WEAVE_VERSION:                         "@weave_version@",
+// Don't manually modify this line, as it is automatically replaced on merge day
+// by the gecko_migration.py script.
+WEAVE_VERSION: "1.58.0",
 
 // Sync Server API version that the client supports.
-SYNC_API_VERSION:                      "1.1",
-USER_API_VERSION:                      "1.0",
-MISC_API_VERSION:                      "1.0",
+SYNC_API_VERSION:                      "1.5",
 
 // Version of the data format this client supports. The data format describes
 // how records are packaged; this is separate from the Server API version and
@@ -58,27 +57,27 @@ MASTER_PASSWORD_LOCKED_RETRY_INTERVAL: 15 * 60 * 1000,   // 15 minutes
 // The default for how long we "block" sync from running when doing a migration.
 DEFAULT_BLOCK_PERIOD:                  2 * 24 * 60 * 60 * 1000, // 2 days
 
-// Separate from the ID fetch batch size to allow tuning for mobile.
-MOBILE_BATCH_SIZE:                     50,
-
 // 50 is hardcoded here because of URL length restrictions.
 // (GUIDs can be up to 64 chars long.)
 // Individual engines can set different values for their limit if their
 // identifiers are shorter.
 DEFAULT_GUID_FETCH_BATCH_SIZE:         50,
-DEFAULT_MOBILE_GUID_FETCH_BATCH_SIZE:  50,
 
 // Default batch size for applying incoming records.
 DEFAULT_STORE_BATCH_SIZE:              1,
-HISTORY_STORE_BATCH_SIZE:              50,      // same as MOBILE_BATCH_SIZE
-FORMS_STORE_BATCH_SIZE:                50,      // same as MOBILE_BATCH_SIZE
-PASSWORDS_STORE_BATCH_SIZE:            50,      // same as MOBILE_BATCH_SIZE
+HISTORY_STORE_BATCH_SIZE:              50,
+FORMS_STORE_BATCH_SIZE:                50,
+PASSWORDS_STORE_BATCH_SIZE:            50,
 ADDONS_STORE_BATCH_SIZE:               1000000, // process all addons at once
-APPS_STORE_BATCH_SIZE:                 50,      // same as MOBILE_BATCH_SIZE
+APPS_STORE_BATCH_SIZE:                 50,
 
 // Default batch size for download batching
 // (how many records are fetched at a time from the server when batching is used).
 DEFAULT_DOWNLOAD_BATCH_SIZE:           1000,
+
+
+// Default maximum size for a record payload
+DEFAULT_MAX_RECORD_PAYLOAD_BYTES:      262144,  // 256KB
 
 // score thresholds for early syncs
 SINGLE_USER_THRESHOLD:                 1000,
@@ -124,7 +123,6 @@ ENGINE_SUCCEEDED:                      "success.engine",
 
 // login failure status codes:
 LOGIN_FAILED_NO_USERNAME:              "error.login.reason.no_username",
-LOGIN_FAILED_NO_PASSWORD:              "error.login.reason.no_password2",
 LOGIN_FAILED_NO_PASSPHRASE:            "error.login.reason.no_recoverykey",
 LOGIN_FAILED_NETWORK_ERROR:            "error.login.reason.network",
 LOGIN_FAILED_SERVER_ERROR:             "error.login.reason.server",
@@ -154,18 +152,6 @@ ENGINE_METARECORD_DOWNLOAD_FAIL:       "error.engine.reason.metarecord_download_
 ENGINE_METARECORD_UPLOAD_FAIL:         "error.engine.reason.metarecord_upload_fail",
 // an upload failure where the batch was interrupted with a 412
 ENGINE_BATCH_INTERRUPTED:              "error.engine.reason.batch_interrupted",
-
-JPAKE_ERROR_CHANNEL:                   "jpake.error.channel",
-JPAKE_ERROR_NETWORK:                   "jpake.error.network",
-JPAKE_ERROR_SERVER:                    "jpake.error.server",
-JPAKE_ERROR_TIMEOUT:                   "jpake.error.timeout",
-JPAKE_ERROR_INTERNAL:                  "jpake.error.internal",
-JPAKE_ERROR_INVALID:                   "jpake.error.invalid",
-JPAKE_ERROR_NODATA:                    "jpake.error.nodata",
-JPAKE_ERROR_KEYMISMATCH:               "jpake.error.keymismatch",
-JPAKE_ERROR_WRONGMESSAGE:              "jpake.error.wrongmessage",
-JPAKE_ERROR_USERABORT:                 "jpake.error.userabort",
-JPAKE_ERROR_DELAYUNSUPPORTED:          "jpake.error.delayunsupported",
 
 // info types for Service.getStorageInfo
 INFO_COLLECTIONS:                      "collections",

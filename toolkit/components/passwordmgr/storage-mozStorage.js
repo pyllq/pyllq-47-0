@@ -8,7 +8,6 @@ const PERMISSION_SAVE_LOGINS = "login-saving";
 
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
-Components.utils.import("resource://gre/modules/Promise.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "LoginHelper",
                                   "resource://gre/modules/LoginHelper.jsm");
@@ -47,8 +46,8 @@ function LoginManagerStorage_mozStorage() { }
 
 LoginManagerStorage_mozStorage.prototype = {
 
-  classID : Components.ID("{8c2023b9-175c-477e-9761-44ae7b549756}"),
-  QueryInterface : XPCOMUtils.generateQI([Ci.nsILoginManagerStorage,
+  classID: Components.ID("{8c2023b9-175c-477e-9761-44ae7b549756}"),
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsILoginManagerStorage,
                                           Ci.nsIInterfaceRequestor]),
   getInterface(aIID) {
     if (aIID.equals(Ci.nsIVariant)) {
@@ -63,7 +62,7 @@ LoginManagerStorage_mozStorage.prototype = {
     throw new Components.Exception("Interface not available", Cr.NS_ERROR_NO_INTERFACE);
   },
 
-  __crypto : null,  // nsILoginManagerCrypto service
+  __crypto: null,  // nsILoginManagerCrypto service
   get _crypto() {
     if (!this.__crypto)
       this.__crypto = Cc["@mozilla.org/login-manager/crypto/SDR;1"].
@@ -145,10 +144,10 @@ LoginManagerStorage_mozStorage.prototype = {
       }
     }
   },
-  _dbConnection : null,  // The database connection
-  _dbStmts      : null,  // Database statements for memoization
+  _dbConnection: null,  // The database connection
+  _dbStmts: null,  // Database statements for memoization
 
-  _signonsFile  : null,  // nsIFile for "signons.sqlite"
+  _signonsFile: null,  // nsIFile for "signons.sqlite"
 
 
   /*
@@ -852,7 +851,7 @@ LoginManagerStorage_mozStorage.prototype = {
       throw e;
     }
 
-    Services.obs.addObserver(this, "profile-before-change", false);
+    Services.obs.addObserver(this, "profile-before-change");
     return isFirstRun;
   },
 

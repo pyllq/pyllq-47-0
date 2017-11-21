@@ -1,8 +1,6 @@
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource:///modules/SitePermissions.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "Promise",
-  "resource://gre/modules/Promise.jsm");
 
 const PREF_PERMISSION_FAKE = "media.navigator.permission.fake";
 const CONTENT_SCRIPT_HELPER = getRootDirectory(gTestPath) + "get_user_media_content_script.js";
@@ -30,10 +28,10 @@ function waitForCondition(condition, nextTest, errorMsg, retryTimes) {
   var moveOn = function() { clearInterval(interval); nextTest(); };
 }
 
-function promiseWaitForCondition(aConditionFn) {
-  let deferred = Promise.defer();
-  waitForCondition(aConditionFn, deferred.resolve, "Condition didn't pass.");
-  return deferred.promise;
+function promiseWaitForCondition(aConditionFn, retryTimes) {
+  return new Promise(resolve => {
+    waitForCondition(aConditionFn, resolve, "Condition didn't pass.", retryTimes);
+  });
 }
 
 /**
@@ -49,9 +47,7 @@ function promiseWindow(url) {
   return new Promise(resolve => {
     Services.obs.addObserver(function obs(win) {
       win.QueryInterface(Ci.nsIDOMWindow);
-      win.addEventListener("load", function loadHandler() {
-        win.removeEventListener("load", loadHandler);
-
+      win.addEventListener("load", function() {
         if (win.location.href !== url) {
           info("ignoring a window with this url: " + win.location.href);
           return;
@@ -59,8 +55,8 @@ function promiseWindow(url) {
 
         Services.obs.removeObserver(obs, "domwindowopened");
         resolve(win);
-      });
-    }, "domwindowopened", false);
+      }, {once: true});
+    }, "domwindowopened");
   });
 }
 
@@ -72,7 +68,7 @@ function whenDelayedStartupFinished(aWindow) {
         Services.obs.removeObserver(observer, aTopic);
         resolve();
       }
-    }, "browser-delayed-startup-finished", false);
+    }, "browser-delayed-startup-finished");
   });
 }
 
@@ -84,7 +80,7 @@ function promiseIndicatorWindow() {
   return promiseWindow("chrome://browser/content/webrtcIndicator.xul");
 }
 
-function* assertWebRTCIndicatorStatus(expected) {
+async function assertWebRTCIndicatorStatus(expected) {
   let ui = Cu.import("resource:///modules/webrtcUI.jsm", {}).webrtcUI;
   let expectedState = expected ? "visible" : "hidden";
   let msg = "WebRTC indicator " + expectedState;
@@ -92,7 +88,7 @@ function* assertWebRTCIndicatorStatus(expected) {
     // It seems the global indicator is not always removed synchronously
     // in some cases.
     info("waiting for the global indicator to be hidden");
-    yield promiseWaitForCondition(() => !ui.showGlobalIndicator);
+    await promiseWaitForCondition(() => !ui.showGlobalIndicator);
   }
   is(ui.showGlobalIndicator, !!expected, msg);
 
@@ -120,7 +116,7 @@ function* assertWebRTCIndicatorStatus(expected) {
     if (!expected) {
       let win = Services.wm.getMostRecentWindow("Browser:WebRTCGlobalIndicator");
       if (win) {
-        yield new Promise((resolve, reject) => {
+        await new Promise((resolve, reject) => {
           win.addEventListener("unload", function listener(e) {
             if (e.target == win.document) {
               win.removeEventListener("unload", listener);
@@ -139,15 +135,15 @@ function* assertWebRTCIndicatorStatus(expected) {
 
       if (document.readyState != "complete") {
         info("Waiting for the sharing indicator's document to load");
-        let deferred = Promise.defer();
-        document.addEventListener("readystatechange",
-                                  function onReadyStateChange() {
-          if (document.readyState != "complete")
-            return;
-          document.removeEventListener("readystatechange", onReadyStateChange);
-          deferred.resolve();
+        await new Promise(resolve => {
+          document.addEventListener("readystatechange",
+                                    function onReadyStateChange() {
+            if (document.readyState != "complete")
+              return;
+            document.removeEventListener("readystatechange", onReadyStateChange);
+            resolve();
+          });
         });
-        yield deferred.promise;
       }
 
       for (let item of ["video", "audio", "screen"]) {
@@ -168,13 +164,12 @@ function promisePopupEvent(popup, eventSuffix) {
     return Promise.resolve();
 
   let eventType = "popup" + eventSuffix;
-  let deferred = Promise.defer();
-  popup.addEventListener(eventType, function onPopupShown(event) {
-    popup.removeEventListener(eventType, onPopupShown);
-    deferred.resolve();
-  });
+  return new Promise(resolve => {
+    popup.addEventListener(eventType, function(event) {
+      resolve();
+    }, {once: true});
 
-  return deferred.promise;
+  });
 }
 
 function promiseNotificationShown(notification) {
@@ -205,20 +200,20 @@ function promiseObserverCalled(aTopic) {
   });
 }
 
-function expectObserverCalled(aTopic) {
+function expectObserverCalled(aTopic, aCount = 1) {
   return new Promise(resolve => {
     let mm = _mm();
     mm.addMessageListener("Test:ExpectObserverCalled:Reply",
                           function listener({data}) {
-      is(data.count, 1, "expected notification " + aTopic);
+      is(data.count, aCount, "expected notification " + aTopic);
       mm.removeMessageListener("Test:ExpectObserverCalled:Reply", listener);
       resolve();
     });
-    mm.sendAsyncMessage("Test:ExpectObserverCalled", aTopic);
+    mm.sendAsyncMessage("Test:ExpectObserverCalled", {topic: aTopic, count: aCount});
   });
 }
 
-function expectNoObserverCalled(aIgnoreDeviceEvents = false) {
+function expectNoObserverCalled() {
   return new Promise(resolve => {
     let mm = _mm();
     mm.addMessageListener("Test:ExpectNoObserverCalled:Reply",
@@ -228,16 +223,20 @@ function expectNoObserverCalled(aIgnoreDeviceEvents = false) {
         if (!data[topic])
           continue;
 
-        // If we are stopping tracks that were created from 2 different
-        // getUserMedia calls, the "recording-device-events" notification is
-        // fired twice on Windows and Mac, and intermittently twice on Linux.
-        if (topic == "recording-device-events" && aIgnoreDeviceEvents) {
-          todo(false, "Got " + data[topic] + " unexpected " + topic +
-               " notifications, see bug 1320994");
-        } else {
-          is(data[topic], 0, topic + " notification unexpected");
-        }
+        is(data[topic], 0, topic + " notification unexpected");
       }
+      resolve();
+    });
+    mm.sendAsyncMessage("Test:ExpectNoObserverCalled");
+  });
+}
+
+function ignoreObserversCalled() {
+  return new Promise(resolve => {
+    let mm = _mm();
+    mm.addMessageListener("Test:ExpectNoObserverCalled:Reply",
+                          function listener() {
+      mm.removeMessageListener("Test:ExpectNoObserverCalled:Reply", listener);
       resolve();
     });
     mm.sendAsyncMessage("Test:ExpectNoObserverCalled");
@@ -252,6 +251,24 @@ function promiseMessageReceived() {
       resolve(data);
     });
     mm.sendAsyncMessage("Test:WaitForMessage");
+  });
+}
+
+function promiseSpecificMessageReceived(aMessage, aCount = 1) {
+  return new Promise(resolve => {
+    let mm = _mm();
+    let counter = 0;
+    mm.addMessageListener("Test:MessageReceived", function listener({data}) {
+      if (data == aMessage) {
+        counter++;
+        if (counter == aCount) {
+          mm.sendAsyncMessage("Test:StopWaitForMultipleMessages");
+          mm.removeMessageListener("Test:MessageReceived", listener);
+          resolve(data);
+        }
+      }
+    });
+    mm.sendAsyncMessage("Test:WaitForMultipleMessages");
   });
 }
 
@@ -273,49 +290,47 @@ function promiseMessage(aMessage, aAction) {
 }
 
 function promisePopupNotificationShown(aName, aAction) {
-  let deferred = Promise.defer();
+  return new Promise(resolve => {
 
-  PopupNotifications.panel.addEventListener("popupshown", function popupNotifShown() {
-    PopupNotifications.panel.removeEventListener("popupshown", popupNotifShown);
+    PopupNotifications.panel.addEventListener("popupshown", function() {
+      ok(!!PopupNotifications.getNotification(aName), aName + " notification shown");
+      ok(PopupNotifications.isPanelOpen, "notification panel open");
+      ok(!!PopupNotifications.panel.firstChild, "notification panel populated");
 
-    ok(!!PopupNotifications.getNotification(aName), aName + " notification shown");
-    ok(PopupNotifications.isPanelOpen, "notification panel open");
-    ok(!!PopupNotifications.panel.firstChild, "notification panel populated");
+      resolve();
+    }, {once: true});
 
-    deferred.resolve();
+    if (aAction)
+      aAction();
+
   });
-
-  if (aAction)
-    aAction();
-
-  return deferred.promise;
 }
 
 function promisePopupNotification(aName) {
-  let deferred = Promise.defer();
+  return new Promise(resolve => {
 
-  waitForCondition(() => PopupNotifications.getNotification(aName),
-                   () => {
-    ok(!!PopupNotifications.getNotification(aName),
-       aName + " notification appeared");
+    waitForCondition(() => PopupNotifications.getNotification(aName),
+                     () => {
+      ok(!!PopupNotifications.getNotification(aName),
+         aName + " notification appeared");
 
-    deferred.resolve();
-  }, "timeout waiting for popup notification " + aName);
+      resolve();
+    }, "timeout waiting for popup notification " + aName);
 
-  return deferred.promise;
+  });
 }
 
 function promiseNoPopupNotification(aName) {
-  let deferred = Promise.defer();
+  return new Promise(resolve => {
 
-  waitForCondition(() => !PopupNotifications.getNotification(aName),
-                   () => {
-    ok(!PopupNotifications.getNotification(aName),
-       aName + " notification removed");
-    deferred.resolve();
-  }, "timeout waiting for popup notification " + aName + " to disappear");
+    waitForCondition(() => !PopupNotifications.getNotification(aName),
+                     () => {
+      ok(!PopupNotifications.getNotification(aName),
+         aName + " notification removed");
+      resolve();
+    }, "timeout waiting for popup notification " + aName + " to disappear");
 
-  return deferred.promise;
+  });
 }
 
 const kActionAlways = 1;
@@ -347,8 +362,7 @@ function getMediaCaptureState() {
   });
 }
 
-function* stopSharing(aType = "camera", aShouldKeepSharing = false,
-                      aExpectDoubleRecordingEvent = false) {
+async function stopSharing(aType = "camera", aShouldKeepSharing = false) {
   let promiseRecordingEvent = promiseObserverCalled("recording-device-events");
   gIdentityHandler._identityBox.click();
   let permissions = document.getElementById("identity-popup-permission-list");
@@ -357,47 +371,45 @@ function* stopSharing(aType = "camera", aShouldKeepSharing = false,
                               ".identity-popup-permission-remove-button");
   cancelButton.click();
   gIdentityHandler._identityPopup.hidden = true;
-  yield promiseRecordingEvent;
-  yield expectObserverCalled("getUserMedia:revoke");
+  await promiseRecordingEvent;
+  await expectObserverCalled("getUserMedia:revoke");
 
   // If we are stopping screen sharing and expect to still have another stream,
   // "recording-window-ended" won't be fired.
   if (!aShouldKeepSharing)
-    yield expectObserverCalled("recording-window-ended");
+    await expectObserverCalled("recording-window-ended");
 
-  yield expectNoObserverCalled(aExpectDoubleRecordingEvent);
+  await expectNoObserverCalled();
 
   if (!aShouldKeepSharing)
-    yield* checkNotSharing();
+    await checkNotSharing();
 }
 
 function promiseRequestDevice(aRequestAudio, aRequestVideo, aFrameId, aType,
-                              aBrowser = gBrowser.selectedBrowser) {
+                              aBrowser = gBrowser.selectedBrowser,
+                              aBadDevice = false) {
   info("requesting devices");
   return ContentTask.spawn(aBrowser,
-                           {aRequestAudio, aRequestVideo, aFrameId, aType},
-                           function*(args) {
+                           {aRequestAudio, aRequestVideo, aFrameId, aType, aBadDevice},
+                           async function(args) {
     let global = content.wrappedJSObject;
     if (args.aFrameId)
       global = global.document.getElementById(args.aFrameId).contentWindow;
-    global.requestDevice(args.aRequestAudio, args.aRequestVideo, args.aType);
+    global.requestDevice(args.aRequestAudio, args.aRequestVideo, args.aType, args.aBadDevice);
   });
 }
 
-function* closeStream(aAlreadyClosed, aFrameId, aStreamCount = 1) {
-  yield expectNoObserverCalled();
+async function closeStream(aAlreadyClosed, aFrameId) {
+  await expectNoObserverCalled();
 
   let promises;
   if (!aAlreadyClosed) {
-    promises = [];
-    for (let i = 0; i < aStreamCount; i++) {
-      promises.push(promiseObserverCalled("recording-device-events"));
-    }
-    promises.push(promiseObserverCalled("recording-window-ended"));
+    promises = [promiseObserverCalled("recording-device-events"),
+                promiseObserverCalled("recording-window-ended")];
   }
 
   info("closing the stream");
-  yield ContentTask.spawn(gBrowser.selectedBrowser, aFrameId, function*(contentFrameId) {
+  await ContentTask.spawn(gBrowser.selectedBrowser, aFrameId, async function(contentFrameId) {
     let global = content.wrappedJSObject;
     if (contentFrameId)
       global = global.document.getElementById(contentFrameId).contentWindow;
@@ -405,23 +417,23 @@ function* closeStream(aAlreadyClosed, aFrameId, aStreamCount = 1) {
   });
 
   if (promises)
-    yield Promise.all(promises);
+    await Promise.all(promises);
 
-  yield* assertWebRTCIndicatorStatus(null);
+  await assertWebRTCIndicatorStatus(null);
 }
 
-function* reloadAndAssertClosedStreams() {
+async function reloadAndAssertClosedStreams() {
   info("reloading the web page");
   let promises = [
     promiseObserverCalled("recording-device-events"),
     promiseObserverCalled("recording-window-ended")
   ];
-  yield ContentTask.spawn(gBrowser.selectedBrowser, null,
+  await ContentTask.spawn(gBrowser.selectedBrowser, null,
                           "() => content.location.reload()");
-  yield Promise.all(promises);
+  await Promise.all(promises);
 
-  yield expectNoObserverCalled();
-  yield checkNotSharing();
+  await expectNoObserverCalled();
+  await checkNotSharing();
 }
 
 function checkDeviceSelectors(aAudio, aVideo, aScreen) {
@@ -444,7 +456,9 @@ function checkDeviceSelectors(aAudio, aVideo, aScreen) {
     ok(screenSelector.hidden, "screen selector hidden");
 }
 
-function* checkSharingUI(aExpected, aWin = window) {
+// aExpected is for the current tab,
+// aExpectedGlobal is for all tabs.
+async function checkSharingUI(aExpected, aWin = window, aExpectedGlobal = null) {
   let doc = aWin.document;
   // First check the icon above the control center (i) icon.
   let identityBox = doc.getElementById("identity-box");
@@ -488,21 +502,21 @@ function* checkSharingUI(aExpected, aWin = window) {
   aWin.gIdentityHandler._identityPopup.hidden = true;
 
   // Check the global indicators.
-  yield* assertWebRTCIndicatorStatus(aExpected);
+  await assertWebRTCIndicatorStatus(aExpectedGlobal || aExpected);
 }
 
-function* checkNotSharing() {
-  Assert.deepEqual((yield getMediaCaptureState()), {},
+async function checkNotSharing() {
+  Assert.deepEqual((await getMediaCaptureState()), {},
                    "expected nothing to be shared");
 
   ok(!document.getElementById("identity-box").hasAttribute("sharing"),
      "no sharing indicator on the control center icon");
 
-  yield* assertWebRTCIndicatorStatus(null);
+  await assertWebRTCIndicatorStatus(null);
 }
 
 function promiseReloadFrame(aFrameId) {
-  return ContentTask.spawn(gBrowser.selectedBrowser, aFrameId, function*(contentFrameId) {
+  return ContentTask.spawn(gBrowser.selectedBrowser, aFrameId, async function(contentFrameId) {
     content.wrappedJSObject
            .document
            .getElementById(contentFrameId)
@@ -510,4 +524,35 @@ function promiseReloadFrame(aFrameId) {
            .location
            .reload();
   });
+}
+
+async function runTests(tests, options = {}) {
+  let leaf = options.relativeURI || "get_user_media.html";
+
+  let rootDir = getRootDirectory(gTestPath);
+  rootDir = rootDir.replace("chrome://mochitests/content/",
+                            "https://example.com/");
+  let absoluteURI = rootDir + leaf;
+  let cleanup = options.cleanup || (() => expectNoObserverCalled());
+
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, absoluteURI);
+  let browser = tab.linkedBrowser;
+
+  browser.messageManager.loadFrameScript(CONTENT_SCRIPT_HELPER, true);
+
+  is(PopupNotifications._currentNotifications.length, 0,
+     "should start the test without any prior popup notification");
+  ok(gIdentityHandler._identityPopup.hidden,
+     "should start the test with the control center hidden");
+
+  await SpecialPowers.pushPrefEnv({"set": [[PREF_PERMISSION_FAKE, true]]});
+
+  for (let testCase of tests) {
+    info(testCase.desc);
+    await testCase.run(browser);
+    await cleanup();
+  }
+
+  // Some tests destroy the original tab and leave a new one in its place.
+  await BrowserTestUtils.removeTab(gBrowser.selectedTab);
 }

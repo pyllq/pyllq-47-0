@@ -1027,9 +1027,9 @@ BasicCompositor::TryToEndRemoteDrawing(bool aForceToEnd)
 
     const uint32_t retryMs = 2;
     RefPtr<BasicCompositor> self = this;
-    RefPtr<Runnable> runnable = NS_NewRunnableFunction([self]() {
-      self->TryToEndRemoteDrawing();
-    });
+    RefPtr<Runnable> runnable =
+      NS_NewRunnableFunction("layers::BasicCompositor::TryToEndRemoteDrawing",
+                             [self]() { self->TryToEndRemoteDrawing(); });
     MessageLoop::current()->PostDelayedTask(runnable.forget(), retryMs);
     return;
   }
@@ -1084,15 +1084,6 @@ void
 BasicCompositor::FinishPendingComposite()
 {
   TryToEndRemoteDrawing(/* aForceToEnd */ true);
-}
-
-BasicCompositor*
-AssertBasicCompositor(Compositor* aCompositor)
-{
-  BasicCompositor* compositor = aCompositor ? aCompositor->AsBasicCompositor()
-                                            : nullptr;
-  MOZ_DIAGNOSTIC_ASSERT(!!compositor);
-  return compositor;
 }
 
 } // namespace layers

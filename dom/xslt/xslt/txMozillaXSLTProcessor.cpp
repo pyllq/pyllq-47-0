@@ -132,7 +132,7 @@ txToDocHandlerFactory::createHandlerWith(txOutputFormat* aFormat,
 
 nsresult
 txToDocHandlerFactory::createHandlerWith(txOutputFormat* aFormat,
-                                         const nsSubstring& aName,
+                                         const nsAString& aName,
                                          int32_t aNsID,
                                          txAXMLEventHandler** aHandler)
 {
@@ -224,7 +224,7 @@ txToFragmentHandlerFactory::createHandlerWith(txOutputFormat* aFormat,
 
 nsresult
 txToFragmentHandlerFactory::createHandlerWith(txOutputFormat* aFormat,
-                                              const nsSubstring& aName,
+                                              const nsAString& aName,
                                               int32_t aNsID,
                                               txAXMLEventHandler** aHandler)
 {
@@ -441,9 +441,11 @@ public:
         aResult = nullptr;
         return NS_ERROR_INVALID_ARG;
     }
-    bool isStripSpaceAllowed(const txXPathNode& aNode)
+    nsresult isStripSpaceAllowed(const txXPathNode& aNode, bool& aAllowed)
     {
-        return false;
+        aAllowed = false;
+
+        return NS_OK;
     }
     void* getPrivateContext()
     {
@@ -544,7 +546,8 @@ public:
   RefPtr<txMozillaXSLTProcessor> mProcessor;
 
   explicit nsTransformBlockerEvent(txMozillaXSLTProcessor* processor)
-    : mProcessor(processor)
+    : mozilla::Runnable("nsTransformBlockerEvent")
+    , mProcessor(processor)
   {}
 
   ~nsTransformBlockerEvent()
@@ -1011,26 +1014,16 @@ txMozillaXSLTProcessor::Reset()
     return NS_OK;
 }
 
-NS_IMETHODIMP
-txMozillaXSLTProcessor::SetFlags(uint32_t aFlags)
+void
+txMozillaXSLTProcessor::SetFlags(uint32_t aFlags, SystemCallerGuarantee)
 {
-    NS_ENSURE_TRUE(nsContentUtils::IsCallerChrome(),
-                   NS_ERROR_DOM_SECURITY_ERR);
-
     mFlags = aFlags;
-
-    return NS_OK;
 }
 
-NS_IMETHODIMP
-txMozillaXSLTProcessor::GetFlags(uint32_t* aFlags)
+uint32_t
+txMozillaXSLTProcessor::Flags(SystemCallerGuarantee)
 {
-    NS_ENSURE_TRUE(nsContentUtils::IsCallerChrome(),
-                   NS_ERROR_DOM_SECURITY_ERR);
-
-    *aFlags = mFlags;
-
-    return NS_OK;
+    return mFlags;
 }
 
 NS_IMETHODIMP
@@ -1095,12 +1088,12 @@ txMozillaXSLTProcessor::reportError(nsresult aResult,
             if (bundle) {
                 const char16_t* error[] = { errorText.get() };
                 if (mStylesheet) {
-                    bundle->FormatStringFromName(u"TransformError",
+                    bundle->FormatStringFromName("TransformError",
                                                  error, 1,
                                                  getter_Copies(errorMessage));
                 }
                 else {
-                    bundle->FormatStringFromName(u"LoadingError",
+                    bundle->FormatStringFromName("LoadingError",
                                                  error, 1,
                                                  getter_Copies(errorMessage));
                 }

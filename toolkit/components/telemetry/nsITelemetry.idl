@@ -52,8 +52,8 @@ interface nsITelemetry : nsISupports
 
 
   /**
-   * An object containing a snapshot from all of the currently registered histograms.
-   * { name1: {data1}, name2:{data2}...}
+   * An object containing a snapshot from all of the currently registered histograms from all processes.
+   * { process1: {name1: {data1}, name2:{data2}...} }
    * where data is consists of the following properties:
    *   min - Minimal bucket size
    *   max - Maximum bucket size
@@ -173,12 +173,34 @@ interface nsITelemetry : nsISupports
    *   "captures": [["string-key", stack-index, count], ... ]
    * }
    *
-   * @param clear Whether to clear out the subsession histograms after taking a  snapshot.
+   * @param clear Whether to clear out the subsession histograms after taking a snapshot.
    *
    * @return A snapshot of captured stacks.
    */
   [implicit_jscontext]
   jsval snapshotCapturedStacks([optional] in boolean clear);
+
+  /*
+   * Asynchronously get an array of the modules loaded in the process.
+   *
+   * The data has the following structure:
+   *
+   * [
+   *   {
+   *     "name": <string>, // Name of the module file (e.g. xul.dll)
+   *     "version": <string>, // Version of the module
+   *     "debugName": <string>, // ID of the debug information file
+   *     "debugID": <string>, // Name of the debug information file
+   *   },
+   *   ...
+   * ]
+   *
+   * @return A promise that resolves to an array of modules or rejects with
+             NS_ERROR_FAILURE on failure.
+   * @throws NS_ERROR_NOT_IMPLEMENTED if the Gecko profiler is not enabled.
+   */
+  [implicit_jscontext]
+  nsISupports getLoadedModules();
 
   /*
    * An array of thread hang stats,
@@ -226,19 +248,28 @@ interface nsITelemetry : nsISupports
    * The returned object has the following functions:
    *   add(int) - Adds an int value to the appropriate bucket
    *   snapshot() - Returns a snapshot of the histogram with the same data fields as in histogramSnapshots()
-   *   clear() - Zeros out the histogram's buckets and sum
-   *   dataset() - identifies what dataset this is in: DATASET_RELEASE_CHANNEL_OPTOUT or ...OPTIN
+   *   clear() - Zeros out the histogram's buckets and sum. This is intended to be only used in tests.
+   *   dataset() - identifies what dataset this is in: DATASET_RELEASE_CHANNEL_OPTOUT or ...OPTIN.
+   *               This is intended to be only used in tests.
    */
   [implicit_jscontext]
   jsval getHistogramById(in ACString id);
 
   /*
    * An object containing a snapshot from all of the currently registered keyed histograms.
-   * { name1: {histogramData1}, name2:{histogramData2}...}
+   * { process1: {name1: {histogramData1}, name2:{histogramData2}...}}
    * where the histogramData is as described in histogramSnapshots.
    */
   [implicit_jscontext]
   readonly attribute jsval keyedHistogramSnapshots;
+
+  /**
+   * Get a snapshot of the internally duplicated subsession keyed histograms.
+   * @param clear Whether to clear out the subsession histograms after snapshotting.
+   * @return An object as histogramSnapshots, except this contains the internally duplicated keyed histograms for subsession telemetry.
+   */
+  [implicit_jscontext]
+  jsval snapshotSubsessionKeyedHistograms([optional] in boolean clear);
 
   /**
    * Returns an array whose values are the names of histograms defined
@@ -258,7 +289,9 @@ interface nsITelemetry : nsISupports
    *   snapshot([optional] string key) - If key is provided, returns a snapshot for the histogram with that key or null. If key is not provided, returns the snapshots of all the registered keys in the form {key1: snapshot1, key2: snapshot2, ...}.
    *   keys() - Returns an array with the string keys of the currently registered histograms
    *   clear() - Clears the registered histograms from this.
-   *   dataset() - identifies what dataset this is in: DATASET_RELEASE_CHANNEL_OPTOUT or ...OPTIN
+   *             This is intended to be only used in tests.
+   *   dataset() - identifies what dataset this is in: DATASET_RELEASE_CHANNEL_OPTOUT or ...OPTIN.
+   *               This is intended to be only used in tests.
    */
   [implicit_jscontext]
   jsval getKeyedHistogramById(in ACString id);
@@ -290,46 +323,6 @@ interface nsITelemetry : nsISupports
    */
   readonly attribute boolean isOfficialTelemetry;
 
-  /** Addon telemetry hooks */
-
-  /**
-   * Register a histogram for an addon.  Throws an error if the
-   * histogram name has been registered previously.
-   *
-   * @param addon_id - Unique ID of the addon
-   * @param name - Unique histogram name
-   * @param histogram_type - HISTOGRAM_EXPONENTIAL, HISTOGRAM_LINEAR,
-   *        HISTOGRAM_BOOLEAN or HISTOGRAM_COUNT
-   * @param min - Minimal bucket size
-   * @param max - Maximum bucket size
-   * @param bucket_count - number of buckets in the histogram
-   */
-  [optional_argc]
-  void registerAddonHistogram(in ACString addon_id, in ACString name,
-                              in unsigned long histogram_type,
-                              [optional] in uint32_t min,
-                              [optional] in uint32_t max,
-                              [optional] in uint32_t bucket_count);
-
-  /**
-   * Return a histogram previously registered via
-   * registerAddonHistogram.  Throws an error if the id/name combo has
-   * not been registered via registerAddonHistogram.
-   *
-   * @param addon_id - Unique ID of the addon
-   * @param name - Registered histogram name
-   *
-   */
-  [implicit_jscontext]
-  jsval getAddonHistogram(in ACString addon_id, in ACString name);
-
-  /**
-   * Delete all histograms associated with the given addon id.
-   *
-   * @param addon_id - Unique ID of the addon
-   */
-  void unregisterAddonHistograms(in ACString addon_id);
-
   /**
    * Enable/disable recording for this histogram at runtime.
    * Recording is enabled by default, unless listed at kRecordingInitiallyDisabledIDs[].
@@ -339,18 +332,6 @@ interface nsITelemetry : nsISupports
    * @param enabled - whether or not to enable recording from now on.
    */
   void setHistogramRecordingEnabled(in ACString id, in boolean enabled);
-
-  /**
-   * An object containing a snapshot from all of the currently
-   * registered addon histograms.
-   * { addon-id1 : data1, ... }
-   *
-   * where data is an object whose properties are the names of the
-   * addon's histograms and whose corresponding values are as in
-   * histogramSnapshots.
-   */
-  [implicit_jscontext]
-  readonly attribute jsval addonHistogramSnapshots;
 
   /**
    * Read data from the previous run. After the callback is called, the last
@@ -377,6 +358,12 @@ interface nsITelemetry : nsISupports
    * @throws NS_ERROR_NOT_AVAILABLE if TimeStamp doesn't have the data.
    */
   double msSinceProcessStart();
+
+  /**
+   * Time since the system wide epoch. This is not a monotonic timer but
+   * can be used across process boundaries.
+   */
+  double msSystemNow();
 
   /**
    * Adds the value to the given scalar.
@@ -511,7 +498,35 @@ interface nsITelemetry : nsISupports
    * @param [aClear=false] Whether to clear out the scalars after snapshotting.
    */
   [implicit_jscontext, optional_argc]
-  jsval snapshotBuiltinEvents(in uint32_t aDataset, [optional] in boolean aClear);
+  jsval snapshotEvents(in uint32_t aDataset, [optional] in boolean aClear);
+
+  /**
+   * Register new events to record them from addons. This allows registering multiple
+   * events for a category. They will be valid only for the current Firefox session.
+   * Note that events shipping in Firefox should be registered in Events.yaml.
+   *
+   * @param aCategory The unique category the events are registered in.
+   * @param aEventData An object that contains registration data for 1-N events of the form:
+   *   {
+   *     "categoryName": {
+   *       "methods": ["test1"],
+   *       "objects": ["object1"],
+   *       "record_on_release": false,
+   *       "extra_keys": ["key1", "key2"], // optional
+   *       "expired": false // optional, defaults to false.
+   *     },
+   *     ...
+   *   }
+   * @param aEventData.<name>.methods List of methods for this event entry.
+   * @param aEventData.<name>.objects List of objects for this event entry.
+   * @param aEventData.<name>.extra_keys Optional, list of allowed extra keys for this event entry.
+   * @param aEventData.<name>.record_on_release Optional, whether to record this data on release.
+   *                                            Defaults to false.
+   * @param aEventData.<name>.expired Optional, whether this event entry is expired. This allows
+   *                                  recording it without error, but it will be discarded. Defaults to false.
+   */
+  [implicit_jscontext]
+  void registerEvents(in ACString aCategory, in jsval aEventData);
 
   /**
    * Resets all the stored events. This is intended to be only used in tests.

@@ -185,8 +185,16 @@ class TestResolver(MozbuildObject):
         # If installing tests is going to result in re-generating the build
         # backend, we need to do this here, so that the updated contents of
         # all-tests.pkl make it to the set of tests to run.
-        self._run_make(target='run-tests-deps', pass_thru=True,
-                       print_directory=False)
+        self._run_make(
+            target='backend.TestManifestBackend', pass_thru=True, print_directory=False,
+            filename=mozpath.join(self.topsrcdir, 'build', 'rebuild-backend.mk'),
+            append_env={
+                b'PYTHON': self.virtualenv_manager.python_path,
+                b'BUILD_BACKEND_FILES': b'backend.TestManifestBackend',
+                b'BACKEND_GENERATION_SCRIPT': mozpath.join(
+                    self.topsrcdir, 'build', 'gen_test_backend.py'),
+            },
+        )
 
         self._tests = TestMetadata(os.path.join(self.topobjdir,
                                                 'all-tests.pkl'),
@@ -436,9 +444,9 @@ def _resolve_installs(paths, topobjdir, manifest):
         for install_info in installs:
             try:
                 if len(install_info) == 3:
-                    manifest.add_pattern_symlink(*install_info)
+                    manifest.add_pattern_link(*install_info)
                 if len(install_info) == 2:
-                    manifest.add_symlink(*install_info)
+                    manifest.add_link(*install_info)
             except ValueError:
                 # A duplicate value here is pretty likely when running
                 # multiple directories at once, and harmless.
@@ -487,9 +495,9 @@ def install_test_files(topsrcdir, topobjdir, tests_root, test_objs):
     for source, dest in set(install_info.installs):
         if dest in install_info.external_installs:
             continue
-        manifest.add_symlink(source, dest)
+        manifest.add_link(source, dest)
     for base, pattern, dest in install_info.pattern_installs:
-        manifest.add_pattern_symlink(base, pattern, dest)
+        manifest.add_pattern_link(base, pattern, dest)
 
     _resolve_installs(install_info.deferred_installs, topobjdir, manifest)
 

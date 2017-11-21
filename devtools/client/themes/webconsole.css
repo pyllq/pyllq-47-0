@@ -402,6 +402,15 @@ a {
 }
 
 /* JSTerm Styles */
+
+html #jsterm-wrapper,
+html .jsterm-stack-node,
+html .jsterm-input-node-html,
+html #webconsole-notificationbox {
+  flex: 0;
+  width: 100vw;
+}
+
 .jsterm-input-container {
   background-color: var(--theme-tab-toolbar-background);
   border-top: 1px solid var(--theme-splitter-color);
@@ -612,6 +621,42 @@ a.learn-more-link.webconsole-learn-more-link {
   filter: url(images/filters.svg#checked-icon-state) brightness(0.9);
 }
 
+/* Old console frontend filters */
+.devtools-toolbarbutton[type=menu-button] > .toolbarbutton-menubutton-button {
+  -moz-appearance: none;
+  color: inherit;
+  border-width: 0;
+  -moz-box-orient: horizontal;
+  padding: 0;
+}
+
+.devtools-toolbarbutton[type=menu-button] {
+  padding: 0 1px;
+  -moz-box-align: stretch;
+  --toolbarbutton-checked-color: var(--theme-body-color);
+  --toolbarbutton-checked-background: var(--theme-selection-background-semitransparent);
+}
+
+.devtools-toolbarbutton > .toolbarbutton-menubutton-button > .toolbarbutton-icon {
+  margin-inline-end: 4px;
+}
+
+.devtools-menulist > .menulist-dropmarker {
+  -moz-appearance: none;
+  display: -moz-box;
+  list-style-image: url("chrome://devtools/skin/images/dropmarker.svg");
+  -moz-box-align: center;
+  min-width: 16px;
+}
+
+.devtools-toolbarbutton[type=menu] > .toolbarbutton-menu-dropmarker,
+.devtools-toolbarbutton[type=menu-button] > .toolbarbutton-menubutton-dropmarker {
+  -moz-appearance: none !important;
+  list-style-image: url("chrome://devtools/skin/images/dropmarker.svg");
+  -moz-box-align: center;
+  padding: 0 3px;
+}
+
 @media (max-width: 500px) {
   .message > .timestamp {
     display: none;
@@ -653,7 +698,7 @@ a.learn-more-link.webconsole-learn-more-link {
 
 /*
  * This hardcoded width likely due to a toolkit Windows specific bug.
- * See http://hg.mozilla.org/mozilla-central/annotate/f38d6df93cad/toolkit/themes/winstripe/global/textbox-aero.css#l7
+ * See https://hg.mozilla.org/mozilla-central/annotate/f38d6df93cad/toolkit/themes/winstripe/global/textbox-aero.css#l7
  */
 
 :root[platform="win"] .hud-filter-box {
@@ -713,12 +758,22 @@ a.learn-more-link.webconsole-learn-more-link {
   flex: 1 1 100%;
 }
 
+.webconsole-output-wrapper .message-flex-body > .message-body {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.webconsole-output-wrapper .message-body > * {
+  flex-shrink: 0;
+}
+
 .webconsole-output.hideTimestamps > .message > .timestamp {
   display: none;
 }
 
-.message.startGroup .message-body,
-.message.startGroupCollapsed .message-body {
+.message.startGroup .message-body > .objectBox-string,
+.message.startGroupCollapsed .message-body > .objectBox-string {
   color: var(--theme-body-color);
   font-weight: bold;
 }
@@ -744,9 +799,16 @@ a.learn-more-link.webconsole-learn-more-link {
   margin-inline-end: 5px;
 }
 
+.network .message-flex-body > .message-body {
+  display: flex;
+}
+
 .webconsole-output-wrapper .message .indent {
   display: inline-block;
   border-inline-end: solid 1px var(--theme-splitter-color);
+}
+.webconsole-output-wrapper .message .indent[data-indent="0"] {
+  border-inline-end: none;
 }
 
 .message.startGroup .indent,
@@ -757,7 +819,18 @@ a.learn-more-link.webconsole-learn-more-link {
 
 .message.startGroup .icon,
 .message.startGroupCollapsed .icon {
-    display: none;
+  display: none;
+}
+
+/*
+ * Open DOMNode in inspector button. Style need to be reset in the new
+ * console since its style is already defined in reps.css .
+ */
+.webconsole-output-wrapper .open-inspector {
+  background: unset;
+  padding-left: unset;
+  margin-left: unset;
+  cursor: unset;
 }
 
 /* console.table() */
@@ -795,3 +868,44 @@ a.learn-more-link.webconsole-learn-more-link {
   height: 1.25em;
   line-height: 1.25em;
 }
+
+/* Layout */
+
+.webconsole-output {
+  flex: 1;
+  direction: ltr;
+  overflow: auto;
+  -moz-user-select: text;
+  position: relative;
+}
+
+html,
+body,
+#app-wrapper {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+#app-wrapper {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+body #output-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.webconsole-output-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Object Inspector */

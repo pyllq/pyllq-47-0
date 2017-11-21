@@ -52,8 +52,12 @@ registerCleanupFunction(function* () {
   DebuggerServer.destroy();
 
   // Debugger tests use a lot of memory, so force a GC to help fragmentation.
-  info("Forcing GC after debugger test.");
-  Cu.forceGC();
+  info("Forcing GC/CC after debugger test.");
+  yield new Promise(resolve => {
+    Cu.forceGC();
+    Cu.forceCC();
+    Cu.schedulePreciseGC(resolve);
+  });
 });
 
 // Import the GCLI test helper
@@ -108,12 +112,10 @@ this.removeTab = function removeTab(aTab, aWindow) {
   let targetBrowser = targetWindow.gBrowser;
   let tabContainer = targetBrowser.tabContainer;
 
-  tabContainer.addEventListener("TabClose", function onClose(aEvent) {
-    tabContainer.removeEventListener("TabClose", onClose);
-
+  tabContainer.addEventListener("TabClose", function (aEvent) {
     info("Tab removed and finished closing.");
     deferred.resolve();
-  });
+  }, {once: true});
 
   targetBrowser.removeTab(aTab);
   return deferred.promise;

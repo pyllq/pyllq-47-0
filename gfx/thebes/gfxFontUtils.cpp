@@ -10,7 +10,6 @@
 
 #include "nsServiceManagerUtils.h"
 
-#include "mozilla/dom/EncodingUtils.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/BinarySearch.h"
@@ -18,12 +17,16 @@
 
 #include "nsCOMPtr.h"
 #include "nsIUUIDGenerator.h"
-#include "nsIUnicodeDecoder.h"
+#include "mozilla/Encoding.h"
 
 #include "harfbuzz/hb.h"
 
 #include "plbase64.h"
 #include "mozilla/Logging.h"
+
+#ifdef XP_MACOSX
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 
 #define LOG(log, args) MOZ_LOG(gfxPlatform::GetLog(log), \
                                LogLevel::Debug, args)
@@ -845,8 +848,10 @@ void gfxFontUtils::ParseFontList(const nsAString& aFamilyList,
         fontname = Substring(nameStart, p);
         fontname.CompressWhitespace(true, true);
         
-        // append it to the list
-        aFontList.AppendElement(fontname);
+        // append it to the list if it's not empty
+        if (!fontname.IsEmpty()) {
+            aFontList.AppendElement(fontname);
+        }
         ++p;
     }
 }
@@ -855,8 +860,9 @@ void gfxFontUtils::AppendPrefsFontList(const char *aPrefName,
                                        nsTArray<nsString>& aFontList)
 {
     // get the list of single-face font families
-    nsAdoptingString fontlistValue = Preferences::GetString(aPrefName);
-    if (!fontlistValue) {
+    nsAutoString fontlistValue;
+    nsresult rv = Preferences::GetString(aPrefName, fontlistValue);
+    if (NS_FAILED(rv)) {
         return;
     }
 
@@ -1432,6 +1438,16 @@ gfxFontUtils::GetCharsetForFontName(uint16_t aPlatform, uint16_t aScript, uint16
     return nullptr;
 }
 
+template<int N>
+static bool
+StartsWith(const nsACString& string, const char (&prefix)[N])
+{
+  if (N - 1 > string.Length()) {
+    return false;
+  }
+  return memcmp(string.Data(), prefix, N - 1) == 0;
+}
+
 // convert a raw name from the name table to an nsString, if possible;
 // return value indicates whether conversion succeeded
 bool
@@ -1473,31 +1489,35 @@ gfxFontUtils::DecodeFontName(const char *aNameData, int32_t aByteLen,
         return true;
     }
 
-    nsCOMPtr<nsIUnicodeDecoder> decoder =
-        mozilla::dom::EncodingUtils::DecoderForEncoding(csName);
-    if (!decoder) {
+    nsDependentCString encodingName(csName);
+    if (StartsWith(encodingName, "x-mac-") &&
+        !encodingName.EqualsLiteral("x-mac-cyrillic")) {
+#ifdef XP_MACOSX
+        // Special case for macOS only: support legacy Mac encodings
+        // that aren't part of the Encoding Standard.
+        if (aPlatformCode == PLATFORM_ID_MAC) {
+            CFStringRef str =
+                CFStringCreateWithBytes(kCFAllocatorDefault,
+                                        (const UInt8*)aNameData, aByteLen,
+                                        aScriptCode, false);
+            if (str) {
+                CFIndex length = CFStringGetLength(str);
+                aName.SetLength(length);
+                CFStringGetCharacters(str, CFRangeMake(0, length),
+                                      (UniChar*)aName.BeginWriting());
+                CFRelease(str);
+                return true;
+            }
+        }
+#endif
         NS_WARNING("failed to get the decoder for a font name string");
         return false;
     }
 
-    int32_t destLength;
-    nsresult rv = decoder->GetMaxLength(aNameData, aByteLen, &destLength);
-    if (NS_FAILED(rv)) {
-        NS_WARNING("decoder->GetMaxLength failed, invalid font name?");
-        return false;
-    }
-
-    // make space for the converted string
-    aName.SetLength(destLength);
-    rv = decoder->Convert(aNameData, &aByteLen,
-                          aName.BeginWriting(), &destLength);
-    if (NS_FAILED(rv)) {
-        NS_WARNING("decoder->Convert failed, invalid font name?");
-        return false;
-    }
-    aName.Truncate(destLength); // set the actual length
-
-    return true;
+    auto encoding = Encoding::ForName(encodingName);
+    auto rv = encoding->DecodeWithoutBOMHandling(
+      AsBytes(MakeSpan(aNameData, aByteLen)), aName);
+    return NS_SUCCEEDED(rv);
 }
 
 nsresult

@@ -20,8 +20,6 @@ XPCOMUtils.defineLazyModuleGetter(this, "PluralForm",
                                   "resource://gre/modules/PluralForm.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
                                   "resource://gre/modules/PrivateBrowsingUtils.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "Task",
-                                  "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "SitePermissions",
                                   "resource:///modules/SitePermissions.jsm");
 
@@ -34,40 +32,12 @@ this.webrtcUI = {
   emitter: new EventEmitter(),
 
   init() {
-    Services.obs.addObserver(maybeAddMenuIndicator, "browser-delayed-startup-finished", false);
-
-    let ppmm = Cc["@mozilla.org/parentprocessmessagemanager;1"]
-                 .getService(Ci.nsIMessageBroadcaster);
-    ppmm.addMessageListener("webrtc:UpdatingIndicators", this);
-    ppmm.addMessageListener("webrtc:UpdateGlobalIndicators", this);
-    ppmm.addMessageListener("child-process-shutdown", this);
-
-    let mm = Cc["@mozilla.org/globalmessagemanager;1"]
-               .getService(Ci.nsIMessageListenerManager);
-    mm.addMessageListener("rtcpeer:Request", this);
-    mm.addMessageListener("rtcpeer:CancelRequest", this);
-    mm.addMessageListener("webrtc:Request", this);
-    mm.addMessageListener("webrtc:StopRecording", this);
-    mm.addMessageListener("webrtc:CancelRequest", this);
-    mm.addMessageListener("webrtc:UpdateBrowserIndicators", this);
+    Services.obs.addObserver(maybeAddMenuIndicator, "browser-delayed-startup-finished");
+    Services.ppmm.addMessageListener("child-process-shutdown", this);
   },
 
   uninit() {
     Services.obs.removeObserver(maybeAddMenuIndicator, "browser-delayed-startup-finished");
-
-    let ppmm = Cc["@mozilla.org/parentprocessmessagemanager;1"]
-                 .getService(Ci.nsIMessageBroadcaster);
-    ppmm.removeMessageListener("webrtc:UpdatingIndicators", this);
-    ppmm.removeMessageListener("webrtc:UpdateGlobalIndicators", this);
-
-    let mm = Cc["@mozilla.org/globalmessagemanager;1"]
-               .getService(Ci.nsIMessageListenerManager);
-    mm.removeMessageListener("rtcpeer:Request", this);
-    mm.removeMessageListener("rtcpeer:CancelRequest", this);
-    mm.removeMessageListener("webrtc:Request", this);
-    mm.removeMessageListener("webrtc:StopRecording", this);
-    mm.removeMessageListener("webrtc:CancelRequest", this);
-    mm.removeMessageListener("webrtc:UpdateBrowserIndicators", this);
 
     if (gIndicatorWindow) {
       gIndicatorWindow.close();
@@ -156,6 +126,13 @@ this.webrtcUI = {
     webrtcUI.forgetActivePermissionsFromBrowser(aBrowser);
   },
 
+  forgetStreamsFromProcess(aProcessMM) {
+    // stream.processMM is null when e10s is disabled.
+    this._streams =
+      this._streams.filter(stream => stream.processMM &&
+                                     stream.processMM != aProcessMM);
+  },
+
   showSharingDoorhanger(aActiveStream) {
     let browserWindow = aActiveStream.browser.ownerGlobal;
     if (aActiveStream.tab) {
@@ -166,12 +143,11 @@ this.webrtcUI = {
     browserWindow.focus();
     let identityBox = browserWindow.document.getElementById("identity-box");
     if (AppConstants.platform == "macosx" && !Services.focus.activeWindow) {
-      browserWindow.addEventListener("activate", function onActivate() {
-        browserWindow.removeEventListener("activate", onActivate);
-        Services.tm.mainThread.dispatch(function() {
+      browserWindow.addEventListener("activate", function() {
+        Services.tm.dispatchToMainThread(function() {
           identityBox.click();
-        }, Ci.nsIThread.DISPATCH_NORMAL);
-      });
+        });
+      }, {once: true});
       Cc["@mozilla.org/widget/macdocksupport;1"].getService(Ci.nsIMacDockSupport)
         .activateApplication(true);
       return;
@@ -225,6 +201,7 @@ this.webrtcUI = {
     return this.emitter.off(...args);
   },
 
+  // Listeners and observers are registered in nsBrowserGlue.js
   receiveMessage(aMessage) {
     switch (aMessage.name) {
 
@@ -235,10 +212,10 @@ this.webrtcUI = {
 
         let blockers = Array.from(this.peerConnectionBlockers);
 
-        Task.spawn(function*() {
+        (async function() {
           for (let blocker of blockers) {
             try {
-              let result = yield blocker(params);
+              let result = await blocker(params);
               if (result == "deny") {
                 return false;
               }
@@ -247,7 +224,7 @@ this.webrtcUI = {
             }
           }
           return true;
-        }).then(decision => {
+        })().then(decision => {
           let message;
           if (decision) {
             this.emitter.emit("peer-request-allowed", params);
@@ -282,30 +259,40 @@ this.webrtcUI = {
         removePrompt(aMessage.target, aMessage.data);
         break;
       case "webrtc:UpdatingIndicators":
-        webrtcUI._streams = [];
+        webrtcUI.forgetStreamsFromProcess(aMessage.target);
         break;
       case "webrtc:UpdateGlobalIndicators":
         updateIndicators(aMessage.data, aMessage.target);
         break;
       case "webrtc:UpdateBrowserIndicators":
         let id = aMessage.data.windowId;
+        aMessage.targetFrameLoader.QueryInterface(Ci.nsIFrameLoader);
+        let processMM =
+          aMessage.targetFrameLoader.messageManager.processMessageManager;
         let index;
         for (index = 0; index < webrtcUI._streams.length; ++index) {
-          if (webrtcUI._streams[index].state.windowId == id)
+          let stream = webrtcUI._streams[index];
+          if (stream.state.windowId == id && stream.processMM == processMM)
             break;
         }
         // If there's no documentURI, the update is actually a removal of the
         // stream, triggered by the recording-window-ended notification.
-        if (!aMessage.data.documentURI && index < webrtcUI._streams.length)
+        if (!aMessage.data.documentURI && index < webrtcUI._streams.length) {
           webrtcUI._streams.splice(index, 1);
-        else
-          webrtcUI._streams[index] = {browser: aMessage.target, state: aMessage.data};
+        } else {
+          webrtcUI._streams[index] = {
+            browser: aMessage.target,
+            processMM,
+            state: aMessage.data
+          };
+        }
         let tabbrowser = aMessage.target.ownerGlobal.gBrowser;
         if (tabbrowser)
           tabbrowser.setBrowserSharing(aMessage.target, aMessage.data);
         break;
       case "child-process-shutdown":
         webrtcUI.processIndicators.delete(aMessage.target);
+        webrtcUI.forgetStreamsFromProcess(aMessage.target);
         updateIndicators(null, null);
         break;
     }
@@ -492,19 +479,22 @@ function prompt(aBrowser, aRequest) {
         let activeCamera;
         let activeMic;
 
-        for (let device of videoDevices) {
-          let set = webrtcUI.activePerms.get(aBrowser.outerWindowID);
-          if (set && set.has(aRequest.windowID + device.mediaSource + device.id)) {
-            activeCamera = device;
-            break;
+        // Always prompt for screen sharing
+        if (!sharingScreen) {
+          for (let device of videoDevices) {
+            let set = webrtcUI.activePerms.get(aBrowser.outerWindowID);
+            if (set && set.has(aRequest.windowID + device.mediaSource + device.id)) {
+              activeCamera = device;
+              break;
+            }
           }
-        }
 
-        for (let device of audioDevices) {
-          let set = webrtcUI.activePerms.get(aBrowser.outerWindowID);
-          if (set && set.has(aRequest.windowID + device.mediaSource + device.id)) {
-            activeMic = device;
-            break;
+          for (let device of audioDevices) {
+            let set = webrtcUI.activePerms.get(aBrowser.outerWindowID);
+            if (set && set.has(aRequest.windowID + device.mediaSource + device.id)) {
+              activeMic = device;
+              break;
+            }
           }
         }
 
@@ -649,6 +639,7 @@ function prompt(aBrowser, aRequest) {
               string = bundle.getFormattedString("getUserMedia.shareFirefoxWarning.message",
                                                  [brand, learnMore]);
             }
+            // eslint-disable-next-line no-unsanitized/property
             warning.innerHTML = string;
           }
 
@@ -787,7 +778,7 @@ function prompt(aBrowser, aRequest) {
     // share without prompting).
     let reasonForNoPermanentAllow = "";
     if (sharingScreen) {
-      reasonForNoPermanentAllow = "getUserMedia.reasonForNoPermanentAllow.screen2";
+      reasonForNoPermanentAllow = "getUserMedia.reasonForNoPermanentAllow.screen3";
     } else if (sharingAudio) {
       reasonForNoPermanentAllow = "getUserMedia.reasonForNoPermanentAllow.audio";
     } else if (!aRequest.secure) {
@@ -1076,10 +1067,15 @@ function updateIndicators(data, target) {
   }
 
   if (webrtcUI.showGlobalIndicator) {
-    if (!gIndicatorWindow)
+    if (!gIndicatorWindow) {
       gIndicatorWindow = getGlobalIndicator();
-    else
-      gIndicatorWindow.updateIndicatorState();
+    } else {
+      try {
+        gIndicatorWindow.updateIndicatorState();
+      } catch (err) {
+        Cu.reportError(`error in gIndicatorWindow.updateIndicatorState(): ${err.message}`);
+      }
+    }
   } else if (gIndicatorWindow) {
     gIndicatorWindow.close();
     gIndicatorWindow = null;

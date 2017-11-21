@@ -4,7 +4,6 @@
 
 "use strict";
 
-const events = require("sdk/event/core");
 const { Actor, ActorClassWithSpec } = require("devtools/shared/protocol");
 const { getStringifiableFragments } =
   require("devtools/server/actors/utils/css-grid-utils");
@@ -59,6 +58,13 @@ var GridActor = ActorClassWithSpec(gridSpec, {
       gridFragments: this.gridFragments
     };
 
+    // If the WalkerActor already knows the container element, then also return its
+    // ActorID so we avoid the client from doing another round trip to get it in many
+    // cases.
+    if (this.walker.hasNode(this.containerEl)) {
+      form.containerNodeActorID = this.walker.getNode(this.containerEl).actorID;
+    }
+
     return form;
   },
 });
@@ -72,16 +78,10 @@ var LayoutActor = ActorClassWithSpec(layoutSpec, {
 
     this.tabActor = tabActor;
     this.walker = walker;
-
-    this.onNavigate = this.onNavigate.bind(this);
-
-    events.on(this.tabActor, "navigate", this.onNavigate);
   },
 
   destroy: function () {
     Actor.prototype.destroy.call(this);
-
-    events.off(this.tabActor, "navigate", this.onNavigate);
 
     this.tabActor = null;
     this.walker = null;
@@ -97,6 +97,10 @@ var LayoutActor = ActorClassWithSpec(layoutSpec, {
    */
   getGrids: function (rootNode) {
     let grids = [];
+
+    if (!rootNode) {
+      return grids;
+    }
 
     let treeWalker = this.walker.getDocumentWalker(rootNode);
     while (treeWalker.nextNode()) {
@@ -121,21 +125,21 @@ var LayoutActor = ActorClassWithSpec(layoutSpec, {
    * @return {Array} An array of GridActor objects.
    */
   getAllGrids: function (rootNode, traverseFrames) {
+    let grids = [];
+
+    if (!rootNode) {
+      return grids;
+    }
+
     if (!traverseFrames) {
       return this.getGrids(rootNode.rawNode);
     }
 
-    let grids = [];
     for (let {document} of this.tabActor.windows) {
       grids = [...grids, ...this.getGrids(document.documentElement)];
     }
 
     return grids;
-  },
-
-  onNavigate: function () {
-    let grids = this.getAllGrids(this.walker.rootNode);
-    events.emit(this, "grid-layout-changed", grids);
   },
 
 });

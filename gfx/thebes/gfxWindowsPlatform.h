@@ -50,7 +50,6 @@ class FeatureState;
 class DeviceManagerDx;
 }
 namespace layers {
-class DeviceManagerD3D9;
 class ReadbackManagerD3D11;
 }
 }
@@ -172,22 +171,13 @@ public:
 
     virtual bool CanUseHardwareVideoDecoding() override;
 
-    /**
-     * Check whether format is supported on a platform or not (if unclear, returns true)
-     */
-    virtual bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags) override;
-
     virtual void CompositorUpdated() override;
 
     bool DidRenderingDeviceReset(DeviceResetReason* aResetReason = nullptr) override;
     void SchedulePaintIfDeviceReset() override;
+    void CheckForContentOnlyDeviceReset();
 
     mozilla::gfx::BackendType GetContentBackendFor(mozilla::layers::LayersBackend aLayers) override;
-
-    // ClearType is not always enabled even when available (e.g. Windows XP)
-    // if either of these prefs are enabled and apply, use ClearType rendering
-    bool UseClearTypeForDownloadableFonts();
-    bool UseClearTypeAlways();
 
     static void GetDLLVersion(char16ptr_t aDLLPath, nsAString& aVersion);
 
@@ -198,8 +188,7 @@ public:
 
     void SetupClearTypeParams();
 
-    IDWriteFactory *GetDWriteFactory() { return mDWriteFactory; }
-    inline bool DWriteEnabled() { return !!mDWriteFactory; }
+    inline bool DWriteEnabled() const { return !!mozilla::gfx::Factory::GetDWriteFactory(); }
     inline DWRITE_MEASURING_MODE DWriteMeasuringMode() { return mMeasuringMode; }
 
     IDWriteRenderingParams *GetRenderingParams(TextRenderingMode aRenderMode)
@@ -246,9 +235,6 @@ protected:
 protected:
     RenderMode mRenderMode;
 
-    int8_t mUseClearTypeForDownloadableFonts;
-    int8_t mUseClearTypeAlways;
-
 private:
     void Init();
     void InitAcceleration() override;
@@ -267,8 +253,8 @@ private:
     void InitializeD3D11Config();
     void InitializeD2DConfig();
     void InitializeDirectDrawConfig();
+    void InitializeAdvancedLayersConfig();
 
-    RefPtr<IDWriteFactory> mDWriteFactory;
     RefPtr<IDWriteRenderingParams> mRenderingParams[TEXT_RENDERING_COUNT];
     DWRITE_MEASURING_MODE mMeasuringMode;
 

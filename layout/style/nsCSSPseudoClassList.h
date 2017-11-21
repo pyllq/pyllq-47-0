@@ -70,7 +70,6 @@ CSS_PSEUDO_CLASS(empty, ":empty", 0, "")
 CSS_PSEUDO_CLASS(mozOnlyWhitespace, ":-moz-only-whitespace", 0, "")
 CSS_PSEUDO_CLASS(mozEmptyExceptChildrenWithLocalname, ":-moz-empty-except-children-with-localname", 0, "")
 CSS_PSEUDO_CLASS(lang, ":lang", 0, "")
-CSS_PSEUDO_CLASS(mozBoundElement, ":-moz-bound-element", 0, "")
 CSS_PSEUDO_CLASS(root, ":root", 0, "")
 CSS_PSEUDO_CLASS(any, ":-moz-any", 0, "")
 
@@ -99,6 +98,9 @@ CSS_PSEUDO_CLASS(mozIsHTML, ":-moz-is-html", 0, "")
 CSS_PSEUDO_CLASS(mozNativeAnonymous, ":-moz-native-anonymous",
                  CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "")
 
+CSS_PSEUDO_CLASS(mozUseShadowTreeRoot, ":-moz-use-shadow-tree-root",
+                 CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "")
+
 // Matches anything when the specified look-and-feel metric is set
 CSS_PSEUDO_CLASS(mozSystemMetric, ":-moz-system-metric", 0, "")
 
@@ -120,7 +122,8 @@ CSS_PSEUDO_CLASS(mozWindowInactive, ":-moz-window-inactive", 0, "")
 
 // Matches any table elements that have a nonzero border attribute,
 // according to HTML integer attribute parsing rules.
-CSS_PSEUDO_CLASS(mozTableBorderNonzero, ":-moz-table-border-nonzero", 0, "")
+CSS_PSEUDO_CLASS(mozTableBorderNonzero, ":-moz-table-border-nonzero",
+                 CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "")
 
 // Matches HTML frame/iframe elements which are mozbrowser.
 CSS_PSEUDO_CLASS(mozBrowserFrame, ":-moz-browser-frame",
@@ -207,6 +210,26 @@ CSS_STATE_PSEUDO_CLASS(mozHandlerCrashed, ":-moz-handler-crashed",
 CSS_STATE_PSEUDO_CLASS(mozMathIncrementScriptLevel,
                        ":-moz-math-increment-script-level", 0, "",
                        NS_EVENT_STATE_INCREMENT_SCRIPT_LEVEL)
+
+CSS_STATE_PSEUDO_CLASS(mozHasDirAttr, ":-moz-has-dir-attr",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "",
+                       NS_EVENT_STATE_HAS_DIR_ATTR)
+CSS_STATE_PSEUDO_CLASS(mozDirAttrLTR, ":-moz-dir-attr-ltr",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "",
+                       NS_EVENT_STATE_DIR_ATTR_LTR)
+CSS_STATE_PSEUDO_CLASS(mozDirAttrRTL, ":-moz-dir-attr-rtl",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "",
+                       NS_EVENT_STATE_DIR_ATTR_RTL)
+CSS_STATE_PSEUDO_CLASS(mozDirAttrLikeAuto, ":-moz-dir-attr-like-auto",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS, "",
+                       NS_EVENT_STATE_DIR_ATTR_LIKE_AUTO)
+
+CSS_STATE_PSEUDO_CLASS(mozAutofill, ":-moz-autofill",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS_AND_CHROME, "",
+                       NS_EVENT_STATE_AUTOFILL)
+CSS_STATE_PSEUDO_CLASS(mozAutofillPreview, ":-moz-autofill-preview",
+                       CSS_PSEUDO_CLASS_ENABLED_IN_UA_SHEETS_AND_CHROME, "",
+                       NS_EVENT_STATE_AUTOFILL_PREVIEW)
 
 // CSS 3 UI
 // http://www.w3.org/TR/2004/CR-css3-ui-20040511/#pseudo-classes

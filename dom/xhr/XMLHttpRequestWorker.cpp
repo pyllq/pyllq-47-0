@@ -81,7 +81,7 @@ XMLHttpRequestWorker::StateData::trace(JSTracer *aTrc)
  *  reuse.  We maintain a counter on the main thread of how many times Send was
  *  called on this XHR, and we decrement the counter every time we receive a
  *  loadend event.  When the counter reaches zero we dispatch a runnable to the
- *  worker thread to unpin the XHR.  We only decrement the counter if the 
+ *  worker thread to unpin the XHR.  We only decrement the counter if the
  *  dispatch was successful, because the worker may no longer be accepting
  *  regular runnables.  In the event that we reach Proxy::Teardown and there
  *  the outstanding Send count is still non-zero, we dispatch a control
@@ -357,7 +357,8 @@ class AsyncTeardownRunnable final : public Runnable
 
 public:
   explicit AsyncTeardownRunnable(Proxy* aProxy)
-  : mProxy(aProxy)
+    : Runnable("dom::AsyncTeardownRunnable")
+    , mProxy(aProxy)
   {
     MOZ_ASSERT(aProxy);
   }
@@ -438,12 +439,16 @@ class LoadStartDetectionRunnable final : public Runnable,
 
 public:
   LoadStartDetectionRunnable(Proxy* aProxy, XMLHttpRequestWorker* aXHRPrivate)
-  : mWorkerPrivate(aProxy->mWorkerPrivate), mProxy(aProxy), mXHR(aProxy->mXHR),
-    mXMLHttpRequestPrivate(aXHRPrivate), mChannelId(mProxy->mInnerChannelId),
-    mReceivedLoadStart(false)
+    : Runnable("dom::LoadStartDetectionRunnable")
+    , mWorkerPrivate(aProxy->mWorkerPrivate)
+    , mProxy(aProxy)
+    , mXHR(aProxy->mXHR)
+    , mXMLHttpRequestPrivate(aXHRPrivate)
+    , mChannelId(mProxy->mInnerChannelId)
+    , mReceivedLoadStart(false)
   {
     AssertIsOnMainThread();
-    mEventType.AssignWithConversion(sEventStrings[STRING_loadstart]);
+    CopyASCIItoUTF16(sEventStrings[STRING_loadstart], mEventType);
   }
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -460,7 +465,7 @@ public:
       return false;
     }
 
-    return NS_SUCCEEDED(NS_DispatchToCurrentThread(this));
+    return NS_SUCCEEDED(mWorkerPrivate->DispatchToMainThread(this));
   }
 
 private:
@@ -1315,12 +1320,6 @@ EventRunnable::WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate)
     return true;
   }
 
-  JS::Rooted<JSString*> type(aCx,
-    JS_NewUCStringCopyN(aCx, mType.get(), mType.Length()));
-  if (!type) {
-    return false;
-  }
-
   XMLHttpRequestEventTarget* target;
   if (mUploadEvent) {
     target = xhr->GetUploadObjectNoCreate();
@@ -1588,8 +1587,6 @@ XMLHttpRequestWorker::Construct(const GlobalObject& aGlobal,
   WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(cx);
   MOZ_ASSERT(workerPrivate);
 
-  Telemetry::Accumulate(Telemetry::XHR_IN_WORKER, 1);
-
   RefPtr<XMLHttpRequestWorker> xhr = new XMLHttpRequestWorker(workerPrivate);
 
   if (workerPrivate->XHRParamsAllowed()) {
@@ -1836,15 +1833,17 @@ XMLHttpRequestWorker::SendInternal(SendRunnable* aRunnable,
 
   autoUnpin.Clear();
 
+  bool succeeded = autoSyncLoop->Run();
+  mStateData.mFlagSend = false;
+
   // Don't clobber an existing exception that we may have thrown on aRv
   // already... though can there really be one?  In any case, it seems to me
   // that this autoSyncLoop->Run() can never fail, since the StopSyncLoop call
   // for it will come from ProxyCompleteRunnable and that always passes true for
   // the second arg.
-  if (!autoSyncLoop->Run() && !aRv.Failed()) {
+  if (!succeeded && !aRv.Failed()) {
     aRv.Throw(NS_ERROR_FAILURE);
   }
-  mStateData.mFlagSend = false;
 }
 
 bool

@@ -25,6 +25,7 @@
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/mozalloc.h"           // for operator delete
 #include "mozilla/gfx/CriticalSection.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsISupportsImpl.h"            // for TextureImage::AddRef, etc
 #include "GfxTexturesReporter.h"
@@ -32,6 +33,7 @@
 #include "nsThreadUtils.h"
 
 class gfxImageSurface;
+struct ID3D11Device;
 
 namespace mozilla {
 
@@ -103,7 +105,11 @@ public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(SyncObject)
   virtual ~SyncObject() { }
 
-  static already_AddRefed<SyncObject> CreateSyncObject(SyncHandle aHandle);
+  static already_AddRefed<SyncObject> CreateSyncObject(SyncHandle aHandle
+#ifdef XP_WIN
+                                                       , ID3D11Device* aDevice = nullptr
+#endif
+                                                       );
 
   enum class SyncType {
     D3D11,
@@ -182,6 +188,7 @@ struct MappedYCbCrTextureData {
 };
 
 class ReadLockDescriptor;
+class NonBlockingTextureReadLock;
 
 // A class to help implement copy-on-write semantics for shared textures.
 //
@@ -209,27 +216,37 @@ protected:
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(TextureReadLock)
 
-  virtual int32_t ReadLock() = 0;
+  virtual bool ReadLock() = 0;
+  virtual bool TryReadLock(TimeDuration aTimeout) { return ReadLock(); }
   virtual int32_t ReadUnlock() = 0;
-  virtual int32_t GetReadCount() = 0;
   virtual bool IsValid() const = 0;
-
-  static already_AddRefed<TextureReadLock>
-  Create(LayersIPCChannel* aAllocator);
 
   static already_AddRefed<TextureReadLock>
   Deserialize(const ReadLockDescriptor& aDescriptor, ISurfaceAllocator* aAllocator);
 
-  virtual bool Serialize(ReadLockDescriptor& aOutput) = 0;
+  virtual bool Serialize(ReadLockDescriptor& aOutput, base::ProcessId aOther) = 0;
 
   enum LockType {
-    TYPE_MEMORY,
-    TYPE_SHMEM
+    TYPE_NONBLOCKING_MEMORY,
+    TYPE_NONBLOCKING_SHMEM,
+    TYPE_CROSS_PROCESS_SEMAPHORE
   };
   virtual LockType GetType() = 0;
 
+  virtual NonBlockingTextureReadLock* AsNonBlockingLock() { return nullptr; }
+
 protected:
   NS_DECL_OWNINGTHREAD
+};
+
+class NonBlockingTextureReadLock : public TextureReadLock {
+public:
+  virtual int32_t GetReadCount() = 0;
+
+  static already_AddRefed<TextureReadLock>
+  Create(LayersIPCChannel* aAllocator);
+
+  virtual NonBlockingTextureReadLock* AsNonBlockingLock() override { return this; }
 };
 
 #ifdef XP_WIN
@@ -577,10 +594,8 @@ public:
    * If the texture flags contain TextureFlags::DEALLOCATE_CLIENT, the destruction
    * will be synchronously coordinated with the compositor side, otherwise it
    * will be done asynchronously.
-   * If sync is true, the destruction will be synchronous regardless of the
-   * texture's flags (bad for performance, use with care).
    */
-  void Destroy(bool sync = false);
+  void Destroy();
 
   /**
    * Track how much of this texture is wasted.
@@ -633,12 +648,16 @@ public:
   uint64_t GetLastFwdTransactionId() { return mFwdTransactionId; }
 
   void EnableReadLock();
+  void EnableBlockingReadLock();
 
   TextureReadLock* GetReadLock() { return mReadLock; }
 
   bool IsReadLocked() const;
 
-  void SerializeReadLock(ReadLockDescriptor& aDescriptor);
+  bool TryReadLock();
+  void ReadUnlock();
+
+  bool SerializeReadLock(ReadLockDescriptor& aDescriptor);
 
 private:
   static void TextureClientRecycleCallback(TextureClient* aClient, void* aClosure);
@@ -710,6 +729,7 @@ protected:
   uint32_t mExpectedDtRefs;
 #endif
   bool mIsLocked;
+  bool mIsReadLocked;
   // This member tracks that the texture was written into until the update
   // is sent to the compositor. We need this remember to lock mReadLock on
   // behalf of the compositor just before sending the notification.
@@ -727,12 +747,21 @@ protected:
 
   // Serial id of TextureClient. It is unique in current process.
   const uint64_t mSerial;
+
+  // External image id. It is unique if it is allocated.
+  // The id is allocated in TextureClient::InitIPDLActor().
+  // Its allocation is supported by
+  // CompositorBridgeChild and ImageBridgeChild for now.
+  wr::MaybeExternalImageId mExternalImageId;
+
   // Used to assign serial ids of TextureClient.
   static mozilla::Atomic<uint64_t> sSerialCounter;
 
   friend class TextureChild;
   friend void TestTextureClientSurface(TextureClient*, gfxImageSurface*);
   friend void TestTextureClientYCbCr(TextureClient*, PlanarYCbCrData&);
+  friend already_AddRefed<TextureHost> CreateTextureHostWithBackend(
+    TextureClient*, LayersBackend&);
 
 #ifdef GFX_DEBUG_TRACK_CLIENTS_IN_POOL
 public:
@@ -747,8 +776,10 @@ public:
 class TextureClientReleaseTask : public Runnable
 {
 public:
-    explicit TextureClientReleaseTask(TextureClient* aClient)
-        : mTextureClient(aClient) {
+  explicit TextureClientReleaseTask(TextureClient* aClient)
+    : Runnable("layers::TextureClientReleaseTask")
+    , mTextureClient(aClient)
+  {
     }
 
     NS_IMETHOD Run() override

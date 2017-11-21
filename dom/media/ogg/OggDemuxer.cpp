@@ -6,7 +6,6 @@
 
 #include "nsError.h"
 #include "MediaDecoderStateMachine.h"
-#include "AbstractMediaDecoder.h"
 #include "OggDemuxer.h"
 #include "OggCodecState.h"
 #include "mozilla/AbstractThread.h"
@@ -129,16 +128,21 @@ OggDemuxer::~OggDemuxer()
     // a chained stream or not.
     bool isChained = mIsChained;
     void* ptr = this;
-    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction([ptr, isChained]() -> void {
-      // We can't use OGG_DEBUG here because it implicitly refers to `this`,
-      // which we can't capture in this runnable.
-      MOZ_LOG(gMediaDemuxerLog, mozilla::LogLevel::Debug,
-              ("OggDemuxer(%p)::%s: Reporting telemetry MEDIA_OGG_LOADED_IS_CHAINED=%d",
-               ptr, __func__, isChained));
-      Telemetry::Accumulate(Telemetry::ID::MEDIA_OGG_LOADED_IS_CHAINED, isChained);
-    });
-    // Non-DocGroup version of AbstractThread::MainThread is fine for Telemetry.
-    AbstractThread::MainThread()->Dispatch(task.forget());
+    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
+      "OggDemuxer::~OggDemuxer", [ptr, isChained]() -> void {
+        // We can't use OGG_DEBUG here because it implicitly refers to `this`,
+        // which we can't capture in this runnable.
+        MOZ_LOG(gMediaDemuxerLog,
+                mozilla::LogLevel::Debug,
+                ("OggDemuxer(%p)::%s: Reporting telemetry "
+                 "MEDIA_OGG_LOADED_IS_CHAINED=%d",
+                 ptr,
+                 __func__,
+                 isChained));
+        Telemetry::Accumulate(
+          Telemetry::HistogramID::MEDIA_OGG_LOADED_IS_CHAINED, isChained);
+      });
+    SystemGroup::Dispatch(TaskCategory::Other, task.forget());
   }
 }
 
@@ -187,7 +191,7 @@ OggDemuxer::HaveStartTime(TrackInfo::TrackType aType)
 int64_t
 OggDemuxer::StartTime(TrackInfo::TrackType aType)
 {
-  return OggState(aType).mStartTime.refOr(TimeUnit::FromMicroseconds(0)).ToMicroseconds();
+  return OggState(aType).mStartTime.refOr(TimeUnit::Zero()).ToMicroseconds();
 }
 
 RefPtr<OggDemuxer::InitPromise>
@@ -310,17 +314,17 @@ OggDemuxer::ReadHeaders(TrackInfo::TrackType aType,
 {
   while (!aState->DoneReadingHeaders()) {
     DemuxUntilPacketAvailable(aType, aState);
-    ogg_packet* packet = aState->PacketOut();
+    OggPacketPtr packet = aState->PacketOut();
     if (!packet) {
-      OGG_DEBUG("Ran out of header packets early; deactivating stream %ld", aState->mSerial);
+      OGG_DEBUG("Ran out of header packets early; deactivating stream %" PRIu32, aState->mSerial);
       aState->Deactivate();
       return false;
     }
 
     // Local OggCodecState needs to decode headers in order to process
     // packet granulepos -> time mappings, etc.
-    if (!aState->DecodeHeader(packet)) {
-      OGG_DEBUG("Failed to decode ogg header packet; deactivating stream %ld", aState->mSerial);
+    if (!aState->DecodeHeader(Move(packet))) {
+      OGG_DEBUG("Failed to decode ogg header packet; deactivating stream %" PRIu32, aState->mSerial);
       aState->Deactivate();
       return false;
     }
@@ -369,7 +373,7 @@ OggDemuxer::SetupTargetSkeleton()
     if (!HasAudio() && !HasVideo()) {
       // We have a skeleton track, but no audio or video, may as well disable
       // the skeleton, we can't do anything useful with this media.
-      OGG_DEBUG("Deactivating skeleton stream %ld", mSkeletonState->mSerial);
+      OGG_DEBUG("Deactivating skeleton stream %" PRIu32, mSkeletonState->mSerial);
       mSkeletonState->Deactivate();
     } else if (ReadHeaders(TrackInfo::kAudioTrack, mSkeletonState) &&
                mSkeletonState->HasIndex()) {
@@ -381,7 +385,7 @@ OggDemuxer::SetupTargetSkeleton()
       BuildSerialList(tracks);
       int64_t duration = 0;
       if (NS_SUCCEEDED(mSkeletonState->GetDuration(tracks, duration))) {
-        OGG_DEBUG("Got duration from Skeleton index %lld", duration);
+        OGG_DEBUG("Got duration from Skeleton index %" PRId64, duration);
         mInfo.mMetadataDuration.emplace(TimeUnit::FromMicroseconds(duration));
       }
     }
@@ -401,7 +405,7 @@ OggDemuxer::SetupMediaTracksInfo(const nsTArray<uint32_t>& aSerials)
     OggCodecState* codecState = mCodecStore.Get(serial);
 
     MessageField* msgInfo = nullptr;
-    if (mSkeletonState && mSkeletonState->mMsgFieldStore.Contains(serial)) {
+    if (mSkeletonState) {
       mSkeletonState->mMsgFieldStore.Get(serial, &msgInfo);
     }
 
@@ -556,7 +560,7 @@ OggDemuxer::ReadMetadata()
     int64_t startTime = -1;
     FindStartTime(startTime);
     if (startTime >= 0) {
-      OGG_DEBUG("Detected stream start time %lld", startTime);
+      OGG_DEBUG("Detected stream start time %" PRId64, startTime);
       mStartTime.emplace(startTime);
     }
 
@@ -573,17 +577,17 @@ OggDemuxer::ReadMetadata()
       if (endTime != -1) {
         mInfo.mUnadjustedMetadataEndTime.emplace(TimeUnit::FromMicroseconds(endTime));
         mInfo.mMetadataDuration.emplace(TimeUnit::FromMicroseconds(endTime - mStartTime.refOr(0)));
-        OGG_DEBUG("Got Ogg duration from seeking to end %lld", endTime);
+        OGG_DEBUG("Got Ogg duration from seeking to end %" PRId64, endTime);
       }
     }
     if (mInfo.mMetadataDuration.isNothing()) {
       mInfo.mMetadataDuration.emplace(TimeUnit::FromInfinity());
     }
     if (HasAudio()) {
-      mInfo.mAudio.mDuration = mInfo.mMetadataDuration->ToMicroseconds();
+      mInfo.mAudio.mDuration = mInfo.mMetadataDuration.ref();
     }
     if (HasVideo()) {
-      mInfo.mVideo.mDuration = mInfo.mMetadataDuration->ToMicroseconds();
+      mInfo.mVideo.mDuration = mInfo.mMetadataDuration.ref();
     }
   } else {
     OGG_DEBUG("no audio or video tracks");
@@ -659,7 +663,7 @@ OggDemuxer::ReadOggChain(const media::TimeUnit& aLastEndTime)
   }
 
   MessageField* msgInfo = nullptr;
-  if (mSkeletonState && mSkeletonState->mMsgFieldStore.Contains(serial)) {
+  if (mSkeletonState) {
     mSkeletonState->mMsgFieldStore.Get(serial, &msgInfo);
   }
 
@@ -730,7 +734,7 @@ OggDemuxer::ReadOggChain(const media::TimeUnit& aLastEndTime)
     }
     // Setup a new TrackInfo so that the MediaFormatReader will flush the
     // current decoder.
-    mSharedAudioTrackInfo = new SharedTrackInfo(mInfo.mAudio, ++sStreamSourceID);
+    mSharedAudioTrackInfo = new TrackInfoSharedPtr(mInfo.mAudio, ++sStreamSourceID);
     return true;
   }
 
@@ -842,7 +846,7 @@ OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
 
   while (true) {
     if (packet) {
-      OggCodecState::ReleasePacket(state->PacketOut());
+      Unused << state->PacketOut();
     }
     DemuxUntilPacketAvailable(aType, state);
 
@@ -1006,7 +1010,7 @@ OggDemuxer::FindStartTime(int64_t& aOutStartTime)
   if (HasVideo()) {
     FindStartTime(TrackInfo::kVideoTrack, videoStartTime);
     if (videoStartTime != INT64_MAX) {
-      OGG_DEBUG("OggDemuxer::FindStartTime() video=%lld", videoStartTime);
+      OGG_DEBUG("OggDemuxer::FindStartTime() video=%" PRId64, videoStartTime);
       mVideoOggState.mStartTime =
         Some(TimeUnit::FromMicroseconds(videoStartTime));
     }
@@ -1014,7 +1018,7 @@ OggDemuxer::FindStartTime(int64_t& aOutStartTime)
   if (HasAudio()) {
     FindStartTime(TrackInfo::kAudioTrack, audioStartTime);
     if (audioStartTime != INT64_MAX) {
-      OGG_DEBUG("OggDemuxer::FindStartTime() audio=%lld", audioStartTime);
+      OGG_DEBUG("OggDemuxer::FindStartTime() audio=%" PRId64, audioStartTime);
       mAudioOggState.mStartTime =
         Some(TimeUnit::FromMicroseconds(audioStartTime));
     }
@@ -1046,7 +1050,7 @@ nsresult
 OggDemuxer::SeekInternal(TrackInfo::TrackType aType, const TimeUnit& aTarget)
 {
   int64_t target = aTarget.ToMicroseconds();
-  OGG_DEBUG("About to seek to %lld", target);
+  OGG_DEBUG("About to seek to %" PRId64, target);
   nsresult res;
   int64_t adjustedTarget = target;
   int64_t startTime = StartTime(aType);
@@ -1117,19 +1121,18 @@ OggDemuxer::SeekInternal(TrackInfo::TrackType aType, const TimeUnit& aTarget)
       break;
     }
     if (state->IsKeyframe(packet)) {
-      OGG_DEBUG("keyframe found after seeking at %lld", startTstamp);
+      OGG_DEBUG("keyframe found after seeking at %" PRId64, startTstamp);
       tempPackets.Erase();
       foundKeyframe = true;
     }
     if (foundKeyframe && startTstamp == adjustedTarget) {
       break;
     }
-    ogg_packet* releaseMe = state->PacketOut();
     if (foundKeyframe) {
-      tempPackets.Append(releaseMe);
+      tempPackets.Append(state->PacketOut());
     } else {
       // Discard video packets before the first keyframe.
-      OggCodecState::ReleasePacket(releaseMe);
+      Unused << state->PacketOut();
     }
   }
   // Re-add all packet into the codec state in order.
@@ -1175,7 +1178,7 @@ OggDemuxer::SeekToKeyframeUsingIndex(TrackInfo::TrackType aType, int64_t aTarget
     // Index must be invalid.
     return RollbackIndexedSeek(aType, tell);
   }
-  LOG(LogLevel::Debug, ("Seeking using index to keyframe at offset %lld\n",
+  LOG(LogLevel::Debug, ("Seeking using index to keyframe at offset %" PRId64 "\n",
                      keyframe.mKeyPoint.mOffset));
   nsresult res = Resource(aType)->Seek(nsISeekableStream::NS_SEEK_SET,
                                        keyframe.mKeyPoint.mOffset);
@@ -1317,8 +1320,8 @@ OggTrackDemuxer::Seek(const TimeUnit& aTime)
 
     // Check what time we actually seeked to.
     if (sample != nullptr) {
-      seekTime = TimeUnit::FromMicroseconds(sample->mTime);
-      OGG_DEBUG("%p seeked to time %lld", this, seekTime.ToMicroseconds());
+      seekTime = sample->mTime;
+      OGG_DEBUG("%p seeked to time %" PRId64, this, seekTime.ToMicroseconds());
     }
     mQueuedSample = sample;
 
@@ -1357,7 +1360,7 @@ OggTrackDemuxer::NextSample()
     // We've encountered an end of bitstream packet; check for a chained
     // bitstream following this one.
     // This will also update mSharedAudioTrackInfo.
-    mParent->ReadOggChain(TimeUnit::FromMicroseconds(data->GetEndTime()));
+    mParent->ReadOggChain(data->GetEndTime());
   }
   return data;
 }
@@ -1403,15 +1406,14 @@ OggTrackDemuxer::SkipToNextRandomAccessPoint(const TimeUnit& aTimeThreshold)
   OGG_DEBUG("TimeThreshold: %f", aTimeThreshold.ToSeconds());
   while (!found && (sample = NextSample())) {
     parsed++;
-    if (sample->mKeyframe && sample->mTime >= aTimeThreshold.ToMicroseconds()) {
+    if (sample->mKeyframe && sample->mTime >= aTimeThreshold) {
       found = true;
       mQueuedSample = sample;
     }
   }
   if (found) {
     OGG_DEBUG("next sample: %f (parsed: %d)",
-               TimeUnit::FromMicroseconds(sample->mTime).ToSeconds(),
-               parsed);
+               sample->mTime.ToSeconds(), parsed);
     return SkipAccessPointPromise::CreateAndResolve(parsed, __func__);
   } else {
     SkipFailureHolder failure(NS_ERROR_DOM_MEDIA_END_OF_STREAM, parsed);
@@ -1687,7 +1689,7 @@ OggDemuxer::SeekInBufferedRange(TrackInfo::TrackType aType,
                                 const nsTArray<SeekRange>& aRanges,
                                 const SeekRange& aRange)
 {
-  OGG_DEBUG("Seeking in buffered data to %lld using bisection search", aTarget);
+  OGG_DEBUG("Seeking in buffered data to %" PRId64 " using bisection search", aTarget);
   if (aType == TrackInfo::kVideoTrack || aAdjustedTarget >= aTarget) {
     // We know the exact byte range in which the target must lie. It must
     // be buffered in the media cache. Seek there.
@@ -1734,7 +1736,7 @@ OggDemuxer::SeekInUnbuffered(TrackInfo::TrackType aType,
                              int64_t aEndTime,
                              const nsTArray<SeekRange>& aRanges)
 {
-  OGG_DEBUG("Seeking in unbuffered data to %lld using bisection search", aTarget);
+  OGG_DEBUG("Seeking in unbuffered data to %" PRId64 " using bisection search", aTarget);
 
   // If we've got an active Theora bitstream, determine the maximum possible
   // time in usecs which a keyframe could be before a given interframe. We

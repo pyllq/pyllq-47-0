@@ -18,7 +18,6 @@ import java.util.Locale;
 import android.content.SharedPreferences;
 
 import org.mozilla.gecko.EventDispatcher;
-import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoSharedPrefs;
 import org.mozilla.gecko.PrefsHelper;
 import org.mozilla.gecko.R;
@@ -34,6 +33,7 @@ import org.mozilla.gecko.db.BrowserContract.URLColumns;
 import org.mozilla.gecko.home.HomePager.OnUrlOpenListener;
 import org.mozilla.gecko.home.SearchLoader.SearchCursorLoader;
 import org.mozilla.gecko.preferences.GeckoPreferences;
+import org.mozilla.gecko.skin.SkinConfig;
 import org.mozilla.gecko.toolbar.AutocompleteHandler;
 import org.mozilla.gecko.util.BundleEventListener;
 import org.mozilla.gecko.util.EventCallback;
@@ -44,6 +44,12 @@ import org.mozilla.gecko.util.ThreadUtils;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.graphics.Typeface;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.style.StyleSpan;
 import android.view.ContextMenu.ContextMenuInfo;
 import android.database.Cursor;
 import android.net.Uri;
@@ -77,7 +83,8 @@ import android.widget.TextView;
  */
 public class BrowserSearch extends HomeFragment
                            implements BundleEventListener,
-                                      SearchEngineBar.OnSearchBarClickListener {
+                                      SearchEngineBar.OnSearchBarClickListener,
+                                      Tabs.OnTabsChangedListener {
 
     @RobocopTarget
     public interface SuggestClientFactory {
@@ -180,9 +187,6 @@ public class BrowserSearch extends HomeFragment
     // On edit suggestion listener
     private OnEditSuggestionListener mEditSuggestionListener;
 
-    // Whether the suggestions will fade in when shown
-    private boolean mAnimateSuggestions;
-
     // Opt-in prompt view for search suggestions
     private View mSuggestionsOptInPrompt;
 
@@ -263,7 +267,7 @@ public class BrowserSearch extends HomeFragment
                 getLoaderManager().destroyLoader(LOADER_ID_SUGGESTION);
             }
 
-            GeckoAppShell.notifyObservers("SearchEngines:GetVisible", null);
+            EventDispatcher.getInstance().dispatch("SearchEngines:GetVisible", null);
         }
         super.onHiddenChanged(hidden);
     }
@@ -277,7 +281,7 @@ public class BrowserSearch extends HomeFragment
 
         // Fetch engines if we need to.
         if (mSearchEngines.isEmpty() || !Locale.getDefault().equals(mLastLocale)) {
-            GeckoAppShell.notifyObservers("SearchEngines:GetVisible", null);
+            EventDispatcher.getInstance().dispatch("SearchEngines:GetVisible", null);
         } else {
             updateSearchEngineBar();
         }
@@ -309,6 +313,7 @@ public class BrowserSearch extends HomeFragment
 
         EventDispatcher.getInstance().unregisterUiThreadListener(this,
             "SearchEngines:Data");
+        Tabs.unregisterOnTabsChangedListener(this);
 
         mSearchEngineBar.setAdapter(null);
         mSearchEngineBar = null;
@@ -373,7 +378,8 @@ public class BrowserSearch extends HomeFragment
                 info.url = cursor.getString(cursor.getColumnIndexOrThrow(BrowserContract.Combined.URL));
                 info.title = cursor.getString(cursor.getColumnIndexOrThrow(BrowserContract.Combined.TITLE));
 
-                int bookmarkId = cursor.getInt(cursor.getColumnIndexOrThrow(BrowserContract.Combined.BOOKMARK_ID));
+                final int bookmarkColumn = cursor.getColumnIndexOrThrow(BrowserContract.Combined.BOOKMARK_ID);
+                int bookmarkId = cursor.isNull(bookmarkColumn) ? -1 : cursor.getInt(bookmarkColumn);
                 info.bookmarkId = bookmarkId;
 
                 int historyId = cursor.getInt(cursor.getColumnIndexOrThrow(BrowserContract.Combined.HISTORY_ID));
@@ -406,9 +412,14 @@ public class BrowserSearch extends HomeFragment
             }
         });
 
+        final Tab tab = Tabs.getInstance().getSelectedTab();
+        final boolean isPrivate = (tab != null && tab.isPrivate());
+        mList.setPrivateMode(isPrivate);
+
         registerForContextMenu(mList);
         EventDispatcher.getInstance().registerUiThreadListener(this,
             "SearchEngines:Data");
+        Tabs.registerOnTabsChangedListener(this);
 
         mSearchEngineBar.setOnSearchBarClickListener(this);
     }
@@ -443,7 +454,7 @@ public class BrowserSearch extends HomeFragment
             // Position for Top Sites grid items, but will always be -1 since this is only for BrowserSearch result
             final int position = -1;
 
-            new RemoveItemByUrlTask(context, info.url, info.itemType, position).execute();
+            new RemoveItemTask(getActivity(), info, position).execute();
             return true;
         }
 
@@ -476,6 +487,17 @@ public class BrowserSearch extends HomeFragment
     }
 
     @Override
+    public void onTabChanged(Tab tab, Tabs.TabEvents msg, String data) {
+        if (tab == null) {
+            return;
+        }
+
+        if (msg == Tabs.TabEvents.SELECTED) {
+            mList.setPrivateMode(tab.isPrivate());
+        }
+    }
+
+    @Override
     protected void load() {
         SearchLoader.init(getLoaderManager(), LOADER_ID_SEARCH, mCursorLoaderCallbacks, mSearchTerm);
     }
@@ -497,7 +519,9 @@ public class BrowserSearch extends HomeFragment
         }
 
         // Prefetch auto-completed domain since it's a likely target
-        GeckoAppShell.notifyObservers("Session:Prefetch", "http://" + autocompletion);
+        final GeckoBundle data = new GeckoBundle(1);
+        data.putString("url", "http://" + autocompletion);
+        EventDispatcher.getInstance().dispatch("Session:Prefetch", data);
 
         mAutocompleteHandler.onAutocomplete(autocompletion);
         mAutocompleteHandler = null;
@@ -597,7 +621,9 @@ public class BrowserSearch extends HomeFragment
 
             if (searchCount == 0) {
                 // Prefetch the first item in the list since it's weighted the highest
-                GeckoAppShell.notifyObservers("Session:Prefetch", url);
+                final GeckoBundle data = new GeckoBundle(1);
+                data.putString("url", url);
+                EventDispatcher.getInstance().dispatch("Session:Prefetch", data);
             }
 
             // Does the completion match against the whole URL? This will match
@@ -731,8 +757,8 @@ public class BrowserSearch extends HomeFragment
         }
 
         final GeckoBundle suggest = data.getBundle("suggest");
-        final String suggestEngine = suggest.getString("engine", null);
-        final String suggestTemplate = suggest.getString("template", null);
+        final String suggestEngine = suggest.getString("engine");
+        final String suggestTemplate = suggest.getString("template");
         final boolean suggestionsPrompted = suggest.getBoolean("prompted");
         final GeckoBundle[] engines = data.getBundleArray("searchEngines");
 
@@ -930,8 +956,7 @@ public class BrowserSearch extends HomeFragment
 
                         // Show search suggestions and update them
                         if (enabled) {
-                            mSuggestionsEnabled = enabled;
-                            mAnimateSuggestions = true;
+                            mSuggestionsEnabled = true;
                             mAdapter.notifyDataSetChanged();
                             filterSuggestions();
                         }
@@ -1153,6 +1178,9 @@ public class BrowserSearch extends HomeFragment
         public void bindView(View view, Context context, int position) {
             final int type = getItemViewType(position);
 
+            final Tab tab = Tabs.getInstance().getSelectedTab();
+            final boolean isPrivate = (tab != null && tab.isPrivate());
+
             if (type == ROW_SEARCH || type == ROW_SUGGEST) {
                 final SearchEngineRow row = (SearchEngineRow) view;
                 row.setOnUrlOpenListener(mUrlOpenListener);
@@ -1161,23 +1189,54 @@ public class BrowserSearch extends HomeFragment
                 row.setSearchTerm(mSearchTerm);
 
                 final SearchEngine engine = mSearchEngines.get(position);
-                final boolean haveSuggestions = (engine.hasSuggestions() || !mSearchHistorySuggestions.isEmpty());
-                final boolean animate = (mAnimateSuggestions && haveSuggestions);
-                row.updateSuggestions(mSuggestionsEnabled, engine, mSearchHistorySuggestions, animate);
-                if (animate) {
-                    // Only animate suggestions the first time they are shown
-                    mAnimateSuggestions = false;
-                }
+                row.updateSuggestions(mSuggestionsEnabled, engine, mSearchHistorySuggestions);
+                row.setPrivateMode(isPrivate);
             } else {
                 // Account for the search engines
                 position -= getPrimaryEngineCount();
 
                 final Cursor c = getCursor(position);
                 final TwoLinePageRow row = (TwoLinePageRow) view;
+
+                if (SkinConfig.isPhoton()) {
+                    // Highlight all substrings in title field if they matches the search term.
+                    row.setTitleFormatter(mTwoLinePageRowTitleFormatter);
+                }
                 row.updateFromCursor(c);
+                row.setPrivateMode(isPrivate);
             }
         }
     }
+
+    private TwoLinePageRow.TitleFormatter mTwoLinePageRowTitleFormatter = new TwoLinePageRow.TitleFormatter() {
+        @Override
+        public CharSequence format(@NonNull CharSequence title) {
+            // Don't try to search for an empty string - String.indexOf will return 0, which would result
+            // in us iterating with lastIndexOfMatch = 0, which eventually results in an OOM.
+            if (TextUtils.isEmpty(mSearchTerm)) {
+                return title;
+            }
+
+            // Find matching substrings in title field in TwoLinePageRow, ignoring cases.
+            final String titleInLowerCase = title.toString().toLowerCase();
+            final String pattern = mSearchTerm.toLowerCase();
+            final int patternLength = pattern.length();
+
+            final SpannableStringBuilder sb = new SpannableStringBuilder(title);
+
+            int indexOfMatch = 0;
+            int lastIndexOfMatch = 0;
+            while (indexOfMatch != -1) {
+                indexOfMatch = titleInLowerCase.indexOf(pattern, lastIndexOfMatch);
+                lastIndexOfMatch = indexOfMatch + patternLength;
+                if (indexOfMatch != -1) {
+                    final StyleSpan boldSpan = new StyleSpan(Typeface.BOLD);
+                    sb.setSpan(boldSpan, indexOfMatch, lastIndexOfMatch, Spannable.SPAN_INCLUSIVE_INCLUSIVE);
+                }
+            }
+            return sb;
+        }
+    };
 
     private class CursorLoaderCallbacks implements LoaderCallbacks<Cursor> {
         @Override
@@ -1298,6 +1357,10 @@ public class BrowserSearch extends HomeFragment
 
         public HomeSearchListView(Context context, AttributeSet attrs, int defStyle) {
             super(context, attrs, defStyle);
+
+            final Tab tab = Tabs.getInstance().getSelectedTab();
+            final boolean isPrivate = (tab != null && tab.isPrivate());
+            setSelector(isPrivate);
         }
 
         @Override
@@ -1308,6 +1371,20 @@ public class BrowserSearch extends HomeFragment
             }
 
             return super.onTouchEvent(event);
+        }
+
+        @Override
+        public void setPrivateMode(boolean isPrivate) {
+            final boolean modeChanged = isPrivateMode() != isPrivate;
+            if (modeChanged) {
+                setSelector(isPrivate);
+            }
+
+            super.setPrivateMode(isPrivate);
+        }
+
+        private void setSelector(boolean isPrivate) {
+            setSelector(isPrivate ? R.drawable.search_list_selector_private : R.drawable.search_list_selector);
         }
     }
 }

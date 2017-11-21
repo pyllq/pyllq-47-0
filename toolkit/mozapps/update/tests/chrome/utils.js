@@ -76,6 +76,9 @@ const { classes: Cc, interfaces: Ci, manager: Cm, results: Cr,
 
 Cu.import("resource://gre/modules/Services.jsm", this);
 
+/* import-globals-from testConstants.js */
+Services.scriptloader.loadSubScript("chrome://mochitests/content/chrome/toolkit/mozapps/update/tests/chrome/testConstants.js", this);
+
 const IS_MACOSX = ("nsILocalFileMac" in Ci);
 const IS_WIN = ("@mozilla.org/windows-registry-key;1" in Cc);
 
@@ -96,13 +99,9 @@ const PAGEID_FINISHED_BKGRD   = "finishedBackground";    // Done
 
 const UPDATE_WINDOW_NAME = "Update:Wizard";
 
-const URL_HOST = "http://example.com";
-const URL_PATH_UPDATE_XML = "/chrome/toolkit/mozapps/update/tests/chrome/update.sjs";
-const REL_PATH_DATA = "chrome/toolkit/mozapps/update/tests/data";
-
 // These two URLs must not contain parameters since tests add their own
 // test specific parameters.
-const URL_HTTP_UPDATE_XML = URL_HOST + URL_PATH_UPDATE_XML;
+const URL_HTTP_UPDATE_XML = URL_HTTP_UPDATE_SJS;
 const URL_HTTPS_UPDATE_XML = "https://example.com" + URL_PATH_UPDATE_XML;
 
 const URI_UPDATE_PROMPT_DIALOG  = "chrome://mozapps/content/update/updates.xul";
@@ -190,8 +189,7 @@ const gWindowObserver = {
       return;
     }
 
-    win.addEventListener("load", function WO_observe_onLoad() {
-      win.removeEventListener("load", WO_observe_onLoad);
+    win.addEventListener("load", function() {
       // Ignore windows other than the update UI window.
       if (win.location != URI_UPDATE_PROMPT_DIALOG) {
         debugDump("load event for window not being tested - location: " +
@@ -212,7 +210,7 @@ const gWindowObserver = {
       gWin = win;
       gDocElem = gWin.document.documentElement;
       gDocElem.addEventListener("pageshow", onPageShowDefault);
-    });
+    }, {once: true});
   }
 };
 
@@ -224,11 +222,6 @@ const gWindowObserver = {
  */
 function runTestDefault() {
   debugDump("entering");
-
-  if (!("@mozilla.org/zipwriter;1" in Cc)) {
-    ok(false, "nsIZipWriter is required to run these tests");
-    return;
-  }
 
   SimpleTest.waitForExplicitFinish();
 
@@ -490,7 +483,7 @@ function getContinueFile() {
   let continueFile = Cc["@mozilla.org/file/directory_service;1"].
                      getService(Ci.nsIProperties).
                      get("CurWorkD", Ci.nsILocalFile);
-  let continuePath = REL_PATH_DATA + "/continue";
+  let continuePath = REL_PATH_DATA + "continue";
   let continuePathParts = continuePath.split("/");
   for (let i = 0; i < continuePathParts.length; ++i) {
     continueFile.append(continuePathParts[i]);
@@ -801,6 +794,10 @@ function setupPrefs() {
   }
   Services.prefs.setBoolPref(PREF_APP_UPDATE_ENABLED, true);
 
+  if (!Services.prefs.getBoolPref(PREF_APP_UPDATE_AUTO), false) {
+    Services.prefs.setBoolPref(PREF_APP_UPDATE_AUTO, true);
+  }
+
   if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_SERVICE_ENABLED)) {
     gAppUpdateServiceEnabled = Services.prefs.getBoolPref(PREF_APP_UPDATE_SERVICE_ENABLED);
   }
@@ -814,6 +811,8 @@ function setupPrefs() {
   Services.prefs.setIntPref(PREF_APP_UPDATE_IDLETIME, 0);
   Services.prefs.setIntPref(PREF_APP_UPDATE_PROMPTWAITTIME, 0);
   Services.prefs.setBoolPref(PREF_APP_UPDATE_SILENT, false);
+  Services.prefs.setBoolPref(PREF_APP_UPDATE_DOORHANGER, false);
+  Services.prefs.setIntPref(PREF_APP_UPDATE_DOWNLOADBACKGROUNDINTERVAL, 0);
 }
 
 /**
@@ -863,6 +862,10 @@ function resetPrefs() {
     Services.prefs.clearUserPref(PREF_APP_UPDATE_ENABLED);
   }
 
+  if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_AUTO)) {
+    Services.prefs.clearUserPref(PREF_APP_UPDATE_AUTO);
+  }
+
   if (gAppUpdateServiceEnabled !== undefined) {
     Services.prefs.setBoolPref(PREF_APP_UPDATE_SERVICE_ENABLED, gAppUpdateServiceEnabled);
   } else if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_SERVICE_ENABLED)) {
@@ -907,9 +910,12 @@ function resetPrefs() {
     Services.prefs.clearUserPref(PREF_APP_UPDATE_BACKGROUNDMAXERRORS);
   }
 
-  try {
-    Services.prefs.deleteBranch(PREFBRANCH_APP_UPDATE_NEVER);
-  } catch (e) {
+  if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_DOORHANGER)) {
+    Services.prefs.clearUserPref(PREF_APP_UPDATE_DOORHANGER);
+  }
+
+  if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_DOWNLOADBACKGROUNDINTERVAL)) {
+    Services.prefs.clearUserPref(PREF_APP_UPDATE_DOWNLOADBACKGROUNDINTERVAL);
   }
 }
 
@@ -977,7 +983,7 @@ const errorsPrefObserver = {
 
     let maxErrors = aMaxErrorCount ? aMaxErrorCount : 2;
     Services.prefs.setIntPref(aMaxErrorPref, maxErrors);
-    Services.prefs.addObserver(aObservePref, this, false);
+    Services.prefs.addObserver(aObservePref, this);
   },
 
   /**

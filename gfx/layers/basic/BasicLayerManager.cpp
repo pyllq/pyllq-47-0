@@ -9,7 +9,7 @@
 #include <stack>                        // for stack
 #include "BasicContainerLayer.h"        // for BasicContainerLayer
 #include "BasicLayersImpl.h"            // for ToData, BasicReadbackLayer, etc
-#include "GeckoProfiler.h"              // for PROFILER_LABEL
+#include "GeckoProfiler.h"              // for AUTO_PROFILER_LABEL
 #include "ImageContainer.h"             // for ImageFactory
 #include "Layers.h"                     // for Layer, ContainerLayer, etc
 #include "ReadbackLayer.h"              // for ReadbackLayer
@@ -562,8 +562,7 @@ BasicLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
                                           void* aCallbackData,
                                           EndTransactionFlags aFlags)
 {
-  PROFILER_LABEL("BasicLayerManager", "EndTransactionInternal",
-    js::ProfileEntry::Category::GRAPHICS);
+  AUTO_PROFILER_LABEL("BasicLayerManager::EndTransactionInternal", GRAPHICS);
 
 #ifdef MOZ_LAYERS_HAVE_LOG
   MOZ_LAYERS_LOG(("  ----- (beginning paint)"));
@@ -572,6 +571,8 @@ BasicLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
 
   NS_ASSERTION(InConstruction(), "Should be in construction phase");
   mPhase = PHASE_DRAWING;
+
+  SetCompositionTime(TimeStamp::Now());
 
   RenderTraceLayers(mRoot, "FF00");
 
@@ -630,7 +631,6 @@ BasicLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
       FlashWidgetUpdateArea(mTarget);
     }
     RecordFrame();
-    PostPresent();
 
     if (!mTransactionIncomplete) {
       // Clear out target if we have a complete transaction.
@@ -659,6 +659,8 @@ BasicLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
 
   NS_ASSERTION(!aCallback || !mTransactionIncomplete,
                "If callback is not null, transaction must be complete");
+
+  ClearDisplayItemLayers();
 
   // XXX - We should probably assert here that for an incomplete transaction
   // out target is the default target.
@@ -734,7 +736,7 @@ BasicLayerManager::PaintSelfOrChildren(PaintLayerContext& aPaintContext,
       }
 
       PaintLayer(aGroupTarget, layer, aPaintContext.mCallback,
-          aPaintContext.mCallbackData);
+                aPaintContext.mCallbackData);
       if (mTransactionIncomplete)
         break;
     }
@@ -813,10 +815,10 @@ BasicLayerManager::PaintLayer(gfxContext* aTarget,
 {
   MOZ_ASSERT(aTarget);
 
-  PROFILER_LABEL("BasicLayerManager", "PaintLayer",
-    js::ProfileEntry::Category::GRAPHICS);
+  AUTO_PROFILER_LABEL("BasicLayerManager::PaintLayer", GRAPHICS);
 
-  PaintLayerContext paintLayerContext(aTarget, aLayer, aCallback, aCallbackData);
+  PaintLayerContext paintLayerContext(aTarget, aLayer,
+                                      aCallback, aCallbackData);
 
   // Don't attempt to paint layers with a singular transform, cairo will
   // just throw an error.

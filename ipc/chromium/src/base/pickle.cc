@@ -26,7 +26,14 @@
 static_assert(MOZ_ALIGNOF(Pickle::memberAlignmentType) >= MOZ_ALIGNOF(uint32_t),
               "Insufficient alignment");
 
+#ifndef MOZ_TASK_TRACER
 static const uint32_t kHeaderSegmentCapacity = 64;
+#else
+// TaskTracer would add extra fields to the header to carry task ID and
+// other information.
+// \see class Message::HeaderTaskTracer
+static const uint32_t kHeaderSegmentCapacity = 128;
+#endif
 
 static const uint32_t kDefaultSegmentCapacity = 4096;
 
@@ -119,8 +126,10 @@ void Pickle::UpdateIter(PickleIterator* iter, uint32_t bytes) const {
 
 // Payload is sizeof(Pickle::memberAlignmentType) aligned.
 
-Pickle::Pickle(uint32_t header_size)
-    : buffers_(AlignInt(header_size), kHeaderSegmentCapacity, kDefaultSegmentCapacity),
+Pickle::Pickle(uint32_t header_size, size_t segment_capacity)
+    : buffers_(AlignInt(header_size),
+               segment_capacity ? segment_capacity : kHeaderSegmentCapacity,
+               segment_capacity ? segment_capacity : kDefaultSegmentCapacity),
       header_(nullptr),
       header_size_(AlignInt(header_size)) {
   DCHECK(static_cast<memberAlignmentType>(header_size) >= sizeof(Header));
@@ -450,6 +459,11 @@ bool Pickle::ReadSentinel(PickleIterator* iter, uint32_t sentinel) const {
   return found == sentinel;
 }
 
+bool Pickle::IgnoreSentinel(PickleIterator* iter) const {
+  uint32_t found;
+  return ReadUInt32(iter, &found);
+}
+
 bool Pickle::WriteSentinel(uint32_t sentinel) {
   return WriteUInt32(sentinel);
 }
@@ -523,7 +537,7 @@ bool Pickle::WriteBytes(const void* data, uint32_t data_len, uint32_t alignment)
 }
 
 bool Pickle::WriteString(const std::string& value) {
-#ifdef MOZ_FAULTY
+#ifdef FUZZING
   std::string v(value);
   Singleton<mozilla::ipc::Faulty>::get()->FuzzString(v);
   if (!WriteInt(static_cast<int>(v.size())))
@@ -539,7 +553,7 @@ bool Pickle::WriteString(const std::string& value) {
 }
 
 bool Pickle::WriteWString(const std::wstring& value) {
-#ifdef MOZ_FAULTY
+#ifdef FUZZING
   std::wstring v(value);
   Singleton<mozilla::ipc::Faulty>::get()->FuzzWString(v);
   if (!WriteInt(static_cast<int>(v.size())))
@@ -557,7 +571,7 @@ bool Pickle::WriteWString(const std::wstring& value) {
 }
 
 bool Pickle::WriteData(const char* data, uint32_t length) {
-#ifdef MOZ_FAULTY
+#ifdef FUZZING
   std::string v(data, length);
   Singleton<mozilla::ipc::Faulty>::get()->FuzzData(v, v.size());
   return WriteInt(v.size()) && WriteBytes(v.data(), v.size());

@@ -162,13 +162,15 @@ JSEventHandler::HandleEvent(nsIDOMEvent* aEvent)
     RefPtr<OnErrorEventHandlerNonNull> handler =
       mTypedHandler.OnErrorEventHandler();
     ErrorResult rv;
-    bool handled = handler->Call(mTarget, msgOrEvent, fileName, lineNumber,
-                                 columnNumber, error, rv);
+    JS::Rooted<JS::Value> retval(RootingCx());
+    handler->Call(mTarget, msgOrEvent, fileName, lineNumber,
+                  columnNumber, error, &retval, rv);
     if (rv.Failed()) {
       return rv.StealNSResult();
     }
 
-    if (handled) {
+    if (retval.isBoolean() &&
+        retval.toBoolean() == bool(scriptEvent)) {
       event->PreventDefaultInternal(isChromeHandler);
     }
     return NS_OK;
@@ -215,12 +217,8 @@ JSEventHandler::HandleEvent(nsIDOMEvent* aEvent)
     return rv.StealNSResult();
   }
 
-  // If the handler returned false and its sense is not reversed,
-  // or the handler returned true and its sense is reversed from
-  // the usual (false means cancel), then prevent default.
-  if (retval.isBoolean() &&
-      retval.toBoolean() == (mEventName == nsGkAtoms::onerror ||
-                             mEventName == nsGkAtoms::onmouseover)) {
+  // If the handler returned false, then prevent default.
+  if (retval.isBoolean() && !retval.toBoolean()) {
     event->PreventDefaultInternal(isChromeHandler);
   }
 

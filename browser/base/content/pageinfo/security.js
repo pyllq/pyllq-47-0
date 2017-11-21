@@ -5,6 +5,8 @@
 
 Components.utils.import("resource://gre/modules/BrowserUtils.jsm");
 
+/* import-globals-from pageInfo.js */
+
 XPCOMUtils.defineLazyModuleGetter(this, "LoginHelper",
                                   "resource://gre/modules/LoginHelper.jsm");
 
@@ -55,15 +57,15 @@ var security = {
 
       var retval = {
         hostName,
-        cAName : issuerName,
-        encryptionAlgorithm : undefined,
-        encryptionStrength : undefined,
+        cAName: issuerName,
+        encryptionAlgorithm: undefined,
+        encryptionStrength: undefined,
         version: undefined,
         isBroken,
         isMixed,
         isEV,
         cert,
-        certificateTransparency : undefined
+        certificateTransparency: undefined
       };
 
       var version;
@@ -92,24 +94,18 @@ var security = {
           break;
       }
 
-      // Select status text to display for Certificate Transparency.
+      // Select the status text to display for Certificate Transparency.
+      // Since we do not yet enforce the CT Policy on secure connections,
+      // we must not complain on policy discompliance (it might be viewed
+      // as a security issue by the user).
       switch (status.certificateTransparencyStatus) {
         case nsISSLStatus.CERTIFICATE_TRANSPARENCY_NOT_APPLICABLE:
-          // CT compliance checks were not performed,
-          // do not display any status text.
+        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_POLICY_NOT_ENOUGH_SCTS:
+        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_POLICY_NOT_DIVERSE_SCTS:
           retval.certificateTransparency = null;
           break;
-        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_NONE:
-          retval.certificateTransparency = "None";
-          break;
-        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_OK:
-          retval.certificateTransparency = "OK";
-          break;
-        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_UNKNOWN_LOG:
-          retval.certificateTransparency = "UnknownLog";
-          break;
-        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_INVALID:
-          retval.certificateTransparency = "Invalid";
+        case nsISSLStatus.CERTIFICATE_TRANSPARENCY_POLICY_COMPLIANT:
+          retval.certificateTransparency = "Compliant";
           break;
       }
 
@@ -117,15 +113,15 @@ var security = {
     }
     return {
       hostName,
-      cAName : "",
-      encryptionAlgorithm : "",
-      encryptionStrength : 0,
+      cAName: "",
+      encryptionAlgorithm: "",
+      encryptionStrength: 0,
       version: "",
       isBroken,
       isMixed,
       isEV,
-      cert : null,
-      certificateTransparency : null
+      cert: null,
+      certificateTransparency: null
     };
   },
 
@@ -171,7 +167,7 @@ var security = {
       win.focus();
     } else
       window.openDialog("chrome://browser/content/preferences/cookies.xul",
-                        "Browser:Cookies", "", {filterString : eTLD});
+                        "Browser:Cookies", "", {filterString: eTLD});
   },
 
   /**
@@ -181,7 +177,7 @@ var security = {
     LoginHelper.openPasswordManager(window, this._getSecurityInfo().hostName);
   },
 
-  _cert : null
+  _cert: null
 };
 
 function securityOnLoad(uri, windowInfo) {
@@ -199,8 +195,10 @@ function securityOnLoad(uri, windowInfo) {
   /* Set Identity section text */
   setText("security-identity-domain-value", info.hostName);
 
-  var owner, verifier;
+  var owner, verifier, validity;
   if (info.cert && !info.isBroken) {
+    validity = info.cert.validity.notAfterLocalDay;
+
     // Try to pull out meaningful values.  Technically these fields are optional
     // so we'll employ fallbacks where appropriate.  The EV spec states that Org
     // fields must be specified for subject and issuer so that case is simpler.
@@ -226,6 +224,11 @@ function securityOnLoad(uri, windowInfo) {
 
   setText("security-identity-owner-value", owner);
   setText("security-identity-verifier-value", verifier);
+  if (validity) {
+    setText("security-identity-validity-value", validity);
+  } else {
+    document.getElementById("security-identity-validity-row").hidden = true;
+  }
 
   /* Manage the View Cert button*/
   var viewCert = document.getElementById("security-view-cert");
@@ -312,7 +315,7 @@ function setText(id, value) {
     element.value = value;
   else {
     if (element.hasChildNodes())
-      element.removeChild(element.firstChild);
+      element.firstChild.remove();
     var textNode = document.createTextNode(value);
     element.appendChild(textNode);
   }

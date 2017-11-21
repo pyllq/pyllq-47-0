@@ -11,7 +11,7 @@
 #include "nsContentUtils.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsContentSecurityManager.h"
-#include "nsNullPrincipal.h"
+#include "NullPrincipal.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIInputStreamChannel.h"
 #include "mozilla/DebugOnly.h"
@@ -67,7 +67,7 @@ nsViewSourceChannel::Init(nsIURI* uri)
     // Until then we follow the principal of least privilege and use
     // nullPrincipal as the loadingPrincipal and the least permissive
     // securityflag.
-    nsCOMPtr<nsIPrincipal> nullPrincipal = nsNullPrincipal::Create();
+    nsCOMPtr<nsIPrincipal> nullPrincipal = NullPrincipal::Create();
 
     rv = pService->NewChannel2(path,
                                nullptr, // aOriginCharset
@@ -90,7 +90,7 @@ nsViewSourceChannel::Init(nsIURI* uri)
     mApplicationCacheChannel = do_QueryInterface(mChannel);
     mUploadChannel = do_QueryInterface(mChannel);
     mPostChannel = do_QueryInterface(mChannel);
-    
+
     return NS_OK;
 }
 
@@ -104,7 +104,7 @@ nsViewSourceChannel::InitSrcdoc(nsIURI* aURI,
 
     nsCOMPtr<nsIURI> inStreamURI;
     // Need to strip view-source: from the URI.  Hardcoded to
-    // about:srcdoc as this is the only permissible URI for srcdoc 
+    // about:srcdoc as this is the only permissible URI for srcdoc
     // loads
     rv = NS_NewURI(getter_AddRefs(inStreamURI),
                    NS_LITERAL_STRING("about:srcdoc"));
@@ -298,13 +298,13 @@ nsViewSourceChannel::AsyncOpen(nsIStreamListener *aListener, nsISupports *ctxt)
      * mChannel, since we want to make sure we're in the loadgroup
      * when mChannel finishes and fires OnStopRequest()
      */
-    
+
     nsCOMPtr<nsILoadGroup> loadGroup;
     mChannel->GetLoadGroup(getter_AddRefs(loadGroup));
     if (loadGroup)
         loadGroup->AddRequest(static_cast<nsIViewSourceChannel*>
                                          (this), nullptr);
-    
+
     nsresult rv = NS_OK;
     nsCOMPtr<nsILoadInfo> loadInfo = mChannel->GetLoadInfo();
     if (loadInfo && loadInfo->GetEnforceSecurity()) {
@@ -322,7 +322,7 @@ nsViewSourceChannel::AsyncOpen(nsIStreamListener *aListener, nsISupports *ctxt)
     if (NS_SUCCEEDED(rv)) {
         mOpened = true;
     }
-    
+
     return rv;
 }
 
@@ -378,8 +378,8 @@ nsViewSourceChannel::SetLoadFlags(uint32_t aLoadFlags)
 
     // "View source" always wants the currently cached content.
     // We also want to have _this_ channel, not mChannel to be the
-    // 'document' channel in the loadgroup. 
- 
+    // 'document' channel in the loadgroup.
+
     // These should actually be just LOAD_FROM_CACHE and LOAD_DOCUMENT_URI but
     // the win32 compiler fails to deal due to amiguous inheritance.
     // nsIChannel::LOAD_DOCUMENT_URI/nsIRequest::LOAD_FROM_CACHE also fails; the
@@ -402,7 +402,7 @@ nsViewSourceChannel::SetLoadFlags(uint32_t aLoadFlags)
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::GetContentType(nsACString &aContentType) 
+nsViewSourceChannel::GetContentType(nsACString &aContentType)
 {
     NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
 
@@ -456,7 +456,7 @@ nsViewSourceChannel::SetContentType(const nsACString &aContentType)
         // We do not take hints
         return NS_ERROR_NOT_AVAILABLE;
     }
-    
+
     mContentType = aContentType;
     return NS_OK;
 }
@@ -574,6 +574,14 @@ nsViewSourceChannel::SetLoadInfo(nsILoadInfo* aLoadInfo)
 }
 
 NS_IMETHODIMP
+nsViewSourceChannel::GetIsDocument(bool *aIsDocument)
+{
+    NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
+
+    return mChannel->GetIsDocument(aIsDocument);
+}
+
+NS_IMETHODIMP
 nsViewSourceChannel::GetNotificationCallbacks(nsIInterfaceRequestor* *aNotificationCallbacks)
 {
     NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
@@ -589,7 +597,7 @@ nsViewSourceChannel::SetNotificationCallbacks(nsIInterfaceRequestor* aNotificati
     return mChannel->SetNotificationCallbacks(aNotificationCallbacks);
 }
 
-NS_IMETHODIMP 
+NS_IMETHODIMP
 nsViewSourceChannel::GetSecurityInfo(nsISupports * *aSecurityInfo)
 {
     NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
@@ -599,7 +607,7 @@ nsViewSourceChannel::GetSecurityInfo(nsISupports * *aSecurityInfo)
 
 // nsIViewSourceChannel methods
 NS_IMETHODIMP
-nsViewSourceChannel::GetOriginalContentType(nsACString &aContentType) 
+nsViewSourceChannel::GetOriginalContentType(nsACString &aContentType)
 {
     NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
 
@@ -662,7 +670,7 @@ nsViewSourceChannel::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
     mCachingChannel = do_QueryInterface(aRequest);
     mCacheInfoChannel = do_QueryInterface(mChannel);
     mUploadChannel = do_QueryInterface(aRequest);
-    
+
     return mListener->OnStartRequest(static_cast<nsIViewSourceChannel*>
                                                 (this),
                                      aContext);
@@ -696,7 +704,7 @@ NS_IMETHODIMP
 nsViewSourceChannel::OnDataAvailable(nsIRequest *aRequest, nsISupports* aContext,
                                      nsIInputStream *aInputStream,
                                      uint64_t aSourceOffset,
-                                     uint32_t aLength) 
+                                     uint32_t aLength)
 {
     NS_ENSURE_TRUE(mListener, NS_ERROR_FAILURE);
     return mListener->OnDataAvailable(static_cast<nsIViewSourceChannel*>
@@ -712,14 +720,15 @@ nsViewSourceChannel::OnDataAvailable(nsIRequest *aRequest, nsISupports* aContext
 // to override GetRequestHeader and VisitHeaders. The reason is that we don't
 // want various headers like Link: and Refresh: applying to view-source.
 NS_IMETHODIMP
-nsViewSourceChannel::GetChannelId(nsACString& aChannelId)
+nsViewSourceChannel::GetChannelId(uint64_t *aChannelId)
 {
+    NS_ENSURE_ARG_POINTER(aChannelId);
   return !mHttpChannel ? NS_ERROR_NULL_POINTER :
       mHttpChannel->GetChannelId(aChannelId);
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::SetChannelId(const nsACString& aChannelId)
+nsViewSourceChannel::SetChannelId(uint64_t aChannelId)
 {
   return !mHttpChannel ? NS_ERROR_NULL_POINTER :
       mHttpChannel->SetChannelId(aChannelId);
@@ -737,6 +746,20 @@ nsViewSourceChannel::SetTopLevelContentWindowId(uint64_t aWindowId)
 {
   return !mHttpChannel ? NS_ERROR_NULL_POINTER :
       mHttpChannel->SetTopLevelContentWindowId(aWindowId);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetTopLevelOuterContentWindowId(uint64_t *aWindowId)
+{
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER :
+      mHttpChannel->GetTopLevelOuterContentWindowId(aWindowId);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetTopLevelOuterContentWindowId(uint64_t aWindowId)
+{
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER :
+      mHttpChannel->SetTopLevelOuterContentWindowId(aWindowId);
 }
 
 NS_IMETHODIMP
@@ -935,8 +958,9 @@ nsViewSourceChannel::VisitResponseHeaders(nsIHttpHeaderVisitor *aVisitor)
     nsAutoCString contentType;
     nsresult rv =
         mHttpChannel->GetResponseHeader(contentTypeStr, contentType);
-    if (NS_SUCCEEDED(rv))
-        aVisitor->VisitHeader(contentTypeStr, contentType);
+    if (NS_SUCCEEDED(rv)) {
+        return aVisitor->VisitHeader(contentTypeStr, contentType);
+    }
     return NS_OK;
 }
 
@@ -949,8 +973,7 @@ nsViewSourceChannel::GetOriginalResponseHeader(const nsACString & aHeader,
     if (NS_FAILED(rv)) {
         return rv;
     }
-    aVisitor->VisitHeader(aHeader, value);
-    return NS_OK;
+    return aVisitor->VisitHeader(aHeader, value);
 }
 
 NS_IMETHODIMP
@@ -988,14 +1011,14 @@ nsViewSourceChannel::RedirectTo(nsIURI *uri)
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::GetRequestContextID(nsID *_retval)
+nsViewSourceChannel::GetRequestContextID(uint64_t *_retval)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
         mHttpChannel->GetRequestContextID(_retval);
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::SetRequestContextID(const nsID rcid)
+nsViewSourceChannel::SetRequestContextID(uint64_t rcid)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
         mHttpChannel->SetRequestContextID(rcid);
@@ -1015,15 +1038,19 @@ nsViewSourceChannel::SetIsMainDocumentChannel(bool aValue)
         mHttpChannel->SetIsMainDocumentChannel(aValue);
 }
 
-// Have to manually forward since these are [notxpcom]
+// Have to manually forward SetCorsPreflightParameters since it's [notxpcom]
 void
 nsViewSourceChannel::SetCorsPreflightParameters(const nsTArray<nsCString>& aUnsafeHeaders)
 {
   mHttpChannelInternal->SetCorsPreflightParameters(aUnsafeHeaders);
 }
 
-mozilla::net::nsHttpChannel *
-nsViewSourceChannel::QueryHttpChannelImpl()
+NS_IMETHODIMP
+nsViewSourceChannel::LogBlockedCORSRequest(const nsAString& aMessage)
 {
-  return mHttpChannelInternal->QueryHttpChannelImpl();
+  if (!mHttpChannel) {
+    NS_WARNING("nsViewSourceChannel::LogBlockedCORSRequest mHttpChannel is null");
+    return NS_ERROR_UNEXPECTED;
+  }
+  return mHttpChannel->LogBlockedCORSRequest(aMessage);
 }

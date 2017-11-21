@@ -91,9 +91,6 @@ nsGIFDecoder2::nsGIFDecoder2(RasterImage* aImage)
 {
   // Clear out the structure, excluding the arrays.
   memset(&mGIFStruct, 0, sizeof(mGIFStruct));
-
-  // Initialize as "animate once" in case no NETSCAPE2.0 extension is found.
-  mGIFStruct.loop_count = 1;
 }
 
 nsGIFDecoder2::~nsGIFDecoder2()
@@ -111,7 +108,7 @@ nsGIFDecoder2::FinishInternal()
     if (mCurrentFrameIndex == mGIFStruct.images_decoded) {
       EndImageFrame();
     }
-    PostDecodeDone(mGIFStruct.loop_count - 1);
+    PostDecodeDone(mGIFStruct.loop_count);
     mGIFOpen = false;
   }
 
@@ -181,8 +178,6 @@ nsGIFDecoder2::BeginImageFrame(const IntRect& aFrameRect,
   MOZ_ASSERT(HasSize());
 
   bool hasTransparency = CheckForTransparency(aFrameRect);
-  gfx::SurfaceFormat format = hasTransparency ? SurfaceFormat::B8G8R8A8
-                                              : SurfaceFormat::B8G8R8X8;
 
   // Make sure there's no animation if we're downscaling.
   MOZ_ASSERT_IF(Size() != OutputSize(), !GetImageMetadata().HasAnimation());
@@ -193,6 +188,9 @@ nsGIFDecoder2::BeginImageFrame(const IntRect& aFrameRect,
 
   Maybe<SurfacePipe> pipe;
   if (mGIFStruct.images_decoded == 0) {
+    gfx::SurfaceFormat format = hasTransparency ? SurfaceFormat::B8G8R8A8
+                                                : SurfaceFormat::B8G8R8X8;
+
     // The first frame may be displayed progressively.
     pipeFlags |= SurfacePipeFlags::PROGRESSIVE_DISPLAY;
 
@@ -204,10 +202,17 @@ nsGIFDecoder2::BeginImageFrame(const IntRect& aFrameRect,
   } else {
     // This is an animation frame (and not the first). To minimize the memory
     // usage of animations, the image data is stored in paletted form.
+    //
+    // We should never use paletted surfaces with a draw target directly, so
+    // the only practical difference between B8G8R8A8 and B8G8R8X8 is the
+    // cleared pixel value if we get truncated. We want 0 in that case to
+    // ensure it is an acceptable value for the color map as was the case
+    // historically.
     MOZ_ASSERT(Size() == OutputSize());
     pipe =
       SurfacePipeFactory::CreatePalettedSurfacePipe(this, mGIFStruct.images_decoded,
-                                                    Size(), aFrameRect, format,
+                                                    Size(), aFrameRect,
+                                                    SurfaceFormat::B8G8R8A8,
                                                     aDepth, pipeFlags);
   }
 
@@ -738,6 +743,11 @@ nsGIFDecoder2::ReadNetscapeExtensionData(const char* aData)
     case NETSCAPE_LOOPING_EXTENSION_SUB_BLOCK_ID:
       // This is looping extension.
       mGIFStruct.loop_count = LittleEndian::readUint16(aData + 1);
+      // Zero loop count is infinite animation loop request.
+      if (mGIFStruct.loop_count == 0) {
+        mGIFStruct.loop_count = -1;
+      }
+
       return Transition::To(State::NETSCAPE_EXTENSION_SUB_BLOCK,
                             SUB_BLOCK_HEADER_LEN);
 
@@ -1075,7 +1085,7 @@ nsGIFDecoder2::SkipSubBlocks(const char* aData)
                                   nextSubBlockLength);
 }
 
-Maybe<Telemetry::ID>
+Maybe<Telemetry::HistogramID>
 nsGIFDecoder2::SpeedHistogram() const
 {
   return Some(Telemetry::IMAGE_DECODE_SPEED_GIF);

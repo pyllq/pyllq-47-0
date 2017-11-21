@@ -592,9 +592,7 @@ void nr_ice_media_stream_refresh_consent_all(nr_ice_media_stream *stream)
 
     comp=STAILQ_FIRST(&stream->components);
     while(comp){
-      if((comp->state != NR_ICE_COMPONENT_DISABLED) &&
-         (comp->local_component->state != NR_ICE_COMPONENT_DISABLED) &&
-          comp->disconnected) {
+      if(comp->disconnected) {
         nr_ice_component_refresh_consent_now(comp);
       }
 
@@ -608,10 +606,7 @@ void nr_ice_media_stream_disconnect_all_components(nr_ice_media_stream *stream)
 
     comp=STAILQ_FIRST(&stream->components);
     while(comp){
-      if((comp->state != NR_ICE_COMPONENT_DISABLED) &&
-         (comp->local_component->state != NR_ICE_COMPONENT_DISABLED)) {
-        comp->disconnected = 1;
-      }
+      comp->disconnected = 1;
 
       comp=STAILQ_NEXT(comp,entry);
     }
@@ -831,6 +826,10 @@ int nr_ice_media_stream_send(nr_ice_peer_ctx *pctx, nr_ice_media_stream *str, in
       }
       ABORT(r);
     }
+
+    // accumulate the sent bytes for the active candidate pair
+    comp->active->bytes_sent += len;
+    gettimeofday(&comp->active->last_sent, 0);
 
     _status=0;
   abort:

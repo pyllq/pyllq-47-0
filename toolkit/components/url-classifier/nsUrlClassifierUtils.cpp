@@ -92,7 +92,8 @@ GetPlatformType()
 #elif defined(XP_WIN)
   return WINDOWS_PLATFORM;
 #else
-  return PLATFORM_TYPE_UNSPECIFIED;
+  // Default to Linux for other platforms (see bug 1362501).
+  return LINUX_PLATFORM;
 #endif
 }
 
@@ -115,7 +116,7 @@ InitListUpdateRequest(ThreatType aThreatType,
   // Only set non-empty state.
   if (aStateBase64[0] != '\0') {
     nsCString stateBinary;
-    nsresult rv = Base64Decode(nsCString(aStateBase64), stateBinary);
+    nsresult rv = Base64Decode(nsDependentCString(aStateBase64), stateBinary);
     if (NS_SUCCEEDED(rv)) {
       aListUpdateRequest->set_state(stateBinary.get(), stateBinary.Length());
     }
@@ -147,20 +148,13 @@ CreateClientInfo()
 } // end of namespace mozilla.
 
 nsUrlClassifierUtils::nsUrlClassifierUtils()
-  : mEscapeCharmap(nullptr)
-  , mProviderDictLock("nsUrlClassifierUtils.mProviderDictLock")
+  : mProviderDictLock("nsUrlClassifierUtils.mProviderDictLock")
 {
 }
 
 nsresult
 nsUrlClassifierUtils::Init()
 {
-  // Everything but alpha numerics, - and .
-  mEscapeCharmap = new Charmap(0xffffffff, 0xfc009fff, 0xf8000001, 0xf8000001,
-                               0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
-  if (!mEscapeCharmap)
-    return NS_ERROR_OUT_OF_MEMORY;
-
   // nsIUrlClassifierUtils is a thread-safe service so it's
   // allowed to use on non-main threads. However, building
   // the provider dictionary must be on the main thread.
@@ -238,6 +232,10 @@ static const struct {
   { "goog-unwanted-proto", UNWANTED_SOFTWARE},         // 3
   { "goog-phish-proto", SOCIAL_ENGINEERING},           // 5
 
+  // For application reputation
+  { "goog-badbinurl-proto", MALICIOUS_BINARY},         // 7
+  { "goog-downloadwhite-proto", CSD_DOWNLOAD_WHITELIST},  // 9
+
   // For testing purpose.
   { "test-phish-proto",    SOCIAL_ENGINEERING_PUBLIC}, // 2
   { "test-unwanted-proto", UNWANTED_SOFTWARE}, // 3
@@ -279,7 +277,9 @@ nsUrlClassifierUtils::GetProvider(const nsACString& aTableName,
 {
   MutexAutoLock lock(mProviderDictLock);
   nsCString* provider = nullptr;
-  if (mProviderDict.Get(aTableName, &provider)) {
+  if (StringBeginsWith(aTableName, NS_LITERAL_CSTRING("test"))) {
+    aProvider = NS_LITERAL_CSTRING(TESTING_TABLE_PROVIDER_NAME);
+  } else if (mProviderDict.Get(aTableName, &provider)) {
     aProvider = provider ? *provider : EmptyCString();
   } else {
     aProvider = EmptyCString();
@@ -292,11 +292,15 @@ nsUrlClassifierUtils::GetTelemetryProvider(const nsACString& aTableName,
                                   nsACString& aProvider)
 {
   GetProvider(aTableName, aProvider);
-  // Filter out build-in providers: mozilla, google, google4
-  // Empty provider is filtered as "other"
+  // Whitelist known providers to avoid reporting on private ones.
+  // An empty provider is treated as "other"
   if (!NS_LITERAL_CSTRING("mozilla").Equals(aProvider) &&
       !NS_LITERAL_CSTRING("google").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("google4").Equals(aProvider)) {
+      !NS_LITERAL_CSTRING("google4").Equals(aProvider) &&
+      !NS_LITERAL_CSTRING("baidu").Equals(aProvider) &&
+      !NS_LITERAL_CSTRING("mozcn").Equals(aProvider) &&
+      !NS_LITERAL_CSTRING("yandex").Equals(aProvider) &&
+      !NS_LITERAL_CSTRING(TESTING_TABLE_PROVIDER_NAME).Equals(aProvider)) {
     aProvider.Assign(NS_LITERAL_CSTRING("other"));
   }
 
@@ -376,7 +380,7 @@ nsUrlClassifierUtils::MakeFindFullHashRequestV4(const char** aListNames,
   // Set up FindFullHashesRequest.client_states.
   for (uint32_t i = 0; i < aListCount; i++) {
     nsCString stateBinary;
-    rv = Base64Decode(nsCString(aListStatesBase64[i]), stateBinary);
+    rv = Base64Decode(nsDependentCString(aListStatesBase64[i]), stateBinary);
     NS_ENSURE_SUCCESS(rv, rv);
     r.add_client_states(stateBinary.get(), stateBinary.Length());
   }
@@ -388,7 +392,7 @@ nsUrlClassifierUtils::MakeFindFullHashRequestV4(const char** aListNames,
   // 1) Set threat types.
   for (uint32_t i = 0; i < aListCount; i++) {
     uint32_t threatType;
-    rv = ConvertListNameToThreatType(nsCString(aListNames[i]), &threatType);
+    rv = ConvertListNameToThreatType(nsDependentCString(aListNames[i]), &threatType);
     NS_ENSURE_SUCCESS(rv, rv);
     threatInfo->add_threat_types((ThreatType)threatType);
   }
@@ -402,7 +406,7 @@ nsUrlClassifierUtils::MakeFindFullHashRequestV4(const char** aListNames,
   // 4) Set threat entries.
   for (uint32_t i = 0; i < aPrefixCount; i++) {
     nsCString prefixBinary;
-    rv = Base64Decode(nsCString(aPrefixesBase64[i]), prefixBinary);
+    rv = Base64Decode(nsDependentCString(aPrefixesBase64[i]), prefixBinary);
     threatInfo->add_threat_entries()->set_hash(prefixBinary.get(),
                                                prefixBinary.Length());
   }
@@ -427,7 +431,8 @@ nsUrlClassifierUtils::MakeFindFullHashRequestV4(const char** aListNames,
 static uint32_t
 DurationToMs(const Duration& aDuration)
 {
-  return aDuration.seconds() * 1000 + aDuration.nanos() / 1000;
+  // Seconds precision is good enough. Ignore nanoseconds like Chrome does.
+  return aDuration.seconds() * 1000;
 }
 
 NS_IMETHODIMP
@@ -449,8 +454,7 @@ nsUrlClassifierUtils::ParseFindFullHashResponseV4(const nsACString& aResponse,
   }
 
   bool hasUnknownThreatType = false;
-  auto minWaitDuration = DurationToMs(r.minimum_wait_duration());
-  auto negCacheDuration = DurationToMs(r.negative_cache_duration());
+
   for (auto& m : r.matches()) {
     nsCString tableNames;
     nsresult rv = ConvertThreatTypeToListNames(m.threat_type(), tableNames);
@@ -459,15 +463,24 @@ nsUrlClassifierUtils::ParseFindFullHashResponseV4(const nsACString& aResponse,
       continue; // Ignore un-convertable threat type.
     }
     auto& hash = m.threat().hash();
-    aCallback->OnCompleteHashFound(nsCString(hash.c_str(), hash.length()),
-                                   tableNames,
-                                   minWaitDuration,
-                                   negCacheDuration,
-                                   DurationToMs(m.cache_duration()));
+    auto cacheDurationSec = m.cache_duration().seconds();
+    aCallback->OnCompleteHashFound(nsDependentCString(hash.c_str(), hash.length()),
+                                   tableNames, cacheDurationSec);
+
+    Telemetry::Accumulate(Telemetry::URLCLASSIFIER_POSITIVE_CACHE_DURATION,
+                          cacheDurationSec * PR_MSEC_PER_SEC);
   }
+
+  auto minWaitDuration = DurationToMs(r.minimum_wait_duration());
+  auto negCacheDurationSec = r.negative_cache_duration().seconds();
+
+  aCallback->OnResponseParsed(minWaitDuration, negCacheDurationSec);
 
   Telemetry::Accumulate(Telemetry::URLCLASSIFIER_COMPLETION_ERROR,
                         hasUnknownThreatType ? UNKNOWN_THREAT_TYPE : SUCCESS);
+
+  Telemetry::Accumulate(Telemetry::URLCLASSIFIER_NEGATIVE_CACHE_DURATION,
+                        negCacheDurationSec * PR_MSEC_PER_SEC);
 
   return NS_OK;
 }
@@ -709,7 +722,6 @@ nsUrlClassifierUtils::ParseIPAddress(const nsACString & host,
       _retval.Append(canonical);
     }
   }
-  return;
 }
 
 void

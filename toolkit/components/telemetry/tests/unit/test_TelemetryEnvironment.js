@@ -1,10 +1,12 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-Cu.import("resource://gre/modules/AddonManager.jsm");
+const {AddonManager, AddonManagerPrivate} = Cu.import("resource://gre/modules/AddonManager.jsm", {});
 Cu.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
+Cu.import("resource://gre/modules/ObjectUtils.jsm");
 Cu.import("resource://gre/modules/Preferences.jsm", this);
 Cu.import("resource://gre/modules/PromiseUtils.jsm", this);
+Cu.import("resource://gre/modules/Timer.jsm", this);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
 Cu.import("resource://testing-common/AddonManagerTesting.jsm");
 Cu.import("resource://testing-common/httpd.js");
@@ -15,12 +17,15 @@ Cu.import("resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AttributionCode",
                                   "resource:///modules/AttributionCode.jsm");
 
-// Lazy load |LightweightThemeManager|, we won't be using it on Gonk.
+// Lazy load |LightweightThemeManager|.
 XPCOMUtils.defineLazyModuleGetter(this, "LightweightThemeManager",
                                   "resource://gre/modules/LightweightThemeManager.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "ProfileAge",
                                   "resource://gre/modules/ProfileAge.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "ExtensionTestUtils",
+                                  "resource://testing-common/ExtensionXPCShellUtils.jsm");
 
 // The webserver hosting the addons.
 var gHttpServer = null;
@@ -142,6 +147,10 @@ var SysInfo = {
     } catch (ex) {
       throw ex;
     }
+  },
+
+  getPropertyAsUint32(name) {
+      return this.get(name);
   },
 
   get(name) {
@@ -413,19 +422,16 @@ function checkSettingsSection(data) {
                  f + " must have the correct type.");
   }
 
-  // Check "addonCompatibilityCheckEnabled" separately, as it is not available
-  // on Gonk.
-  if (gIsGonk) {
-    Assert.ok(!("addonCompatibilityCheckEnabled" in data.settings), "Must not be available on Gonk.");
-  } else {
-    Assert.equal(data.settings.addonCompatibilityCheckEnabled, AddonManager.checkCompatibility);
-  }
+  // Check "addonCompatibilityCheckEnabled" separately.
+  Assert.equal(data.settings.addonCompatibilityCheckEnabled, AddonManager.checkCompatibility);
 
   // Check "isDefaultBrowser" separately, as it is not available on Android an can either be
   // null or boolean on other platforms.
   if (gIsAndroid) {
     Assert.ok(!("isDefaultBrowser" in data.settings), "Must not be available on Android.");
-  } else {
+  } else if ("isDefaultBrowser" in data.settings) {
+    // isDefaultBrowser might not be available in the payload, since it's
+    // gathered after the session was restored.
     Assert.ok(checkNullOrBool(data.settings.isDefaultBrowser));
   }
 
@@ -517,7 +523,7 @@ function checkSystemSection(data) {
 
   if (gIsWindows || gIsMac || gIsLinux) {
     let EXTRA_CPU_FIELDS = ["cores", "model", "family", "stepping",
-			    "l2cacheKB", "l3cacheKB", "speedMHz", "vendor"];
+                            "l2cacheKB", "l3cacheKB", "speedMHz", "vendor"];
 
     for (let f of EXTRA_CPU_FIELDS) {
       // Note this is testing TelemetryEnvironment.js only, not that the
@@ -535,18 +541,18 @@ function checkSystemSection(data) {
 
     // We insist these are available
     for (let f of ["cores"]) {
-	Assert.ok(!(f in data.system.cpu) ||
-		  Number.isFinite(data.system.cpu[f]),
-		  f + " must be a number if non null.");
+      Assert.ok(!(f in data.system.cpu) ||
+                Number.isFinite(data.system.cpu[f]),
+                f + " must be a number if non null.");
     }
 
     // These should be numbers if they are not null
     for (let f of ["model", "family", "stepping", "l2cacheKB",
-		   "l3cacheKB", "speedMHz"]) {
-	Assert.ok(!(f in data.system.cpu) ||
-		  data.system.cpu[f] === null ||
-		  Number.isFinite(data.system.cpu[f]),
-		  f + " must be a number if non null.");
+                   "l3cacheKB", "speedMHz"]) {
+      Assert.ok(!(f in data.system.cpu) ||
+                data.system.cpu[f] === null ||
+                Number.isFinite(data.system.cpu[f]),
+                f + " must be a number if non null.");
     }
   }
 
@@ -554,8 +560,8 @@ function checkSystemSection(data) {
   Assert.ok(Number.isFinite(cpuData.count), "CPU count must be a number.");
   Assert.ok(Array.isArray(cpuData.extensions), "CPU extensions must be available.");
 
-  // Device data is only available on Android or Gonk.
-  if (gIsAndroid || gIsGonk) {
+  // Device data is only available on Android.
+  if (gIsAndroid) {
     let deviceData = data.system.device;
     Assert.ok(checkNullOrString(deviceData.model));
     Assert.ok(checkNullOrString(deviceData.manufacturer));
@@ -584,7 +590,7 @@ function checkSystemSection(data) {
       Assert.ok((osData["windowsUBR"] === null) || Number.isFinite(osData["windowsUBR"]),
                 "windowsUBR must be null or a number.");
     }
-  } else if (gIsAndroid || gIsGonk) {
+  } else if (gIsAndroid) {
     Assert.ok(checkNullOrString(osData.kernelVersion));
   }
 
@@ -653,36 +659,48 @@ function checkSystemSection(data) {
   } catch (e) {}
 }
 
-function checkActiveAddon(data) {
+function checkActiveAddon(data, partialRecord) {
   let signedState = mozinfo.addon_signing ? "number" : "undefined";
   // system add-ons have an undefined signState
   if (data.isSystem)
     signedState = "undefined";
 
   const EXPECTED_ADDON_FIELDS_TYPES = {
+    version: "string",
+    scope: "number",
+    type: "string",
+    updateDay: "number",
+    isSystem: "boolean",
+    isWebExtension: "boolean",
+    multiprocessCompatible: "boolean",
+  };
+
+  const FULL_ADDON_FIELD_TYPES = {
     blocklisted: "boolean",
     name: "string",
     userDisabled: "boolean",
     appDisabled: "boolean",
-    version: "string",
-    scope: "number",
-    type: "string",
     foreignInstall: "boolean",
     hasBinaryComponents: "boolean",
     installDay: "number",
-    updateDay: "number",
     signedState,
-    isSystem: "boolean",
   };
 
-  for (let f in EXPECTED_ADDON_FIELDS_TYPES) {
-    Assert.ok(f in data, f + " must be available.");
-    Assert.equal(typeof data[f], EXPECTED_ADDON_FIELDS_TYPES[f],
-                 f + " must have the correct type.");
+  let fields = EXPECTED_ADDON_FIELDS_TYPES;
+  if (!partialRecord) {
+    fields = Object.assign({}, fields, FULL_ADDON_FIELD_TYPES);
   }
 
-  // We check "description" separately, as it can be null.
-  Assert.ok(checkNullOrString(data.description));
+  for (let [name, type] of Object.entries(fields)) {
+    Assert.ok(name in data, name + " must be available.");
+    Assert.equal(typeof data[name], type,
+                 name + " must have the correct type.");
+  }
+
+  if (!partialRecord) {
+    // We check "description" separately, as it can be null.
+    Assert.ok(checkNullOrString(data.description));
+  }
 }
 
 function checkPlugin(data) {
@@ -742,7 +760,7 @@ function checkActiveGMPlugin(data) {
   Assert.equal(typeof data.applyBackgroundUpdates, "number");
 }
 
-function checkAddonsSection(data, expectBrokenAddons) {
+function checkAddonsSection(data, expectBrokenAddons, partialAddonsRecords) {
   const EXPECTED_FIELDS = [
     "activeAddons", "theme", "activePlugins", "activeGMPlugins", "activeExperiment",
     "persona",
@@ -757,7 +775,7 @@ function checkAddonsSection(data, expectBrokenAddons) {
   if (!expectBrokenAddons) {
     let activeAddons = data.addons.activeAddons;
     for (let addon in activeAddons) {
-      checkActiveAddon(activeAddons[addon]);
+      checkActiveAddon(activeAddons[addon], partialAddonsRecords);
     }
   }
 
@@ -803,10 +821,18 @@ function checkExperimentsSection(data) {
     let experimentData = experiments[id];
     Assert.ok("branch" in experimentData, "The experiment must have branch data.")
     Assert.ok(checkString(experimentData.branch), "The experiment data must be valid.");
+    if ("type" in experimentData) {
+      Assert.ok(checkString(experimentData.type));
+    }
   }
 }
 
-function checkEnvironmentData(data, isInitial = false, expectBrokenAddons = false) {
+function checkEnvironmentData(data, options = {}) {
+  const {
+    isInitial = false,
+    expectBrokenAddons = false,
+  } = options;
+
   checkBuildSection(data);
   checkSettingsSection(data);
   checkProfileSection(data);
@@ -816,7 +842,7 @@ function checkEnvironmentData(data, isInitial = false, expectBrokenAddons = fals
   checkExperimentsSection(data);
 }
 
-add_task(function* setup() {
+add_task(async function setup() {
   // Load a custom manifest to provide search engine loading from JAR files.
   do_load_manifest("chrome.manifest");
   registerFakeSysInfo();
@@ -831,11 +857,17 @@ add_task(function* setup() {
   system_addon.lastModifiedTime = SYSTEM_ADDON_INSTALL_DATE;
   loadAddonManager(APP_ID, APP_NAME, APP_VERSION, PLATFORM_VERSION);
 
-  // Spoof the persona ID, but not on Gonk.
-  if (!gIsGonk) {
-    LightweightThemeManager.currentTheme =
-      spoofTheme(PERSONA_ID, PERSONA_NAME, PERSONA_DESCRIPTION);
-  }
+  // Spoof the persona ID.
+  LightweightThemeManager.currentTheme =
+    spoofTheme(PERSONA_ID, PERSONA_NAME, PERSONA_DESCRIPTION);
+
+  // The test runs in a fresh profile so starting the AddonManager causes
+  // the addons database to be created (as does setting new theme).
+  // For test_addonsStartup below, we want to test a "warm" startup where
+  // there is already a database on disk.  Simulate that here by just
+  // restarting the AddonManager.
+  await AddonTestUtils.promiseRestartManager();
+
   // Register a fake plugin host for consistent flash version data.
   registerFakePluginHost();
 
@@ -851,6 +883,9 @@ add_task(function* setup() {
   // Spoof the the hotfixVersion
   Preferences.set("extensions.hotfix.lastVersion", APP_HOTFIX_VERSION);
 
+  // Allow non-multiprocessCompatible extensions
+  Preferences.set("extensions.allow-non-mpc-extensions", true);
+
   // Create the attribution data file, so that settings.attribution will exist.
   // The attribution functionality only exists in Firefox.
   if (AppConstants.MOZ_BUILD_APP == "browser") {
@@ -858,22 +893,33 @@ add_task(function* setup() {
     do_register_cleanup(cleanupAttributionData);
   }
 
-  yield spoofProfileReset();
+  await spoofProfileReset();
   TelemetryEnvironment.delayedInit();
 });
 
-add_task(function* test_checkEnvironment() {
-  let environmentData = yield TelemetryEnvironment.onInitialized();
-  checkEnvironmentData(environmentData, true);
+add_task(async function test_checkEnvironment() {
+  // During startup we have partial addon records.
+  // First make sure we haven't yet read the addons DB, then test that
+  // we have some partial addons data.
+  Assert.equal(AddonManagerPrivate.isDBLoaded(), false,
+               "addons database is not loaded");
+
+  checkAddonsSection(TelemetryEnvironment.currentEnvironment, false, true);
+
+  // Now continue with startup.
+  let initPromise = TelemetryEnvironment.onInitialized();
+  finishAddonManagerStartup();
+  let environmentData = await initPromise;
+  checkEnvironmentData(environmentData, {isInitial: true});
 
   spoofPartnerInfo();
-  Services.obs.notifyObservers(null, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC, null);
+  Services.obs.notifyObservers(null, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC);
 
   environmentData = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(environmentData);
 });
 
-add_task(function* test_prefWatchPolicies() {
+add_task(async function test_prefWatchPolicies() {
   const PREF_TEST_1 = "toolkit.telemetry.test.pref_new";
   const PREF_TEST_2 = "toolkit.telemetry.test.pref1";
   const PREF_TEST_3 = "toolkit.telemetry.test.pref2";
@@ -911,7 +957,7 @@ add_task(function* test_prefWatchPolicies() {
   Preferences.set(PREF_TEST_1, expectedValue);
   Preferences.set(PREF_TEST_2, false);
   Preferences.set(PREF_TEST_5, unexpectedValue);
-  let eventEnvironmentData = yield deferred.promise;
+  let eventEnvironmentData = await deferred.promise;
 
   // Unregister the listener.
   TelemetryEnvironment.unregisterChangeListener("testWatchPrefs");
@@ -927,10 +973,10 @@ add_task(function* test_prefWatchPolicies() {
   Assert.ok(!(PREF_TEST_3 in userPrefs),
             "Do not report if preference not user set.");
   Assert.equal(userPrefs[PREF_TEST_5], expectedValue,
-	      "The pref value in the environment data should still be the same");
+               "The pref value in the environment data should still be the same");
 });
 
-add_task(function* test_prefWatch_prefReset() {
+add_task(async function test_prefWatch_prefReset() {
   const PREF_TEST = "toolkit.telemetry.test.pref1";
   const PREFS_TO_WATCH = new Map([
     [PREF_TEST, {what: TelemetryEnvironment.RECORD_PREF_STATE}],
@@ -948,7 +994,7 @@ add_task(function* test_prefWatch_prefReset() {
 
   // Trigger a change in the watched preferences.
   Preferences.reset(PREF_TEST);
-  yield deferred.promise;
+  await deferred.promise;
 
   Assert.strictEqual(TelemetryEnvironment.currentEnvironment.settings.userPrefs[PREF_TEST], undefined);
 
@@ -956,9 +1002,27 @@ add_task(function* test_prefWatch_prefReset() {
   TelemetryEnvironment.unregisterChangeListener("testWatchPrefs_reset");
 });
 
-add_task(function* test_addonsWatch_InterestingChange() {
+add_task(async function test_prefDefault() {
+  const PREF_TEST = "toolkit.telemetry.test.defaultpref1";
+  const expectedValue = "some-test-value";
+
+  const PREFS_TO_WATCH = new Map([
+    [PREF_TEST, {what: TelemetryEnvironment.RECORD_DEFAULTPREF_VALUE}],
+  ]);
+
+  // Set the preference to a default value.
+  Services.prefs.getDefaultBranch(null).setCharPref(PREF_TEST, expectedValue);
+
+  // Set the Environment preferences to watch.
+  // We're not watching, but this function does the setup we need.
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
+
+  Assert.strictEqual(TelemetryEnvironment.currentEnvironment.settings.userPrefs[PREF_TEST], expectedValue);
+});
+
+add_task(async function test_addonsWatch_InterestingChange() {
   const ADDON_INSTALL_URL = gDataRoot + "restartless.xpi";
-  const ADDON_ID = "tel-restartless-xpi@tests.mozilla.org";
+  const ADDON_ID = "tel-restartless-webext@tests.mozilla.org";
   // We only expect a single notification for each install, uninstall, enable, disable.
   const EXPECTED_NOTIFICATIONS = 4;
 
@@ -980,27 +1044,29 @@ add_task(function* test_addonsWatch_InterestingChange() {
 
   // Test for receiving one notification after each change.
   let checkpointPromise = registerCheckpointPromise(1);
-  yield AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
-  yield checkpointPromise;
+  await AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+  await checkpointPromise;
   assertCheckpoint(1);
   Assert.ok(ADDON_ID in TelemetryEnvironment.currentEnvironment.addons.activeAddons);
 
   checkpointPromise = registerCheckpointPromise(2);
-  let addon = yield AddonManagerTesting.getAddonById(ADDON_ID);
+  let addon = await AddonManagerTesting.getAddonById(ADDON_ID);
   addon.userDisabled = true;
-  yield checkpointPromise;
+  await checkpointPromise;
   assertCheckpoint(2);
   Assert.ok(!(ADDON_ID in TelemetryEnvironment.currentEnvironment.addons.activeAddons));
 
   checkpointPromise = registerCheckpointPromise(3);
+  let startupPromise = AddonTestUtils.promiseWebExtensionStartup(ADDON_ID);
   addon.userDisabled = false;
-  yield checkpointPromise;
+  await checkpointPromise;
   assertCheckpoint(3);
   Assert.ok(ADDON_ID in TelemetryEnvironment.currentEnvironment.addons.activeAddons);
+  await startupPromise;
 
   checkpointPromise = registerCheckpointPromise(4);
-  yield AddonManagerTesting.uninstallAddonByID(ADDON_ID);
-  yield checkpointPromise;
+  await AddonManagerTesting.uninstallAddonByID(ADDON_ID);
+  await checkpointPromise;
   assertCheckpoint(4);
   Assert.ok(!(ADDON_ID in TelemetryEnvironment.currentEnvironment.addons.activeAddons));
 
@@ -1008,7 +1074,7 @@ add_task(function* test_addonsWatch_InterestingChange() {
                "We must only receive the notifications we expect.");
 });
 
-add_task(function* test_pluginsWatch_Add() {
+add_task(async function test_pluginsWatch_Add() {
   if (gIsAndroid) {
     Assert.ok(true, "Skipping: there is no Plugin Manager on Android.");
     return;
@@ -1028,8 +1094,8 @@ add_task(function* test_pluginsWatch_Add() {
   };
   TelemetryEnvironment.registerChangeListener("testWatchPlugins_Add", callback);
 
-  Services.obs.notifyObservers(null, PLUGIN_UPDATED_TOPIC, null);
-  yield deferred.promise;
+  Services.obs.notifyObservers(null, PLUGIN_UPDATED_TOPIC);
+  await deferred.promise;
 
   Assert.equal(TelemetryEnvironment.currentEnvironment.addons.activePlugins.length, 2);
 
@@ -1038,7 +1104,7 @@ add_task(function* test_pluginsWatch_Add() {
   Assert.equal(receivedNotifications, 1, "We must only receive one notification.");
 });
 
-add_task(function* test_pluginsWatch_Remove() {
+add_task(async function test_pluginsWatch_Remove() {
   if (gIsAndroid) {
     Assert.ok(true, "Skipping: there is no Plugin Manager on Android.");
     return;
@@ -1059,15 +1125,15 @@ add_task(function* test_pluginsWatch_Remove() {
   };
   TelemetryEnvironment.registerChangeListener("testWatchPlugins_Remove", callback);
 
-  Services.obs.notifyObservers(null, PLUGIN_UPDATED_TOPIC, null);
-  yield deferred.promise;
+  Services.obs.notifyObservers(null, PLUGIN_UPDATED_TOPIC);
+  await deferred.promise;
 
   TelemetryEnvironment.unregisterChangeListener("testWatchPlugins_Remove");
 
   Assert.equal(receivedNotifications, 1, "We must only receive one notification.");
 });
 
-add_task(function* test_addonsWatch_NotInterestingChange() {
+add_task(async function test_addonsWatch_NotInterestingChange() {
   // We are not interested to dictionary addons changes.
   const DICTIONARY_ADDON_INSTALL_URL = gDataRoot + "dictionary.xpi";
   const INTERESTING_ADDON_INSTALL_URL = gDataRoot + "restartless.xpi";
@@ -1081,10 +1147,10 @@ add_task(function* test_addonsWatch_NotInterestingChange() {
       deferred.resolve();
     });
 
-  yield AddonManagerTesting.installXPIFromURL(DICTIONARY_ADDON_INSTALL_URL);
-  yield AddonManagerTesting.installXPIFromURL(INTERESTING_ADDON_INSTALL_URL);
+  await AddonManagerTesting.installXPIFromURL(DICTIONARY_ADDON_INSTALL_URL);
+  await AddonManagerTesting.installXPIFromURL(INTERESTING_ADDON_INSTALL_URL);
 
-  yield deferred.promise;
+  await deferred.promise;
   Assert.ok(!("telemetry-dictionary@tests.mozilla.org" in
               TelemetryEnvironment.currentEnvironment.addons.activeAddons),
             "Dictionaries should not appear in active addons.");
@@ -1092,9 +1158,9 @@ add_task(function* test_addonsWatch_NotInterestingChange() {
   TelemetryEnvironment.unregisterChangeListener("testNotInteresting");
 });
 
-add_task(function* test_addonsAndPlugins() {
+add_task(async function test_addonsAndPlugins() {
   const ADDON_INSTALL_URL = gDataRoot + "restartless.xpi";
-  const ADDON_ID = "tel-restartless-xpi@tests.mozilla.org";
+  const ADDON_ID = "tel-restartless-webext@tests.mozilla.org";
   const ADDON_INSTALL_DATE = truncateToDays(Date.now());
   const EXPECTED_ADDON_DATA = {
     blocklisted: false,
@@ -1109,8 +1175,10 @@ add_task(function* test_addonsAndPlugins() {
     hasBinaryComponents: false,
     installDay: ADDON_INSTALL_DATE,
     updateDay: ADDON_INSTALL_DATE,
-    signedState: mozinfo.addon_signing ? AddonManager.SIGNEDSTATE_SIGNED : AddonManager.SIGNEDSTATE_NOT_REQUIRED,
+    signedState: mozinfo.addon_signing ? AddonManager.SIGNEDSTATE_PRIVILEGED : AddonManager.SIGNEDSTATE_NOT_REQUIRED,
     isSystem: false,
+    isWebExtension: true,
+    multiprocessCompatible: true,
   };
   const SYSTEM_ADDON_ID = "tel-system-xpi@tests.mozilla.org";
   const EXPECTED_SYSTEM_ADDON_DATA = {
@@ -1128,6 +1196,29 @@ add_task(function* test_addonsAndPlugins() {
     updateDay: truncateToDays(SYSTEM_ADDON_INSTALL_DATE),
     signedState: undefined,
     isSystem: true,
+    isWebExtension: false,
+    multiprocessCompatible: true,
+  };
+
+  const WEBEXTENSION_ADDON_ID = "tel-webextension-xpi@tests.mozilla.org";
+  const WEBEXTENSION_ADDON_INSTALL_DATE = truncateToDays(Date.now());
+  const EXPECTED_WEBEXTENSION_ADDON_DATA = {
+    blocklisted: false,
+    description: "A webextension addon.",
+    name: "XPI Telemetry WebExtension Add-on Test",
+    userDisabled: false,
+    appDisabled: false,
+    version: "1.0",
+    scope: 1,
+    type: "extension",
+    foreignInstall: false,
+    hasBinaryComponents: false,
+    installDay: WEBEXTENSION_ADDON_INSTALL_DATE,
+    updateDay: WEBEXTENSION_ADDON_INSTALL_DATE,
+    signedState: mozinfo.addon_signing ? AddonManager.SIGNEDSTATE_PRIVILEGED : AddonManager.SIGNEDSTATE_NOT_REQUIRED,
+    isSystem: false,
+    isWebExtension: true,
+    multiprocessCompatible: true,
   };
 
   const EXPECTED_PLUGIN_DATA = {
@@ -1139,8 +1230,37 @@ add_task(function* test_addonsAndPlugins() {
     clicktoplay: true,
   };
 
-  // Install an addon so we have some data.
-  yield AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+  let deferred = PromiseUtils.defer();
+  TelemetryEnvironment.registerChangeListener("test_WebExtension",
+    (reason, data) => {
+      Assert.equal(reason, "addons-changed");
+      deferred.resolve();
+    }
+  );
+
+  // Install an add-on so we have some data.
+  await AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+
+  // Install a webextension as well.
+  ExtensionTestUtils.init(this);
+
+  let webextension = ExtensionTestUtils.loadExtension({
+    useAddonManager: "permanent",
+    manifest: {
+      "name": "XPI Telemetry WebExtension Add-on Test",
+      "description": "A webextension addon.",
+      "version": "1.0",
+      "applications": {
+        "gecko": {
+          "id": WEBEXTENSION_ADDON_ID,
+        },
+      },
+    },
+  });
+
+  await webextension.startup();
+  await deferred.promise;
+  TelemetryEnvironment.unregisterChangeListener("test_WebExtension");
 
   let data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
@@ -1158,6 +1278,15 @@ add_task(function* test_addonsAndPlugins() {
   for (let f in EXPECTED_SYSTEM_ADDON_DATA) {
     Assert.equal(targetSystemAddon[f], EXPECTED_SYSTEM_ADDON_DATA[f], f + " must have the correct value.");
   }
+
+  // Check webextension add-on data.
+  Assert.ok(WEBEXTENSION_ADDON_ID in data.addons.activeAddons, "We must have one active webextension addon.");
+  let targetWebExtensionAddon = data.addons.activeAddons[WEBEXTENSION_ADDON_ID];
+  for (let f in EXPECTED_WEBEXTENSION_ADDON_DATA) {
+    Assert.equal(targetWebExtensionAddon[f], EXPECTED_WEBEXTENSION_ADDON_DATA[f], f + " must have the correct value.");
+  }
+
+  await webextension.unload();
 
   // Check theme data.
   let theme = data.addons.theme;
@@ -1177,20 +1306,21 @@ add_task(function* test_addonsAndPlugins() {
   Assert.ok(targetPlugin.mimeTypes.find(m => m == PLUGIN_MIME_TYPE2));
   Assert.ok(!targetPlugin.mimeTypes.find(m => m == "Not There."));
 
-  let personaId = (gIsGonk) ? null : PERSONA_ID;
-  Assert.equal(data.addons.persona, personaId, "The correct Persona Id must be reported.");
+  Assert.equal(data.addons.persona, PERSONA_ID, "The correct Persona Id must be reported.");
 
   // Uninstall the addon.
-  yield AddonManagerTesting.uninstallAddonByID(ADDON_ID);
+  await AddonManagerTesting.uninstallAddonByID(ADDON_ID);
 });
 
-add_task(function* test_signedAddon() {
-  const ADDON_INSTALL_URL = gDataRoot + "signed.xpi";
-  const ADDON_ID = "tel-signed-xpi@tests.mozilla.org";
+add_task(async function test_signedAddon() {
+  AddonTestUtils.useRealCertChecks = true;
+
+  const ADDON_INSTALL_URL = gDataRoot + "signed-webext.xpi";
+  const ADDON_ID = "tel-signed-webext@tests.mozilla.org";
   const ADDON_INSTALL_DATE = truncateToDays(Date.now());
   const EXPECTED_ADDON_DATA = {
     blocklisted: false,
-    description: "A signed addon which gets enabled without a reboot.",
+    description: "A signed webextension",
     name: "XPI Telemetry Signed Test",
     userDisabled: false,
     appDisabled: false,
@@ -1208,9 +1338,9 @@ add_task(function* test_signedAddon() {
   TelemetryEnvironment.registerChangeListener("test_signedAddon", deferred.resolve);
 
   // Install the addon.
-  yield AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+  await AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
 
-  yield deferred.promise;
+  await deferred.promise;
   // Unregister the listener.
   TelemetryEnvironment.unregisterChangeListener("test_signedAddon");
 
@@ -1223,17 +1353,19 @@ add_task(function* test_signedAddon() {
   for (let f in EXPECTED_ADDON_DATA) {
     Assert.equal(targetAddon[f], EXPECTED_ADDON_DATA[f], f + " must have the correct value.");
   }
+
+  AddonTestUtils.useRealCertChecks = false;
 });
 
-add_task(function* test_addonsFieldsLimit() {
+add_task(async function test_addonsFieldsLimit() {
   const ADDON_INSTALL_URL = gDataRoot + "long-fields.xpi";
-  const ADDON_ID = "tel-longfields-xpi@tests.mozilla.org";
+  const ADDON_ID = "tel-longfields-webext@tests.mozilla.org";
 
   // Install the addon and wait for the TelemetryEnvironment to pick it up.
   let deferred = PromiseUtils.defer();
   TelemetryEnvironment.registerChangeListener("test_longFieldsAddon", deferred.resolve);
-  yield AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
-  yield deferred.promise;
+  await AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+  await deferred.promise;
   TelemetryEnvironment.unregisterChangeListener("test_longFieldsAddon");
 
   let data = TelemetryEnvironment.currentEnvironment;
@@ -1253,7 +1385,7 @@ add_task(function* test_addonsFieldsLimit() {
                "The description string must have been limited");
 });
 
-add_task(function* test_collectionWithbrokenAddonData() {
+add_task(async function test_collectionWithbrokenAddonData() {
   const BROKEN_ADDON_ID = "telemetry-test2.example.com@services.mozilla.org";
   const BROKEN_MANIFEST = {
     id: "telemetry-test2.example.com@services.mozilla.org",
@@ -1264,7 +1396,7 @@ add_task(function* test_collectionWithbrokenAddonData() {
   };
 
   const ADDON_INSTALL_URL = gDataRoot + "restartless.xpi";
-  const ADDON_ID = "tel-restartless-xpi@tests.mozilla.org";
+  const ADDON_ID = "tel-restartless-webext@tests.mozilla.org";
   const ADDON_INSTALL_DATE = truncateToDays(Date.now());
   const EXPECTED_ADDON_DATA = {
     blocklisted: false,
@@ -1304,19 +1436,19 @@ add_task(function* test_collectionWithbrokenAddonData() {
   let brokenAddonProvider = createMockAddonProvider("Broken Extensions Provider");
   AddonManagerPrivate.registerProvider(brokenAddonProvider);
   brokenAddonProvider.addAddon(BROKEN_MANIFEST);
-  yield checkpointPromise;
+  await checkpointPromise;
   assertCheckpoint(1);
 
   // Now install an addon which returns the correct information.
   checkpointPromise = registerCheckpointPromise(2);
-  yield AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
-  yield checkpointPromise;
+  await AddonManagerTesting.installXPIFromURL(ADDON_INSTALL_URL);
+  await checkpointPromise;
   assertCheckpoint(2);
 
   // Check that the new environment contains the Social addon installed with the broken
   // manifest and the rest of the data.
   let data = TelemetryEnvironment.currentEnvironment;
-  checkEnvironmentData(data, false, true /* expect broken addons*/);
+  checkEnvironmentData(data, {expectBrokenAddons: true});
 
   let activeAddons = data.addons.activeAddons;
   Assert.ok(BROKEN_ADDON_ID in activeAddons,
@@ -1332,13 +1464,14 @@ add_task(function* test_collectionWithbrokenAddonData() {
   AddonManagerPrivate.unregisterProvider(brokenAddonProvider);
 
   // Uninstall the valid addon.
-  yield AddonManagerTesting.uninstallAddonByID(ADDON_ID);
+  await AddonManagerTesting.uninstallAddonByID(ADDON_ID);
 });
 
-add_task(function* test_defaultSearchEngine() {
+add_task(async function test_defaultSearchEngine() {
   // Check that no default engine is in the environment before the search service is
   // initialized.
-  let data = TelemetryEnvironment.currentEnvironment;
+
+  let data = await TelemetryEnvironment.testCleanRestart().onInitialized();
   checkEnvironmentData(data);
   Assert.ok(!("defaultSearchEngine" in data.settings));
   Assert.ok(!("defaultSearchEngineData" in data.settings));
@@ -1352,7 +1485,7 @@ add_task(function* test_defaultSearchEngine() {
                           Services.io.newURI(url));
 
   // Initialize the search service.
-  yield new Promise(resolve => Services.search.init(resolve));
+  await new Promise(resolve => Services.search.init(resolve));
 
   // Our default engine from the JAR file has an identifier. Check if it is correctly
   // reported.
@@ -1380,7 +1513,7 @@ add_task(function* test_defaultSearchEngine() {
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
   Assert.equal(data.settings.defaultSearchEngine, "NONE");
-  Assert.deepEqual(data.settings.defaultSearchEngineData, {name:"NONE"});
+  Assert.deepEqual(data.settings.defaultSearchEngineData, {name: "NONE"});
 
   // Add a new search engine (this will have no engine identifier).
   const SEARCH_ENGINE_ID = "telemetry_default";
@@ -1391,7 +1524,7 @@ add_task(function* test_defaultSearchEngine() {
   let deferred = PromiseUtils.defer();
   TelemetryEnvironment.registerChangeListener("testWatch_SearchDefault", deferred.resolve);
   Services.search.defaultEngine = Services.search.getEngineByName(SEARCH_ENGINE_ID);
-  yield deferred.promise;
+  await deferred.promise;
 
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
@@ -1412,7 +1545,7 @@ add_task(function* test_defaultSearchEngine() {
   let promise = new Promise(resolve => {
     TelemetryEnvironment.registerChangeListener("testWatch_SearchDefault", resolve);
   });
-  let engine = yield new Promise((resolve, reject) => {
+  let engine = await new Promise((resolve, reject) => {
     Services.obs.addObserver(function obs(obsSubject, obsTopic, obsData) {
       try {
         let searchEngine = obsSubject.QueryInterface(Ci.nsISearchEngine);
@@ -1426,17 +1559,17 @@ add_task(function* test_defaultSearchEngine() {
       } catch (ex) {
         reject(ex);
       }
-    }, "browser-search-engine-modified", false);
+    }, "browser-search-engine-modified");
     Services.search.addEngine("file://" + do_get_cwd().path + "/engine.xml",
                               null, null, false);
   });
   Services.search.defaultEngine = engine;
-  yield promise;
+  await promise;
   TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
   Assert.deepEqual(data.settings.defaultSearchEngineData,
-                   {"name":"engine-telemetry", "loadPath":"[other]/engine.xml", "origin":"verified"});
+                   {"name": "engine-telemetry", "loadPath": "[other]/engine.xml", "origin": "verified"});
 
   // Now break this engine's load path hash.
   promise = new Promise(resolve => {
@@ -1444,7 +1577,7 @@ add_task(function* test_defaultSearchEngine() {
   });
   engine.wrappedJSObject.setAttr("loadPathHash", "broken");
   Services.obs.notifyObservers(null, "browser-search-engine-modified", "engine-current");
-  yield promise;
+  await promise;
   TelemetryEnvironment.unregisterChangeListener("testWatch_SearchDefault");
   data = TelemetryEnvironment.currentEnvironment;
   Assert.equal(data.settings.defaultSearchEngineData.origin, "invalid");
@@ -1463,7 +1596,7 @@ add_task(function* test_defaultSearchEngine() {
   TelemetryEnvironment.registerChangeListener("testSearchEngine_pref", deferred.resolve);
   // Trigger an environment change.
   Preferences.set(PREF_TEST, 1);
-  yield deferred.promise;
+  await deferred.promise;
   TelemetryEnvironment.unregisterChangeListener("testSearchEngine_pref");
 
   // Check that the search engine information is correctly retained when prefs change.
@@ -1475,13 +1608,75 @@ add_task(function* test_defaultSearchEngine() {
   Assert.equal(data.settings.searchCohort, undefined);
 
   // ... but that if a cohort identifier is set, we send it.
+  deferred = PromiseUtils.defer();
+  TelemetryEnvironment.registerChangeListener("testSearchEngine_pref", deferred.resolve);
   Services.prefs.setCharPref("browser.search.cohort", "testcohort");
   Services.obs.notifyObservers(null, "browser-search-service", "init-complete");
+  await deferred.promise;
+  TelemetryEnvironment.unregisterChangeListener("testSearchEngine_pref");
   data = TelemetryEnvironment.currentEnvironment;
   Assert.equal(data.settings.searchCohort, "testcohort");
+  Assert.equal(data.experiments.searchCohort.branch, "testcohort");
+
+  // Check that when changing the cohort identifier...
+  deferred = PromiseUtils.defer();
+  TelemetryEnvironment.registerChangeListener("testSearchEngine_pref", deferred.resolve);
+  Services.prefs.setCharPref("browser.search.cohort", "testcohort2");
+  Services.obs.notifyObservers(null, "browser-search-service", "init-complete");
+  await deferred.promise;
+  TelemetryEnvironment.unregisterChangeListener("testSearchEngine_pref");
+  data = TelemetryEnvironment.currentEnvironment;
+  // ... the setting and experiment are updated.
+  Assert.equal(data.settings.searchCohort, "testcohort2");
+  Assert.equal(data.experiments.searchCohort.branch, "testcohort2");
 });
 
-add_task(function* test_osstrings() {
+add_task({ skip_if: () => AppConstants.MOZ_APP_NAME == "thunderbird" },
+         async function test_delayed_defaultBrowser() {
+  // Skip this test on Thunderbird since it is not a browser, so it cannot
+  // be the default browser.
+
+  // Make sure we don't have anything already cached for this test.
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
+
+  let environmentData = TelemetryEnvironment.currentEnvironment;
+  checkEnvironmentData(environmentData);
+  Assert.equal(environmentData.settings.isDefaultBrowser, null,
+               "isDefaultBrowser must be null before the session is restored.");
+
+  Services.obs.notifyObservers(null, "sessionstore-windows-restored");
+
+  environmentData = TelemetryEnvironment.currentEnvironment;
+  checkEnvironmentData(environmentData);
+  Assert.ok("isDefaultBrowser" in environmentData.settings,
+            "isDefaultBrowser must be available after the session is restored.");
+  Assert.equal(typeof(environmentData.settings.isDefaultBrowser), "boolean",
+               "isDefaultBrowser must be of the right type.");
+
+  // Make sure pref-flipping doesn't overwrite the browser default state.
+  const PREF_TEST = "toolkit.telemetry.test.pref1";
+  const PREFS_TO_WATCH = new Map([
+    [PREF_TEST, {what: TelemetryEnvironment.RECORD_PREF_STATE}],
+  ]);
+  Preferences.reset(PREF_TEST);
+
+  // Watch the test preference.
+  TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
+  let deferred = PromiseUtils.defer();
+  TelemetryEnvironment.registerChangeListener("testDefaultBrowser_pref", deferred.resolve);
+  // Trigger an environment change.
+  Preferences.set(PREF_TEST, 1);
+  await deferred.promise;
+  TelemetryEnvironment.unregisterChangeListener("testDefaultBrowser_pref");
+
+  // Check that the data is still available.
+  environmentData = TelemetryEnvironment.currentEnvironment;
+  checkEnvironmentData(environmentData);
+  Assert.ok("isDefaultBrowser" in environmentData.settings,
+            "isDefaultBrowser must still be available after a pref is flipped.");
+});
+
+add_task(async function test_osstrings() {
   // First test that numbers in sysinfo properties are converted to string fields
   // in system.os.
   SysInfo.overrides = {
@@ -1490,7 +1685,7 @@ add_task(function* test_osstrings() {
     kernel_version: 3,
   };
 
-  yield TelemetryEnvironment.testCleanRestart().onInitialized();
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
   let data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
 
@@ -1507,7 +1702,7 @@ add_task(function* test_osstrings() {
     kernel_version: null,
   };
 
-  yield TelemetryEnvironment.testCleanRestart().onInitialized();
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
 
@@ -1519,16 +1714,16 @@ add_task(function* test_osstrings() {
 
   // Clean up.
   SysInfo.overrides = {};
-  yield TelemetryEnvironment.testCleanRestart().onInitialized();
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
 });
 
-add_task(function* test_experimentsAPI() {
+add_task(async function test_experimentsAPI() {
   const EXPERIMENT1 = "experiment-1";
   const EXPERIMENT1_BRANCH = "nice-branch";
   const EXPERIMENT2 = "experiment-2";
   const EXPERIMENT2_BRANCH = "other-branch";
 
-  let checkExperiment = (id, branch, environmentData) => {
+  let checkExperiment = (environmentData, id, branch, type = null) => {
     Assert.ok("experiments" in environmentData,
               "The current environment must report the experiment annotations.");
     Assert.ok(id in environmentData.experiments,
@@ -1538,7 +1733,7 @@ add_task(function* test_experimentsAPI() {
   };
 
   // Clean the environment and check that it's reporting the correct info.
-  yield TelemetryEnvironment.testCleanRestart().onInitialized();
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
   let data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
 
@@ -1553,7 +1748,7 @@ add_task(function* test_experimentsAPI() {
     deferred.resolve(env);
   });
   TelemetryEnvironment.setExperimentActive(EXPERIMENT1, EXPERIMENT1_BRANCH);
-  let eventEnvironmentData = yield deferred.promise;
+  let eventEnvironmentData = await deferred.promise;
 
   // Check that the old environment does not contain the experiments.
   checkEnvironmentData(eventEnvironmentData);
@@ -1563,7 +1758,7 @@ add_task(function* test_experimentsAPI() {
   // Check that the current environment contains the right experiment.
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
-  checkExperiment(EXPERIMENT1, EXPERIMENT1_BRANCH, data);
+  checkExperiment(data, EXPERIMENT1, EXPERIMENT1_BRANCH);
 
   TelemetryEnvironment.unregisterChangeListener("test_experimentsAPI");
 
@@ -1573,16 +1768,16 @@ add_task(function* test_experimentsAPI() {
     deferred.resolve(env);
   });
   TelemetryEnvironment.setExperimentActive(EXPERIMENT2, EXPERIMENT2_BRANCH);
-  eventEnvironmentData = yield deferred.promise;
+  eventEnvironmentData = await deferred.promise;
 
   // Check that the current environment contains both the experiment.
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
-  checkExperiment(EXPERIMENT1, EXPERIMENT1_BRANCH, data);
-  checkExperiment(EXPERIMENT2, EXPERIMENT2_BRANCH, data);
+  checkExperiment(data, EXPERIMENT1, EXPERIMENT1_BRANCH);
+  checkExperiment(data, EXPERIMENT2, EXPERIMENT2_BRANCH);
 
   // The previous environment should only contain the first experiment.
-  checkExperiment(EXPERIMENT1, EXPERIMENT1_BRANCH, eventEnvironmentData);
+  checkExperiment(eventEnvironmentData, EXPERIMENT1, EXPERIMENT1_BRANCH);
   Assert.ok(!(EXPERIMENT2 in eventEnvironmentData),
             "The old environment must not contain the new experiment annotation.");
 
@@ -1607,23 +1802,26 @@ add_task(function* test_experimentsAPI() {
     deferred.resolve(env);
   });
   TelemetryEnvironment.setExperimentInactive(EXPERIMENT1);
-  eventEnvironmentData = yield deferred.promise;
+  eventEnvironmentData = await deferred.promise;
 
   // Check that the current environment contains just the second experiment.
   data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
   Assert.ok(!(EXPERIMENT1 in data),
             "The current environment must not contain the removed experiment annotation.");
-  checkExperiment(EXPERIMENT2, EXPERIMENT2_BRANCH, data);
+  checkExperiment(data, EXPERIMENT2, EXPERIMENT2_BRANCH);
 
   // The previous environment should contain both annotations.
-  checkExperiment(EXPERIMENT1, EXPERIMENT1_BRANCH, eventEnvironmentData);
-  checkExperiment(EXPERIMENT2, EXPERIMENT2_BRANCH, eventEnvironmentData);
+  checkExperiment(eventEnvironmentData, EXPERIMENT1, EXPERIMENT1_BRANCH);
+  checkExperiment(eventEnvironmentData, EXPERIMENT2, EXPERIMENT2_BRANCH);
 
-  TelemetryEnvironment.unregisterChangeListener("test_experimentsAPI5");
+  // Set an experiment with a type and check that it correctly shows up.
+  TelemetryEnvironment.setExperimentActive("typed-experiment", "random-branch", {type: "ab-test"});
+  data = TelemetryEnvironment.currentEnvironment;
+  checkExperiment(data, "typed-experiment", "random-branch", "ab-test");
 });
 
-add_task(function* test_experimentsAPI_limits() {
+add_task(async function test_experimentsAPI_limits() {
   const EXPERIMENT = "experiment-2-experiment-2-experiment-2-experiment-2-experiment-2" +
                      "-experiment-2-experiment-2-experiment-2-experiment-2";
   const EXPERIMENT_BRANCH = "other-branch-other-branch-other-branch-other-branch-other" +
@@ -1632,7 +1830,7 @@ add_task(function* test_experimentsAPI_limits() {
   const EXPERIMENT_BRANCH_TRUNCATED = EXPERIMENT_BRANCH.substring(0, 100);
 
   // Clean the environment and check that it's reporting the correct info.
-  yield TelemetryEnvironment.testCleanRestart().onInitialized();
+  await TelemetryEnvironment.testCleanRestart().onInitialized();
   let data = TelemetryEnvironment.currentEnvironment;
   checkEnvironmentData(data);
 
@@ -1646,7 +1844,7 @@ add_task(function* test_experimentsAPI_limits() {
   TelemetryEnvironment.registerChangeListener("test_experimentsAPI",
                                               () => deferred.resolve());
   TelemetryEnvironment.setExperimentActive(EXPERIMENT, EXPERIMENT_BRANCH);
-  yield deferred.promise;
+  await deferred.promise;
 
   // Check that the current environment contains the truncated values
   // for the experiment data.
@@ -1662,9 +1860,15 @@ add_task(function* test_experimentsAPI_limits() {
             "The experiments must be reporting the truncated branch.");
 
   TelemetryEnvironment.unregisterChangeListener("test_experimentsAPI");
+
+  // Check that an overly long type is truncated.
+  const longType = "a0123456678901234567890123456789";
+  TelemetryEnvironment.setExperimentActive("exp", "some-branch", {type: longType});
+  data = TelemetryEnvironment.currentEnvironment;
+  Assert.equal(data.experiments["exp"].type, longType.substring(0, 20));
 });
 
-add_task(function* test_environmentShutdown() {
+add_task(async function test_environmentShutdown() {
   // Define and reset the test preference.
   const PREF_TEST = "toolkit.telemetry.test.pref1";
   const PREFS_TO_WATCH = new Map([

@@ -148,7 +148,8 @@ private:
     {
     public:
       Command(AudioNodeStream* aStream, float aReduction)
-        : mStream(aStream)
+        : mozilla::Runnable("Command")
+        , mStream(aStream)
         , mReduction(aReduction)
       {
       }
@@ -169,11 +170,11 @@ private:
       float mReduction;
     };
 
-    NS_DispatchToMainThread(new Command(aStream, aReduction));
+    mAbstractMainThread->Dispatch(do_AddRef(new Command(aStream, aReduction)));
   }
 
 private:
-  AudioNodeStream* mDestination;
+  RefPtr<AudioNodeStream> mDestination;
   AudioParamTimeline mThreshold;
   AudioParamTimeline mKnee;
   AudioParamTimeline mRatio;

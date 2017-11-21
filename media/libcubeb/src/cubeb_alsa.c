@@ -17,6 +17,7 @@
 #include <alsa/asoundlib.h>
 #include "cubeb/cubeb.h"
 #include "cubeb-internal.h"
+#include "cubeb_utils.h"
 
 #define CUBEB_STREAM_MAX 16
 #define CUBEB_WATCHDOG_MS 10000
@@ -316,12 +317,12 @@ alsa_process_stream(cubeb_stream * stm)
   /* Capture: Pass read frames to callback function */
   if (stm->stream_type == SND_PCM_STREAM_CAPTURE && stm->bufframes > 0 &&
       (!stm->other_stream || stm->other_stream->bufframes < stm->other_stream->buffer_size)) {
-    long wrote = stm->bufframes;
+    snd_pcm_sframes_t wrote = stm->bufframes;
     struct cubeb_stream * mainstm = stm->other_stream ? stm->other_stream : stm;
     void * other_buffer = stm->other_stream ? stm->other_stream->buffer + stm->other_stream->bufframes : NULL;
 
     /* Correct write size to the other stream available space */
-    if (stm->other_stream && wrote > stm->other_stream->buffer_size - stm->other_stream->bufframes) {
+    if (stm->other_stream && wrote > (snd_pcm_sframes_t) (stm->other_stream->buffer_size - stm->other_stream->bufframes)) {
       wrote = stm->other_stream->buffer_size - stm->other_stream->bufframes;
     }
 
@@ -341,14 +342,14 @@ alsa_process_stream(cubeb_stream * stm)
   }
 
   /* Playback: Don't have enough data? Let's ask for more. */
-  if (stm->stream_type == SND_PCM_STREAM_PLAYBACK && avail > stm->bufframes &&
+  if (stm->stream_type == SND_PCM_STREAM_PLAYBACK && avail > (snd_pcm_sframes_t) stm->bufframes &&
       (!stm->other_stream || stm->other_stream->bufframes > 0)) {
     long got = avail - stm->bufframes;
     void * other_buffer = stm->other_stream ? stm->other_stream->buffer : NULL;
     char * buftail = stm->buffer + snd_pcm_frames_to_bytes(stm->pcm, stm->bufframes);
 
     /* Correct read size to the other stream available frames */
-    if (stm->other_stream && got > stm->other_stream->bufframes) {
+    if (stm->other_stream && got > (snd_pcm_sframes_t) stm->other_stream->bufframes) {
       got = stm->other_stream->bufframes;
     }
 
@@ -368,7 +369,7 @@ alsa_process_stream(cubeb_stream * stm)
   }
 
   /* Playback: Still don't have enough data? Add some silence. */
-  if (stm->stream_type == SND_PCM_STREAM_PLAYBACK && avail > stm->bufframes) {
+  if (stm->stream_type == SND_PCM_STREAM_PLAYBACK && avail > (snd_pcm_sframes_t) stm->bufframes) {
     long drain_frames = avail - stm->bufframes;
     double drain_time = (double) drain_frames / stm->params.rate;
 
@@ -933,6 +934,9 @@ alsa_stream_init_single(cubeb * ctx, cubeb_stream ** stream, char const * stream
   r = pthread_mutex_init(&stm->mutex, NULL);
   assert(r == 0);
 
+  r = pthread_cond_init(&stm->cond, NULL);
+  assert(r == 0);
+
   r = alsa_locked_pcm_open(&stm->pcm, pcm_name, stm->stream_type, ctx->local_config);
   if (r < 0) {
     alsa_stream_destroy(stm);
@@ -975,9 +979,6 @@ alsa_stream_init_single(cubeb * ctx, cubeb_stream ** stream, char const * stream
   assert(stm->saved_fds);
   r = snd_pcm_poll_descriptors(stm->pcm, stm->saved_fds, stm->nfds);
   assert((nfds_t) r == stm->nfds);
-
-  r = pthread_cond_init(&stm->cond, NULL);
-  assert(r == 0);
 
   if (alsa_register_stream(ctx, stm) != 0) {
     alsa_stream_destroy(stm);
@@ -1287,8 +1288,10 @@ alsa_stream_set_volume(cubeb_stream * stm, float volume)
 
 static int
 alsa_enumerate_devices(cubeb * context, cubeb_device_type type,
-                       cubeb_device_collection ** collection)
+                       cubeb_device_collection * collection)
 {
+  cubeb_device_info* device = NULL;
+
   if (!context)
     return CUBEB_ERROR;
 
@@ -1305,32 +1308,42 @@ alsa_enumerate_devices(cubeb * context, cubeb_device_type type,
     return CUBEB_ERROR;
   }
 
-  *collection = (cubeb_device_collection *) calloc(1, sizeof(cubeb_device_collection) + 1*sizeof(cubeb_device_info *));
-  assert(*collection);
-
   char const * a_name = "default";
-  (*collection)->device[0] = (cubeb_device_info *) calloc(1, sizeof(cubeb_device_info));
-  assert((*collection)->device[0]);
+  device = (cubeb_device_info *) calloc(1, sizeof(cubeb_device_info));
+  assert(device);
+  if (!device)
+    return CUBEB_ERROR;
 
-  (*collection)->device[0]->device_id = strdup(a_name);
-  (*collection)->device[0]->devid = (*collection)->device[0]->device_id;
-  (*collection)->device[0]->friendly_name = strdup(a_name);
-  (*collection)->device[0]->group_id = strdup(a_name);
-  (*collection)->device[0]->vendor_name = strdup(a_name);
-  (*collection)->device[0]->type = type;
-  (*collection)->device[0]->state = CUBEB_DEVICE_STATE_ENABLED;
-  (*collection)->device[0]->preferred = CUBEB_DEVICE_PREF_ALL;
-  (*collection)->device[0]->format = CUBEB_DEVICE_FMT_S16NE;
-  (*collection)->device[0]->default_format = CUBEB_DEVICE_FMT_S16NE;
-  (*collection)->device[0]->max_channels = max_channels;
-  (*collection)->device[0]->min_rate = rate;
-  (*collection)->device[0]->max_rate = rate;
-  (*collection)->device[0]->default_rate = rate;
-  (*collection)->device[0]->latency_lo = 0;
-  (*collection)->device[0]->latency_hi = 0;
+  device->device_id = a_name;
+  device->devid = (cubeb_devid) device->device_id;
+  device->friendly_name = a_name;
+  device->group_id = a_name;
+  device->vendor_name = a_name;
+  device->type = type;
+  device->state = CUBEB_DEVICE_STATE_ENABLED;
+  device->preferred = CUBEB_DEVICE_PREF_ALL;
+  device->format = CUBEB_DEVICE_FMT_S16NE;
+  device->default_format = CUBEB_DEVICE_FMT_S16NE;
+  device->max_channels = max_channels;
+  device->min_rate = rate;
+  device->max_rate = rate;
+  device->default_rate = rate;
+  device->latency_lo = 0;
+  device->latency_hi = 0;
 
-  (*collection)->count = 1;
+  collection->device = device;
+  collection->count = 1;
 
+  return CUBEB_OK;
+}
+
+static int
+alsa_device_collection_destroy(cubeb * context,
+                               cubeb_device_collection * collection)
+{
+  assert(collection->count == 1);
+  (void) context;
+  free(collection->device);
   return CUBEB_OK;
 }
 
@@ -1342,11 +1355,13 @@ static struct cubeb_ops const alsa_ops = {
   .get_preferred_sample_rate = alsa_get_preferred_sample_rate,
   .get_preferred_channel_layout = NULL,
   .enumerate_devices = alsa_enumerate_devices,
+  .device_collection_destroy = alsa_device_collection_destroy,
   .destroy = alsa_destroy,
   .stream_init = alsa_stream_init,
   .stream_destroy = alsa_stream_destroy,
   .stream_start = alsa_stream_start,
   .stream_stop = alsa_stream_stop,
+  .stream_reset_default_device = NULL,
   .stream_get_position = alsa_stream_get_position,
   .stream_get_latency = alsa_stream_get_latency,
   .stream_set_volume = alsa_stream_set_volume,

@@ -2,9 +2,9 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-add_task(function* () {
-  let tab1 = yield BrowserTestUtils.openNewForegroundTab(gBrowser, "about:blank?1");
-  let tab2 = yield BrowserTestUtils.openNewForegroundTab(gBrowser, "about:blank?2");
+add_task(async function() {
+  let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, "about:blank?1");
+  let tab2 = await BrowserTestUtils.openNewForegroundTab(gBrowser, "about:blank?2");
 
   gBrowser.selectedTab = tab1;
 
@@ -161,9 +161,9 @@ add_task(function* () {
   });
 
   extension.onMessage("change-tab", (tabId, attr, on) => {
-    let {Management: {global: {TabManager}}} = Cu.import("resource://gre/modules/Extension.jsm", {});
+    let {Management: {global: {tabTracker}}} = Cu.import("resource://gre/modules/Extension.jsm", {});
 
-    let tab = TabManager.getTab(tabId);
+    let tab = tabTracker.getTab(tabId);
 
     if (attr == "muted") {
       // Ideally we'd simulate a click on the tab audio icon for this, but the
@@ -184,7 +184,7 @@ add_task(function* () {
       // `tabs.duplicate`.
       let newTab = gBrowser.duplicateTab(tab);
       BrowserTestUtils.waitForEvent(newTab, "SSTabRestored", () => true).then(() => {
-        extension.sendMessage("change-tab-done", tabId, TabManager.getId(newTab));
+        extension.sendMessage("change-tab-done", tabId, tabTracker.getId(newTab));
       });
       return;
     }
@@ -192,12 +192,12 @@ add_task(function* () {
     extension.sendMessage("change-tab-done", tabId);
   });
 
-  yield extension.startup();
+  await extension.startup();
 
-  yield extension.awaitFinish("tab-audio");
+  await extension.awaitFinish("tab-audio");
 
-  yield extension.unload();
+  await extension.unload();
 
-  yield BrowserTestUtils.removeTab(tab1);
-  yield BrowserTestUtils.removeTab(tab2);
+  await BrowserTestUtils.removeTab(tab1);
+  await BrowserTestUtils.removeTab(tab2);
 });

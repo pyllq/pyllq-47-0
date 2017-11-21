@@ -13,8 +13,6 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/RemoteWebProgress.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "BrowserUtils",
-                                  "resource://gre/modules/BrowserUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
                                   "resource://gre/modules/NetUtil.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Prefetcher",
@@ -140,8 +138,8 @@ var ContentPolicyParent = {
         continue;
       }
       try {
-        let contentLocation = BrowserUtils.makeURI(aData.contentLocation);
-        let requestOrigin = aData.requestOrigin ? BrowserUtils.makeURI(aData.requestOrigin) : null;
+        let contentLocation = Services.io.newURI(aData.contentLocation);
+        let requestOrigin = aData.requestOrigin ? Services.io.newURI(aData.requestOrigin) : null;
 
         let result = Prefetcher.withPrefetching(aData.prefetched, aObjects, () => {
           return policy.shouldLoad(aData.contentType,
@@ -228,7 +226,7 @@ var AboutProtocolParent = {
   },
 
   getURIFlags(msg) {
-    let uri = BrowserUtils.makeURI(msg.data.uri);
+    let uri = Services.io.newURI(msg.data.uri);
     let contractID = msg.data.contractID;
     let module = Cc[contractID].getService(Ci.nsIAboutModule);
     try {
@@ -248,7 +246,7 @@ var AboutProtocolParent = {
       };
     }
 
-    let uri = BrowserUtils.makeURI(msg.data.uri);
+    let uri = Services.io.newURI(msg.data.uri);
     let channelParams;
     if (msg.data.contentPolicyType === Ci.nsIContentPolicy.TYPE_DOCUMENT) {
       // For TYPE_DOCUMENT loads, we cannot recreate the loadinfo here in the
@@ -442,7 +440,7 @@ var EventTargetParent = {
 
       // Check if |target| is somewhere on the patch from the
       // <tabbrowser> up to the root element.
-      let window = target.ownerDocument.defaultView;
+      let window = target.ownerGlobal;
       if (window && target.contains(window.gBrowser)) {
         return window;
       }
@@ -455,7 +453,7 @@ var EventTargetParent = {
   // <browser> element and the window since those are the two possible
   // results of redirectEventTarget.
   getTargets(browser) {
-    let window = browser.ownerDocument.defaultView;
+    let window = browser.ownerGlobal;
     return [browser, window];
   },
 
@@ -590,6 +588,28 @@ var EventTargetParent = {
 };
 EventTargetParent.init();
 
+// This function returns a listener that will remove itself the first time
+// it is fired.
+var selfRemovingListeners = new WeakMap();
+function makeSelfRemovingListener(addon, target, type, listener, useCapture) {
+  if (selfRemovingListeners.has(listener)) {
+    return selfRemovingListeners.get(listener);
+  }
+
+  function selfRemovingListener(event) {
+    EventTargetInterposition.methods.removeEventListener(addon, target, type,
+                                                         listener, useCapture);
+    if ("handleEvent" in listener) {
+      listener.handleEvent(event);
+    } else {
+      listener.call(event.target, event);
+    }
+  }
+  selfRemovingListeners.set(listener, selfRemovingListener);
+
+  return selfRemovingListener;
+}
+
 // This function returns a listener that will not fire on events where
 // the target is a remote xul:browser element itself. We'd rather let
 // the child process handle the event and pass it up via
@@ -631,18 +651,33 @@ function makeFilteringListener(eventType, listener) {
 var EventTargetInterposition = new Interposition("EventTargetInterposition");
 
 EventTargetInterposition.methods.addEventListener =
-  function(addon, target, type, listener, useCapture, wantsUntrusted) {
+  function(addon, target, type, listener, options, wantsUntrusted) {
     let delayed = CompatWarning.delayedWarning(
       `Registering a ${type} event listener on content DOM nodes` +
         " needs to happen in the content process.",
       addon, CompatWarning.warnings.DOM_events);
 
-    EventTargetParent.addEventListener(addon, target, type, listener, useCapture, wantsUntrusted, delayed);
-    target.addEventListener(type, makeFilteringListener(type, listener), useCapture, wantsUntrusted);
+    let useCapture =
+      options === true || (typeof options == "object" && options.capture) || false;
+    if (typeof options == "object" && options.once) {
+      listener = makeSelfRemovingListener(addon, target, type, listener, useCapture);
+    }
+
+    EventTargetParent.addEventListener(addon, target, type, listener,
+                                       useCapture, wantsUntrusted, delayed);
+    target.addEventListener(type, makeFilteringListener(type, listener),
+                            useCapture, wantsUntrusted);
   };
 
 EventTargetInterposition.methods.removeEventListener =
-  function(addon, target, type, listener, useCapture) {
+  function(addon, target, type, listener, options) {
+    let useCapture =
+      options === true || (typeof options == "object" && options.capture) || false;
+
+    if (selfRemovingListeners.has(listener)) {
+      listener = selfRemovingListeners.get(listener);
+    }
+
     EventTargetParent.removeEventListener(addon, target, type, listener, useCapture);
     target.removeEventListener(type, makeFilteringListener(type, listener), useCapture);
   };
@@ -669,7 +704,7 @@ ContentDocShellTreeItemInterposition.getters.rootTreeItem =
       return null;
     }
 
-    let chromeWin = browser.ownerDocument.defaultView;
+    let chromeWin = browser.ownerGlobal;
 
     // Return that window's docshell.
     return chromeWin.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -797,7 +832,7 @@ ContentDocumentInterposition.methods.importNode =
   };
 
 // This interposition ensures that calling browser.docShell from an
-// add-on returns a CPOW around the dochell.
+// add-on returns a CPOW around the docshell.
 var RemoteBrowserElementInterposition = new Interposition("RemoteBrowserElementInterposition",
                                                           EventTargetInterposition);
 
@@ -944,7 +979,7 @@ function wrapProgressListener(kind, listener) {
 }
 
 TabBrowserElementInterposition.methods.addProgressListener = function(addon, target, listener) {
-  if (!target.ownerDocument.defaultView.gMultiProcessBrowser) {
+  if (!target.ownerGlobal.gMultiProcessBrowser) {
     return target.addProgressListener(listener);
   }
 
@@ -953,7 +988,7 @@ TabBrowserElementInterposition.methods.addProgressListener = function(addon, tar
 };
 
 TabBrowserElementInterposition.methods.removeProgressListener = function(addon, target, listener) {
-  if (!target.ownerDocument.defaultView.gMultiProcessBrowser) {
+  if (!target.ownerGlobal.gMultiProcessBrowser) {
     return target.removeProgressListener(listener);
   }
 
@@ -962,7 +997,7 @@ TabBrowserElementInterposition.methods.removeProgressListener = function(addon, 
 };
 
 TabBrowserElementInterposition.methods.addTabsProgressListener = function(addon, target, listener) {
-  if (!target.ownerDocument.defaultView.gMultiProcessBrowser) {
+  if (!target.ownerGlobal.gMultiProcessBrowser) {
     return target.addTabsProgressListener(listener);
   }
 
@@ -971,7 +1006,7 @@ TabBrowserElementInterposition.methods.addTabsProgressListener = function(addon,
 };
 
 TabBrowserElementInterposition.methods.removeTabsProgressListener = function(addon, target, listener) {
-  if (!target.ownerDocument.defaultView.gMultiProcessBrowser) {
+  if (!target.ownerGlobal.gMultiProcessBrowser) {
     return target.removeTabsProgressListener(listener);
   }
 
@@ -1025,6 +1060,10 @@ var RemoteAddonsParent = {
     mm.addMessageListener("Addons:RegisterGlobal", this);
 
     Services.ppmm.initialProcessData.remoteAddonsParentInitted = true;
+
+    Services.ppmm.loadProcessScript("data:,new " + function() {
+      Components.utils.import("resource://gre/modules/RemoteAddonsChild.jsm");
+    }, true);
 
     this.globalToBrowser = new WeakMap();
     this.browserToGlobal = new WeakMap();

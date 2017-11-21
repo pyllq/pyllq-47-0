@@ -14,8 +14,6 @@
 #include "jsiter.h"
 #include "jspubtd.h"
 
-#include "frontend/ParseNode.h"
-
 #include "vm/Stack.h"
 
 namespace js {
@@ -32,7 +30,7 @@ BoxNonStrictThis(JSContext* cx, HandleValue thisv, MutableHandleValue vp);
 extern bool
 GetFunctionThis(JSContext* cx, AbstractFramePtr frame, MutableHandleValue res);
 
-extern bool
+extern void
 GetNonSyntacticGlobalThis(JSContext* cx, HandleObject envChain, MutableHandleValue res);
 
 /*
@@ -420,14 +418,6 @@ ThrowingOperation(JSContext* cx, HandleValue v);
 bool
 GetProperty(JSContext* cx, HandleValue value, HandlePropertyName name, MutableHandleValue vp);
 
-bool
-GetEnvironmentName(JSContext* cx, HandleObject obj, HandlePropertyName name,
-                   MutableHandleValue vp);
-
-bool
-GetEnvironmentNameForTypeOf(JSContext* cx, HandleObject obj, HandlePropertyName name,
-                            MutableHandleValue vp);
-
 JSObject*
 Lambda(JSContext* cx, HandleFunction fun, HandleObject parent);
 
@@ -447,6 +437,9 @@ bool
 SetObjectElement(JSContext* cx, HandleObject obj, HandleValue index, HandleValue value,
                  bool strict, HandleScript script, jsbytecode* pc);
 
+bool
+SetObjectElement(JSContext* cx, HandleObject obj, HandleValue index, HandleValue value,
+                 HandleValue receiver, bool strict);
 bool
 SetObjectElement(JSContext* cx, HandleObject obj, HandleValue index, HandleValue value,
                  HandleValue receiver, bool strict, HandleScript script, jsbytecode* pc);
@@ -564,7 +557,8 @@ enum class CheckIsObjectKind : uint8_t {
     IteratorNext,
     IteratorReturn,
     IteratorThrow,
-    GetIterator
+    GetIterator,
+    GetAsyncIterator
 };
 
 bool
@@ -581,10 +575,35 @@ bool
 ThrowUninitializedThis(JSContext* cx, AbstractFramePtr frame);
 
 bool
+ThrowInitializedThis(JSContext* cx, AbstractFramePtr frame);
+
+bool
 DefaultClassConstructor(JSContext* cx, unsigned argc, Value* vp);
 
 bool
 Debug_CheckSelfHosted(JSContext* cx, HandleValue v);
+
+bool
+CheckClassHeritageOperation(JSContext* cx, HandleValue heritage);
+
+JSObject*
+ObjectWithProtoOperation(JSContext* cx, HandleValue proto);
+
+JSObject*
+FunWithProtoOperation(JSContext* cx, HandleFunction fun, HandleObject parent, HandleObject proto);
+
+JSFunction*
+MakeDefaultConstructor(JSContext* cx, HandleScript script, jsbytecode* pc, HandleObject proto);
+
+JSObject*
+HomeObjectSuperBase(JSContext* cx, HandleObject homeObj);
+
+JSObject*
+SuperFunOperation(JSContext* cx, HandleObject callee);
+
+bool
+SetPropertySuper(JSContext* cx, HandleObject obj, HandleValue receiver,
+                 HandlePropertyName id, HandleValue rval, bool strict);
 
 }  /* namespace js */
 

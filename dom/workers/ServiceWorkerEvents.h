@@ -15,6 +15,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/Response.h"
 #include "mozilla/dom/workers/bindings/ServiceWorker.h"
+#include "mozilla/dom/workers/Workers.h"
 
 #include "nsProxyRelease.h"
 #include "nsContentUtils.h"
@@ -57,11 +58,7 @@ public:
     virtual bool
     WaitOnPromise(Promise& aPromise) = 0;
 
-    NS_IMETHOD_(MozExternalRefCountType)
-    AddRef() = 0;
-
-    NS_IMETHOD_(MozExternalRefCountType)
-    Release() = 0;
+    NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
   };
 
 private:

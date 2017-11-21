@@ -129,9 +129,11 @@ public:
   virtual nsresult CreateAnswer(const JsepAnswerOptions& options,
                                 std::string* answer) override;
 
-  virtual std::string GetLocalDescription() const override;
+  virtual std::string GetLocalDescription(JsepDescriptionPendingOrCurrent type)
+                                          const override;
 
-  virtual std::string GetRemoteDescription() const override;
+  virtual std::string GetRemoteDescription(JsepDescriptionPendingOrCurrent type)
+                                           const override;
 
   virtual nsresult SetLocalDescription(JsepSdpType type,
                                        const std::string& sdp) override;
@@ -168,7 +170,7 @@ public:
   }
 
   virtual bool
-  IsOfferer() const
+  IsOfferer() const override
   {
     return mIsOfferer;
   }
@@ -226,6 +228,7 @@ private:
   nsresult SetRemoteDescriptionAnswer(JsepSdpType type, UniquePtr<Sdp> answer);
   nsresult ValidateLocalDescription(const Sdp& description);
   nsresult ValidateRemoteDescription(const Sdp& description);
+  nsresult ValidateOffer(const Sdp& offer);
   nsresult ValidateAnswer(const Sdp& offer, const Sdp& answer);
   nsresult SetRemoteTracksFromDescription(const Sdp* remoteDescription);
   // Non-const because we use our Uuid generator
@@ -244,7 +247,7 @@ private:
   nsresult SetupOfferMSections(const JsepOfferOptions& options, Sdp* sdp);
   // Non-const so it can assign m-line index to tracks
   nsresult SetupOfferMSectionsByType(SdpMediaSection::MediaType type,
-                                     Maybe<size_t> offerToReceive,
+                                     const Maybe<size_t>& offerToReceive,
                                      Sdp* sdp);
   nsresult BindLocalTracks(SdpMediaSection::MediaType mediatype,
                            Sdp* sdp);
@@ -298,8 +301,10 @@ private:
 
   nsresult EnableOfferMsection(SdpMediaSection* msection);
 
-  mozilla::Sdp* GetParsedLocalDescription() const;
-  mozilla::Sdp* GetParsedRemoteDescription() const;
+  mozilla::Sdp* GetParsedLocalDescription(JsepDescriptionPendingOrCurrent type)
+                                          const;
+  mozilla::Sdp* GetParsedRemoteDescription(JsepDescriptionPendingOrCurrent type)
+                                           const;
   const Sdp* GetAnswer() const;
 
   std::vector<JsepSendingTrack> mLocalTracks;

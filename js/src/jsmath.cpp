@@ -66,8 +66,23 @@
 #  define GETRANDOM_NR 318
 # elif defined(__i386__)
 #  define GETRANDOM_NR 355
+# elif defined(__aarch64__)
+#  define GETRANDOM_NR 278
 # elif defined(__arm__)
 #  define GETRANDOM_NR 384
+// Added other architectures:
+# elif defined(__ppc64le__)
+#  define GETRANDOM_NR 359
+# elif defined(__PPC64LE__)
+#  define GETRANDOM_NR 359
+# elif defined(__ppc64__)
+#  define GETRANDOM_NR 359
+# elif defined(__PPC64__)
+#  define GETRANDOM_NR 359
+# elif defined(__s390x__)
+#  define GETRANDOM_NR 349
+# elif defined(__s390__)
+#  define GETRANDOM_NR 349
 # endif
 
 # if defined(SYS_getrandom)
@@ -116,7 +131,7 @@ static const JSConstDoubleSpec math_constants[] = {
     {"PI"     ,  M_PI      },
     {"SQRT2"  ,  M_SQRT2   },
     {"SQRT1_2",  M_SQRT1_2 },
-    {0,0}
+    {nullptr  ,  0         }
 };
 
 MathCache::MathCache() {
@@ -191,7 +206,7 @@ js::math_acos(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -226,7 +241,7 @@ js::math_asin(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -261,7 +276,7 @@ js::math_atan(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -380,7 +395,7 @@ js::math_cos(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -415,7 +430,7 @@ js::math_exp(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -533,7 +548,7 @@ js::math_log_handle(JSContext* cx, HandleValue val, MutableHandleValue res)
     if (!ToNumber(cx, val, &in))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -875,7 +890,7 @@ js::math_sin_handle(JSContext* cx, HandleValue val, MutableHandleValue res)
     if (!ToNumber(cx, val, &in))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -938,7 +953,7 @@ js::math_sqrt_handle(JSContext* cx, HandleValue number, MutableHandleValue resul
     if (!ToNumber(cx, number, &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -986,7 +1001,7 @@ js::math_tan(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
 
@@ -1010,7 +1025,7 @@ static bool math_function(JSContext* cx, unsigned argc, Value* vp)
     if (!ToNumber(cx, args[0], &x))
         return false;
 
-    MathCache* mathCache = cx->caches.getMathCache(cx);
+    MathCache* mathCache = cx->caches().getMathCache(cx);
     if (!mathCache)
         return false;
     double z = F(mathCache, x);

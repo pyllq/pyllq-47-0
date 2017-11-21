@@ -15,8 +15,6 @@
 #include "nsIUnicharInputStream.h"
 #include "nsIProtocolHandler.h"
 #include "nsNetUtil.h"
-#include "prprf.h"
-#include "prmem.h"
 #include "nsTextFormatter.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsCRT.h"
@@ -28,7 +26,7 @@
 #include "nsXPCOMCIDInternal.h"
 #include "nsUnicharInputStream.h"
 #include "nsContentUtils.h"
-#include "nsNullPrincipal.h"
+#include "NullPrincipal.h"
 
 #include "mozilla/Logging.h"
 
@@ -793,7 +791,7 @@ nsExpatDriver::OpenInputStreamFromExternalDTD(const char16_t* aFPIStr,
       }
     }
     if (!loadingPrincipal) {
-      loadingPrincipal = nsNullPrincipal::Create();
+      loadingPrincipal = NullPrincipal::Create();
     }
     rv = NS_NewChannel(getter_AddRefs(channel),
                        uri,
@@ -837,7 +835,7 @@ CreateErrorText(const char16_t* aDescription,
   }
 
   aErrorString.Assign(message);
-  nsTextFormatter::smprintf_free(message);
+  free(message);
 
   return NS_OK;
 }
@@ -915,7 +913,7 @@ nsExpatDriver::HandleError()
     }
     const char16_t *nameStart = uriEnd ? uriEnd + 1 : mismatch;
     tagName.Append(nameStart, (nameEnd ? nameEnd : pos) - nameStart);
-    
+
     nsAutoString msg;
     nsParserMsgUtils::GetLocalizedStringByName(XMLPARSER_PROPERTIES,
                                                "Expected", msg);
@@ -928,7 +926,7 @@ nsExpatDriver::HandleError()
 
     description.Append(message);
 
-    nsTextFormatter::smprintf_free(message);
+    free(message);
   }
 
   // Adjust the column number so that it is one based rather than zero based.
@@ -1059,7 +1057,7 @@ nsExpatDriver::ConsumeToken(nsScanner& aScanner, bool& aFlushTokens)
   aScanner.EndReading(end);
 
   MOZ_LOG(gExpatDriverLog, LogLevel::Debug,
-         ("Remaining in expat's buffer: %i, remaining in scanner: %i.",
+         ("Remaining in expat's buffer: %i, remaining in scanner: %zu.",
           mExpatBuffered, Distance(start, end)));
 
   // We want to call Expat if we have more buffers, or if we know there won't
@@ -1207,7 +1205,7 @@ nsExpatDriver::ConsumeToken(nsScanner& aScanner, bool& aFlushTokens)
   aScanner.Mark();
 
   MOZ_LOG(gExpatDriverLog, LogLevel::Debug,
-         ("Remaining in expat's buffer: %i, remaining in scanner: %i.",
+         ("Remaining in expat's buffer: %i, remaining in scanner: %zu.",
           mExpatBuffered, Distance(currentExpatPosition, end)));
 
   return NS_SUCCEEDED(mInternalState) ? NS_ERROR_HTMLPARSER_EOF : NS_OK;
@@ -1228,12 +1226,11 @@ nsExpatDriver::WillBuildModel(const CParserContext& aParserContext,
 
   mOriginalSink = aSink;
 
-  static const XML_Memory_Handling_Suite memsuite =
-    {
-      (void *(*)(size_t))PR_Malloc,
-      (void *(*)(void *, size_t))PR_Realloc,
-      PR_Free
-    };
+  static const XML_Memory_Handling_Suite memsuite = {
+    malloc,
+    realloc,
+    free
+  };
 
   static const char16_t kExpatSeparator[] = { kExpatSeparatorChar, '\0' };
 

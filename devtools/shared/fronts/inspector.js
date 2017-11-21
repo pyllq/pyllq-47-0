@@ -23,9 +23,7 @@ const {
 const promise = require("promise");
 const defer = require("devtools/shared/defer");
 const { Task } = require("devtools/shared/task");
-const { Class } = require("sdk/core/heritage");
 const events = require("sdk/event/core");
-const object = require("sdk/util/object");
 const nodeConstants = require("devtools/shared/dom-node-constants.js");
 loader.lazyRequireGetter(this, "CommandUtils",
   "devtools/client/shared/developer-toolbar", true);
@@ -36,42 +34,42 @@ const HIDDEN_CLASS = "__fx-devtools-hide-shortcut__";
  * Convenience API for building a list of attribute modifications
  * for the `modifyAttributes` request.
  */
-const AttributeModificationList = Class({
-  initialize: function (node) {
+class AttributeModificationList {
+  constructor(node) {
     this.node = node;
     this.modifications = [];
-  },
+  }
 
-  apply: function () {
+  apply() {
     let ret = this.node.modifyAttributes(this.modifications);
     return ret;
-  },
+  }
 
-  destroy: function () {
+  destroy() {
     this.node = null;
     this.modification = null;
-  },
+  }
 
-  setAttributeNS: function (ns, name, value) {
+  setAttributeNS(ns, name, value) {
     this.modifications.push({
       attributeNamespace: ns,
       attributeName: name,
       newValue: value
     });
-  },
+  }
 
-  setAttribute: function (name, value) {
+  setAttribute(name, value) {
     this.setAttributeNS(undefined, name, value);
-  },
+  }
 
-  removeAttributeNS: function (ns, name) {
+  removeAttributeNS(ns, name) {
     this.setAttributeNS(ns, name, undefined);
-  },
+  }
 
-  removeAttribute: function (name) {
+  removeAttribute(name) {
     this.setAttributeNS(undefined, name, undefined);
   }
-});
+}
 
 /**
  * Client side of the node actor.
@@ -125,7 +123,7 @@ const NodeFront = FrontClassWithSpec(nodeSpec, {
 
     // Shallow copy of the form.  We could just store a reference, but
     // eventually we'll want to update some of the data.
-    this._form = object.merge(form);
+    this._form = Object.assign({}, form);
     this._form.attrs = this._form.attrs ? this._form.attrs.slice() : [];
 
     if (form.parent) {
@@ -348,7 +346,7 @@ const NodeFront = FrontClassWithSpec(nodeSpec, {
    * Return a new AttributeModificationList for this node.
    */
   startModifyingAttributes: function () {
-    return AttributeModificationList(this);
+    return new AttributeModificationList(this);
   },
 
   _cacheAttributes: function () {
@@ -432,7 +430,7 @@ const NodeFront = FrontClassWithSpec(nodeSpec, {
       return null;
     }
     const { DebuggerServer } = require("devtools/server/main");
-    let actor = DebuggerServer._searchAllConnectionsForActor(this.actorID);
+    let actor = DebuggerServer.searchAllConnectionsForActor(this.actorID);
     if (!actor) {
       // Can happen if we try to get the raw node for an already-expired
       // actor.
@@ -767,12 +765,13 @@ const WalkerFront = FrontClassWithSpec(walkerSpec, {
         }
 
         if (!targetFront) {
-          console.trace("Got a mutation for an unexpected actor: " + targetID +
+          console.warn("Got a mutation for an unexpected actor: " + targetID +
             ", please file a bug on bugzilla.mozilla.org!");
+          console.trace();
           continue;
         }
 
-        let emittedMutation = object.merge(change, { target: targetFront });
+        let emittedMutation = Object.assign(change, { target: targetFront });
 
         if (change.type === "childList" ||
             change.type === "nativeAnonymousChildList") {
@@ -826,8 +825,9 @@ const WalkerFront = FrontClassWithSpec(walkerSpec, {
           // first.
           for (let child of targetFront.treeChildren()) {
             if (child.nodeType === nodeConstants.DOCUMENT_NODE) {
-              console.trace("Got an unexpected frameLoad in the inspector, " +
+              console.warn("Got an unexpected frameLoad in the inspector, " +
                 "please file a bug on bugzilla.mozilla.org!");
+              console.trace();
             }
           }
         } else if (change.type === "documentUnload") {
@@ -905,7 +905,7 @@ const WalkerFront = FrontClassWithSpec(walkerSpec, {
       return null;
     }
     const { DebuggerServer } = require("devtools/server/main");
-    let walkerActor = DebuggerServer._searchAllConnectionsForActor(this.actorID);
+    let walkerActor = DebuggerServer.searchAllConnectionsForActor(this.actorID);
     if (!walkerActor) {
       throw Error("Could not find client side for actor " + this.actorID);
     }
@@ -925,7 +925,7 @@ const WalkerFront = FrontClassWithSpec(walkerSpec, {
       // Imported an already-orphaned node.
       this._orphaned.add(top);
       walkerActor._orphaned
-        .add(DebuggerServer._searchAllConnectionsForActor(top.actorID));
+        .add(DebuggerServer.searchAllConnectionsForActor(top.actorID));
     }
     return returnNode;
   },
@@ -991,11 +991,7 @@ var InspectorFront = FrontClassWithSpec(inspectorSpec, {
     if (toolbox) {
       // If the eyedropper was already started using the gcli command, hide it so we don't
       // end up with 2 instances of the eyedropper on the page.
-      let {target} = toolbox;
-      let requisition = yield CommandUtils.createRequisition(target, {
-        environment: CommandUtils.createEnvironment({target})
-      });
-      yield requisition.updateExec("eyedropper --hide");
+      CommandUtils.executeOnTarget(toolbox.target, "eyedropper --hide");
     }
 
     yield this._pickColorFromPage(options);

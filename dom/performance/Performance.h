@@ -39,8 +39,6 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(Performance,
                                            DOMEventTargetHelper)
 
-  static bool IsEnabled(JSContext* aCx, JSObject* aGlobal);
-
   static bool IsObserverEnabled(JSContext* aCx, JSObject* aGlobal);
 
   static already_AddRefed<Performance>
@@ -103,6 +101,11 @@ public:
 
   virtual nsITimedChannel* GetChannel() const = 0;
 
+  void MemoryPressure();
+
+  size_t SizeOfUserEntries(mozilla::MallocSizeOf aMallocSizeOf) const;
+  size_t SizeOfResourceEntries(mozilla::MallocSizeOf aMallocSizeOf) const;
+
 protected:
   Performance();
   explicit Performance(nsPIDOMWindowInner* aWindow);
@@ -117,8 +120,6 @@ protected:
 
   DOMHighResTimeStamp ResolveTimestampFromName(const nsAString& aName,
                                                ErrorResult& aRv);
-
-  virtual nsISupports* GetAsISupports() = 0;
 
   virtual void DispatchBufferFullEvent() = 0;
 
@@ -154,11 +155,14 @@ protected:
   nsTObserverArray<PerformanceObserver*> mObservers;
 
 private:
-  nsTArray<RefPtr<PerformanceEntry>> mUserEntries;
-  nsTArray<RefPtr<PerformanceEntry>> mResourceEntries;
+  static const uint64_t kDefaultResourceTimingBufferSize = 150;
+
+  // When kDefaultResourceTimingBufferSize is increased or removed, these should
+  // be changed to use SegmentedVector
+  AutoTArray<RefPtr<PerformanceEntry>, kDefaultResourceTimingBufferSize> mUserEntries;
+  AutoTArray<RefPtr<PerformanceEntry>, kDefaultResourceTimingBufferSize> mResourceEntries;
 
   uint64_t mResourceTimingBufferSize;
-  static const uint64_t kDefaultResourceTimingBufferSize = 150;
   bool mPendingNotificationObserversTask;
 
   RefPtr<PerformanceService> mPerformanceService;

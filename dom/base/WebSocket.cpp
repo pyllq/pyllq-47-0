@@ -32,7 +32,6 @@
 #include "nsError.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIURL.h"
-#include "nsIUnicodeEncoder.h"
 #include "nsThreadUtils.h"
 #include "nsIPromptFactory.h"
 #include "nsIWindowWatcher.h"
@@ -63,6 +62,11 @@
 #include "nsProxyRelease.h"
 #include "nsWeakReference.h"
 
+#define OPEN_EVENT_STRING NS_LITERAL_STRING("open")
+#define MESSAGE_EVENT_STRING NS_LITERAL_STRING("message")
+#define ERROR_EVENT_STRING NS_LITERAL_STRING("error")
+#define CLOSE_EVENT_STRING NS_LITERAL_STRING("close")
+
 using namespace mozilla::net;
 using namespace mozilla::dom::workers;
 
@@ -82,8 +86,7 @@ public:
   NS_DECL_NSIOBSERVER
   NS_DECL_NSIREQUEST
   NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_NSIEVENTTARGET
-  using nsIEventTarget::Dispatch;
+  NS_DECL_NSIEVENTTARGET_FULL
 
   explicit WebSocketImpl(WebSocket* aWebSocket)
   : mWebSocket(aWebSocket)
@@ -146,7 +149,7 @@ public:
 
   nsresult ConsoleError();
   void PrintErrorOnConsole(const char* aBundleURI,
-                           const char16_t* aError,
+                           const char* aError,
                            const char16_t** aFormatStrings,
                            uint32_t aFormatStringsLen);
 
@@ -242,6 +245,9 @@ public:
 
   RefPtr<WebSocketEventService> mService;
 
+  // For dispatching runnables to main thread.
+  nsCOMPtr<nsIEventTarget> mMainThreadEventTarget;
+
 private:
   ~WebSocketImpl()
   {
@@ -264,7 +270,8 @@ class CallDispatchConnectionCloseEvents final : public CancelableRunnable
 {
 public:
   explicit CallDispatchConnectionCloseEvents(WebSocketImpl* aWebSocketImpl)
-    : mWebSocketImpl(aWebSocketImpl)
+    : CancelableRunnable("dom::CallDispatchConnectionCloseEvents")
+    , mWebSocketImpl(aWebSocketImpl)
   {
     aWebSocketImpl->AssertIsOnTargetThread();
   }
@@ -291,7 +298,7 @@ class PrintErrorOnConsoleRunnable final : public WorkerMainThreadRunnable
 public:
   PrintErrorOnConsoleRunnable(WebSocketImpl* aImpl,
                               const char* aBundleURI,
-                              const char16_t* aError,
+                              const char* aError,
                               const char16_t** aFormatStrings,
                               uint32_t aFormatStringsLen)
     : WorkerMainThreadRunnable(aImpl->mWorkerPrivate,
@@ -315,7 +322,7 @@ private:
   WebSocketImpl* mImpl;
 
   const char* mBundleURI;
-  const char16_t* mError;
+  const char* mError;
   const char16_t** mFormatStrings;
   uint32_t mFormatStringsLen;
 };
@@ -324,7 +331,7 @@ private:
 
 void
 WebSocketImpl::PrintErrorOnConsole(const char *aBundleURI,
-                                   const char16_t *aError,
+                                   const char *aError,
                                    const char16_t **aFormatStrings,
                                    uint32_t aFormatStringsLen)
 {
@@ -400,9 +407,11 @@ namespace {
 class CancelWebSocketRunnable final : public Runnable
 {
 public:
-  CancelWebSocketRunnable(nsIWebSocketChannel* aChannel, uint16_t aReasonCode,
+  CancelWebSocketRunnable(nsIWebSocketChannel* aChannel,
+                          uint16_t aReasonCode,
                           const nsACString& aReasonString)
-    : mChannel(aChannel)
+    : Runnable("dom::CancelWebSocketRunnable")
+    , mChannel(aChannel)
     , mReasonCode(aReasonCode)
     , mReasonString(aReasonString)
   {}
@@ -454,7 +463,8 @@ public:
   CloseConnectionRunnable(WebSocketImpl* aImpl,
                           uint16_t aReasonCode,
                           const nsACString& aReasonString)
-    : mImpl(aImpl)
+    : Runnable("dom::CloseConnectionRunnable")
+    , mImpl(aImpl)
     , mReasonCode(aReasonCode)
     , mReasonString(aReasonString)
   {}
@@ -551,11 +561,11 @@ WebSocketImpl::ConsoleError()
 
   if (mWebSocket->ReadyState() < WebSocket::OPEN) {
     PrintErrorOnConsole("chrome://global/locale/appstrings.properties",
-                        u"connectionFailure",
+                        "connectionFailure",
                         formatStrings, ArrayLength(formatStrings));
   } else {
     PrintErrorOnConsole("chrome://global/locale/appstrings.properties",
-                        u"netInterrupt",
+                        "netInterrupt",
                         formatStrings, ArrayLength(formatStrings));
   }
   /// todo some specific errors - like for message too large
@@ -610,6 +620,10 @@ WebSocketImpl::Disconnect()
 
   AssertIsOnTargetThread();
 
+  // DontKeepAliveAnyMore() and DisconnectInternal() can release the object. So
+  // hold a reference to this until the end of the method.
+  RefPtr<WebSocketImpl> kungfuDeathGrip = this;
+
   // Disconnect can be called from some control event (such as Notify() of
   // WorkerHolder). This will be schedulated before any other sync/async
   // runnable. In order to prevent some double Disconnect() calls, we use this
@@ -631,12 +645,10 @@ WebSocketImpl::Disconnect()
     rv.SuppressException();
   }
 
-  // DontKeepAliveAnyMore() can release the object. So hold a reference to this
-  // until the end of the method.
-  RefPtr<WebSocketImpl> kungfuDeathGrip = this;
-
-  NS_ReleaseOnMainThread(mChannel.forget());
-  NS_ReleaseOnMainThread(mService.forget());
+  NS_ReleaseOnMainThreadSystemGroup("WebSocketImpl::mChannel",
+                                    mChannel.forget());
+  NS_ReleaseOnMainThreadSystemGroup("WebSocketImpl::mService",
+                                    mService.forget());
 
   mWebSocket->DontKeepAliveAnyMore();
   mWebSocket->mImpl = nullptr;
@@ -781,7 +793,7 @@ WebSocketImpl::OnStart(nsISupports* aContext)
   RefPtr<WebSocket> webSocket = mWebSocket;
 
   // Call 'onopen'
-  rv = webSocket->CreateAndDispatchSimpleEvent(NS_LITERAL_STRING("open"));
+  rv = webSocket->CreateAndDispatchSimpleEvent(OPEN_EVENT_STRING);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch the open event");
   }
@@ -845,11 +857,16 @@ WebSocketImpl::OnAcknowledge(nsISupports *aContext, uint32_t aSize)
     return NS_OK;
   }
 
-  if (aSize > mWebSocket->mOutgoingBufferedAmount) {
+  MOZ_RELEASE_ASSERT(mWebSocket->mOutgoingBufferedAmount.isValid());
+  if (aSize > mWebSocket->mOutgoingBufferedAmount.value()) {
     return NS_ERROR_UNEXPECTED;
   }
 
   mWebSocket->mOutgoingBufferedAmount -= aSize;
+  if (!mWebSocket->mOutgoingBufferedAmount.isValid()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
   return NS_OK;
 }
 
@@ -1429,32 +1446,6 @@ WebSocket::ConstructorCommon(const GlobalObject& aGlobal,
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WebSocket)
 
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(WebSocket)
-  bool isBlack = tmp->IsBlack();
-  if (isBlack || tmp->mKeepingAlive) {
-    if (tmp->mListenerManager) {
-      tmp->mListenerManager->MarkForCC();
-    }
-    if (!isBlack && tmp->PreservingWrapper()) {
-      // This marks the wrapper black.
-      tmp->GetWrapper();
-    }
-    return true;
-  }
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_END
-
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_IN_CC_BEGIN(WebSocket)
-  return tmp->IsBlack();
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_IN_CC_END
-
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_BEGIN(WebSocket)
-  return tmp->IsBlack();
-NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WebSocket,
-                                               DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_TRACE_END
-
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WebSocket,
                                                   DOMEventTargetHelper)
   if (tmp->mImpl) {
@@ -1470,6 +1461,12 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WebSocket,
     MOZ_ASSERT(!tmp->mImpl);
   }
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+bool
+WebSocket::IsCertainlyAliveForCC() const
+{
+  return mKeepingAlive;
+}
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(WebSocket)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
@@ -1595,8 +1592,7 @@ WebSocketImpl::Init(JSContext* aCx,
                                    EmptyCString(),
                                    nullptr,
                                    &shouldLoad,
-                                   nsContentUtils::GetContentPolicy(),
-                                   nsContentUtils::GetSecurityManager());
+                                   nsContentUtils::GetContentPolicy());
     NS_ENSURE_SUCCESS(rv, rv);
 
     if (NS_CP_REJECTED(shouldLoad)) {
@@ -1623,7 +1619,7 @@ WebSocketImpl::Init(JSContext* aCx,
     mSecure = true;
 
     const char16_t* params[] = { reportSpec.get(), u"wss" };
-    CSP_LogLocalizedStr(u"upgradeInsecureRequest",
+    CSP_LogLocalizedStr("upgradeInsecureRequest",
                         params, ArrayLength(params),
                         EmptyString(), // aSourceFile
                         EmptyString(), // aScriptSample
@@ -1654,13 +1650,12 @@ WebSocketImpl::Init(JSContext* aCx,
       nsCOMPtr<nsPIDOMWindowInner> innerWindow;
 
       while (true) {
-        bool isNullPrincipal = true;
         if (principal) {
+          bool isNullPrincipal = true;
           isNullPrincipal = principal->GetIsNullPrincipal();
-        }
-
-        if (!isNullPrincipal) {
-          break;
+          if (isNullPrincipal || nsContentUtils::IsSystemPrincipal(principal)) {
+            break;
+          }
         }
 
         if (!innerWindow) {
@@ -1696,12 +1691,20 @@ WebSocketImpl::Init(JSContext* aCx,
             break;
           }
 
+          if (parentWindow->GetScriptableTop() ==
+                innerWindow->GetScriptableTop()) {
+            break;
+          }
+
           currentInnerWindow = parentWindow->GetCurrentInnerWindow();
           if (NS_WARN_IF(!currentInnerWindow)) {
             return NS_ERROR_DOM_SECURITY_ERR;
           }
 
-          MOZ_ASSERT(currentInnerWindow != innerWindow);
+          if (currentInnerWindow == innerWindow) {
+            // The opener may be the same outer window as the parent.
+            break;
+          }
         }
 
         innerWindow = currentInnerWindow;
@@ -1881,6 +1884,10 @@ WebSocketImpl::InitializeConnection(nsIPrincipal* aPrincipal)
 
   mChannel = wsChannel;
 
+  if (mIsMainThread && doc) {
+    mMainThreadEventTarget = doc->EventTargetFor(TaskCategory::Other);
+  }
+
   return NS_OK;
 }
 
@@ -1902,7 +1909,7 @@ WebSocketImpl::DispatchConnectionCloseEvents()
   // Call 'onerror' if needed
   if (mFailed) {
     nsresult rv =
-      webSocket->CreateAndDispatchSimpleEvent(NS_LITERAL_STRING("error"));
+      webSocket->CreateAndDispatchSimpleEvent(ERROR_EVENT_STRING);
     if (NS_FAILED(rv)) {
       NS_WARNING("Failed to dispatch the error event");
     }
@@ -2014,7 +2021,7 @@ WebSocket::CreateAndDispatchMessageEvent(const nsACString& aData,
 
   RefPtr<MessageEvent> event = new MessageEvent(this, nullptr, nullptr);
 
-  event->InitMessageEvent(nullptr, NS_LITERAL_STRING("message"), false, false,
+  event->InitMessageEvent(nullptr, MESSAGE_EVENT_STRING, false, false,
                           jsData, mImpl->mUTF16Origin, EmptyString(), nullptr,
                           Sequence<OwningNonNull<MessagePort>>());
   event->SetTrusted(true);
@@ -2051,7 +2058,7 @@ WebSocket::CreateAndDispatchCloseEvent(bool aWasClean,
   init.mReason = aReason;
 
   RefPtr<CloseEvent> event =
-    CloseEvent::Constructor(this, NS_LITERAL_STRING("close"), init);
+    CloseEvent::Constructor(this, CLOSE_EVENT_STRING, init);
   event->SetTrusted(true);
 
   return DispatchDOMEvent(nullptr, event, nullptr, nullptr);
@@ -2171,10 +2178,10 @@ WebSocket::UpdateMustKeepAlive()
     {
       case CONNECTING:
       {
-        if (mListenerManager->HasListenersFor(nsGkAtoms::onopen) ||
-            mListenerManager->HasListenersFor(nsGkAtoms::onmessage) ||
-            mListenerManager->HasListenersFor(nsGkAtoms::onerror) ||
-            mListenerManager->HasListenersFor(nsGkAtoms::onclose)) {
+        if (mListenerManager->HasListenersFor(OPEN_EVENT_STRING) ||
+            mListenerManager->HasListenersFor(MESSAGE_EVENT_STRING) ||
+            mListenerManager->HasListenersFor(ERROR_EVENT_STRING) ||
+            mListenerManager->HasListenersFor(CLOSE_EVENT_STRING)) {
           shouldKeepAlive = true;
         }
       }
@@ -2183,10 +2190,10 @@ WebSocket::UpdateMustKeepAlive()
       case OPEN:
       case CLOSING:
       {
-        if (mListenerManager->HasListenersFor(nsGkAtoms::onmessage) ||
-            mListenerManager->HasListenersFor(nsGkAtoms::onerror) ||
-            mListenerManager->HasListenersFor(nsGkAtoms::onclose) ||
-            mOutgoingBufferedAmount != 0) {
+        if (mListenerManager->HasListenersFor(MESSAGE_EVENT_STRING) ||
+            mListenerManager->HasListenersFor(ERROR_EVENT_STRING) ||
+            mListenerManager->HasListenersFor(CLOSE_EVENT_STRING) ||
+            mOutgoingBufferedAmount.value() != 0) {
           shouldKeepAlive = true;
         }
       }
@@ -2368,7 +2375,8 @@ uint32_t
 WebSocket::BufferedAmount() const
 {
   AssertIsOnTargetThread();
-  return mOutgoingBufferedAmount;
+  MOZ_RELEASE_ASSERT(mOutgoingBufferedAmount.isValid());
+  return mOutgoingBufferedAmount.value();
 }
 
 // webIDL: attribute BinaryType binaryType;
@@ -2502,6 +2510,10 @@ WebSocket::Send(nsIInputStream* aMsgStream,
 
   // Always increment outgoing buffer len, even if closed
   mOutgoingBufferedAmount += aMsgLength;
+  if (!mOutgoingBufferedAmount.isValid()) {
+    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+    return;
+  }
 
   if (readyState == CLOSING ||
       readyState == CLOSED) {
@@ -2848,9 +2860,12 @@ NS_IMETHODIMP
 WebSocketImpl::Dispatch(already_AddRefed<nsIRunnable> aEvent, uint32_t aFlags)
 {
   nsCOMPtr<nsIRunnable> event_ref(aEvent);
-  // If the target is the main-thread we can just dispatch the runnable.
+  // If the target is the main-thread, we should try to dispatch the runnable
+  // to a labeled event target.
   if (mIsMainThread) {
-    return NS_DispatchToMainThread(event_ref.forget());
+    return mMainThreadEventTarget
+      ? mMainThreadEventTarget->Dispatch(event_ref.forget())
+      : GetMainThreadEventTarget()->Dispatch(event_ref.forget());
   }
 
   MutexAutoLock lock(mMutex);
@@ -2887,6 +2902,12 @@ WebSocketImpl::IsOnCurrentThread(bool* aResult)
 {
   *aResult = IsTargetThread();
   return NS_OK;
+}
+
+NS_IMETHODIMP_(bool)
+WebSocketImpl::IsOnCurrentThreadInfallible()
+{
+  return IsTargetThread();
 }
 
 bool

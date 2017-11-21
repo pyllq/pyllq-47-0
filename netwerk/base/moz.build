@@ -32,11 +32,9 @@ XPIDL_SOURCES += [
     'nsIChannelEventSink.idl',
     'nsIChannelWithDivertableParentListener.idl',
     'nsIChildChannel.idl',
+    'nsIClassifiedChannel.idl',
     'nsIClassOfService.idl',
     'nsIContentSniffer.idl',
-    'nsICryptoFIPSInfo.idl',
-    'nsICryptoHash.idl',
-    'nsICryptoHMAC.idl',
     'nsIDashboard.idl',
     'nsIDashboardEventNotifier.idl',
     'nsIDeprecationWarner.idl',
@@ -71,7 +69,6 @@ XPIDL_SOURCES += [
     'nsINetworkPredictor.idl',
     'nsINetworkPredictorVerifier.idl',
     'nsINetworkProperties.idl',
-    'nsINSSErrorsService.idl',
     'nsINullChannel.idl',
     'nsIParentChannel.idl',
     'nsIParentRedirectingChannel.idl',
@@ -90,6 +87,7 @@ XPIDL_SOURCES += [
     'nsIProxyInfo.idl',
     'nsIRandomGenerator.idl',
     'nsIRedirectChannelRegistrar.idl',
+    'nsIRedirectHistoryEntry.idl',
     'nsIRedirectResultListener.idl',
     'nsIRequest.idl',
     'nsIRequestContext.idl',
@@ -153,7 +151,6 @@ EXPORTS += [
     'nsInputStreamPump.h',
     'nsMIMEInputStream.h',
     'nsNetUtil.h',
-    'nsNetUtilInlines.h',
     'nsReadLine.h',
     'nsSerializationHelper.h',
     'nsSimpleNestedURI.h',
@@ -163,12 +160,14 @@ EXPORTS += [
     'nsURIHashKey.h',
     'nsURLHelper.h',
     'nsURLParsers.h',
+    'SimpleChannel.h',
 ]
 
 EXPORTS.mozilla += [
     'LoadContextInfo.h',
     'LoadInfo.h',
     'LoadTainting.h',
+    'nsRedirectHistoryEntry.h',
 ]
 
 EXPORTS.mozilla.net += [
@@ -180,12 +179,9 @@ EXPORTS.mozilla.net += [
     'MemoryDownloader.h',
     'Predictor.h',
     'ReferrerPolicy.h',
+    'SimpleChannelParent.h',
+    'TCPFastOpen.h',
 ]
-
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
-    EXPORTS += [
-        'NetStatistics.h',
-    ]
 
 UNIFIED_SOURCES += [
     'ArrayBufferInputStream.cpp',
@@ -225,6 +221,7 @@ UNIFIED_SOURCES += [
     'nsPreloadedStream.cpp',
     'nsProtocolProxyService.cpp',
     'nsProxyInfo.cpp',
+    'nsRedirectHistoryEntry.cpp',
     'nsRequestObserverProxy.cpp',
     'nsSecCheckWrapChannel.cpp',
     'nsSerializationHelper.cpp',
@@ -252,13 +249,16 @@ UNIFIED_SOURCES += [
     'RedirectChannelRegistrar.cpp',
     'RequestContextService.cpp',
     'SimpleBuffer.cpp',
+    'SimpleChannel.cpp',
+    'SimpleChannelParent.cpp',
     'StreamingProtocolService.cpp',
+    'TCPFastOpenLayer.cpp',
     'ThrottleQueue.cpp',
     'Tickler.cpp',
     'TLSServerSocket.cpp',
 ]
 
-if CONFIG['MOZ_RUST'] and CONFIG['MOZ_RUST_URLPARSE']:
+if CONFIG['MOZ_RUST_URLPARSE']:
     EXPORTS.mozilla.net += [ 'RustURL.h' ]
     UNIFIED_SOURCES += [ 'RustURL.cpp' ]
 

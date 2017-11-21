@@ -10,8 +10,8 @@ var Feedback = {
     return this._feedbackURL = Services.urlFormatter.formatURLPref("app.feedbackURL");
   },
 
-  observe: function(aMessage, aTopic, aData) {
-    if (aTopic !== "Feedback:Show") {
+  onEvent: function(event, data, callback) {
+    if (event !== "Feedback:Show") {
       return;
     }
 
@@ -52,7 +52,7 @@ var Feedback = {
         break;
     }
 
-    let win = event.target.ownerDocument.defaultView.top;
+    let win = event.target.ownerGlobal.top;
     BrowserApp.closeTab(BrowserApp.getTabForWindow(win));
   },
 

@@ -3,6 +3,8 @@
 
 #include <jni.h>
 
+#include "nsThreadUtils.h"
+
 #include "mozilla/IndexSequence.h"
 #include "mozilla/Move.h"
 #include "mozilla/RefPtr.h"
@@ -15,6 +17,22 @@
 #include "mozilla/jni/Refs.h"
 #include "mozilla/jni/Types.h"
 #include "mozilla/jni/Utils.h"
+
+struct NativeException {
+    const char* str;
+};
+
+template<class T> static
+NativeException NullHandle()
+{
+    return { __func__ };
+}
+
+template<class T> static
+NativeException NullWeakPtr()
+{
+    return { __func__ };
+}
 
 namespace mozilla {
 namespace jni {
@@ -42,7 +60,7 @@ namespace jni {
  *
  *       void AttachTo(const MyJavaClass::LocalRef& instance)
  *       {
- *           MyJavaClass::Natives<MyClass>::AttachInstance(
+ *           MyJavaClass::Natives<MyClass>::AttachNative(
  *                   instance, static_cast<SupportsWeakPtr<MyClass>*>(this));
  *
  *           // "instance" does NOT own "this", so the C++ object
@@ -68,7 +86,7 @@ namespace jni {
  *
  *       void AttachTo(const MyJavaClass::LocalRef& instance)
  *       {
- *           MyJavaClass::Natives<MyClass>::AttachInstance(instance, this);
+ *           MyJavaClass::Natives<MyClass>::AttachNative(instance, this);
  *
  *           // "instance" owns "this" through the RefPtr, so the C++ object
  *           // may be destroyed as soon as instance.disposeNative() is called.
@@ -89,7 +107,7 @@ namespace jni {
  *
  *       static void AttachTo(const MyJavaClass::LocalRef& instance)
  *       {
- *           MyJavaClass::Natives<MyClass>::AttachInstance(
+ *           MyJavaClass::Natives<MyClass>::AttachNative(
  *                   instance, mozilla::MakeUnique<MyClass>());
  *
  *           // "instance" owns the newly created C++ object, so the C++
@@ -124,12 +142,14 @@ public:
     static const int value = sizeof(Test<Impl>('\0')) / sizeof(char);
 };
 
+template<class Impl>
 inline uintptr_t CheckNativeHandle(JNIEnv* env, uintptr_t handle)
 {
     if (!handle) {
         if (!env->ExceptionCheck()) {
-            ThrowException(env, "java/lang/NullPointerException",
-                           "Null native pointer");
+            ThrowException(env,
+                           "java/lang/NullPointerException",
+                           NullHandle<Impl>().str);
         }
         return 0;
     }
@@ -143,7 +163,7 @@ struct NativePtr<Impl, /* Type = */ NativePtrType::OWNING>
 {
     static Impl* Get(JNIEnv* env, jobject instance)
     {
-        return reinterpret_cast<Impl*>(CheckNativeHandle(
+        return reinterpret_cast<Impl*>(CheckNativeHandle<Impl>(
                 env, GetNativeHandle(env, instance)));
     }
 
@@ -182,15 +202,16 @@ struct NativePtr<Impl, /* Type = */ NativePtrType::WEAK>
     static Impl* Get(JNIEnv* env, jobject instance)
     {
         const auto ptr = reinterpret_cast<WeakPtr<Impl>*>(
-                CheckNativeHandle(env, GetNativeHandle(env, instance)));
+                CheckNativeHandle<Impl>(env, GetNativeHandle(env, instance)));
         if (!ptr) {
             return nullptr;
         }
 
         Impl* const impl = *ptr;
         if (!impl) {
-            ThrowException(env, "java/lang/NullPointerException",
-                           "Native weak object already released");
+            ThrowException(env,
+                           "java/lang/NullPointerException",
+                           NullWeakPtr<Impl>().str);
         }
         return impl;
     }
@@ -231,7 +252,7 @@ struct NativePtr<Impl, /* Type = */ NativePtrType::REFPTR>
     static Impl* Get(JNIEnv* env, jobject instance)
     {
         const auto ptr = reinterpret_cast<RefPtr<Impl>*>(
-                CheckNativeHandle(env, GetNativeHandle(env, instance)));
+                CheckNativeHandle<Impl>(env, GetNativeHandle(env, instance)));
         if (!ptr) {
             return nullptr;
         }
@@ -350,7 +371,7 @@ template<class C> struct ProxyArg<LocalRef<C>> : ProxyArg<typename C::Ref> {};
 template<class Impl, class Owner, bool IsStatic,
          bool HasThisArg /* has instance/class local ref in the call */,
          typename... Args>
-class ProxyNativeCall : public AbstractCall
+class ProxyNativeCall
 {
     // "this arg" refers to the Class::LocalRef (for static methods) or
     // Owner::LocalRef (for instance methods) that we optionally (as indicated
@@ -426,6 +447,13 @@ class ProxyNativeCall : public AbstractCall
         mozilla::Unused << dummy;
     }
 
+    static Impl* GetNativeObject(Class::Param thisArg) { return nullptr; }
+
+    static Impl* GetNativeObject(typename Owner::Param thisArg)
+    {
+        return NativePtr<Impl>::Get(GetEnvForThread(), thisArg.Get());
+    }
+
 public:
     // The class that implements the call target.
     typedef Impl TargetClass;
@@ -448,6 +476,10 @@ public:
     // Get class ref for static calls or object ref for instance calls.
     typename ThisArgClass::Param GetThisArg() const { return mThisArg; }
 
+    // Get the native object targeted by this call.
+    // Returns nullptr for static calls.
+    Impl* GetNativeObject() const { return GetNativeObject(mThisArg); }
+
     // Return if target is the given function pointer / pointer-to-member.
     // Because we can only compare pointers of the same type, we use a
     // templated overload that is chosen only if given a different type of
@@ -460,7 +492,7 @@ public:
     void SetTarget(NativeCallType call) { mNativeCall = call; }
     template<typename T> void SetTarget(T&&) const { MOZ_CRASH(); }
 
-    void operator()() override
+    void operator()()
     {
         JNIEnv* const env = GetEnvForThread();
         typename ThisArgClass::LocalRef thisArg(env, mThisArg);
@@ -493,22 +525,44 @@ struct Dispatcher
     template<class Traits, bool IsStatic = Traits::isStatic,
              typename ThisArg, typename... ProxyArgs>
     static typename EnableIf<
+            Traits::dispatchTarget == DispatchTarget::GECKO_PRIORITY, void>::Type
+    Run(ThisArg thisArg, ProxyArgs&&... args)
+    {
+        // For a static method, do not forward the "this arg" (i.e. the class
+        // local ref) if the implementation does not request it. This saves us
+        // a pair of calls to add/delete global ref.
+        auto proxy = ProxyNativeCall<Impl, typename Traits::Owner, IsStatic,
+                                     HasThisArg, Args...>(
+                (HasThisArg || !IsStatic) ? thisArg : nullptr,
+                Forward<ProxyArgs>(args)...);
+        DispatchToGeckoPriorityQueue(
+                NS_NewRunnableFunction("PriorityNativeCall", Move(proxy)));
+    }
+
+    template<class Traits, bool IsStatic = Traits::isStatic,
+             typename ThisArg, typename... ProxyArgs>
+    static typename EnableIf<
             Traits::dispatchTarget == DispatchTarget::GECKO, void>::Type
     Run(ThisArg thisArg, ProxyArgs&&... args)
     {
         // For a static method, do not forward the "this arg" (i.e. the class
         // local ref) if the implementation does not request it. This saves us
         // a pair of calls to add/delete global ref.
-        DispatchToGeckoThread(MakeUnique<ProxyNativeCall<
-                Impl, typename Traits::Owner, IsStatic, HasThisArg,
-                Args...>>(HasThisArg || !IsStatic ? thisArg : nullptr,
-                          Forward<ProxyArgs>(args)...));
+        auto proxy = ProxyNativeCall<Impl, typename Traits::Owner, IsStatic,
+                                     HasThisArg, Args...>(
+                (HasThisArg || !IsStatic) ? thisArg : nullptr,
+                Forward<ProxyArgs>(args)...);
+        NS_DispatchToMainThread(
+                NS_NewRunnableFunction("GeckoNativeCall", Move(proxy)));
     }
 
     template<class Traits, bool IsStatic = false, typename... ProxyArgs>
     static typename EnableIf<
             Traits::dispatchTarget == DispatchTarget::CURRENT, void>::Type
-    Run(ProxyArgs&&... args) {}
+    Run(ProxyArgs&&... args)
+    {
+        MOZ_CRASH("Unreachable code");
+    }
 };
 
 } // namespace detail

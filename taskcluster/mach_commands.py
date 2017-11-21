@@ -9,6 +9,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import json
 import logging
+import os
 import sys
 import traceback
 import re
@@ -21,8 +22,6 @@ from mach.decorators import (
 )
 
 from mozbuild.base import MachCommandBase
-
-ARTIFACT_URL = 'https://queue.taskcluster.net/v1/task/{}/artifacts/{}'
 
 
 class ShowTaskGraphSubCommand(SubCommand):
@@ -43,7 +42,7 @@ class ShowTaskGraphSubCommand(SubCommand):
             CommandArgument('--labels', '-L', action="store_const",
                             dest="format", const="labels",
                             help="Output the label for each task in the task graph (default)"),
-            CommandArgument('--parameters', '-p', required=True,
+            CommandArgument('--parameters', '-p', default="project=mozilla-central",
                             help="parameters file (.yml or .json; see "
                                  "`taskcluster/docs/parameters.rst`)`"),
             CommandArgument('--no-optimize', dest="optimize", action="store_false",
@@ -72,17 +71,6 @@ class MachCommands(MachCommandBase):
         and that build may further depend on various toolchains, libraries, etc.
         """
 
-    @SubCommand('taskgraph', 'python-tests',
-                description='Run the taskgraph unit tests')
-    def taskgraph_python_tests(self, **options):
-        import unittest
-        import mozunit
-        suite = unittest.defaultTestLoader.discover('taskgraph.test')
-        runner = mozunit.MozTestRunner(verbosity=2)
-        result = runner.run(suite)
-        if not result.wasSuccessful():
-            sys.exit(1)
-
     @ShowTaskGraphSubCommand('taskgraph', 'tasks',
                              description="Show all tasks in the taskgraph")
     def taskgraph_tasks(self, **options):
@@ -107,6 +95,11 @@ class MachCommands(MachCommandBase):
                              description="Show the optimized taskgraph")
     def taskgraph_optimized(self, **options):
         return self.show_taskgraph('optimized_task_graph', options)
+
+    @ShowTaskGraphSubCommand('taskgraph', 'morphed',
+                             description="Show the morphed taskgraph")
+    def taskgraph_morphed(self, **options):
+        return self.show_taskgraph('morphed_task_graph', options)
 
     @SubCommand('taskgraph', 'decision',
                 description="Run the decision task")
@@ -146,10 +139,6 @@ class MachCommands(MachCommandBase):
     @CommandArgument('--level',
                      required=True,
                      help='SCM level of this repository')
-    @CommandArgument('--triggered-by',
-                     choices=['nightly', 'push'],
-                     default='push',
-                     help='Source of execution of the decision graph')
     @CommandArgument('--target-tasks-method',
                      help='method for selecting the target tasks to generate')
     def taskgraph_decision(self, **options):
@@ -278,6 +267,117 @@ class MachCommands(MachCommandBase):
             traceback.print_exc()
             sys.exit(1)
 
+    @SubCommand('taskgraph', 'add-talos',
+                description="Run the add-talos task")
+    @CommandArgument('--root', '-r',
+                     default='taskcluster/ci',
+                     help="root of the taskgraph definition relative to topsrcdir")
+    @CommandArgument('--decision-task-id',
+                     required=True,
+                     help="Id of the decision task that is part of the push to be talos'd")
+    @CommandArgument('--times',
+                     required=False,
+                     default=1,
+                     type=int,
+                     help="Number of times to add each job.")
+    def taskgraph_add_talos(self, **options):
+        """Add all talos jobs for a push."""
+
+        import taskgraph.action
+        try:
+            self.setup_logging()
+            return taskgraph.action.add_talos(options['decision_task_id'], options['times'])
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+
+    @SubCommand('taskgraph', 'action-callback',
+                description='Run action callback used by action tasks')
+    def action_callback(self, **options):
+        import taskgraph.actions
+        try:
+            self.setup_logging()
+
+            task_group_id = os.environ.get('ACTION_TASK_GROUP_ID', None)
+            task_id = json.loads(os.environ.get('ACTION_TASK_ID', 'null'))
+            task = json.loads(os.environ.get('ACTION_TASK', 'null'))
+            input = json.loads(os.environ.get('ACTION_INPUT', 'null'))
+            callback = os.environ.get('ACTION_CALLBACK', None)
+            parameters = json.loads(os.environ.get('ACTION_PARAMETERS', '{}'))
+
+            return taskgraph.actions.trigger_action_callback(
+                    task_group_id=task_group_id,
+                    task_id=task_id,
+                    task=task,
+                    input=input,
+                    callback=callback,
+                    parameters=parameters,
+                    test=False)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+
+    @SubCommand('taskgraph', 'test-action-callback',
+                description='Run an action callback in a testing mode')
+    @CommandArgument('--parameters', '-p', default='project=mozilla-central',
+                     help='parameters file (.yml or .json; see '
+                          '`taskcluster/docs/parameters.rst`)`')
+    @CommandArgument('--task-id', default=None,
+                     help='TaskId to which the action applies')
+    @CommandArgument('--task-group-id', default=None,
+                     help='TaskGroupId to which the action applies')
+    @CommandArgument('--input', default=None,
+                     help='Action input (.yml or .json)')
+    @CommandArgument('--task', default=None,
+                     help='Task definition (.yml or .json; if omitted, the task will be'
+                          'fetched from the queue)')
+    @CommandArgument('callback', default=None,
+                     help='Action callback name (Python function name)')
+    def test_action_callback(self, **options):
+        import taskgraph.parameters
+        from taskgraph.util.taskcluster import get_task_definition
+        import taskgraph.actions
+        import yaml
+
+        def load_data(filename):
+            with open(filename) as f:
+                if filename.endswith('.yml'):
+                    return yaml.safe_load(f)
+                elif filename.endswith('.json'):
+                    return json.load(f)
+                else:
+                    raise Exception("unknown filename {}".format(filename))
+
+        try:
+            self.setup_logging()
+            task_id = options['task_id']
+            if options['task']:
+                task = load_data(options['task'])
+            elif task_id:
+                task = get_task_definition(task_id)
+            else:
+                task = None
+
+            if options['input']:
+                input = load_data(options['input'])
+            else:
+                input = None
+
+            parameters = taskgraph.parameters.load_parameters_file(options['parameters'])
+            parameters.check()
+
+            return taskgraph.actions.trigger_action_callback(
+                    task_group_id=options['task_group_id'],
+                    task_id=task_id,
+                    task=task,
+                    input=input,
+                    callback=options['callback'],
+                    parameters=parameters,
+                    test=True)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+
     def setup_logging(self, quiet=False, verbose=True):
         """
         Set up Python logging for all loggers, sending results to stderr (so
@@ -305,7 +405,7 @@ class MachCommands(MachCommandBase):
 
         try:
             self.setup_logging(quiet=options['quiet'], verbose=options['verbose'])
-            parameters = taskgraph.parameters.load_parameters_file(options)
+            parameters = taskgraph.parameters.load_parameters_file(options['parameters'])
             parameters.check()
 
             tgg = taskgraph.generator.TaskGraphGenerator(

@@ -26,8 +26,13 @@ const {
 const StyleInspectorMenu = require("devtools/client/inspector/shared/style-inspector-menu");
 const TooltipsOverlay = require("devtools/client/inspector/shared/tooltips-overlay");
 const KeyShortcuts = require("devtools/client/shared/key-shortcuts");
-const BoxModelView = require("devtools/client/inspector/components/box-model");
 const clipboardHelper = require("devtools/shared/platform/clipboard");
+
+const { createElement, createFactory } = require("devtools/client/shared/vendor/react");
+const ReactDOM = require("devtools/client/shared/vendor/react-dom");
+const { Provider } = require("devtools/client/shared/vendor/react-redux");
+
+const BoxModelApp = createFactory(require("devtools/client/inspector/boxmodel/components/BoxModelApp"));
 
 const STYLE_INSPECTOR_PROPERTIES = "devtools/shared/locales/styleinspector.properties";
 const {LocalizationHelper} = require("devtools/shared/l10n");
@@ -154,6 +159,7 @@ UpdateProcess.prototype = {
 function CssComputedView(inspector, document, pageStyle) {
   this.inspector = inspector;
   this.highlighters = inspector.highlighters;
+  this.store = inspector.store;
   this.styleDocument = document;
   this.styleWindow = this.styleDocument.defaultView;
   this.pageStyle = pageStyle;
@@ -174,6 +180,7 @@ function CssComputedView(inspector, document, pageStyle) {
 
   let doc = this.styleDocument;
   this.element = doc.getElementById("propertyContainer");
+  this.boxModelWrapper = doc.getElementById("boxmodel-wrapper");
   this.searchField = doc.getElementById("computedview-searchbox");
   this.searchClearButton = doc.getElementById("computedview-searchinput-clear");
   this.includeBrowserStylesCheckbox =
@@ -183,9 +190,9 @@ function CssComputedView(inspector, document, pageStyle) {
   this._onShortcut = this._onShortcut.bind(this);
   this.shortcuts.on("CmdOrCtrl+F", this._onShortcut);
   this.shortcuts.on("Escape", this._onShortcut);
+  this.styleDocument.addEventListener("copy", this._onCopy);
   this.styleDocument.addEventListener("mousedown", this.focusWindow);
   this.element.addEventListener("click", this._onClick);
-  this.element.addEventListener("copy", this._onCopy);
   this.element.addEventListener("contextmenu", this._onContextMenu);
   this.searchField.addEventListener("input", this._onFilterStyles);
   this.searchField.addEventListener("contextmenu", this.inspector.onTextBoxContextMenu);
@@ -209,13 +216,13 @@ function CssComputedView(inspector, document, pageStyle) {
   // The element that we're inspecting, and the document that it comes from.
   this._viewedElement = null;
 
+  this.createBoxModelView();
   this.createStyleViews();
 
   this._contextmenu = new StyleInspectorMenu(this, { isRuleView: false });
 
   // Add the tooltips and highlightersoverlay
   this.tooltips = new TooltipsOverlay(this);
-  this.tooltips.addToView();
 
   this.highlighters.addToView(this);
 }
@@ -323,7 +330,8 @@ CssComputedView.prototype = {
         classes.contains("bestmatch") ||
         classes.contains("parentmatch")) {
       let selectorText = "";
-      for (let child of node.childNodes) {
+
+      for (let child of node.childNodes[0].childNodes) {
         if (child.nodeType === node.TEXT_NODE) {
           selectorText += child.textContent;
         }
@@ -361,7 +369,7 @@ CssComputedView.prototype = {
                          classes.contains("property-value") ||
                          isHref)) {
       value = {
-        property: parent.querySelector(".property-name").textContent,
+        property: parent.querySelector(".property-name").firstChild.textContent,
         value: parent.querySelector(".property-value").textContent
       };
     }
@@ -369,7 +377,7 @@ CssComputedView.prototype = {
                             isHref)) {
       let view = propertyContent.previousSibling;
       value = {
-        property: view.querySelector(".property-name").textContent,
+        property: view.querySelector(".property-name").firstChild.textContent,
         value: node.textContent
       };
     }
@@ -504,7 +512,7 @@ CssComputedView.prototype = {
       );
       this._refreshProcess.schedule();
       return deferred.promise;
-    }).then(null, (err) => console.error(err));
+    }).catch((err) => console.error(err));
   },
 
   /**
@@ -552,10 +560,10 @@ CssComputedView.prototype = {
     this._filterChangedTimeout = setTimeout(() => {
       if (this.searchField.value.length > 0) {
         this.searchField.setAttribute("filled", true);
-        this.inspector.emit("computed-view-filtered", true);
+        this.boxModelWrapper.hidden = true;
       } else {
         this.searchField.removeAttribute("filled");
-        this.inspector.emit("computed-view-filtered", false);
+        this.boxModelWrapper.hidden = false;
       }
 
       this.refreshPanel();
@@ -606,6 +614,38 @@ CssComputedView.prototype = {
   },
 
   /**
+   * Render the box model view.
+   */
+  createBoxModelView: function () {
+    let {
+      setSelectedNode,
+      onShowBoxModelHighlighterForNode,
+    } = this.inspector.getCommonComponentProps();
+
+    let {
+      onHideBoxModelHighlighter,
+      onShowBoxModelEditor,
+      onShowBoxModelHighlighter,
+      onToggleGeometryEditor,
+    } = this.inspector.getPanel("boxmodel").getComponentProps();
+
+    let provider = createElement(
+      Provider,
+      { store: this.store },
+      BoxModelApp({
+        setSelectedNode,
+        showBoxModelProperties: false,
+        onHideBoxModelHighlighter,
+        onShowBoxModelEditor,
+        onShowBoxModelHighlighter,
+        onShowBoxModelHighlighterForNode,
+        onToggleGeometryEditor,
+      })
+    );
+    ReactDOM.render(provider, this.boxModelWrapper);
+  },
+
+  /**
    * The CSS as displayed by the UI.
    */
   createStyleViews: function () {
@@ -636,7 +676,7 @@ CssComputedView.prototype = {
     CssComputedView.propertyNames.push.apply(CssComputedView.propertyNames,
       mozProps.sort());
 
-    this._createPropertyViews().then(null, e => {
+    this._createPropertyViews().catch(e => {
       if (!this._isDestroyed) {
         console.warn("The creation of property views was cancelled because " +
           "the computed-view was destroyed before it was done creating views");
@@ -687,8 +727,12 @@ CssComputedView.prototype = {
    *        copy event object.
    */
   _onCopy: function (event) {
-    this.copySelection();
-    event.preventDefault();
+    let win = this.styleWindow;
+    let text = win.getSelection().toString().trim();
+    if (text !== "") {
+      this.copySelection();
+      event.preventDefault();
+    }
   },
 
   /**
@@ -699,28 +743,7 @@ CssComputedView.prototype = {
       let win = this.styleWindow;
       let text = win.getSelection().toString().trim();
 
-      // Tidy up block headings by moving CSS property names and their
-      // values onto the same line and inserting a colon between them.
-      let textArray = text.split(/[\r\n]+/);
-      let result = "";
-
-      // Parse text array to output string.
-      if (textArray.length > 1) {
-        for (let prop of textArray) {
-          if (CssComputedView.propertyNames.indexOf(prop) !== -1) {
-            // Property name
-            result += prop;
-          } else {
-            // Property value
-            result += ": " + prop + ";\n";
-          }
-        }
-      } else {
-        // Short text fragment.
-        result = textArray[0];
-      }
-
-      clipboardHelper.copyString(result);
+      clipboardHelper.copyString(text);
     } catch (e) {
       console.error(e);
     }
@@ -757,7 +780,7 @@ CssComputedView.prototype = {
     // Remove bound listeners
     this.styleDocument.removeEventListener("mousedown", this.focusWindow);
     this.element.removeEventListener("click", this._onClick);
-    this.element.removeEventListener("copy", this._onCopy);
+    this.styleDocument.removeEventListener("copy", this._onCopy);
     this.element.removeEventListener("contextmenu", this._onContextMenu);
     this.searchField.removeEventListener("input", this._onFilterStyles);
     this.searchField.removeEventListener("contextmenu",
@@ -768,7 +791,7 @@ CssComputedView.prototype = {
 
     // Nodes used in templating
     this.element = null;
-    this.panel = null;
+    this.boxModelWrapper = null;
     this.searchField = null;
     this.searchClearButton = null;
     this.includeBrowserStylesCheckbox = null;
@@ -781,6 +804,7 @@ CssComputedView.prototype = {
 
     this.inspector = null;
     this.highlighters = null;
+    this.store = null;
     this.styleDocument = null;
     this.styleWindow = null;
 
@@ -952,7 +976,7 @@ PropertyView.prototype = {
     this.shortcuts.on("Return", (name, event) => this.onMatchedToggle(event));
     this.shortcuts.on("Space", (name, event) => this.onMatchedToggle(event));
 
-    let nameContainer = doc.createElementNS(HTML_NS, "div");
+    let nameContainer = doc.createElementNS(HTML_NS, "span");
     nameContainer.className = "property-name-container";
     this.element.appendChild(nameContainer);
 
@@ -963,8 +987,8 @@ PropertyView.prototype = {
     nameContainer.appendChild(this.matchedExpander);
 
     // Build the style name element
-    this.nameNode = doc.createElementNS(HTML_NS, "div");
-    this.nameNode.setAttribute("class", "property-name theme-fg-color5");
+    this.nameNode = doc.createElementNS(HTML_NS, "span");
+    this.nameNode.classList.add("property-name", "theme-fg-color5");
     // Reset its tabindex attribute otherwise, if an ellipsis is applied
     // it will be reachable via TABing
     this.nameNode.setAttribute("tabindex", "");
@@ -975,22 +999,36 @@ PropertyView.prototype = {
     // Make it hand over the focus to the container
     this.onFocus = () => this.element.focus();
     this.nameNode.addEventListener("click", this.onFocus);
+
+    // Build the style name ":" separator
+    let nameSeparator = doc.createElementNS(HTML_NS, "span");
+    nameSeparator.classList.add("visually-hidden");
+    nameSeparator.textContent = ": ";
+    this.nameNode.appendChild(nameSeparator);
+
     nameContainer.appendChild(this.nameNode);
 
-    let valueContainer = doc.createElementNS(HTML_NS, "div");
+    let valueContainer = doc.createElementNS(HTML_NS, "span");
     valueContainer.className = "property-value-container";
     this.element.appendChild(valueContainer);
 
     // Build the style value element
-    this.valueNode = doc.createElementNS(HTML_NS, "div");
-    this.valueNode.setAttribute("class", "property-value theme-fg-color1");
+    this.valueNode = doc.createElementNS(HTML_NS, "span");
+    this.valueNode.classList.add("property-value", "theme-fg-color1");
     // Reset its tabindex attribute otherwise, if an ellipsis is applied
     // it will be reachable via TABing
     this.valueNode.setAttribute("tabindex", "");
     this.valueNode.setAttribute("dir", "ltr");
     // Make it hand over the focus to the container
     this.valueNode.addEventListener("click", this.onFocus);
+
+    // Build the style value ";" separator
+    let valueSeparator = doc.createElementNS(HTML_NS, "span");
+    valueSeparator.classList.add("visually-hidden");
+    valueSeparator.textContent = ";";
+
     valueContainer.appendChild(this.valueNode);
+    valueContainer.appendChild(valueSeparator);
 
     return this.element;
   },
@@ -1000,7 +1038,7 @@ PropertyView.prototype = {
     let element = doc.createElementNS(HTML_NS, "div");
     element.setAttribute("class", this.propertyContentClassName);
     this.matchedSelectorsContainer = doc.createElementNS(HTML_NS, "div");
-    this.matchedSelectorsContainer.setAttribute("class", "matchedselectors");
+    this.matchedSelectorsContainer.classList.add("matchedselectors");
     element.appendChild(this.matchedSelectorsContainer);
 
     return element;
@@ -1070,7 +1108,7 @@ PropertyView.prototype = {
             this.matchedExpander.setAttribute("open", "");
             this.tree.inspector.emit("computed-view-property-expanded");
           });
-        }).then(null, console.error);
+        }).catch(console.error);
     }
 
     this.matchedSelectorsContainer.innerHTML = "";
@@ -1110,13 +1148,18 @@ PropertyView.prototype = {
       let status = createChild(p, "span", {
         dir: "ltr",
         class: "rule-text theme-fg-color3 " + selector.statusClass,
-        title: selector.statusText,
+        title: selector.statusText
+      });
+
+      createChild(status, "div", {
+        class: "fix-get-selection",
         textContent: selector.sourceText
       });
-      let valueSpan = createChild(status, "span", {
-        class: "other-property-value theme-fg-color1"
+
+      let valueDiv = createChild(status, "div", {
+        class: "fix-get-selection other-property-value theme-fg-color1"
       });
-      valueSpan.appendChild(selector.outputFragment);
+      valueDiv.appendChild(selector.outputFragment);
       promises.push(selector.ready);
     }
 
@@ -1401,7 +1444,6 @@ function ComputedViewTool(inspector, window) {
 
   this.computedView = new CssComputedView(this.inspector, this.document,
     this.inspector.pageStyle);
-  this.boxModelView = new BoxModelView(this.inspector, this.document);
 
   this.onSelected = this.onSelected.bind(this);
   this.refresh = this.refresh.bind(this);
@@ -1510,9 +1552,8 @@ ComputedViewTool.prototype = {
     }
 
     this.computedView.destroy();
-    this.boxModelView.destroy();
 
-    this.computedView = this.boxModelView = this.document = this.inspector = null;
+    this.computedView = this.document = this.inspector = null;
   }
 };
 

@@ -7,6 +7,7 @@
 /* import-globals-from advanced.js */
 /* import-globals-from main.js */
 /* import-globals-from search.js */
+/* import-globals-from containers.js */
 /* import-globals-from content.js */
 /* import-globals-from privacy.js */
 /* import-globals-from applications.js */
@@ -98,7 +99,7 @@ function init_all() {
 
   // Wait until initialization of all preferences are complete before
   // notifying observers that the UI is now ready.
-  Services.obs.notifyObservers(window, "advanced-pane-loaded", null);
+  Services.obs.notifyObservers(window, "advanced-pane-loaded");
 }
 
 // Make the space above the categories list shrink on low window heights
@@ -244,7 +245,7 @@ const CONFIRM_RESTART_PROMPT_CANCEL = 1;
 const CONFIRM_RESTART_PROMPT_RESTART_LATER = 2;
 function confirmRestartPrompt(aRestartToEnable, aDefaultButtonIndex,
                               aWantRevertAsCancelButton,
-			      aWantRestartLaterButton) {
+                              aWantRestartLaterButton) {
   let brandName = document.getElementById("bundleBrand").getString("brandShortName");
   let bundle = document.getElementById("bundlePreferences");
   let msg = bundle.getFormattedString(aRestartToEnable ?

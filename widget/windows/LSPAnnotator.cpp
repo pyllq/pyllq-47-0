@@ -11,11 +11,6 @@
  * on machines with several LSPs.
  */
 
-#if _WIN32_WINNT < 0x0600
-// Redefining _WIN32_WINNT for some Vista APIs that we call
-#undef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
 #include "nsICrashReporter.h"
 #include "nsISupportsImpl.h"
 #include "nsServiceManagerUtils.h"
@@ -34,6 +29,7 @@ class LSPAnnotationGatherer : public Runnable
   ~LSPAnnotationGatherer() {}
 
 public:
+  LSPAnnotationGatherer() : Runnable("crashreporter::LSPAnnotationGatherer") {}
   NS_DECL_NSIRUNNABLE
 
   void Annotate();
@@ -56,7 +52,7 @@ LSPAnnotationGatherer::Annotate()
 NS_IMETHODIMP
 LSPAnnotationGatherer::Run()
 {
-  PR_SetCurrentThreadName("LSP Annotator");
+  NS_SetCurrentThreadName("LSP Annotator");
 
   mThread = NS_GetCurrentThread();
 
@@ -142,7 +138,8 @@ LSPAnnotationGatherer::Run()
   }
 
   mString = str;
-  NS_DispatchToMainThread(NewRunnableMethod(this, &LSPAnnotationGatherer::Annotate));
+  NS_DispatchToMainThread(NewRunnableMethod("crashreporter::LSPAnnotationGatherer::Annotate",
+                                            this, &LSPAnnotationGatherer::Annotate));
   return NS_OK;
 }
 

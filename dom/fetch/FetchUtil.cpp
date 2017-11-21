@@ -1,11 +1,9 @@
 #include "FetchUtil.h"
 
 #include "nsError.h"
-#include "nsIUnicodeDecoder.h"
 #include "nsString.h"
 #include "nsIDocument.h"
 
-#include "mozilla/dom/EncodingUtils.h"
 #include "mozilla/dom/InternalRequest.h"
 
 namespace mozilla {
@@ -148,7 +146,7 @@ FetchUtil::SetRequestReferrer(nsIPrincipal* aPrincipal,
   }
 
   nsCOMPtr<nsIURI> referrerURI;
-  aChannel->GetReferrer(getter_AddRefs(referrerURI));
+  Unused << aChannel->GetReferrer(getter_AddRefs(referrerURI));
 
   // Step 8 https://fetch.spec.whatwg.org/#main-fetch
   // If request’s referrer is not "no-referrer", set request’s referrer to

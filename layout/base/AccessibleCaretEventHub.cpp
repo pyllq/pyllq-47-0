@@ -249,6 +249,12 @@ public:
     aContext->SetState(aContext->PostScrollState());
   }
 
+  virtual void OnScrollPositionChanged(
+    AccessibleCaretEventHub* aContext) override
+  {
+    aContext->mManager->OnScrollPositionChanged();
+  }
+
   virtual void OnBlur(AccessibleCaretEventHub* aContext,
                       bool aIsLeavingDocument) override
   {
@@ -649,8 +655,12 @@ AccessibleCaretEventHub::LaunchLongTapInjector()
   }
 
   int32_t longTapDelay = gfxPrefs::UiClickHoldContextMenusDelay();
-  mLongTapInjectorTimer->InitWithFuncCallback(FireLongTap, this, longTapDelay,
-                                              nsITimer::TYPE_ONE_SHOT);
+  mLongTapInjectorTimer->InitWithNamedFuncCallback(
+    FireLongTap,
+    this,
+    longTapDelay,
+    nsITimer::TYPE_ONE_SHOT,
+    "AccessibleCaretEventHub::LaunchLongTapInjector");
 }
 
 void
@@ -747,8 +757,12 @@ AccessibleCaretEventHub::LaunchScrollEndInjector()
     return;
   }
 
-  mScrollEndInjectorTimer->InitWithFuncCallback(
-    FireScrollEnd, this, kScrollEndTimerDelay, nsITimer::TYPE_ONE_SHOT);
+  mScrollEndInjectorTimer->InitWithNamedFuncCallback(
+    FireScrollEnd,
+    this,
+    kScrollEndTimerDelay,
+    nsITimer::TYPE_ONE_SHOT,
+    "AccessibleCaretEventHub::LaunchScrollEndInjector");
 }
 
 void

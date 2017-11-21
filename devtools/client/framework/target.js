@@ -5,7 +5,6 @@
 "use strict";
 
 const { Ci } = require("chrome");
-const promise = require("promise");
 const defer = require("devtools/shared/defer");
 const EventEmitter = require("devtools/shared/event-emitter");
 const Services = require("Services");
@@ -278,7 +277,7 @@ TabTarget.prototype = {
     return this._form;
   },
 
-  // Get a promise of the root form returned by a listTabs request. This promise
+  // Get a promise of the root form returned by a getRoot request. This promise
   // is cached.
   get root() {
     if (!this._root) {
@@ -289,7 +288,7 @@ TabTarget.prototype = {
 
   _getRoot: function () {
     return new Promise((resolve, reject) => {
-      this.client.listTabs(response => {
+      this.client.mainRoot.getRoot(response => {
         if (response.error) {
           reject(new Error(response.error + ": " + response.message));
           return;
@@ -352,15 +351,15 @@ TabTarget.prototype = {
   },
 
   get isAddon() {
-    return !!(this._form && this._form.actor && (
-      this._form.actor.match(/conn\d+\.addon\d+/) ||
-      this._form.actor.match(/conn\d+\.webExtension\d+/)
-    ));
+    return !!(this._form && this._form.actor &&
+              this._form.actor.match(/conn\d+\.addon\d+/)) || this.isWebExtension;
   },
 
   get isWebExtension() {
-    return !!(this._form && this._form.actor &&
-              this._form.actor.match(/conn\d+\.webExtension\d+/));
+    return !!(this._form && this._form.actor && (
+      this._form.actor.match(/conn\d+\.webExtension\d+/) ||
+      this._form.actor.match(/child\d+\/webExtension\d+/)
+    ));
   },
 
   get isLocalTab() {
@@ -371,12 +370,31 @@ TabTarget.prototype = {
     return !this.window;
   },
 
+  getExtensionPathName(url) {
+    // Return the url if the target is not a webextension.
+    if (!this.isWebExtension) {
+      throw new Error("Target is not a WebExtension");
+    }
+
+    try {
+      const parsedURL = new URL(url);
+      // Only moz-extension URL should be shortened into the URL pathname.
+      if (parsedURL.protocol !== "moz-extension:") {
+        return url;
+      }
+      return parsedURL.pathname;
+    } catch (e) {
+      // Return the url if unable to resolve the pathname.
+      return url;
+    }
+  },
+
   /**
    * Adds remote protocol capabilities to the target, so that it can be used
    * for tools that support the Remote Debugging Protocol even for local
    * connections.
    */
-  makeRemote: function () {
+  makeRemote: async function () {
     if (this._remote) {
       return this._remote.promise;
     }
@@ -399,6 +417,22 @@ TabTarget.prototype = {
       this._client = new DebuggerClient(DebuggerServer.connectPipe());
       // A local TabTarget will never perform chrome debugging.
       this._chrome = false;
+    } else if (this._form.isWebExtension &&
+          this.client.mainRoot.traits.webExtensionAddonConnect) {
+      // The addonActor form is related to a WebExtensionParentActor instance,
+      // which isn't a tab actor on its own, it is an actor living in the parent process
+      // with access to the addon metadata, it can control the addon (e.g. reloading it)
+      // and listen to the AddonManager events related to the lifecycle of the addon
+      // (e.g. when the addon is disabled or uninstalled ).
+      // To retrieve the TabActor instance, we call its "connect" method,
+      // (which fetches the TabActor form from a WebExtensionChildActor instance).
+      let {form} = await this._client.request({
+        to: this._form.actor, type: "connect",
+      });
+
+      this._form = form;
+      this._url = form.url;
+      this._title = form.title;
     }
 
     this._setupRemoteListeners();
@@ -422,13 +456,15 @@ TabTarget.prototype = {
         return;
       }
       this.activeConsole = consoleClient;
+
+      this._onInspectObject = (event, packet) => this.emit("inspect-object", packet);
+      this.activeConsole.on("inspectObject", this._onInspectObject);
+
       this._remote.resolve(null);
     };
 
     let attachConsole = () => {
-      this._client.attachConsole(this._form.consoleActor,
-                                 [ "NetworkActivity" ],
-                                 onConsoleAttached);
+      this._client.attachConsole(this._form.consoleActor, [], onConsoleAttached);
     };
 
     if (this.isLocalTab) {
@@ -486,30 +522,33 @@ TabTarget.prototype = {
   _setupRemoteListeners: function () {
     this.client.addListener("closed", this.destroy);
 
-    this._onTabDetached = (aType, aPacket) => {
+    this._onTabDetached = (type, packet) => {
       // We have to filter message to ensure that this detach is for this tab
-      if (aPacket.from == this._form.actor) {
+      if (packet.from == this._form.actor) {
         this.destroy();
       }
     };
     this.client.addListener("tabDetached", this._onTabDetached);
 
-    this._onTabNavigated = (aType, aPacket) => {
+    this._onTabNavigated = (type, packet) => {
       let event = Object.create(null);
-      event.url = aPacket.url;
-      event.title = aPacket.title;
-      event.nativeConsoleAPI = aPacket.nativeConsoleAPI;
-      event.isFrameSwitching = aPacket.isFrameSwitching;
+      event.url = packet.url;
+      event.title = packet.title;
+      event.nativeConsoleAPI = packet.nativeConsoleAPI;
+      event.isFrameSwitching = packet.isFrameSwitching;
 
-      if (!aPacket.isFrameSwitching) {
-        // Update the title and url unless this is a frame switch.
-        this._url = aPacket.url;
-        this._title = aPacket.title;
+      // Keep the title unmodified when a developer toolbox switches frame
+      // for a tab (Bug 1261687), but always update the title when the target
+      // is a WebExtension (where the addon name is always included in the title
+      // and the url is supposed to be updated every time the selected frame changes).
+      if (!packet.isFrameSwitching || this.isWebExtension) {
+        this._url = packet.url;
+        this._title = packet.title;
       }
 
       // Send any stored event payload (DOMWindow or nsIRequest) for backwards
       // compatibility with non-remotable tools.
-      if (aPacket.state == "start") {
+      if (packet.state == "start") {
         event._navPayload = this._navRequest;
         this.emit("will-navigate", event);
         this._navRequest = null;
@@ -521,8 +560,8 @@ TabTarget.prototype = {
     };
     this.client.addListener("tabNavigated", this._onTabNavigated);
 
-    this._onFrameUpdate = (aType, aPacket) => {
-      this.emit("frame-update", aPacket);
+    this._onFrameUpdate = (type, packet) => {
+      this.emit("frame-update", packet);
     };
     this.client.addListener("frameUpdate", this._onFrameUpdate);
 
@@ -541,6 +580,9 @@ TabTarget.prototype = {
     this.client.removeListener("frameUpdate", this._onFrameUpdate);
     this.client.removeListener("newSource", this._onSourceUpdated);
     this.client.removeListener("updatedSource", this._onSourceUpdated);
+    if (this.activeConsole && this._onInspectObject) {
+      this.activeConsole.off("inspectObject", this._onInspectObject);
+    }
   },
 
   /**
@@ -565,9 +607,11 @@ TabTarget.prototype = {
     }
   },
 
-  // Automatically respawn the toolbox when the tab changes between being
-  // loaded within the parent process and loaded from a content process.
-  // Process change can go in both ways.
+  /**
+   * Automatically respawn the toolbox when the tab changes between being
+   * loaded within the parent process and loaded from a content process.
+   * Process change can go in both ways.
+   */
   onRemotenessChange: function () {
     // Responsive design do a crazy dance around tabs and triggers
     // remotenesschange events. But we should ignore them as at the end
@@ -670,28 +714,34 @@ TabTarget.prototype = {
   },
 
   /**
-   * @see TabActor.prototype.onResolveLocation
+   * Log an error of some kind to the tab's console.
+   *
+   * @param {String} text
+   *                 The text to log.
+   * @param {String} category
+   *                 The category of the message.  @see nsIScriptError.
    */
-  resolveLocation(loc) {
-    let deferred = defer();
-
-    this.client.request(Object.assign({
-      to: this._form.actor,
-      type: "resolveLocation",
-    }, loc), deferred.resolve);
-
-    return deferred.promise;
+  logErrorInPage: function (text, category) {
+    if (this.activeTab && this.activeTab.traits.logErrorInPage) {
+      let packet = {
+        to: this.form.actor,
+        type: "logErrorInPage",
+        text,
+        category,
+      };
+      this.client.request(packet);
+    }
   },
 };
 
 /**
  * WebProgressListener for TabTarget.
  *
- * @param object aTarget
+ * @param object target
  *        The TabTarget instance to work with.
  */
-function TabWebProgressListener(aTarget) {
-  this.target = aTarget;
+function TabWebProgressListener(target) {
+  this.target = target;
 }
 
 TabWebProgressListener.prototype = {
@@ -806,6 +856,10 @@ WorkerTarget.prototype = {
     return this._workerClient;
   },
 
+  get activeConsole() {
+    return this.client._clients.get(this.form.consoleActor);
+  },
+
   get client() {
     return this._workerClient.client;
   },
@@ -828,5 +882,9 @@ WorkerTarget.prototype = {
 
   makeRemote: function () {
     return Promise.resolve();
-  }
+  },
+
+  logErrorInPage: function () {
+    // No-op.  See bug 1368680.
+  },
 };

@@ -216,6 +216,7 @@ static const ClassOps ScalarTypeDescrClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     TypeDescr::finalize,
@@ -323,6 +324,7 @@ static const ClassOps ReferenceTypeDescrClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     TypeDescr::finalize,
@@ -511,6 +513,7 @@ static const ClassOps ArrayTypeDescrClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     TypeDescr::finalize,
@@ -748,6 +751,7 @@ static const ClassOps StructTypeDescrClassOps = {
     nullptr, /* getProperty */
     nullptr, /* setProperty */
     nullptr, /* enumerate */
+    nullptr, /* newEnumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     TypeDescr::finalize,
@@ -1439,7 +1443,7 @@ OutlineTypedObject::setOwnerAndData(JSObject* owner, uint8_t* data)
     // Trigger a post barrier when attaching an object outside the nursery to
     // one that is inside it.
     if (owner && !IsInsideNursery(this) && IsInsideNursery(owner))
-        runtimeFromMainThread()->gc.storeBuffer.putWholeCell(this);
+        zone()->group()->storeBuffer().putWholeCell(this);
 }
 
 /*static*/ OutlineTypedObject*
@@ -1636,7 +1640,10 @@ OutlineTypedObject::obj_trace(JSTracer* trc, JSObject* object)
         newData += reinterpret_cast<uint8_t*>(owner) - reinterpret_cast<uint8_t*>(oldOwner);
         typedObj.setData(newData);
 
-        trc->runtime()->gc.nursery.maybeSetForwardingPointer(trc, oldData, newData, /* direct = */ false);
+        if (trc->isTenuringTracer()) {
+            Nursery& nursery = typedObj.zoneFromAnyThread()->group()->nursery();
+            nursery.maybeSetForwardingPointer(trc, oldData, newData, /* direct = */ false);
+        }
     }
 
     if (!descr.opaque() || !typedObj.isAttached())
@@ -2024,8 +2031,8 @@ TypedObject::obj_deleteProperty(JSContext* cx, HandleObject obj, HandleId id, Ob
 }
 
 bool
-TypedObject::obj_enumerate(JSContext* cx, HandleObject obj, AutoIdVector& properties,
-                           bool enumerableOnly)
+TypedObject::obj_newEnumerate(JSContext* cx, HandleObject obj, AutoIdVector& properties,
+                              bool enumerableOnly)
 {
     MOZ_ASSERT(obj->is<TypedObject>());
     Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
@@ -2141,8 +2148,8 @@ InlineTypedObject::objectMovedDuringMinorGC(JSTracer* trc, JSObject* dst, JSObje
         // but they will not set any direct forwarding pointers.
         uint8_t* oldData = reinterpret_cast<uint8_t*>(src) + offsetOfDataStart();
         uint8_t* newData = dst->as<InlineTypedObject>().inlineTypedMem();
-        trc->runtime()->gc.nursery.maybeSetForwardingPointer(trc, oldData, newData,
-                                                             descr.size() >= sizeof(uintptr_t));
+        dst->zone()->group()->nursery().maybeSetForwardingPointer(trc, oldData, newData,
+                                                                  descr.size() >= sizeof(uintptr_t));
     }
 }
 
@@ -2189,7 +2196,7 @@ InlineTransparentTypedObject::getOrCreateBuffer(JSContext* cx)
     if (IsInsideNursery(this)) {
         // Make sure the buffer is traced by the next generational collection,
         // so that its data pointer is updated after this typed object moves.
-        cx->runtime()->gc.storeBuffer.putWholeCell(buffer);
+        zone()->group()->storeBuffer().putWholeCell(buffer);
     }
 
     return buffer;
@@ -2217,7 +2224,6 @@ const ObjectOps TypedObject::objectOps_ = {
     TypedObject::obj_deleteProperty,
     nullptr, nullptr, /* watch/unwatch */
     nullptr,   /* getElements */
-    TypedObject::obj_enumerate,
     nullptr, /* thisValue */
 };
 
@@ -2228,6 +2234,7 @@ const ObjectOps TypedObject::objectOps_ = {
         nullptr,        /* getProperty */                \
         nullptr,        /* setProperty */                \
         nullptr,        /* enumerate   */                \
+        TypedObject::obj_newEnumerate,                   \
         nullptr,        /* resolve     */                \
         nullptr,        /* mayResolve  */                \
         nullptr,        /* finalize    */                \
@@ -2377,6 +2384,35 @@ TypedObject::construct(JSContext* cx, unsigned int argc, Value* vp)
     // Something bogus.
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_TYPEDOBJECT_BAD_ARGS);
     return false;
+}
+
+/* static */ JS::Result<TypedObject*, JS::OOM&>
+TypedObject::create(JSContext* cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
+                    js::HandleShape shape, js::HandleObjectGroup group)
+{
+    debugCheckNewObject(group, shape, kind, heap);
+
+    const js::Class* clasp = group->clasp();
+    MOZ_ASSERT(::IsTypedObjectClass(clasp));
+
+    JSObject* obj = js::Allocate<JSObject>(cx, kind, /* nDynamicSlots = */ 0, heap, clasp);
+    if (!obj)
+        return cx->alreadyReportedOOM();
+
+    TypedObject* tobj = static_cast<TypedObject*>(obj);
+    tobj->group_.init(group);
+    tobj->initShape(shape);
+
+    tobj->setInitialElementsMaybeNonNative(js::emptyObjectElements);
+
+    if (clasp->shouldDelayMetadataBuilder())
+        cx->compartment()->setObjectPendingMetadata(cx, tobj);
+    else
+        tobj = SetNewObjectMetadata(cx, tobj);
+
+    js::gc::TraceCreateObject(tobj);
+
+    return tobj;
 }
 
 /******************************************************************************
@@ -2679,8 +2715,8 @@ StoreReferenceAny::store(JSContext* cx, GCPtrValue* heap, const Value& v,
     // value properties of typed objects, as these properties are always
     // considered to contain undefined.
     if (!v.isUndefined()) {
-        if (cx->isJSContext())
-            AddTypePropertyId(cx->asJSContext(), obj, id, v);
+        if (!cx->helperThread())
+            AddTypePropertyId(cx, obj, id, v);
         else if (!HasTypePropertyId(obj, id, v))
             return false;
     }
@@ -2699,8 +2735,8 @@ StoreReferenceObject::store(JSContext* cx, GCPtrObject* heap, const Value& v,
     // object properties of typed objects, as these properties are always
     // considered to contain null.
     if (v.isObject()) {
-        if (cx->isJSContext())
-            AddTypePropertyId(cx->asJSContext(), obj, id, v);
+        if (!cx->helperThread())
+            AddTypePropertyId(cx, obj, id, v);
         else if (!HasTypePropertyId(obj, id, v))
             return false;
     }

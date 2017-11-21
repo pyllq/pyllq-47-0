@@ -161,7 +161,7 @@ PageMenu.prototype = {
       if (this._builder) {
         this._builder.click(target.getAttribute(this.GENERATEDITEMID_ATTR));
       } else if (this._browser) {
-        let win = target.ownerDocument.defaultView;
+        let win = target.ownerGlobal;
         let windowUtils = win.QueryInterface(Ci.nsIInterfaceRequestor)
                              .getInterface(Ci.nsIDOMWindowUtils);
         this._browser.messageManager.sendAsyncMessage("ContextMenu:DoCustomCommand", {
@@ -246,7 +246,7 @@ this.PageMenuParent = function PageMenuParent() {
 }
 
 PageMenuParent.prototype = {
-  __proto__ : PageMenu.prototype,
+  __proto__: PageMenu.prototype,
 
   /*
    * Given a target node and popup, add the context menu to the popup. This is
@@ -282,7 +282,7 @@ this.PageMenuChild = function PageMenuChild() {
 }
 
 PageMenuChild.prototype = {
-  __proto__ : PageMenu.prototype,
+  __proto__: PageMenu.prototype,
 
   /*
    * Given a target node, return a JSON object for the custom menu commands. The

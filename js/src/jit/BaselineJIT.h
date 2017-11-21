@@ -194,7 +194,12 @@ struct BaselineScript
         ION_COMPILED_OR_INLINED = 1 << 4,
 
         // Flag is set if this script has profiling instrumentation turned on.
-        PROFILER_INSTRUMENTATION_ON = 1 << 5
+        PROFILER_INSTRUMENTATION_ON = 1 << 5,
+
+        // Whether this script uses its environment chain. This is currently
+        // determined by the BytecodeAnalysis and cached on the BaselineScript
+        // for IonBuilder.
+        USES_ENVIRONMENT_CHAIN = 1 << 6,
     };
 
   private:
@@ -322,6 +327,13 @@ struct BaselineScript
         return flags_ & ION_COMPILED_OR_INLINED;
     }
 
+    void setUsesEnvironmentChain() {
+        flags_ |= USES_ENVIRONMENT_CHAIN;
+    }
+    bool usesEnvironmentChain() const {
+        return flags_ & USES_ENVIRONMENT_CHAIN;
+    }
+
     uint32_t prologueOffset() const {
         return prologueOffset_;
     }
@@ -375,13 +387,13 @@ struct BaselineScript
         templateEnv_ = templateEnv;
     }
 
-    void toggleBarriers(bool enabled, ReprotectCode reprotect = Reprotect) {
-        method()->togglePreBarriers(enabled, reprotect);
-    }
-
     bool containsCodeAddress(uint8_t* addr) const {
         return method()->raw() <= addr && addr <= method()->raw() + method()->instructionsSize();
     }
+
+    BaselineICEntry* maybeICEntryFromPCOffset(uint32_t pcOffset);
+    BaselineICEntry* maybeICEntryFromPCOffset(uint32_t pcOffset,
+                                              BaselineICEntry* prevLookedUpEntry);
 
     BaselineICEntry& icEntry(size_t index);
     BaselineICEntry& icEntryFromReturnOffset(CodeOffset returnOffset);
@@ -400,7 +412,7 @@ struct BaselineScript
     void copyICEntries(JSScript* script, const BaselineICEntry* entries, MacroAssembler& masm);
     void adoptFallbackStubs(FallbackICStubSpace* stubSpace);
 
-    void copyYieldEntries(JSScript* script, Vector<uint32_t>& yieldOffsets);
+    void copyYieldAndAwaitEntries(JSScript* script, Vector<uint32_t>& yieldAndAwaitOffsets);
 
     PCMappingIndexEntry& pcMappingIndexEntry(size_t index);
     CompactBufferReader pcMappingReader(size_t indexEntry);
@@ -452,7 +464,7 @@ struct BaselineScript
 #endif
 
     void noteAccessedGetter(uint32_t pcOffset);
-    void noteArrayWriteHole(uint32_t pcOffset);
+    void noteHasDenseAdd(uint32_t pcOffset);
 
     static size_t offsetOfFlags() {
         return offsetof(BaselineScript, flags_);
@@ -591,6 +603,10 @@ struct BaselineBailoutInfo
 
     // The bytecode pc where we will resume.
     jsbytecode* resumePC;
+
+    // The bytecode pc of try block and fault block.
+    jsbytecode* tryPC;
+    jsbytecode* faultPC;
 
     // If resuming into a TypeMonitor IC chain, this field holds the
     // address of the first stub in that chain.  If this field is

@@ -37,7 +37,7 @@ function checkNotSufferingFromBeingMissing(element, aTodo)
   is(element.validationMessage, "",
     "Validation message should be the empty string");
 
-  is(window.getComputedStyle(element, null).getPropertyValue('background-color'),
+  is(window.getComputedStyle(element).getPropertyValue('background-color'),
      "rgb(0, 128, 0)", ":valid pseudo-class should apply");
 
   if (aTodo) {
@@ -60,7 +60,7 @@ function checkSufferingFromBeingMissing(element, aTodo)
   is(element.validationMessage, "Please select an item in the list.",
      "Validation message is wrong");
 
-  is(window.getComputedStyle(element, null).getPropertyValue('background-color'),
+  is(window.getComputedStyle(element).getPropertyValue('background-color'),
      "rgb(255, 0, 0)", ":invalid pseudo-class should apply");
 
   if (aTodo) {
@@ -186,7 +186,7 @@ function checkInvalidWhenValueMissing(element)
 
   // Setting defaultSelected to true should not make the option selected
   select.add(new Option("", "", true), null);
-  checkSufferingFromBeingMissing(select, true);
+  checkSufferingFromBeingMissing(select);
   select.remove(0);
 
   select.add(new Option("", "", true, true), null);
@@ -210,13 +210,13 @@ function checkInvalidWhenValueMissing(element)
   checkSufferingFromBeingMissing(select);
 
   select.add(new Option("", "", true), null);
-  checkSufferingFromBeingMissing(select, true);
+  checkSufferingFromBeingMissing(select);
 
   select.add(new Option("", "", true), null);
-  checkSufferingFromBeingMissing(select, true);
+  checkSufferingFromBeingMissing(select);
 
   select.add(new Option("foo"), null);
-  checkSufferingFromBeingMissing(select, true);
+  checkSufferingFromBeingMissing(select);
 
   select.options[2].selected = true;
   checkNotSufferingFromBeingMissing(select);

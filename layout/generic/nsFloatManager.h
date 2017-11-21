@@ -45,7 +45,7 @@ struct nsFlowAreaRect {
     , mHasFloats(aHasFloats) {}
 };
 
-#define NS_FLOAT_MANAGER_CACHE_SIZE 4
+#define NS_FLOAT_MANAGER_CACHE_SIZE 64
 
 /**
  * nsFloatManager is responsible for implementing CSS's rules for
@@ -63,6 +63,12 @@ struct nsFlowAreaRect {
  * interpretation of line-right and line-left. We actually implement this by
  * passing in the writing mode of the block formatting context (BFC), i.e.
  * the of BlockReflowInput's writing mode.
+ *
+ * nsFloatManager uses a special logical coordinate space with inline
+ * coordinates on the line-axis and block coordinates on the block-axis
+ * based on the writing mode of the block formatting context. All the
+ * physical types like nsRect, nsPoint, etc. use this coordinate space. See
+ * FloatInfo::mRect for an example.
  *
  * [1] https://drafts.csswg.org/css-writing-modes/#line-mappings
  * [2] https://drafts.csswg.org/css-writing-modes/#logical-to-physical
@@ -107,7 +113,7 @@ public:
                              const mozilla::LogicalRect& aRegion,
                              const nsSize& aContainerSize);
 
-  // Structure that stores the current state of a frame manager for
+  // Structure that stores the current state of a float manager for
   // Save/Restore purposes.
   struct SavedState {
     explicit SavedState() {}
@@ -342,15 +348,56 @@ private:
   public:
     virtual ~ShapeInfo() {}
 
-    virtual nscoord LineLeft(mozilla::WritingMode aWM,
-                             const nscoord aBStart,
+    virtual nscoord LineLeft(const nscoord aBStart,
                              const nscoord aBEnd) const = 0;
-    virtual nscoord LineRight(mozilla::WritingMode aWM,
-                              const nscoord aBStart,
+    virtual nscoord LineRight(const nscoord aBStart,
                               const nscoord aBEnd) const = 0;
     virtual nscoord BStart() const = 0;
     virtual nscoord BEnd() const = 0;
     virtual bool IsEmpty() const = 0;
+
+    // Translate the current origin by the specified offsets.
+    virtual void Translate(nscoord aLineLeft, nscoord aBlockStart) = 0;
+
+    static mozilla::LogicalRect ComputeShapeBoxRect(
+      const mozilla::StyleShapeSource& aShapeOutside,
+      nsIFrame* const aFrame,
+      const mozilla::LogicalRect& aMarginRect,
+      mozilla::WritingMode aWM);
+
+    // Convert the LogicalRect to the special logical coordinate space used
+    // in float manager.
+    static nsRect ConvertToFloatLogical(const mozilla::LogicalRect& aRect,
+                                        mozilla::WritingMode aWM,
+                                        const nsSize& aContainerSize)
+    {
+      return nsRect(aRect.LineLeft(aWM, aContainerSize), aRect.BStart(aWM),
+                    aRect.ISize(aWM), aRect.BSize(aWM));
+    }
+
+    static mozilla::UniquePtr<ShapeInfo> CreateShapeBox(
+      nsIFrame* const aFrame,
+      const mozilla::LogicalRect& aShapeBoxRect,
+      mozilla::WritingMode aWM,
+      const nsSize& aContainerSize);
+
+    static mozilla::UniquePtr<ShapeInfo> CreateInset(
+      const mozilla::StyleBasicShape* aBasicShape,
+      const mozilla::LogicalRect& aShapeBoxRect,
+      mozilla::WritingMode aWM,
+      const nsSize& aContainerSize);
+
+    static mozilla::UniquePtr<ShapeInfo> CreateCircleOrEllipse(
+      const mozilla::StyleBasicShape* aBasicShape,
+      const mozilla::LogicalRect& aShapeBoxRect,
+      mozilla::WritingMode aWM,
+      const nsSize& aContainerSize);
+
+    static mozilla::UniquePtr<ShapeInfo> CreatePolygon(
+      const mozilla::StyleBasicShape* aBasicShape,
+      const mozilla::LogicalRect& aShapeBoxRect,
+      mozilla::WritingMode aWM,
+      const nsSize& aContainerSize);
 
   protected:
     // Compute the minimum line-axis difference between the bounding shape
@@ -369,64 +416,130 @@ private:
 
     static nscoord XInterceptAtY(const nscoord aY, const nscoord aRadiusX,
                                  const nscoord aRadiusY);
+
+    // Convert the physical point to the special logical coordinate space
+    // used in float manager.
+    static nsPoint ConvertToFloatLogical(const nsPoint& aPoint,
+                                         mozilla::WritingMode aWM,
+                                         const nsSize& aContainerSize);
+
+    // Convert the half corner radii (nscoord[8]) to the special logical
+    // coordinate space used in float manager.
+    static mozilla::UniquePtr<nscoord[]> ConvertToFloatLogical(
+      const nscoord aRadii[8],
+      mozilla::WritingMode aWM);
   };
 
-  // Implements shape-outside: <shape-box>.
-  class BoxShapeInfo final : public ShapeInfo
+  // Implements shape-outside: <shape-box> and shape-outside: inset().
+  class RoundedBoxShapeInfo final : public ShapeInfo
   {
   public:
-    BoxShapeInfo(const nsRect& aShapeBoxRect, nsIFrame* const aFrame)
-      : mShapeBoxRect(aShapeBoxRect)
-      , mFrame(aFrame)
+    RoundedBoxShapeInfo(const nsRect& aRect,
+                        mozilla::UniquePtr<nscoord[]> aRadii)
+      : mRect(aRect)
+      , mRadii(Move(aRadii))
+    {}
+
+    nscoord LineLeft(const nscoord aBStart,
+                     const nscoord aBEnd) const override;
+    nscoord LineRight(const nscoord aBStart,
+                      const nscoord aBEnd) const override;
+    nscoord BStart() const override { return mRect.y; }
+    nscoord BEnd() const override { return mRect.YMost(); }
+    bool IsEmpty() const override { return mRect.IsEmpty(); };
+
+    void Translate(nscoord aLineLeft, nscoord aBlockStart) override
     {
+      mRect.MoveBy(aLineLeft, aBlockStart);
     }
 
-    nscoord LineLeft(mozilla::WritingMode aWM,
-                     const nscoord aBStart,
-                     const nscoord aBEnd) const override;
-    nscoord LineRight(mozilla::WritingMode aWM,
-                      const nscoord aBStart,
-                      const nscoord aBEnd) const override;
-    nscoord BStart() const override { return mShapeBoxRect.y; }
-    nscoord BEnd() const override { return mShapeBoxRect.YMost(); }
-    bool IsEmpty() const override { return mShapeBoxRect.IsEmpty(); };
-
   private:
-    // This is the reference box of css shape-outside if specified, which
-    // implements the <shape-box> value in the CSS Shapes Module Level 1.
-    // The coordinate space is the same as FloatInfo::mRect.
-    const nsRect mShapeBoxRect;
-    // The frame of the float.
-    nsIFrame* const mFrame;
+    // The rect of the rounded box shape in the float manager's coordinate
+    // space.
+    nsRect mRect;
+    // The half corner radii of the reference box. It's an nscoord[8] array
+    // in the float manager's coordinate space. If there are no radii, it's
+    // nullptr.
+    mozilla::UniquePtr<nscoord[]> mRadii;
   };
 
-  // Implements shape-outside: circle().
-  class CircleShapeInfo final : public ShapeInfo
+  // Implements shape-outside: circle() and shape-outside: ellipse().
+  class EllipseShapeInfo final : public ShapeInfo
   {
   public:
-    CircleShapeInfo(mozilla::StyleBasicShape* const aBasicShape,
-                    nscoord aLineLeft,
-                    nscoord aBlockStart,
-                    const mozilla::LogicalRect& aShapeBoxRect,
-                    mozilla::WritingMode aWM,
-                    const nsSize& aContainerSize);
+    EllipseShapeInfo(const nsPoint& aCenter,
+                     const nsSize& aRadii)
+      : mCenter(aCenter)
+      , mRadii(aRadii)
+    {}
 
-    nscoord LineLeft(mozilla::WritingMode aWM,
-                     const nscoord aBStart,
+    nscoord LineLeft(const nscoord aBStart,
                      const nscoord aBEnd) const override;
-    nscoord LineRight(mozilla::WritingMode aWM,
-                      const nscoord aBStart,
+    nscoord LineRight(const nscoord aBStart,
                       const nscoord aBEnd) const override;
-    nscoord BStart() const override { return mCenter.y - mRadius; }
-    nscoord BEnd() const override { return mCenter.y + mRadius; }
-    bool IsEmpty() const override { return mRadius == 0; };
+    nscoord BStart() const override { return mCenter.y - mRadii.height; }
+    nscoord BEnd() const override { return mCenter.y + mRadii.height; }
+    bool IsEmpty() const override { return mRadii.IsEmpty(); };
+
+    void Translate(nscoord aLineLeft, nscoord aBlockStart) override
+    {
+      mCenter.MoveBy(aLineLeft, aBlockStart);
+    }
 
   private:
-    // The position of the center of the circle. The coordinate space is the
+    // The position of the center of the ellipse. The coordinate space is the
     // same as FloatInfo::mRect.
     nsPoint mCenter;
-    // The radius of the circle in app units.
-    nscoord mRadius;
+    // The radii of the ellipse in app units. The width and height represent
+    // the line-axis and block-axis radii of the ellipse.
+    nsSize mRadii;
+  };
+
+  // Implements shape-outside: polygon().
+  class PolygonShapeInfo final : public ShapeInfo
+  {
+  public:
+    explicit PolygonShapeInfo(nsTArray<nsPoint>&& aVertices);
+
+    nscoord LineLeft(const nscoord aBStart,
+                     const nscoord aBEnd) const override;
+    nscoord LineRight(const nscoord aBStart,
+                      const nscoord aBEnd) const override;
+    nscoord BStart() const override { return mBStart; }
+    nscoord BEnd() const override { return mBEnd; }
+    bool IsEmpty() const override { return mEmpty; }
+
+    void Translate(nscoord aLineLeft, nscoord aBlockStart) override;
+
+  private:
+    // Helper method for implementing LineLeft() and LineRight().
+    nscoord ComputeLineIntercept(
+      const nscoord aBStart,
+      const nscoord aBEnd,
+      nscoord (*aCompareOp) (std::initializer_list<nscoord>),
+      const nscoord aLineInterceptInitialValue) const;
+
+    // Given a horizontal line y, and two points p1 and p2 forming a line
+    // segment L. Solve x for the intersection of y and L. This method
+    // assumes y and L do intersect, and L is *not* horizontal.
+    static nscoord XInterceptAtY(const nscoord aY,
+                                 const nsPoint& aP1,
+                                 const nsPoint& aP2);
+
+    // The vertices of the polygon in the float manager's coordinate space.
+    nsTArray<nsPoint> mVertices;
+
+    // If mEmpty is true, that means the polygon encloses no area.
+    bool mEmpty = false;
+
+    // Computed block start and block end value of the polygon shape.
+    //
+    // If mEmpty is false, their initial values nscoord_MAX and nscoord_MIN
+    // are used as sentinels for computing min() and max() in the
+    // constructor, and mBStart is guaranteed to be less than or equal to
+    // mBEnd. If mEmpty is true, their values do not matter.
+    nscoord mBStart = nscoord_MAX;
+    nscoord mBEnd = nscoord_MIN;
   };
 
   struct FloatInfo {
@@ -450,9 +563,9 @@ private:
     // aBStart and aBEnd are the starting and ending coordinate of a band.
     // LineLeft() and LineRight() return the innermost line-left extent and
     // line-right extent within the given band, respectively.
-    nscoord LineLeft(mozilla::WritingMode aWM, ShapeType aShapeType,
+    nscoord LineLeft(ShapeType aShapeType,
                      const nscoord aBStart, const nscoord aBEnd) const;
-    nscoord LineRight(mozilla::WritingMode aWM, ShapeType aShapeType,
+    nscoord LineRight(ShapeType aShapeType,
                       const nscoord aBStart, const nscoord aBEnd) const;
     nscoord BStart(ShapeType aShapeType) const;
     nscoord BEnd(ShapeType aShapeType) const;
@@ -465,10 +578,10 @@ private:
 
     // NB! This is really a logical rect in a writing mode suitable for
     // placing floats, which is not necessarily the actual writing mode
-    // either of the block which created the frame manager or the block
-    // that is calling the frame manager. The inline coordinates are in
-    // the line-relative axis of the frame manager and its block
-    // coordinates are in the frame manager's real block direction.
+    // either of the block which created the float manager or the block
+    // that is calling the float manager. The inline coordinates are in
+    // the line-relative axis of the float manager and its block
+    // coordinates are in the float manager's block direction.
     nsRect mRect;
     // Pointer to a concrete subclass of ShapeInfo or null, which means that
     // there is no shape-outside.
@@ -483,7 +596,9 @@ private:
 
   // Translation from local to global coordinate space.
   nscoord mLineLeft, mBlockStart;
-  nsTArray<FloatInfo> mFloats;
+  // We use 11 here in order to fill up the jemalloc allocatoed chunk nicely,
+  // see https://bugzilla.mozilla.org/show_bug.cgi?id=1362876#c6.
+  AutoTArray<FloatInfo, 11> mFloats;
   nsIntervalSet   mFloatDamage;
 
   // Did we try to place a float that could not fit at all and had to be
@@ -518,9 +633,9 @@ class nsAutoFloatManager {
 
 public:
   explicit nsAutoFloatManager(ReflowInput& aReflowInput)
-    : mReflowInput(aReflowInput),
-      mNew(nullptr),
-      mOld(nullptr) {}
+    : mReflowInput(aReflowInput)
+    , mOld(nullptr)
+  {}
 
   ~nsAutoFloatManager();
 
@@ -534,8 +649,11 @@ public:
 
 protected:
   ReflowInput &mReflowInput;
-  nsFloatManager *mNew;
-  nsFloatManager *mOld;
+  mozilla::UniquePtr<nsFloatManager> mNew;
+
+  // A non-owning pointer, which points to the object owned by
+  // nsAutoFloatManager::mNew.
+  nsFloatManager* mOld;
 };
 
 #endif /* !defined(nsFloatManager_h_) */

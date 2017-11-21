@@ -2,14 +2,14 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-add_task(function* testExecuteScript() {
-  let tab = yield BrowserTestUtils.openNewForegroundTab(gBrowser, "http://mochi.test:8888/", true);
+add_task(async function testExecuteScript() {
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, "http://mochi.test:8888/", true);
 
   async function background() {
     let tasks = [
       // Insert CSS file.
       {
-        background: "transparent",
+        background: "rgba(0, 0, 0, 0)",
         foreground: "rgb(0, 113, 4)",
         promise: () => {
           return browser.tabs.insertCSS({
@@ -29,7 +29,7 @@ add_task(function* testExecuteScript() {
       },
       // Remove CSS code again.
       {
-        background: "transparent",
+        background: "rgba(0, 0, 0, 0)",
         foreground: "rgb(0, 113, 4)",
         promise: () => {
           return browser.tabs.removeCSS({
@@ -39,7 +39,7 @@ add_task(function* testExecuteScript() {
       },
       // Remove CSS file again.
       {
-        background: "transparent",
+        background: "rgba(0, 0, 0, 0)",
         foreground: "rgb(0, 0, 0)",
         promise: () => {
           return browser.tabs.removeCSS({
@@ -60,7 +60,7 @@ add_task(function* testExecuteScript() {
       },
       // Remove CSS code again.
       {
-        background: "transparent",
+        background: "rgba(0, 0, 0, 0)",
         foreground: "rgb(0, 0, 0)",
         promise: () => {
           return browser.tabs.removeCSS({
@@ -107,11 +107,11 @@ add_task(function* testExecuteScript() {
     },
   });
 
-  yield extension.startup();
+  await extension.startup();
 
-  yield extension.awaitFinish("removeCSS");
+  await extension.awaitFinish("removeCSS");
 
-  yield extension.unload();
+  await extension.unload();
 
-  yield BrowserTestUtils.removeTab(tab);
+  await BrowserTestUtils.removeTab(tab);
 });

@@ -14,6 +14,8 @@
 
 #include "js/Conversions.h"
 
+#include "vm/String.h"
+
 
 // This macro is should be `one' if current compiler supports builtin functions
 // like __builtin_sadd_overflow.
@@ -67,17 +69,21 @@ namespace js {
  */
 template <AllowGC allowGC>
 extern JSString*
-NumberToString(ExclusiveContext* cx, double d);
+NumberToString(JSContext* cx, double d);
 
 extern JSAtom*
-NumberToAtom(ExclusiveContext* cx, double d);
+NumberToAtom(JSContext* cx, double d);
 
 template <AllowGC allowGC>
 extern JSFlatString*
-Int32ToString(ExclusiveContext* cx, int32_t i);
+Int32ToString(JSContext* cx, int32_t i);
 
 extern JSAtom*
-Int32ToAtom(ExclusiveContext* cx, int32_t si);
+Int32ToAtom(JSContext* cx, int32_t si);
+
+// ES6 15.7.3.12
+extern bool
+IsInteger(const Value& val);
 
 /*
  * Convert an integer or double (contained in the given value) to a string and
@@ -152,7 +158,7 @@ ParseDecimalNumber(const mozilla::Range<const CharT> chars);
  */
 template <typename CharT>
 extern MOZ_MUST_USE bool
-GetPrefixInteger(ExclusiveContext* cx, const CharT* start, const CharT* end, int base,
+GetPrefixInteger(JSContext* cx, const CharT* start, const CharT* end, int base,
                  const CharT** endp, double* dp);
 
 /*
@@ -161,10 +167,10 @@ GetPrefixInteger(ExclusiveContext* cx, const CharT* start, const CharT* end, int
  * only contain digits.
  */
 extern MOZ_MUST_USE bool
-GetDecimalInteger(ExclusiveContext* cx, const char16_t* start, const char16_t* end, double* dp);
+GetDecimalInteger(JSContext* cx, const char16_t* start, const char16_t* end, double* dp);
 
 extern MOZ_MUST_USE bool
-StringToNumber(ExclusiveContext* cx, JSString* str, double* result);
+StringToNumber(JSContext* cx, JSString* str, double* result);
 
 /* ES5 9.3 ToNumber, overwriting *vp with the appropriate number value. */
 MOZ_ALWAYS_INLINE MOZ_MUST_USE bool
@@ -200,7 +206,7 @@ num_parseInt(JSContext* cx, unsigned argc, Value* vp);
  */
 template <typename CharT>
 extern MOZ_MUST_USE bool
-js_strtod(js::ExclusiveContext* cx, const CharT* begin, const CharT* end,
+js_strtod(JSContext* cx, const CharT* begin, const CharT* end,
           const CharT** dEnd, double* d);
 
 namespace js {
@@ -244,6 +250,11 @@ IsDefinitelyIndex(const Value& v, uint32_t* indexp)
         return true;
     }
 
+    if (v.isString() && v.toString()->hasIndexValue()) {
+        *indexp = v.toString()->getIndexValue();
+        return true;
+    }
+
     return false;
 }
 
@@ -257,6 +268,9 @@ ToInteger(JSContext* cx, HandleValue v, double* dp)
     }
     if (v.isDouble()) {
         *dp = v.toDouble();
+    } else if (v.isString() && v.toString()->hasIndexValue()) {
+        *dp = v.toString()->getIndexValue();
+        return true;
     } else {
         extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext* cx, HandleValue v, double* dp);
         if (!ToNumberSlow(cx, v, dp))
@@ -266,35 +280,6 @@ ToInteger(JSContext* cx, HandleValue v, double* dp)
     return true;
 }
 
-/* ES6 7.1.15 ToLength, but clamped to the [0,2^32-2] range.  If the
- * return value is false then *overflow will be true iff the value was
- * not clampable to uint32_t range.
- *
- * For JSContext and ExclusiveContext.
- */
-template<typename T>
-MOZ_MUST_USE bool ToLengthClamped(T* cx, HandleValue v, uint32_t* out, bool* overflow);
-
-/* Non-standard convert and range check an index value as for SIMD, and Atomics
- * operations, eg ES7 24.2.1.1, DataView's GetViewValue():
- *
- *   1. numericIndex = ToNumber(argument)            (may throw TypeError)
- *   2. intIndex = ToInteger(numericIndex)
- *   3. if intIndex != numericIndex throw RangeError
- *
- * This function additionally bounds the range to the non-negative contiguous
- * integers:
- *
- *   4. if intIndex < 0 or intIndex > 2^53 throw RangeError
- *
- * Return true and set |*index| to the integer value if |argument| is a valid
- * array index argument. Otherwise report an TypeError or RangeError and return
- * false.
- *
- * The returned index will always be in the range 0 <= *index <= 2^53.
- */
-MOZ_MUST_USE bool NonStandardToIndex(JSContext* cx, JS::HandleValue v, uint64_t* index);
-
 /* ES2017 draft 7.1.17 ToIndex
  *
  * Return true and set |*index| to the integer value if |v| is a valid
@@ -302,7 +287,14 @@ MOZ_MUST_USE bool NonStandardToIndex(JSContext* cx, JS::HandleValue v, uint64_t*
  *
  * The returned index will always be in the range 0 <= *index <= 2^53-1.
  */
-MOZ_MUST_USE bool ToIndex(JSContext* cx, JS::HandleValue v, uint64_t* index);
+MOZ_MUST_USE bool
+ToIndex(JSContext* cx, JS::HandleValue v, const unsigned errorNumber, uint64_t* index);
+
+static MOZ_MUST_USE inline bool
+ToIndex(JSContext* cx, JS::HandleValue v, uint64_t* index)
+{
+    return ToIndex(cx, v, JSMSG_BAD_INDEX, index);
+}
 
 MOZ_MUST_USE inline bool
 SafeAdd(int32_t one, int32_t two, int32_t* res)
@@ -342,23 +334,6 @@ SafeMul(int32_t one, int32_t two, int32_t* res)
     return ores == (int64_t)*res;
 #endif
 }
-
-extern MOZ_MUST_USE bool
-ToNumberSlow(ExclusiveContext* cx, HandleValue v, double* dp);
-
-// Variant of ToNumber which takes an ExclusiveContext instead of a JSContext.
-// ToNumber is part of the API and can't use ExclusiveContext directly.
-MOZ_ALWAYS_INLINE MOZ_MUST_USE bool
-ToNumber(ExclusiveContext* cx, HandleValue v, double* out)
-{
-    if (v.isNumber()) {
-        *out = v.toNumber();
-        return true;
-    }
-    return ToNumberSlow(cx, v, out);
-}
-
-void FIX_FPU();
 
 } /* namespace js */
 

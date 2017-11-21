@@ -219,8 +219,6 @@ FromImageBitmap(WebGLContext* webgl, const char* funcName, TexImageTarget target
     UniquePtr<dom::ImageBitmapCloneData> cloneData = Move(imageBitmap.ToCloneData());
     const RefPtr<gfx::DataSourceSurface> surf = cloneData->mSurface;
 
-    ////
-
     if (!width) {
         width = surf->GetSize().width;
     }
@@ -229,15 +227,11 @@ FromImageBitmap(WebGLContext* webgl, const char* funcName, TexImageTarget target
         height = surf->GetSize().height;
     }
 
-    ////
-
-
     // WhatWG "HTML Living Standard" (30 October 2015):
     // "The getImageData(sx, sy, sw, sh) method [...] Pixels must be returned as
     //  non-premultiplied alpha values."
-    const bool isAlphaPremult = cloneData->mIsPremultipliedAlpha;
     return MakeUnique<webgl::TexUnpackSurface>(webgl, target, width, height, depth, surf,
-                                               isAlphaPremult);
+                                               cloneData->mAlphaType);
 }
 
 static UniquePtr<webgl::TexUnpackBlob>
@@ -255,6 +249,11 @@ FromImageData(WebGLContext* webgl, const char* funcName, TexImageTarget target,
     const gfx::IntSize size(imageData.Width(), imageData.Height());
     const size_t stride = size.width * 4;
     const gfx::SurfaceFormat surfFormat = gfx::SurfaceFormat::R8G8B8A8;
+
+    // WhatWG "HTML Living Standard" (30 October 2015):
+    // "The getImageData(sx, sy, sw, sh) method [...] Pixels must be returned as
+    //  non-premultiplied alpha values."
+    const auto alphaType = gfxAlphaType::NonPremult;
 
     MOZ_ASSERT(dataSize == stride * size.height);
 
@@ -280,12 +279,8 @@ FromImageData(WebGLContext* webgl, const char* funcName, TexImageTarget target,
 
     ////
 
-    // WhatWG "HTML Living Standard" (30 October 2015):
-    // "The getImageData(sx, sy, sw, sh) method [...] Pixels must be returned as
-    //  non-premultiplied alpha values."
-    const bool isAlphaPremult = false;
     return MakeUnique<webgl::TexUnpackSurface>(webgl, target, width, height, depth, surf,
-                                               isAlphaPremult);
+                                               alphaType);
 }
 
 UniquePtr<webgl::TexUnpackBlob>
@@ -293,7 +288,11 @@ WebGLContext::FromDomElem(const char* funcName, TexImageTarget target, uint32_t 
                           uint32_t height, uint32_t depth, const dom::Element& elem,
                           ErrorResult* const out_error)
 {
-    uint32_t flags = nsLayoutUtils::SFE_WANT_IMAGE_SURFACE |
+    // The canvas spec says that drawImage should draw the first frame of
+    // animated images. The webgl spec doesn't mention the issue, so we do the
+    // same as drawImage.
+    uint32_t flags = nsLayoutUtils::SFE_WANT_FIRST_FRAME_IF_IMAGE |
+                     nsLayoutUtils::SFE_WANT_IMAGE_SURFACE |
                      nsLayoutUtils::SFE_USE_ELEMENT_SIZE_IF_VECTOR;
 
     if (mPixelStore_ColorspaceConversion == LOCAL_GL_NONE)
@@ -374,16 +373,14 @@ WebGLContext::FromDomElem(const char* funcName, TexImageTarget target, uint32_t 
     //////
     // Ok, we're good!
 
-    const bool isAlphaPremult = sfer.mIsPremultiplied;
-
     if (layersImage) {
         return MakeUnique<webgl::TexUnpackImage>(this, target, width, height, depth,
-                                                 layersImage,  isAlphaPremult);
+                                                 layersImage, sfer.mAlphaType);
     }
 
     MOZ_ASSERT(dataSurf);
     return MakeUnique<webgl::TexUnpackSurface>(this, target, width, height, depth,
-                                               dataSurf, isAlphaPremult);
+                                               dataSurf, sfer.mAlphaType);
 }
 
 ////////////////////////////////////////
@@ -695,7 +692,7 @@ ValidateCompressedTexUnpack(WebGLContext* webgl, const char* funcName, GLsizei w
 
     if (dataSize != bytesNeeded.value()) {
         webgl->ErrorInvalidValue("%s: Provided buffer's size must match expected size."
-                                 " (needs %u, has %u)",
+                                 " (needs %u, has %zu)",
                                  funcName, bytesNeeded.value(), dataSize);
         return false;
     }
@@ -1167,6 +1164,8 @@ WebGLTexture::TexStorage(const char* funcName, TexTarget target, GLsizei levels,
     GLenum error = DoTexStorage(mContext->gl, target.get(), levels, sizedFormat, width,
                                 height, depth);
 
+    mContext->OnDataAllocCall();
+
     if (error == LOCAL_GL_OUT_OF_MEMORY) {
         mContext->ErrorOutOfMemory("%s: Ran out of memory during texture allocation.",
                                    funcName);
@@ -1294,10 +1293,12 @@ WebGLTexture::TexImage(const char* funcName, TexImageTarget target, GLint level,
 
     GLenum glError;
     if (!blob->TexOrSubImage(isSubImage, needsRespec, funcName, this, target, level,
-                             driverUnpackInfo, xOffset, yOffset, zOffset, &glError))
+                             driverUnpackInfo, xOffset, yOffset, zOffset, pi, &glError))
     {
         return;
     }
+
+    mContext->OnDataAllocCall();
 
     if (glError == LOCAL_GL_OUT_OF_MEMORY) {
         mContext->ErrorOutOfMemory("%s: Driver ran out of memory during upload.",
@@ -1382,7 +1383,7 @@ WebGLTexture::TexSubImage(const char* funcName, TexImageTarget target, GLint lev
 
     GLenum glError;
     if (!blob->TexOrSubImage(isSubImage, needsRespec, funcName, this, target, level,
-                             driverUnpackInfo, xOffset, yOffset, zOffset, &glError))
+                             driverUnpackInfo, xOffset, yOffset, zOffset, pi, &glError))
     {
         return;
     }
@@ -1394,7 +1395,7 @@ WebGLTexture::TexSubImage(const char* funcName, TexImageTarget target, GLint lev
     }
 
     if (glError) {
-        mContext->ErrorInvalidOperation("%s: Unexpected error during upload: 0x04x",
+        mContext->ErrorInvalidOperation("%s: Unexpected error during upload: 0x%04x",
                                         funcName, glError);
         MOZ_ASSERT(false, "Unexpected GL error.");
         return;
@@ -1504,6 +1505,7 @@ WebGLTexture::CompressedTexImage(const char* funcName, TexImageTarget target, GL
     GLenum error = DoCompressedTexImage(mContext->gl, target, level, internalFormat,
                                         blob->mWidth, blob->mHeight, blob->mDepth,
                                         blob->mAvailBytes, blob->mPtr);
+    mContext->OnDataAllocCall();
     if (error == LOCAL_GL_OUT_OF_MEMORY) {
         mContext->ErrorOutOfMemory("%s: Ran out of memory during upload.", funcName);
         return;
@@ -2168,6 +2170,8 @@ WebGLTexture::CopyTexImage2D(TexImageTarget target, GLint level, GLenum internal
     {
         return;
     }
+
+    mContext->OnDataAllocCall();
 
     ////////////////////////////////////
     // Update our specification data.

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="langOptions">
+        <item>@string/simplified</item>
+        <item>@string/traditional</item>
+        <item>@string/original</item>
+    </string-array>
+    <string-array name="langOptionsValues">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+
+    <string-array name="pinyinOptions">
+        <item>@string/hanyuPinyin</item>
+        <item>@string/hanyuPinyinNum</item>
+        <item>@string/bpmf</item>
+        <item>@string/bpmfNum</item>
+<!--
+        <item>@string/hangulPinyin</item>
+        <item>@string/hangulNumPinyin</item>    
+        <item>@string/katakanaPinyin</item>
+        <item>@string/katakanaNumPinyin</item>
+        <item>@string/halfwidthKatakanaPinyin</item>
+        <item>@string/halfwidthKatakanaNumPinyin</item>
+        <item>@string/hiraganaPinyin</item>
+        <item>@string/hiraganaNumPinyin</item>
+-->
+    </string-array>
+    <string-array name="pinyinOptionsValues">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+<!--
+        <item>4</item>
+        <item>5</item>
+        <item>6</item>
+        <item>7</item>
+        <item>8</item>
+        <item>9</item>
+        <item>10</item>
+        <item>11</item>
+-->
+    </string-array>
+
+    <string-array name="pinyinLocations">
+        <item>@string/top</item>
+        <item>@string/bottom</item>
+    </string-array>
+    <string-array name="pinyinLocationsValues">
+        <item>0</item>
+        <item>16</item>
+    </string-array>
+
+    <string-array name="grades">
+    <item>@string/gradeA</item>
+    <item>@string/gradeB</item>
+    <item>@string/gradeC</item>
+    </string-array>
+
+    <string-array name="gradesValues">
+    <item>0</item>
+    <item>2</item>
+    <item>12</item>
+    </string-array>
+
+    <string-array name="pinyinHangul">
+        <item>@string/hangulNone</item>
+        <item>@string/hangulRomanize</item>
+    </string-array>
+    <string-array name="pinyinHangulValues">
+        <item>0</item>
+        <item>32</item>
+    </string-array>
+
+    <string-array name="pinyinRsHangul">
+        <item>@string/hangulRsChar</item>
+        <item>@string/hangulRsWord</item>
+    </string-array>
+    <string-array name="pinyinRsHangulValues">
+        <item>0</item>
+        <item>64</item>
+    </string-array>
+
+    <string-array name="pinyinRsHanzi">
+        <item>@string/hanziRsChar</item>
+        <item>@string/hanziRsWord</item>
+    </string-array>
+    <string-array name="pinyinRsHanziValues">
+        <item>0</item>
+        <item>128</item>
+    </string-array>
+
+</resources>

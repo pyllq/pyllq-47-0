@@ -2,10 +2,12 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 Cu.import("resource://services-sync/constants.js");
-Cu.import("resource://services-sync/identity.js");
 Cu.import("resource://services-sync/keys.js");
+Cu.import("resource://services-sync/main.js");
 Cu.import("resource://services-sync/record.js");
 Cu.import("resource://services-sync/util.js");
+Cu.import("resource://services-sync/browserid_identity.js");
+Cu.import("resource://testing-common/services/sync/utils.js");
 
 var collectionKeys = new CollectionKeyManager();
 
@@ -115,64 +117,16 @@ add_test(function test_repeated_hmac() {
   run_next_test();
 });
 
-add_test(function test_sync_key_bundle_derivation() {
-  _("Ensure derivation from known values works.");
-
-  // The known values in this test were originally verified against Firefox
-  // Home.
-  let bundle = new SyncKeyBundle("st3fan", "q7ynpwq7vsc9m34hankbyi3s3i");
-
-  // These should be compared to the results from Home, as they once were.
-  let e = "14b8c09fa84e92729ee695160af6e0385f8f6215a25d14906e1747bdaa2de426";
-  let h = "370e3566245d79fe602a3adb5137e42439cd2a571235197e0469d7d541b07875";
-
-  let realE = Utils.bytesAsHex(bundle.encryptionKey);
-  let realH = Utils.bytesAsHex(bundle.hmacKey);
-
-  _("Real E: " + realE);
-  _("Real H: " + realH);
-  do_check_eq(realH, h);
-  do_check_eq(realE, e);
-
-  run_next_test();
-});
-
-add_test(function test_keymanager() {
-  let testKey = "ababcdefabcdefabcdefabcdef";
-  let username = "john@example.com";
-
-  // Decode the key here to mirror what generateEntry will do,
-  // but pass it encoded into the KeyBundle call below.
-
-  let sha256inputE = "" + HMAC_INPUT + username + "\x01";
-  let key = Utils.makeHMACKey(Utils.decodeKeyBase32(testKey));
-  let encryptKey = sha256HMAC(sha256inputE, key);
-
-  let sha256inputH = encryptKey + HMAC_INPUT + username + "\x02";
-  let hmacKey = sha256HMAC(sha256inputH, key);
-
-  // Encryption key is stored in base64 for WeaveCrypto convenience.
-  do_check_eq(encryptKey, new SyncKeyBundle(username, testKey).encryptionKey);
-  do_check_eq(hmacKey, new SyncKeyBundle(username, testKey).hmacKey);
-
-  // Test with the same KeyBundle for both.
-  let obj = new SyncKeyBundle(username, testKey);
-  do_check_eq(hmacKey, obj.hmacKey);
-  do_check_eq(encryptKey, obj.encryptionKey);
-
-  run_next_test();
-});
-
-add_test(function test_collections_manager() {
+add_task(async function test_ensureLoggedIn() {
   let log = Log.repository.getLogger("Test");
   Log.repository.rootLogger.addAppender(new Log.DumpAppender());
 
-  let identity = new IdentityManager();
+  let identityConfig = makeIdentityConfig();
+  let browseridManager = new BrowserIDManager();
+  configureFxAccountIdentity(browseridManager, identityConfig);
+  await browseridManager.ensureLoggedIn();
 
-  identity.account = "john@example.com";
-  identity.syncKey = "a-bbbbb-ccccc-ddddd-eeeee-fffff";
-
-  let keyBundle = identity.syncKeyBundle;
+  let keyBundle = browseridManager.syncKeyBundle;
 
   /*
    * Build a test version of storage/crypto/keys.
@@ -182,10 +136,10 @@ add_test(function test_collections_manager() {
 
   log.info("Building storage keys...");
   let storage_keys = new CryptoWrapper("crypto", "keys");
-  let default_key64 = Svc.Crypto.generateRandomKey();
-  let default_hmac64 = Svc.Crypto.generateRandomKey();
-  let bookmarks_key64 = Svc.Crypto.generateRandomKey();
-  let bookmarks_hmac64 = Svc.Crypto.generateRandomKey();
+  let default_key64 = Weave.Crypto.generateRandomKey();
+  let default_hmac64 = Weave.Crypto.generateRandomKey();
+  let bookmarks_key64 = Weave.Crypto.generateRandomKey();
+  let bookmarks_hmac64 = Weave.Crypto.generateRandomKey();
 
   storage_keys.cleartext = {
     "default": [default_key64, default_hmac64],
@@ -313,8 +267,6 @@ add_test(function test_collections_manager() {
   do_check_array_eq(d4.changed, ["bar", "foo"]);
   do_check_array_eq(d5.changed, ["baz", "foo"]);
   do_check_array_eq(d6.changed, ["bar", "foo"]);
-
-  run_next_test();
 });
 
 function run_test() {

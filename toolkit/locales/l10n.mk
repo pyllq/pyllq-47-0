@@ -36,9 +36,7 @@ endif
 endif
 
 # These are defaulted to be compatible with the files the wget-en-US target
-# pulls. You may override them if you provide your own files. You _must_
-# override them when MOZ_PKG_PRETTYNAMES is defined - the defaults will not
-# work in that case.
+# pulls. You may override them if you provide your own files.
 ZIP_IN ?= $(ABS_DIST)/$(PACKAGE)
 WIN32_INSTALLER_IN ?= $(ABS_DIST)/$(PKG_INST_PATH)$(PKG_INST_BASENAME).exe
 
@@ -142,7 +140,6 @@ endif
 	  $(MAKE_PACKAGE)
 ifdef MAKE_COMPLETE_MAR
 	$(MAKE) -C $(MOZDEPTH)/tools/update-packaging full-update AB_CD=$(AB_CD) \
-	  MOZ_PKG_PRETTYNAMES=$(MOZ_PKG_PRETTYNAMES) \
 	  PACKAGE_BASE_DIR='$(ABS_DIST)/l10n-stage'
 endif
 # packaging done, undo l10n stuff
@@ -184,10 +181,15 @@ langpack-%: libs-%
 ifndef EN_US_BINARY_URL 
 EN_US_BINARY_URL = $(error You must set EN_US_BINARY_URL)
 endif
+# In taskcluster the installer comes from another location
+ifndef EN_US_INSTALLER_BINARY_URL
+EN_US_INSTALLER_BINARY_URL = $(EN_US_BINARY_URL)
+endif
 
 # Allow the overriding of PACKAGE format so we can get an EN_US build with a different
 # PACKAGE format than we are creating l10n packages with.
 EN_US_PACKAGE_NAME ?= $(PACKAGE)
+EN_US_PKG_INST_BASENAME ?= $(PKG_INST_BASENAME)
 
 # This make target allows us to wget the latest en-US binary from a specified website
 # The make installers-% target needs the en-US binary in dist/
@@ -204,8 +206,8 @@ ifdef RETRIEVE_WINDOWS_INSTALLER
 ifeq ($(OS_ARCH), WINNT)
 	$(NSINSTALL) -D $(ABS_DIST)/$(PKG_INST_PATH)
 	(cd $(ABS_DIST)/$(PKG_INST_PATH) && \
-        $(WGET) --no-cache -nv --no-iri -N '$(EN_US_BINARY_URL)/$(PKG_PATH)$(PKG_INST_BASENAME).exe')
-	@echo 'Downloaded $(EN_US_BINARY_URL)/$(PKG_PATH)$(PKG_INST_BASENAME).exe to $(ABS_DIST)/$(PKG_INST_PATH)$(PKG_INST_BASENAME).exe'
+        $(WGET) --no-cache -nv --no-iri -N -O $(PKG_INST_BASENAME).exe '$(EN_US_INSTALLER_BINARY_URL)/$(PKG_PATH)$(EN_US_PKG_INST_BASENAME).exe')
+	@echo 'Downloaded $(EN_US_INSTALLER_BINARY_URL)/$(PKG_PATH)$(EN_US_PKG_INST_BASENAME).exe to $(ABS_DIST)/$(PKG_INST_PATH)$(PKG_INST_BASENAME).exe'
 endif
 endif
 

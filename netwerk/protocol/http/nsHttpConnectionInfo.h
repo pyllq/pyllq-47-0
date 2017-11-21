@@ -58,13 +58,13 @@ public:
 private:
     virtual ~nsHttpConnectionInfo()
     {
-        MOZ_LOG(gHttpLog, LogLevel::Debug, ("Destroying nsHttpConnectionInfo @%x\n", this));
+        MOZ_LOG(gHttpLog, LogLevel::Debug, ("Destroying nsHttpConnectionInfo @%p\n", this));
     }
 
     void BuildHashKey();
 
 public:
-    const nsAFlatCString &HashKey() const { return mHashKey; }
+    const nsCString& HashKey() const { return mHashKey; }
 
     const nsCString &GetOrigin() const { return mOrigin; }
     const char   *Origin()       const { return mOrigin.get(); }
@@ -82,7 +82,7 @@ public:
     // OK to treat these as an infalible allocation
     nsHttpConnectionInfo* Clone() const;
     void CloneAsDirectRoute(nsHttpConnectionInfo **outParam);
-    nsresult CreateWildCard(nsHttpConnectionInfo **outParam);
+    MOZ_MUST_USE nsresult CreateWildCard(nsHttpConnectionInfo **outParam);
 
     const char *ProxyHost() const { return mProxyInfo ? mProxyInfo->Host().get() : nullptr; }
     int32_t     ProxyPort() const { return mProxyInfo ? mProxyInfo->Port() : -1; }

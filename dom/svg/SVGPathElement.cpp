@@ -46,10 +46,10 @@ SVGPathElement::SVGPathElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeIn
 // memory reporting methods
 
 size_t
-SVGPathElement::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+SVGPathElement::SizeOfExcludingThis(mozilla::SizeOfState& aState) const
 {
-  return SVGPathElementBase::SizeOfExcludingThis(aMallocSizeOf) +
-         mD.SizeOfExcludingThis(aMallocSizeOf);
+  return SVGPathElementBase::SizeOfExcludingThis(aState) +
+         mD.SizeOfExcludingThis(aState.mMallocSizeOf);
 }
 
 //----------------------------------------------------------------------
@@ -328,7 +328,7 @@ SVGPathElement::BuildPath(PathBuilder* aBuilder)
   Float strokeWidth = 0;
 
   RefPtr<nsStyleContext> styleContext =
-    nsComputedDOMStyle::GetStyleContextForElementNoFlush(this, nullptr, nullptr);
+    nsComputedDOMStyle::GetStyleContextNoFlush(this, nullptr, nullptr);
   if (styleContext) {
     const nsStyleSVG* style = styleContext->StyleSVG();
     // Note: the path that we return may be used for hit-testing, and SVG

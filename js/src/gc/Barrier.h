@@ -242,8 +242,14 @@ bool
 CurrentThreadIsGCSweeping();
 
 bool
-IsMarkedBlack(NativeObject* obj);
+IsMarkedBlack(JSObject* obj);
 #endif
+
+MOZ_ALWAYS_INLINE void
+CheckEdgeIsNotBlackToGray(JSObject* src, const Value& dst)
+{
+    MOZ_ASSERT_IF(IsMarkedBlack(src), JS::ValueIsNotGray(dst));
+}
 
 template <typename T>
 struct InternalBarrierMethods {};
@@ -252,8 +258,6 @@ template <typename T>
 struct InternalBarrierMethods<T*>
 {
     static bool isMarkable(T* v) { return v != nullptr; }
-
-    static bool isMarkableTaggedPointer(T* v) { return !IsNullTaggedPointer(v); }
 
     static void preBarrier(T* v) { T::writeBarrierPre(v); }
 
@@ -274,7 +278,6 @@ template <>
 struct InternalBarrierMethods<Value>
 {
     static bool isMarkable(const Value& v) { return v.isGCThing(); }
-    static bool isMarkableTaggedPointer(const Value& v) { return isMarkable(v); }
 
     static void preBarrier(const Value& v) {
         DispatchTyped(PreBarrierFunctor<Value>(), v);
@@ -310,8 +313,6 @@ template <>
 struct InternalBarrierMethods<jsid>
 {
     static bool isMarkable(jsid id) { return JSID_IS_GCTHING(id); }
-    static bool isMarkableTaggedPointer(jsid id) { return isMarkable(id); }
-
     static void preBarrier(jsid id) { DispatchTyped(PreBarrierFunctor<jsid>(), id); }
     static void postBarrier(jsid* idp, jsid prev, jsid next) {}
 };
@@ -323,6 +324,9 @@ class BarrieredBase
   protected:
     // BarrieredBase is not directly instantiable.
     explicit BarrieredBase(const T& v) : value(v) {}
+
+    // BarrieredBase subclasses cannot be copy constructed by default.
+    BarrieredBase(const BarrieredBase<T>& other) = default;
 
     // Storage for all barrier classes. |value| must be a GC thing reference
     // type: either a direct pointer to a GC thing or a supported tagged
@@ -432,10 +436,16 @@ class GCPtr : public WriteBarrieredBase<T>
     }
 #ifdef DEBUG
     ~GCPtr() {
-        // No prebarrier necessary as this only happens when we are sweeping or
-        // after we have just collected the nursery.  Note that the wrapped
-        // pointer may already have been freed by this point.
-        MOZ_ASSERT(CurrentThreadIsGCSweeping());
+        // No barriers are necessary as this only happens when we are sweeping
+        // or when after GCManagedDeletePolicy has triggered the barriers for us
+        // and cleared the pointer.
+        //
+        // If you get a crash here, you may need to make the containing object
+        // use GCManagedDeletePolicy and use JS::DeletePolicy to destroy it.
+        //
+        // Note that when sweeping the wrapped pointer may already have been
+        // freed by this point.
+        MOZ_ASSERT(CurrentThreadIsGCSweeping() || this->value == JS::GCPolicy<T>::initial());
         Poison(this, JS_FREED_HEAP_PTR_PATTERN, sizeof(*this));
     }
 #endif
@@ -577,9 +587,10 @@ class ReadBarriered : public ReadBarrieredBase<T>,
         this->post(JS::GCPolicy<T>::initial(), v);
     }
 
-    // Copy is creating a new edge, so we must read barrier the source edge.
+    // The copy constructor creates a new weak edge but the wrapped pointer does
+    // not escape, so no read barrier is necessary.
     explicit ReadBarriered(const ReadBarriered& v) : ReadBarrieredBase<T>(v) {
-        this->post(JS::GCPolicy<T>::initial(), v.get());
+        this->post(JS::GCPolicy<T>::initial(), v.unbarrieredGet());
     }
 
     // Move retains the lifetime status of the source edge, so does not fire
@@ -675,7 +686,7 @@ class HeapSlot : public WriteBarrieredBase<Value>
                                                const Value& target) const;
 #endif
 
-    void set(NativeObject* owner, Kind kind, uint32_t slot, const Value& v) {
+    MOZ_ALWAYS_INLINE void set(NativeObject* owner, Kind kind, uint32_t slot, const Value& v) {
         MOZ_ASSERT(preconditionForSet(owner, kind, slot));
         pre();
         value = v;

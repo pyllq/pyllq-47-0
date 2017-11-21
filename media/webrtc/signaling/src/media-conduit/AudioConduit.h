@@ -7,6 +7,7 @@
 #define AUDIO_SESSION_H_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/ReentrantMonitor.h"
 #include "mozilla/TimeStamp.h"
 #include "nsTArray.h"
 
@@ -15,7 +16,6 @@
 
 // Audio Engine Includes
 #include "webrtc/common_types.h"
-#include "webrtc/transport.h"
 #include "webrtc/voice_engine/include/voe_base.h"
 #include "webrtc/voice_engine/include/voe_volume_control.h"
 #include "webrtc/voice_engine/include/voe_codec.h"
@@ -25,6 +25,8 @@
 #include "webrtc/voice_engine/include/voe_audio_processing.h"
 #include "webrtc/voice_engine/include/voe_video_sync.h"
 #include "webrtc/voice_engine/include/voe_rtp_rtcp.h"
+#include "webrtc/voice_engine/channel_proxy.h"
+
 //Some WebRTC types for short notations
  using webrtc::VoEBase;
  using webrtc::VoENetwork;
@@ -176,9 +178,7 @@ public:
                       mDtmfEnabled(false),
                       mCodecMutex("AudioConduit codec db"),
                       mCaptureDelay(150),
-#if !defined(MOZILLA_EXTERNAL_LINKAGE)
                       mLastTimestamp(0),
-#endif // MOZILLA_INTERNAL_API
                       mSamples(0),
                       mLastSyncLog(0)
   {
@@ -203,11 +203,19 @@ public:
   }
   bool GetRemoteSSRC(unsigned int* ssrc) override;
   bool SetLocalCNAME(const char* cname) override;
+
+  bool GetSendPacketTypeStats(
+      webrtc::RtcpPacketTypeCounter* aPacketCounts) override;
+
+  bool GetRecvPacketTypeStats(
+      webrtc::RtcpPacketTypeCounter* aPacketCounts) override;
+
   bool GetVideoEncoderStats(double* framerateMean,
                             double* framerateStdDev,
                             double* bitrateMean,
                             double* bitrateStdDev,
-                            uint32_t* droppedFrames) override
+                            uint32_t* droppedFrames,
+                            uint32_t* framesEncoded) override
   {
     return false;
   }
@@ -215,7 +223,8 @@ public:
                             double* framerateStdDev,
                             double* bitrateMean,
                             double* bitrateStdDev,
-                            uint32_t* discardedPackets) override
+                            uint32_t* discardedPackets,
+                            uint32_t* framesDecoded) override
   {
     return false;
   }
@@ -233,7 +242,7 @@ public:
                            unsigned int* packetsSent,
                            uint64_t* bytesSent) override;
 
-  bool SetDtmfPayloadType(unsigned char type) override;
+  bool SetDtmfPayloadType(unsigned char type, int freq) override;
 
   bool InsertDTMFTone(int channel, int eventCode, bool outOfBand,
                       int lengthMs, int attenuationDb) override;
@@ -295,6 +304,7 @@ private:
   AutoTArray<Processing,8> mProcessing;
 
   int mChannel;
+  std::unique_ptr<webrtc::voe::ChannelProxy> mChannelProxy;
   bool mDtmfEnabled;
   RecvCodecList    mRecvCodecList;
 
@@ -304,9 +314,7 @@ private:
   // Current "capture" delay (really output plus input delay)
   int32_t mCaptureDelay;
 
-#if !defined(MOZILLA_EXTERNAL_LINKAGE)
   uint32_t mLastTimestamp;
-#endif // MOZILLA_INTERNAL_API
 
   uint32_t mSamples;
   uint32_t mLastSyncLog;

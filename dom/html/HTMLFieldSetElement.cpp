@@ -18,7 +18,7 @@ namespace mozilla {
 namespace dom {
 
 HTMLFieldSetElement::HTMLFieldSetElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
-  : nsGenericHTMLFormElement(aNodeInfo)
+  : nsGenericHTMLFormElement(aNodeInfo, NS_FORM_FIELDSET)
   , mElements(nullptr)
   , mFirstLegend(nullptr)
   , mInvalidElementsCount(0)
@@ -59,9 +59,6 @@ NS_IMPL_ELEMENT_CLONE(HTMLFieldSetElement)
 NS_IMPL_BOOL_ATTR(HTMLFieldSetElement, Disabled, disabled)
 NS_IMPL_STRING_ATTR(HTMLFieldSetElement, Name, name)
 
-// nsIConstraintValidation
-NS_IMPL_NSICONSTRAINTVALIDATION(HTMLFieldSetElement)
-
 bool
 HTMLFieldSetElement::IsDisabledForEvents(EventMessage aMessage)
 {
@@ -83,24 +80,30 @@ HTMLFieldSetElement::GetEventTargetParent(EventChainPreVisitor& aVisitor)
 
 nsresult
 HTMLFieldSetElement::AfterSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
-                                  const nsAttrValue* aValue, bool aNotify)
+                                  const nsAttrValue* aValue,
+                                  const nsAttrValue* aOldValue, bool aNotify)
 {
-  if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::disabled &&
-      nsINode::GetFirstChild()) {
-    if (!mElements) {
-      mElements = new nsContentList(this, MatchListedElements, nullptr, nullptr,
-                                    true);
-    }
+  if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::disabled) {
+    // This *has* to be called *before* calling FieldSetDisabledChanged on our
+    // controls, as they may depend on our disabled state.
+    UpdateDisabledState(aNotify);
 
-    uint32_t length = mElements->Length(true);
-    for (uint32_t i=0; i<length; ++i) {
-      static_cast<nsGenericHTMLFormElement*>(mElements->Item(i))
-        ->FieldSetDisabledChanged(aNotify);
+    if (nsINode::GetFirstChild()) {
+      if (!mElements) {
+        mElements = new nsContentList(this, MatchListedElements, nullptr, nullptr,
+                                      true);
+      }
+
+      uint32_t length = mElements->Length(true);
+      for (uint32_t i=0; i<length; ++i) {
+        static_cast<nsGenericHTMLFormElement*>(mElements->Item(i))
+          ->FieldSetDisabledChanged(aNotify);
+      }
     }
   }
 
   return nsGenericHTMLFormElement::AfterSetAttr(aNameSpaceID, aName,
-                                                aValue, aNotify);
+                                                aValue, aOldValue, aNotify);
 }
 
 // nsIDOMHTMLFieldSetElement
@@ -120,10 +123,10 @@ HTMLFieldSetElement::GetType(nsAString& aType)
 
 /* static */
 bool
-HTMLFieldSetElement::MatchListedElements(nsIContent* aContent, int32_t aNamespaceID,
+HTMLFieldSetElement::MatchListedElements(Element* aElement, int32_t aNamespaceID,
                                          nsIAtom* aAtom, void* aData)
 {
-  nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(aContent);
+  nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(aElement);
   return formControl;
 }
 
@@ -342,8 +345,6 @@ HTMLFieldSetElement::UpdateValidity(bool aElementValidity)
   if (mFieldSet) {
     mFieldSet->UpdateValidity(aElementValidity);
   }
-
-  return;
 }
 
 EventStates

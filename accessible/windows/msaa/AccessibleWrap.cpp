@@ -15,6 +15,7 @@
 #include "nsAccUtils.h"
 #include "nsCoreUtils.h"
 #include "nsIAccessibleEvent.h"
+#include "nsWindowsHelpers.h"
 #include "nsWinUtils.h"
 #include "mozilla/a11y/ProxyAccessible.h"
 #include "ProxyWrappers.h"
@@ -33,6 +34,7 @@
 #include "nsIFrame.h"
 #include "nsIScrollableFrame.h"
 #include "mozilla/dom/NodeInfo.h"
+#include "mozilla/dom/TabParent.h"
 #include "nsIServiceManager.h"
 #include "nsNameSpaceManager.h"
 #include "nsTextFormatter.h"
@@ -42,6 +44,7 @@
 #include "nsArrayUtils.h"
 #include "mozilla/Preferences.h"
 #include "nsIXULRuntime.h"
+#include "mozilla/mscom/AsyncInvoker.h"
 
 #include "oleacc.h"
 
@@ -61,6 +64,7 @@ static gAccessibles = 0;
 #endif
 
 MsaaIdGenerator AccessibleWrap::sIDGen;
+StaticAutoPtr<nsTArray<AccessibleWrap::HandlerControllerData>> AccessibleWrap::sHandlerControllers;
 
 static const VARIANT kVarChildIdSelf = {VT_I4};
 
@@ -78,7 +82,7 @@ AccessibleWrap::AccessibleWrap(nsIContent* aContent, DocAccessible* aDoc) :
 AccessibleWrap::~AccessibleWrap()
 {
   if (mID != kNoID) {
-    sIDGen.ReleaseID(this);
+    sIDGen.ReleaseID(WrapNotNull(this));
   }
 }
 
@@ -114,6 +118,14 @@ AccessibleWrap::QueryInterface(REFIID iid, void** ppv)
 
   *ppv = nullptr;
 
+  if (IID_IClientSecurity == iid) {
+    // Some code might QI(IID_IClientSecurity) to detect whether or not we are
+    // a proxy. Right now that can potentially happen off the main thread, so we
+    // look for this condition immediately so that we don't trigger other code
+    // that might not be thread-safe.
+    return E_NOINTERFACE;
+  }
+
   if (IID_IUnknown == iid)
     *ppv = static_cast<IAccessible*>(this);
   else if (IID_IDispatch == iid || IID_IAccessible == iid)
@@ -130,7 +142,7 @@ AccessibleWrap::QueryInterface(REFIID iid, void** ppv)
     if (IsDefunct() || (!HasOwnContent() && !IsDoc()))
       return E_NOINTERFACE;
 
-    *ppv = static_cast<ISimpleDOMNode*>(new sdnAccessible(GetNode()));
+    *ppv = static_cast<ISimpleDOMNode*>(new sdnAccessible(WrapNotNull(this)));
   }
 
   if (nullptr == *ppv) {
@@ -829,7 +841,8 @@ AccessibleWrap::accSelect(
       // is happening, so we dispatch TakeFocus from the main thread to
       // guarantee that we are outside any IPC.
       nsCOMPtr<nsIRunnable> runnable =
-        mozilla::NewRunnableMethod(this, &Accessible::TakeFocus);
+        mozilla::NewRunnableMethod("Accessible::TakeFocus",
+                                   this, &Accessible::TakeFocus);
       NS_DispatchToMainThread(runnable, NS_DISPATCH_NORMAL);
       return S_OK;
     }
@@ -1254,15 +1267,25 @@ AccessibleWrap::GetHWNDFor(Accessible* aAccessible)
     return nullptr;
   }
 
-  // Accessibles in child processes are said to have the HWND of the window
-  // their tab is within.  Popups are always in the parent process, and so
-  // never proxied, which means this is basically correct.
   if (aAccessible->IsProxy()) {
     ProxyAccessible* proxy = aAccessible->Proxy();
     if (!proxy) {
       return nullptr;
     }
 
+    // If window emulation is enabled, retrieve the emulated window from the
+    // containing document document proxy.
+    if (nsWinUtils::IsWindowEmulationStarted()) {
+      DocAccessibleParent* doc = proxy->Document();
+      HWND hWnd = doc->GetEmulatedWindowHandle();
+      if (hWnd) {
+        return hWnd;
+      }
+    }
+
+    // Accessibles in child processes are said to have the HWND of the window
+    // their tab is within.  Popups are always in the parent process, and so
+    // never proxied, which means this is basically correct.
     Accessible* outerDoc = proxy->OuterDocOfRemoteBrowser();
     NS_ASSERTION(outerDoc, "no outer doc for accessible remote tab!");
     if (!outerDoc) {
@@ -1336,21 +1359,35 @@ GetProxiedAccessibleInSubtree(const DocAccessibleParent* aDoc,
 {
   auto wrapper = static_cast<DocProxyAccessibleWrap*>(WrapperFor(aDoc));
   RefPtr<IAccessible> comProxy;
-  int32_t wrapperChildId = AccessibleWrap::GetChildIDFor(wrapper);
-  if (wrapperChildId == aVarChild.lVal) {
+  int32_t docWrapperChildId = AccessibleWrap::GetChildIDFor(wrapper);
+  // Only top level document accessible proxies are created with a pointer to
+  // their COM proxy.
+  if (aDoc->IsTopLevel()) {
     wrapper->GetNativeInterface(getter_AddRefs(comProxy));
-    return comProxy.forget();
+  } else {
+    auto tab = static_cast<dom::TabParent*>(aDoc->Manager());
+    MOZ_ASSERT(tab);
+    DocAccessibleParent* topLevelDoc = tab->GetTopLevelDocAccessible();
+    MOZ_ASSERT(topLevelDoc && topLevelDoc->IsTopLevel());
+    VARIANT docId = {VT_I4};
+    docId.lVal = docWrapperChildId;
+    RefPtr<IDispatch> disp = GetProxiedAccessibleInSubtree(topLevelDoc, docId);
+    if (!disp) {
+      return nullptr;
+    }
+
+    DebugOnly<HRESULT> hr = disp->QueryInterface(IID_IAccessible,
+                                                 getter_AddRefs(comProxy));
+    MOZ_ASSERT(SUCCEEDED(hr));
   }
 
-  MOZ_ASSERT(aDoc->IsTopLevel());
-  if (!aDoc->IsTopLevel()) {
-    return nullptr;
-  }
-
-  wrapper->GetNativeInterface(getter_AddRefs(comProxy));
   MOZ_ASSERT(comProxy);
   if (!comProxy) {
     return nullptr;
+  }
+
+  if (docWrapperChildId == aVarChild.lVal) {
+    return comProxy.forget();
   }
 
   RefPtr<IDispatch> disp;
@@ -1394,17 +1431,20 @@ AccessibleWrap::GetIAccessibleFor(const VARIANT& aVarChild, bool* aIsDefunct)
     varChild.lVal = GetExistingID();
   }
 
-  if (IsProxy() ? Proxy()->MustPruneChildren() : nsAccUtils::MustPrune(this)) {
+  if (varChild.ulVal != GetExistingID() &&
+      (IsProxy() ? Proxy()->MustPruneChildren() : nsAccUtils::MustPrune(this))) {
+    // This accessible should have no subtree in platform, return null for its children.
     return nullptr;
   }
 
   // If the MSAA ID is not a chrome id then we already know that we won't
-  // find it here and should look remotely instead.
-  if (XRE_IsParentProcess() && !sIDGen.IsChromeID(varChild.lVal)) {
+  // find it here and should look remotely instead. This handles the case when
+  // accessible is part of the chrome process and is part of the xul browser
+  // window and the child id points in the content documents. Thus we need to
+  // make sure that it is never called on proxies.
+  if (XRE_IsParentProcess() && !IsProxy() && !sIDGen.IsChromeID(varChild.lVal)) {
     return GetRemoteIAccessibleFor(varChild);
   }
-  MOZ_ASSERT(XRE_IsParentProcess() ||
-             sIDGen.IsIDForThisContentProcess(varChild.lVal));
 
   if (varChild.lVal > 0) {
     // Gecko child indices are 0-based in contrast to indices used in MSAA.
@@ -1471,7 +1511,6 @@ AccessibleWrap::GetIAccessibleFor(const VARIANT& aVarChild, bool* aIsDefunct)
 already_AddRefed<IAccessible>
 AccessibleWrap::GetRemoteIAccessibleFor(const VARIANT& aVarChild)
 {
-  DocAccessibleParent* proxyDoc = nullptr;
   DocAccessible* doc = Document();
   const nsTArray<DocAccessibleParent*>* remoteDocs =
     DocManager::TopLevelRemoteDocs();
@@ -1517,7 +1556,7 @@ AccessibleWrap::GetRemoteIAccessibleFor(const VARIANT& aVarChild)
 void
 AccessibleWrap::UpdateSystemCaretFor(Accessible* aAccessible)
 {
-  // Move the system caret so that Windows Tablet Edition and tradional ATs with 
+  // Move the system caret so that Windows Tablet Edition and tradional ATs with
   // off-screen model can follow the caret
   ::DestroyCaret();
 
@@ -1527,20 +1566,43 @@ AccessibleWrap::UpdateSystemCaretFor(Accessible* aAccessible)
 
   nsIWidget* widget = nullptr;
   LayoutDeviceIntRect caretRect = text->GetCaretRect(&widget);
-  HWND caretWnd;
-  if (caretRect.IsEmpty() || !(caretWnd = (HWND)widget->GetNativeData(NS_NATIVE_WINDOW))) {
+
+  if (!widget) {
+    return;
+  }
+
+  HWND caretWnd = reinterpret_cast<HWND>(widget->GetNativeData(NS_NATIVE_WINDOW));
+  UpdateSystemCaretFor(caretWnd, caretRect);
+}
+
+/* static */ void
+AccessibleWrap::UpdateSystemCaretFor(ProxyAccessible* aProxy,
+                                     const LayoutDeviceIntRect& aCaretRect)
+{
+  ::DestroyCaret();
+
+  // The HWND should be the real widget HWND, not an emulated HWND.
+  // We get the HWND from the proxy's outer doc to bypass window emulation.
+  Accessible* outerDoc = aProxy->OuterDocOfRemoteBrowser();
+  UpdateSystemCaretFor(GetHWNDFor(outerDoc), aCaretRect);
+}
+
+/* static */ void
+AccessibleWrap::UpdateSystemCaretFor(HWND aCaretWnd,
+                                     const LayoutDeviceIntRect& aCaretRect)
+{
+  if (!aCaretWnd || aCaretRect.IsEmpty()) {
     return;
   }
 
   // Create invisible bitmap for caret, otherwise its appearance interferes
   // with Gecko caret
-  HBITMAP caretBitMap = CreateBitmap(1, caretRect.height, 1, 1, nullptr);
-  if (::CreateCaret(caretWnd, caretBitMap, 1, caretRect.height)) {  // Also destroys the last caret
-    ::ShowCaret(caretWnd);
+  nsAutoBitmap caretBitMap(CreateBitmap(1, aCaretRect.height, 1, 1, nullptr));
+  if (::CreateCaret(aCaretWnd, caretBitMap, 1, aCaretRect.height)) {  // Also destroys the last caret
+    ::ShowCaret(aCaretWnd);
     RECT windowRect;
-    ::GetWindowRect(caretWnd, &windowRect);
-    ::SetCaretPos(caretRect.x - windowRect.left, caretRect.y - windowRect.top);
-    ::DeleteObject(caretBitMap);
+    ::GetWindowRect(aCaretWnd, &windowRect);
+    ::SetCaretPos(aCaretRect.x - windowRect.left, aCaretRect.y - windowRect.top);
   }
 }
 
@@ -1576,4 +1638,92 @@ void
 AccessibleWrap::ReleaseContentProcessIdFor(dom::ContentParentId aIPCContentId)
 {
   sIDGen.ReleaseContentProcessIDFor(aIPCContentId);
+}
+
+/* static */
+void
+AccessibleWrap::SetHandlerControl(DWORD aPid, RefPtr<IHandlerControl> aCtrl)
+{
+  MOZ_ASSERT(XRE_IsParentProcess() && NS_IsMainThread());
+
+  if (!sHandlerControllers) {
+    sHandlerControllers = new nsTArray<HandlerControllerData>();
+    ClearOnShutdown(&sHandlerControllers);
+  }
+
+  HandlerControllerData ctrlData(aPid, Move(aCtrl));
+  if (sHandlerControllers->Contains(ctrlData)) {
+    return;
+  }
+
+  sHandlerControllers->AppendElement(Move(ctrlData));
+}
+
+
+bool
+AccessibleWrap::DispatchTextChangeToHandler(bool aIsInsert,
+                                            const nsString& aText,
+                                            int32_t aStart, uint32_t aLen)
+{
+  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!sHandlerControllers || sHandlerControllers->IsEmpty()) {
+    return false;
+  }
+
+  HWND hwnd = GetHWNDFor(this);
+  MOZ_ASSERT(hwnd);
+  if (!hwnd) {
+    return false;
+  }
+
+  long msaaId = GetChildIDFor(this);
+
+  DWORD ourPid = ::GetCurrentProcessId();
+
+  // The handler ends up calling NotifyWinEvent, which should only be done once
+  // since it broadcasts the same event to every process who is subscribed.
+  // OTOH, if our chrome process contains a handler, we should prefer to
+  // broadcast the event from that process, as we want any DLLs injected by ATs
+  // to receive the event synchronously. Otherwise we simply choose the first
+  // handler in the list, for the lack of a better heuristic.
+
+  nsTArray<HandlerControllerData>::index_type ctrlIndex =
+    sHandlerControllers->IndexOf(ourPid);
+
+  if (ctrlIndex == nsTArray<HandlerControllerData>::NoIndex) {
+    ctrlIndex = 0;
+  }
+
+  HandlerControllerData& controller = sHandlerControllers->ElementAt(ctrlIndex);
+  MOZ_ASSERT(controller.mPid);
+  MOZ_ASSERT(controller.mCtrl);
+
+  VARIANT_BOOL isInsert = aIsInsert ? VARIANT_TRUE : VARIANT_FALSE;
+
+  IA2TextSegment textSegment{::SysAllocStringLen(aText.get(), aText.Length()),
+                             aStart, static_cast<long>(aLen)};
+
+  ASYNC_INVOKER_FOR(IHandlerControl) invoker(controller.mCtrl,
+                                             Some(controller.mIsProxy));
+
+  HRESULT hr = ASYNC_INVOKE(invoker, OnTextChange, PtrToLong(hwnd), msaaId,
+                            isInsert, &textSegment);
+
+  ::SysFreeString(textSegment.text);
+
+  return SUCCEEDED(hr);
+}
+
+/* static */ void
+AccessibleWrap::AssignChildIDTo(NotNull<sdnAccessible*> aSdnAcc)
+{
+  aSdnAcc->SetUniqueID(sIDGen.GetID());
+}
+
+/* static */ void
+AccessibleWrap::ReleaseChildID(NotNull<sdnAccessible*> aSdnAcc)
+{
+  sIDGen.ReleaseID(aSdnAcc);
 }

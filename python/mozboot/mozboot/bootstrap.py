@@ -12,6 +12,7 @@ import subprocess
 
 # Don't forgot to add new mozboot modules to the bootstrap download
 # list in bin/bootstrap.py!
+from mozboot.base import MODERN_RUST_VERSION
 from mozboot.centosfedora import CentOSFedoraBootstrapper
 from mozboot.debian import DebianBootstrapper
 from mozboot.freebsd import FreeBSDBootstrapper
@@ -91,6 +92,21 @@ Would you like to create this directory?
 
 Your choice: '''
 
+STYLO_DIRECTORY_MESSAGE = '''
+Stylo packages require a directory to store shared, persistent state.
+On this machine, that directory is:
+
+  {statedir}
+
+Please restart bootstrap and create that directory when prompted.
+'''
+
+STYLO_REQUIRES_CLONE = '''
+Installing Stylo packages requires a checkout of mozilla-central. Once you
+have such a checkout, please re-run `./mach bootstrap` from the checkout
+directory.
+'''
+
 FINISHED = '''
 Your system should be ready to build %s!
 '''
@@ -107,7 +123,7 @@ instruction here to clone from the Mercurial repository:
 
 Or, if you really prefer vanilla flavor Git:
 
-    git clone https://git.mozilla.org/integration/gecko-dev.git
+    git clone https://github.com/mozilla/gecko-dev.git
 '''
 
 CONFIGURE_MERCURIAL = '''
@@ -144,6 +160,7 @@ DEBIAN_DISTROS = (
     'Elementary OS',
     'Elementary',
     '"elementary OS"',
+    '"elementary"'
 )
 
 
@@ -249,9 +266,13 @@ class Bootstrapper(object):
 
         state_dir_available = os.path.exists(state_dir)
 
-        # Possibly configure Mercurial if the user wants to.
+        r = current_firefox_checkout(check_output=self.instance.check_output,
+                                     hg=self.instance.which('hg'))
+        (checkout_type, checkout_root) = r
+
+        # Possibly configure Mercurial, but not if the current checkout is Git.
         # TODO offer to configure Git.
-        if hg_installed and state_dir_available:
+        if hg_installed and state_dir_available and checkout_type != 'git':
             configure_hg = False
             if not self.instance.no_interactive:
                 choice = self.instance.prompt_int(prompt=CONFIGURE_MERCURIAL,
@@ -265,8 +286,6 @@ class Bootstrapper(object):
                 configure_mercurial(self.instance.which('hg'), state_dir)
 
         # Offer to clone if we're not inside a clone.
-        checkout_type = current_firefox_checkout(check_output=self.instance.check_output,
-                                                 hg=self.instance.which('hg'))
         have_clone = False
 
         if checkout_type:
@@ -277,11 +296,33 @@ class Bootstrapper(object):
             if dest:
                 dest = os.path.expanduser(dest)
                 have_clone = clone_firefox(self.instance.which('hg'), dest)
+                checkout_root = dest
 
         if not have_clone:
             print(SOURCE_ADVERTISE)
 
+        # Install the clang packages needed for developing stylo.
+        if not self.instance.no_interactive:
+            # The best place to install our packages is in the state directory
+            # we have.  If the user doesn't have one, we need them to re-run
+            # bootstrap and create the directory.
+            #
+            # XXX Android bootstrap just assumes the existence of the state
+            # directory and writes the NDK into it.  Should we do the same?
+            if not state_dir_available:
+                print(STYLO_DIRECTORY_MESSAGE.format(statedir=state_dir))
+                sys.exit(1)
+
+            if not have_clone:
+                print(STYLO_REQUIRES_CLONE)
+                sys.exit(1)
+
+            self.instance.state_dir = state_dir
+            self.instance.ensure_stylo_packages(state_dir, checkout_root)
+
         print(self.finished % name)
+        if not (self.instance.which('rustc') and self.instance._parse_version('rustc') >= MODERN_RUST_VERSION):
+            print("To build %s, please restart the shell (Start a new terminal window)" % name)
 
         # Like 'suggest_browser_mozconfig' or 'suggest_mobile_android_mozconfig'.
         getattr(self.instance, 'suggest_%s_mozconfig' % application)()
@@ -418,19 +459,22 @@ def current_firefox_checkout(check_output, hg=None):
             try:
                 node = check_output([hg, 'log', '-r', '0', '--template', '{node}'], cwd=path)
                 if node in HG_ROOT_REVISIONS:
-                    return 'hg'
+                    return ('hg', path)
                 # Else the root revision is different. There could be nested
                 # repos. So keep traversing the parents.
             except subprocess.CalledProcessError:
                 pass
 
-        # TODO check git remotes or `git rev-parse -q --verify $sha1^{commit}`
-        # for signs of Firefox.
+        # Just check for known-good files in the checkout, to prevent attempted
+        # foot-shootings.  Determining a canonical git checkout of mozilla-central
+        # is...complicated
         elif os.path.exists(git_dir):
-            return 'git'
+            moz_configure = os.path.join(path, 'moz.configure')
+            if os.path.exists(moz_configure):
+                return ('git', path)
 
         path, child = os.path.split(path)
         if child == '':
             break
 
-    return None
+    return (None, None)

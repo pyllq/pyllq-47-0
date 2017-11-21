@@ -22,13 +22,6 @@
 #include "nspr.h"
 #include "nsCRT.h" // for atoll
 
-// Arena used by component manager for storing contractid string, dll
-// location strings and small objects
-// CAUTION: Arena align mask needs to be defined before including plarena.h
-//          currently from nsComponentManager.h
-#define PL_ARENA_CONST_ALIGN_MASK 7
-#define NS_CM_BLOCK_SIZE (1024 * 8)
-
 #include "nsCategoryManager.h"
 #include "nsCOMPtr.h"
 #include "nsComponentManager.h"
@@ -155,27 +148,6 @@ error:
     *mErrorPtr = rv;
   }
   return rv;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Arena helper functions
-////////////////////////////////////////////////////////////////////////////////
-char*
-ArenaStrndup(const char* aStr, uint32_t aLen, PLArenaPool* aArena)
-{
-  void* mem;
-  // Include trailing null in the aLen
-  PL_ARENA_ALLOCATE(mem, aArena, aLen + 1);
-  if (mem) {
-    memcpy(mem, aStr, aLen + 1);
-  }
-  return static_cast<char*>(mem);
-}
-
-char*
-ArenaStrdup(const char* aStr, PLArenaPool* aArena)
-{
-  return ArenaStrndup(aStr, strlen(aStr), aArena);
 }
 
 // GetService and a few other functions need to exit their mutex mid-function
@@ -332,9 +304,6 @@ nsresult
 nsComponentManagerImpl::Init()
 {
   MOZ_ASSERT(NOT_INITIALIZED == mStatus);
-
-  // Initialize our arena
-  PL_INIT_ARENA_POOL(&mArena, "ComponentManagerArena", NS_CM_BLOCK_SIZE);
 
   nsCOMPtr<nsIFile> greDir =
     GetLocationFromDirectoryService(NS_GRE_DIR);
@@ -513,8 +482,8 @@ nsComponentManagerImpl::RegisterCIDEntryLocked(
     return;
   }
 
-  nsFactoryEntry* f = mFactories.Get(*aEntry->cid);
-  if (f) {
+  if (auto entry = mFactories.LookupForAdd(*aEntry->cid)) {
+    nsFactoryEntry* f = entry.Data();
     NS_WARNING("Re-registering a CID?");
 
     char idstr[NSID_LENGTH];
@@ -531,11 +500,9 @@ nsComponentManagerImpl::RegisterCIDEntryLocked(
                aModule->Description().get(),
                idstr,
                existing.get());
-    return;
+  } else {
+    entry.OrInsert([aEntry, aModule] () { return new nsFactoryEntry(aEntry, aModule); });
   }
-
-  f = new nsFactoryEntry(aEntry, aModule);
-  mFactories.Put(*aEntry->cid, f);
 }
 
 void
@@ -629,7 +596,6 @@ nsComponentManagerImpl::ManifestBinaryComponent(ManifestProcessingContext& aCx,
 {
   LogMessageWithContext(aCx.mFile, aLineNo,
                         "Binary XPCOM components are no longer supported.");
-  return;
 }
 
 static void
@@ -685,8 +651,9 @@ nsComponentManagerImpl::ManifestComponent(ManifestProcessingContext& aCx,
   fl.GetURIString(hash);
 
   MutexLock lock(mLock);
-  nsFactoryEntry* f = mFactories.Get(cid);
-  if (f) {
+  auto entry = mFactories.LookupForAdd(cid);
+  if (entry) {
+    nsFactoryEntry* f = entry.Data();
     char idstr[NSID_LENGTH];
     cid.ToProvidedString(idstr);
 
@@ -714,18 +681,15 @@ nsComponentManagerImpl::ManifestComponent(ManifestProcessingContext& aCx,
     mKnownModules.Put(hash, km);
   }
 
-  void* place;
-
-  PL_ARENA_ALLOCATE(place, &mArena, sizeof(nsCID));
+  void* place = mArena.Allocate(sizeof(nsCID));
   nsID* permanentCID = static_cast<nsID*>(place);
   *permanentCID = cid;
 
-  PL_ARENA_ALLOCATE(place, &mArena, sizeof(mozilla::Module::CIDEntry));
-  auto* e = new (place) mozilla::Module::CIDEntry();
+  place = mArena.Allocate(sizeof(mozilla::Module::CIDEntry));
+  auto* e = new (KnownNotNull, place) mozilla::Module::CIDEntry();
   e->cid = permanentCID;
 
-  f = new nsFactoryEntry(e, km);
-  mFactories.Put(cid, f);
+  entry.OrInsert([e, km] () { return new nsFactoryEntry(e, km); });
 }
 
 void
@@ -856,9 +820,6 @@ nsresult nsComponentManagerImpl::Shutdown(void)
   delete sStaticModules;
   delete sModuleLocations;
 
-  // delete arena for strings and small objects
-  PL_FinishArenaPool(&mArena);
-
   mStatus = SHUTDOWN_COMPLETE;
 
   MOZ_LOG(nsComponentManagerLog, LogLevel::Debug,
@@ -985,7 +946,7 @@ nsComponentManagerImpl::GetClassObjectByContractID(const char* aContractID,
   nsresult rv;
 
   MOZ_LOG(nsComponentManagerLog, LogLevel::Debug,
-         ("nsComponentManager: GetClassObject(%s)", aContractID));
+         ("nsComponentManager: GetClassObjectByContractID(%s)", aContractID));
 
   nsCOMPtr<nsIFactory> factory = FindFactory(aContractID, strlen(aContractID));
   if (!factory) {
@@ -995,7 +956,7 @@ nsComponentManagerImpl::GetClassObjectByContractID(const char* aContractID,
   rv = factory->QueryInterface(aIID, aResult);
 
   MOZ_LOG(nsComponentManagerLog, LogLevel::Warning,
-         ("\t\tGetClassObject() %s", NS_SUCCEEDED(rv) ? "succeeded" : "FAILED"));
+         ("\t\tGetClassObjectByContractID() %s", NS_SUCCEEDED(rv) ? "succeeded" : "FAILED"));
 
   return rv;
 }
@@ -1568,16 +1529,14 @@ nsComponentManagerImpl::RegisterFactory(const nsCID& aClass,
   nsAutoPtr<nsFactoryEntry> f(new nsFactoryEntry(aClass, aFactory));
 
   SafeMutexAutoLock lock(mLock);
-  nsFactoryEntry* oldf = mFactories.Get(aClass);
-  if (oldf) {
+  if (auto entry = mFactories.LookupForAdd(aClass)) {
     return NS_ERROR_FACTORY_EXISTS;
+  } else {
+    if (aContractID) {
+      mContractIDs.Put(nsDependentCString(aContractID), f);
+    }
+    entry.OrInsert([&f] () { return f.forget(); });
   }
-
-  if (aContractID) {
-    mContractIDs.Put(nsDependentCString(aContractID), f);
-  }
-
-  mFactories.Put(aClass, f.forget());
 
   return NS_OK;
 }
@@ -1593,12 +1552,13 @@ nsComponentManagerImpl::UnregisterFactory(const nsCID& aClass,
 
   {
     SafeMutexAutoLock lock(mLock);
-    nsFactoryEntry* f = mFactories.Get(aClass);
+    auto entry = mFactories.Lookup(aClass);
+    nsFactoryEntry* f = entry ? entry.Data() : nullptr;
     if (!f || f->mFactory != aFactory) {
       return NS_ERROR_FACTORY_NOT_REGISTERED;
     }
 
-    mFactories.Remove(aClass);
+    entry.Remove();
 
     // This might leave a stale contractid -> factory mapping in
     // place, so null out the factory entry (see
@@ -1766,12 +1726,14 @@ nsComponentManagerImpl::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf)
   }
 
   n += sStaticModules->ShallowSizeOfIncludingThis(aMallocSizeOf);
-  n += sModuleLocations->ShallowSizeOfIncludingThis(aMallocSizeOf);
+  if (sModuleLocations) {
+    n += sModuleLocations->ShallowSizeOfIncludingThis(aMallocSizeOf);
+  }
 
   n += mKnownStaticModules.ShallowSizeOfExcludingThis(aMallocSizeOf);
   n += mKnownModules.ShallowSizeOfExcludingThis(aMallocSizeOf);
 
-  n += PL_SizeOfArenaPoolExcludingPool(&mArena, aMallocSizeOf);
+  n += mArena.SizeOfExcludingThis(aMallocSizeOf);
 
   n += mPendingServices.ShallowSizeOfExcludingThis(aMallocSizeOf);
 

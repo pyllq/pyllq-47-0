@@ -125,6 +125,7 @@ class LIRGeneratorShared : public MDefinitionVisitor
     inline LAllocation useRegisterOrConstant(MDefinition* mir);
     inline LAllocation useRegisterOrConstantAtStart(MDefinition* mir);
     inline LAllocation useRegisterOrZeroAtStart(MDefinition* mir);
+    inline LAllocation useRegisterOrZero(MDefinition* mir);
     inline LAllocation useRegisterOrNonDoubleConstant(MDefinition* mir);
 
     inline LUse useRegisterForTypedLoad(MDefinition* mir, MIRType type);
@@ -156,9 +157,9 @@ class LIRGeneratorShared : public MDefinitionVisitor
     inline void defineFixed(LInstructionHelper<1, Ops, Temps>* lir, MDefinition* mir,
                             const LAllocation& output);
 
-    template <size_t Ops, size_t Temps>
-    inline void defineBox(LInstructionHelper<BOX_PIECES, Ops, Temps>* lir, MDefinition* mir,
-                          LDefinition::Policy policy = LDefinition::REGISTER);
+    template <size_t Temps>
+    inline void defineBox(details::LInstructionFixedDefsTempsHelper<BOX_PIECES, Temps>* lir,
+                          MDefinition* mir, LDefinition::Policy policy = LDefinition::REGISTER);
 
     template <size_t Ops, size_t Temps>
     inline void defineInt64(LInstructionHelper<INT64_PIECES, Ops, Temps>* lir, MDefinition* mir,
@@ -197,6 +198,7 @@ class LIRGeneratorShared : public MDefinitionVisitor
     // Returns a box allocation. The use is either typed, a Value, or
     // a constant (if useConstant is true).
     inline LBoxAllocation useBoxOrTypedOrConstant(MDefinition* mir, bool useConstant);
+    inline LBoxAllocation useBoxOrTyped(MDefinition* mir);
 
     // Returns an int64 allocation for an Int64-typed instruction.
     inline LInt64Allocation useInt64(MDefinition* mir, LUse::Policy policy, bool useAtStart);
@@ -206,6 +208,7 @@ class LIRGeneratorShared : public MDefinitionVisitor
     inline LInt64Allocation useInt64Register(MDefinition* mir, bool useAtStart = false);
     inline LInt64Allocation useInt64RegisterOrConstant(MDefinition* mir, bool useAtStart = false);
     inline LInt64Allocation useInt64Fixed(MDefinition* mir, Register64 regs, bool useAtStart = false);
+    inline LInt64Allocation useInt64FixedAtStart(MDefinition* mir, Register64 regs);
 
     LInt64Allocation useInt64RegisterAtStart(MDefinition* mir) {
         return useInt64Register(mir, /* useAtStart = */ true);
@@ -278,6 +281,7 @@ class LIRGeneratorShared : public MDefinitionVisitor
     }
 
     void visitConstant(MConstant* ins) override;
+    void visitWasmFloatConstant(MWasmFloatConstant* ins) override;
 
     // Whether to generate typed reads for element accesses with hole checks.
     static bool allowTypedElementHoleCheck() {

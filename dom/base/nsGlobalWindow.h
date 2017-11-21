@@ -87,6 +87,7 @@ class nsIControllers;
 class nsIJSID;
 class nsIScriptContext;
 class nsIScriptTimeoutHandler;
+class nsITabChild;
 class nsITimeoutHandler;
 class nsIWebBrowserChrome;
 class mozIDOMWindowProxy;
@@ -101,6 +102,8 @@ class nsIIdleService;
 struct nsRect;
 
 class nsWindowSizes;
+
+class IdleRequestExecutor;
 
 namespace mozilla {
 class AbstractThread;
@@ -119,6 +122,10 @@ class Gamepad;
 enum class ImageBitmapFormat : uint8_t;
 class IdleRequest;
 class IdleRequestCallback;
+class IncrementalRunnable;
+#ifdef ENABLE_INTL_API
+class IntlUtils;
+#endif
 class Location;
 class MediaQueryList;
 class MozSelfSupport;
@@ -134,9 +141,10 @@ class TabGroup;
 class Timeout;
 class U2F;
 class VRDisplay;
+enum class VRDisplayEventReason : uint8_t;
 class VREventObserver;
 class WakeLock;
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
 class WindowOrientationObserver;
 #endif
 class Worklet;
@@ -288,6 +296,10 @@ public:
     return static_cast<nsGlobalWindow*>(
                         reinterpret_cast<nsPIDOMWindow<nsISupports>*>(aPIWin));
   }
+  static const nsGlobalWindow* Cast(const nsPIDOMWindowOuter* aPIWin) {
+    return static_cast<const nsGlobalWindow*>(
+                        reinterpret_cast<const nsPIDOMWindow<nsISupports>*>(aPIWin));
+  }
   static nsGlobalWindow* Cast(mozIDOMWindowProxy* aWin) {
     return Cast(nsPIDOMWindowOuter::From(aWin));
   }
@@ -386,13 +398,13 @@ public:
   virtual already_AddRefed<nsISupports> SaveWindowState() override;
   virtual nsresult RestoreWindowState(nsISupports *aState) override;
 
-  virtual void Suspend();
-  virtual void Resume();
+  void Suspend();
+  void Resume();
   virtual bool IsSuspended() const override;
-  virtual void Freeze();
-  virtual void Thaw();
+  void Freeze();
+  void Thaw();
   virtual bool IsFrozen() const override;
-  virtual void SyncStateFromParentWindow();
+  void SyncStateFromParentWindow();
 
   virtual nsresult FireDelayedDOMEvents() override;
 
@@ -412,7 +424,7 @@ public:
                                bool aOriginalOpener) override;
 
   // Outer windows only.
-  virtual void EnsureSizeUpToDate() override;
+  virtual void EnsureSizeAndPositionUpToDate() override;
 
   virtual void EnterModalState() override;
   virtual void LeaveModalState() override;
@@ -444,7 +456,14 @@ public:
   // Inner windows only.
   virtual void SetHasGamepadEventListener(bool aHasGamepad = true) override;
   void NotifyVREventListenerAdded();
+  bool HasUsedVR() const;
+  bool IsVRContentDetected() const;
+  bool IsVRContentPresenting() const;
+
+  using EventTarget::EventListenerAdded;
   virtual void EventListenerAdded(nsIAtom* aType) override;
+  using EventTarget::EventListenerRemoved;
+  virtual void EventListenerRemoved(nsIAtom* aType) override;
 
   // nsIInterfaceRequestor
   NS_DECL_NSIINTERFACEREQUESTOR
@@ -458,6 +477,8 @@ public:
   static bool IsShowModalDialogEnabled(JSContext* /* unused */ = nullptr,
                                        JSObject* /* unused */ = nullptr);
 
+  static bool IsRequestIdleCallbackEnabled(JSContext* aCx, JSObject* /* unused */);
+
   bool DoResolve(JSContext* aCx, JS::Handle<JSObject*> aObj,
                  JS::Handle<jsid> aId,
                  JS::MutableHandle<JS::PropertyDescriptor> aDesc);
@@ -465,8 +486,8 @@ public:
   // If in doubt, return true.
   static bool MayResolve(jsid aId);
 
-  void GetOwnPropertyNames(JSContext* aCx, nsTArray<nsString>& aNames,
-                           mozilla::ErrorResult& aRv);
+  void GetOwnPropertyNames(JSContext* aCx, JS::AutoIdVector& aNames,
+                           bool aEnumerableOnly, mozilla::ErrorResult& aRv);
 
   // Object Management
   static already_AddRefed<nsGlobalWindow> Create(nsGlobalWindow *aOuterWindow);
@@ -590,6 +611,10 @@ public:
   nsresult Observe(nsISupports* aSubject, const char* aTopic,
                    const char16_t* aData);
 
+  void ObserveStorageNotification(mozilla::dom::StorageEvent* aEvent,
+                                  const char16_t* aStorageType,
+                                  bool aPrivateBrowsing);
+
   // Outer windows only.
   void UnblockScriptedClosing();
 
@@ -626,7 +651,7 @@ public:
   virtual void EnableDeviceSensor(uint32_t aType) override;
   virtual void DisableDeviceSensor(uint32_t aType) override;
 
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
   virtual void EnableOrientationChangeListener() override;
   virtual void DisableOrientationChangeListener() override;
 #endif
@@ -737,6 +762,7 @@ public:
   void SetHasSeenGamepadInput(bool aHasSeen);
   bool HasSeenGamepadInput();
   void SyncGamepadState();
+  void StopGamepadHaptics();
 
   // Inner windows only.
   // Enable/disable updates for gamepad input.
@@ -754,6 +780,19 @@ public:
   // Inner windows only.
   // Called to inform that the set of active VR displays has changed.
   void NotifyActiveVRDisplaysChanged();
+
+  // Outer windows only.
+  uint32_t GetAutoActivateVRDisplayID();
+  // Outer windows only.
+  void SetAutoActivateVRDisplayID(uint32_t aAutoActivateVRDisplayID);
+
+  void DispatchVRDisplayActivate(uint32_t aDisplayID,
+                                 mozilla::dom::VRDisplayEventReason aReason);
+  void DispatchVRDisplayDeactivate(uint32_t aDisplayID,
+                                   mozilla::dom::VRDisplayEventReason aReason);
+  void DispatchVRDisplayConnect(uint32_t aDisplayID);
+  void DispatchVRDisplayDisconnect(uint32_t aDisplayID);
+  void DispatchVRDisplayPresentChange(uint32_t aDisplayID);
 
 #define EVENT(name_, id_, type_, struct_)                                     \
   mozilla::dom::EventHandlerNonNull* GetOn##name_()                           \
@@ -822,8 +861,7 @@ public:
   void GetName(nsAString& aName, mozilla::ErrorResult& aError);
   void SetNameOuter(const nsAString& aName, mozilla::ErrorResult& aError);
   void SetName(const nsAString& aName, mozilla::ErrorResult& aError);
-  mozilla::dom::Location* GetLocation(mozilla::ErrorResult& aError);
-  nsIDOMLocation* GetLocation() override;
+  mozilla::dom::Location* GetLocation() override;
   nsHistory* GetHistory(mozilla::ErrorResult& aError);
   mozilla::dom::CustomElementRegistry* CustomElements() override;
   mozilla::dom::BarProp* GetLocationbar(mozilla::ErrorResult& aError);
@@ -898,12 +936,12 @@ public:
                 nsIDocShellLoadInfo* aLoadInfo,
                 bool aForceNoOpener,
                 nsPIDOMWindowOuter **_retval) override;
-  mozilla::dom::Navigator* GetNavigator(mozilla::ErrorResult& aError);
+  mozilla::dom::Navigator* Navigator();
   nsIDOMNavigator* GetNavigator() override;
   nsIDOMOfflineResourceList* GetApplicationCache(mozilla::ErrorResult& aError);
   already_AddRefed<nsIDOMOfflineResourceList> GetApplicationCache() override;
 
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
   int16_t Orientation(mozilla::dom::CallerType aCallerType) const;
 #endif
 
@@ -929,6 +967,14 @@ public:
 
   mozilla::dom::Worklet*
   GetPaintWorklet(mozilla::ErrorResult& aRv);
+
+  void
+  GetRegionalPrefsLocales(nsTArray<nsString>& aLocales);
+
+#ifdef ENABLE_INTL_API
+  mozilla::dom::IntlUtils*
+  GetIntlUtils(mozilla::ErrorResult& aRv);
+#endif
 
 protected:
   bool AlertOrConfirm(bool aAlert, const nsAString& aMessage,
@@ -961,6 +1007,7 @@ public:
   already_AddRefed<mozilla::dom::cache::CacheStorage> GetCaches(mozilla::ErrorResult& aRv);
   already_AddRefed<mozilla::dom::Promise> Fetch(const mozilla::dom::RequestOrUSVString& aInput,
                                                 const mozilla::dom::RequestInit& aInit,
+                                                mozilla::dom::CallerType aCallerType,
                                                 mozilla::ErrorResult& aRv);
   void PrintOuter(mozilla::ErrorResult& aError);
   void Print(mozilla::ErrorResult& aError);
@@ -972,7 +1019,7 @@ public:
                        mozilla::ErrorResult& aError);
   void PostMessageMoz(JSContext* aCx, JS::Handle<JS::Value> aMessage,
                       const nsAString& aTargetOrigin,
-                      const mozilla::dom::Optional<mozilla::dom::Sequence<JS::Value > >& aTransfer,
+                      const mozilla::dom::Sequence<JSObject*>& aTransfer,
                       nsIPrincipal& aSubjectPrincipal,
                       mozilla::ErrorResult& aError);
   int32_t SetTimeout(JSContext* aCx, mozilla::dom::Function& aFunction,
@@ -993,6 +1040,7 @@ public:
                       const mozilla::dom::Sequence<JS::Value>& /* unused */,
                       mozilla::ErrorResult& aError);
   void ClearInterval(int32_t aHandle);
+  void GetOrigin(nsAString& aOrigin);
   void Atob(const nsAString& aAsciiBase64String, nsAString& aBinaryData,
             mozilla::ErrorResult& aError);
   void Btoa(const nsAString& aBinaryData, nsAString& aAsciiBase64String,
@@ -1060,19 +1108,18 @@ public:
   void SetInnerHeight(JSContext* aCx, JS::Handle<JS::Value> aValue,
                       mozilla::dom::CallerType aCallerType,
                       mozilla::ErrorResult& aError);
-  int32_t GetScrollXOuter();
-  int32_t GetScrollX(mozilla::ErrorResult& aError);
-  int32_t GetPageXOffset(mozilla::ErrorResult& aError)
+  double GetScrollXOuter();
+  double GetScrollX(mozilla::ErrorResult& aError);
+  double GetPageXOffset(mozilla::ErrorResult& aError)
   {
     return GetScrollX(aError);
   }
-  int32_t GetScrollYOuter();
-  int32_t GetScrollY(mozilla::ErrorResult& aError);
-  int32_t GetPageYOffset(mozilla::ErrorResult& aError)
+  double GetScrollYOuter();
+  double GetScrollY(mozilla::ErrorResult& aError);
+  double GetPageYOffset(mozilla::ErrorResult& aError)
   {
     return GetScrollY(aError);
   }
-  void MozRequestOverfill(mozilla::dom::OverfillCallback& aCallback, mozilla::ErrorResult& aError);
   void GetScreenX(JSContext* aCx, JS::MutableHandle<JS::Value> aValue,
                   mozilla::dom::CallerType aCallerType,
                   mozilla::ErrorResult& aError);
@@ -1106,7 +1153,6 @@ public:
                                const mozilla::dom::IdleRequestOptions& aOptions,
                                mozilla::ErrorResult& aError);
   void CancelIdleCallback(uint32_t aHandle);
-
 
 #ifdef MOZ_WEBSPEECH
   mozilla::dom::SpeechSynthesis*
@@ -1151,8 +1197,8 @@ public:
   void Back(mozilla::ErrorResult& aError);
   void ForwardOuter(mozilla::ErrorResult& aError);
   void Forward(mozilla::ErrorResult& aError);
-  void HomeOuter(mozilla::ErrorResult& aError);
-  void Home(mozilla::ErrorResult& aError);
+  void HomeOuter(nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aError);
+  void Home(nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aError);
   bool FindOuter(const nsAString& aString, bool aCaseSensitive, bool aBackwards,
                  bool aWrapAround, bool aWholeWord, bool aSearchInFrames,
                  bool aShowDialog, mozilla::ErrorResult& aError);
@@ -1208,7 +1254,7 @@ public:
 
   void Get_content(JSContext* aCx,
                    JS::MutableHandle<JSObject*> aRetval,
-                   mozilla::dom::CallerType aCallerType,
+                   mozilla::dom::SystemCallerGuarantee aCallerType,
                    mozilla::ErrorResult& aError)
   {
     if (mDoc) {
@@ -1218,16 +1264,19 @@ public:
   }
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     mozilla::ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     int32_t aSx, int32_t aSy, int32_t aSw, int32_t aSh,
                     mozilla::ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     int32_t aOffset, int32_t aLength,
                     mozilla::dom::ImageBitmapFormat aFormat,
                     const mozilla::dom::Sequence<mozilla::dom::ChannelPixelLayout>& aLayout,
@@ -1237,6 +1286,7 @@ public:
   // ChromeWindow bits.  Do NOT call these unless your window is in
   // fact an nsGlobalChromeWindow.
   uint16_t WindowState();
+  bool IsFullyOccluded();
   nsIBrowserDOMWindow* GetBrowserDOMWindowOuter();
   nsIBrowserDOMWindow* GetBrowserDOMWindow(mozilla::ErrorResult& aError);
   void SetBrowserDOMWindowOuter(nsIBrowserDOMWindow* aBrowserWindow);
@@ -1607,7 +1657,7 @@ public:
   // If aDoFlush is true, we'll flush our own layout; otherwise we'll try to
   // just flush our parent and only flush ourselves if we think we need to.
   // Outer windows only.
-  mozilla::CSSIntPoint GetScrollXY(bool aDoFlush);
+  mozilla::CSSPoint GetScrollXY(bool aDoFlush);
 
   int32_t GetScrollBoundaryOuter(mozilla::Side aSide);
 
@@ -1775,17 +1825,32 @@ private:
 
   bool IsBackgroundInternal() const;
 
+  void SetIsBackgroundInternal(bool aIsBackground);
+
 public:
   // Dispatch a runnable related to the global.
-  virtual nsresult Dispatch(const char* aName,
-                            mozilla::dom::TaskCategory aCategory,
+  virtual nsresult Dispatch(mozilla::TaskCategory aCategory,
                             already_AddRefed<nsIRunnable>&& aRunnable) override;
 
-  virtual nsIEventTarget*
-  EventTargetFor(mozilla::dom::TaskCategory aCategory) const override;
+  virtual nsISerialEventTarget*
+  EventTargetFor(mozilla::TaskCategory aCategory) const override;
 
   virtual mozilla::AbstractThread*
-  AbstractMainThreadFor(mozilla::dom::TaskCategory aCategory) override;
+  AbstractMainThreadFor(mozilla::TaskCategory aCategory) override;
+
+  void DisableIdleCallbackRequests();
+  uint32_t LastIdleRequestHandle() const { return mIdleRequestCallbackCounter - 1; }
+  nsresult RunIdleRequest(mozilla::dom::IdleRequest* aRequest,
+                          DOMHighResTimeStamp aDeadline, bool aDidTimeout);
+  nsresult ExecuteIdleRequest(TimeStamp aDeadline);
+  void ScheduleIdleRequestDispatch();
+  void SuspendIdleRequests();
+  void ResumeIdleRequests();
+
+  typedef mozilla::LinkedList<mozilla::dom::IdleRequest> IdleRequests;
+  void InsertIdleCallback(mozilla::dom::IdleRequest* aRequest);
+
+  void RemoveIdleCallback(mozilla::dom::IdleRequest* aRequest);
 
 protected:
   // These members are only used on outer window objects. Make sure
@@ -1850,6 +1915,10 @@ protected:
   // Inner windows only.
   // Indicates whether this window wants VR events
   bool                   mHasVREvents : 1;
+
+  // Inner windows only.
+  // Indicates whether this window wants VRDisplayActivate events
+  bool                   mHasVRDisplayActivateEvents : 1;
   nsCheapSet<nsUint32HashKey> mGamepadIndexSet;
   nsRefPtrHashtable<nsUint32HashKey, mozilla::dom::Gamepad> mGamepads;
   bool mHasSeenGamepadInput;
@@ -1859,6 +1928,8 @@ protected:
   // whether scripts may close the window,
   // even if "dom.allow_scripts_to_close_windows" is false.
   bool                   mAllowScriptsToClose : 1;
+
+  bool mTopLevelOuterContentWindow : 1;
 
   nsCOMPtr<nsIScriptContext>    mContext;
   nsWeakPtr                     mOpener;
@@ -1912,9 +1983,8 @@ protected:
 
   // These member variables are used on both inner and the outer windows.
   nsCOMPtr<nsIPrincipal> mDocumentPrincipal;
-
-  typedef nsTArray<RefPtr<mozilla::dom::StorageEvent>> nsStorageEventArray;
-  nsStorageEventArray mPendingStorageEvents;
+  // mTabChild is only ever populated in the content process.
+  nsCOMPtr<nsITabChild>  mTabChild;
 
   uint32_t mSuspendDepth;
   uint32_t mFreezeDepth;
@@ -1924,19 +1994,10 @@ protected:
 
   uint32_t mSerial;
 
-  void DisableIdleCallbackRequests();
-  void UnthrottleIdleCallbackRequests();
-
-  void PostThrottledIdleCallback();
-
-  typedef mozilla::LinkedList<mozilla::dom::IdleRequest> IdleRequests;
-  static void InsertIdleCallbackIntoList(mozilla::dom::IdleRequest* aRequest,
-                                         IdleRequests& aList);
-
   // The current idle request callback handle
   uint32_t mIdleRequestCallbackCounter;
   IdleRequests mIdleRequestCallbacks;
-  IdleRequests mThrottledIdleRequestCallbacks;
+  RefPtr<IdleRequestExecutor> mIdleRequestExecutor;
 
 #ifdef DEBUG
   bool mSetOpenerWindowCalled;
@@ -1985,7 +2046,7 @@ protected:
 
   nsTArray<uint32_t> mEnabledSensors;
 
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
+#if defined(MOZ_WIDGET_ANDROID)
   nsAutoPtr<mozilla::dom::WindowOrientationObserver> mOrientationChangeObserver;
 #endif
 
@@ -2006,13 +2067,24 @@ protected:
   // The VR Displays for this window
   nsTArray<RefPtr<mozilla::dom::VRDisplay>> mVRDisplays;
 
-  nsAutoPtr<mozilla::dom::VREventObserver> mVREventObserver;
+  RefPtr<mozilla::dom::VREventObserver> mVREventObserver;
+
+  // When non-zero, the document should receive a vrdisplayactivate event
+  // after loading.  The value is the ID of the VRDisplay that content should
+  // begin presentation on.
+  uint32_t mAutoActivateVRDisplayID; // Outer windows only
+  int64_t mBeforeUnloadListenerCount; // Inner windows only
+
+#ifdef ENABLE_INTL_API
+  RefPtr<mozilla::dom::IntlUtils> mIntlUtils;
+#endif
 
   friend class nsDOMScriptableHelper;
   friend class nsDOMWindowUtils;
   friend class mozilla::dom::PostMessageEvent;
   friend class DesktopNotification;
   friend class mozilla::dom::TimeoutManager;
+  friend class IdleRequestExecutor;
 
   static WindowByIdTable* sWindowsById;
   static bool sWarnedAboutWindowInternal;

@@ -245,12 +245,16 @@ private:
    * Locates the root items in the bookmarks folder hierarchy assigning folder
    * ids to the root properties that are exposed through the service interface.
    */
-  nsresult ReadRoots();
+  nsresult EnsureRoots();
 
   nsresult AdjustIndices(int64_t aFolder,
                          int32_t aStartIndex,
                          int32_t aEndIndex,
                          int32_t aDelta);
+
+  nsresult AdjustSeparatorsSyncCounter(int64_t aFolderId,
+                                       int32_t aStartIndex,
+                                       int64_t aSyncChangeDelta);
 
   /**
    * Fetches properties of a folder.
@@ -314,6 +318,14 @@ private:
 
   nsMaybeWeakPtrArray<nsINavBookmarkObserver> mObservers;
 
+  int64_t TagsRootId() {
+    nsresult rv = EnsureRoots();
+    NS_ENSURE_SUCCESS(rv, -1);
+    return mTagsRoot;
+  }
+
+  // These are lazy loaded, so never access them directly, always use the
+  // XPIDL getters or TagsRootId().
   int64_t mRoot;
   int64_t mMenuRoot;
   int64_t mTagsRoot;
@@ -396,12 +408,9 @@ private:
    *        URI to get bookmarks for.
    * @param aResult
    *        Array of bookmark ids.
-   * @param aSkipTags
-   *        If true ids of tags-as-bookmarks entries will be excluded.
    */
   nsresult GetBookmarkIdsForURITArray(nsIURI* aURI,
-                                      nsTArray<int64_t>& aResult,
-                                      bool aSkipTags);
+                                      nsTArray<int64_t>& aResult);
 
   nsresult GetBookmarksForURI(nsIURI* aURI,
                               nsTArray<BookmarkData>& _bookmarks);

@@ -19,7 +19,9 @@
 #include "nsRect.h"
 #include "nspr.h"
 #include "png.h"
+
 #include "RasterImage.h"
+#include "SurfaceCache.h"
 #include "SurfacePipeFactory.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Telemetry.h"
@@ -113,7 +115,7 @@ nsPNGDecoder::nsPNGDecoder(RasterImage* aImage)
  , interlacebuf(nullptr)
  , mInProfile(nullptr)
  , mTransform(nullptr)
- , format(gfx::SurfaceFormat::UNKNOWN)
+ , mFormat(SurfaceFormat::UNKNOWN)
  , mCMSMode(0)
  , mChannels(0)
  , mPass(0)
@@ -144,11 +146,10 @@ nsPNGDecoder::~nsPNGDecoder()
 }
 
 nsPNGDecoder::TransparencyType
-nsPNGDecoder::GetTransparencyType(SurfaceFormat aFormat,
-                                  const IntRect& aFrameRect)
+nsPNGDecoder::GetTransparencyType(const IntRect& aFrameRect)
 {
   // Check if the image has a transparent color in its palette.
-  if (aFormat == SurfaceFormat::B8G8R8A8) {
+  if (HasAlphaChannel()) {
     return TransparencyType::eAlpha;
   }
   if (!aFrameRect.IsEqualEdges(FullFrame())) {
@@ -190,12 +191,11 @@ nsPNGDecoder::CreateFrame(const FrameInfo& aFrameInfo)
   MOZ_ASSERT(!IsMetadataDecode());
 
   // Check if we have transparency, and send notifications if needed.
-  auto transparency = GetTransparencyType(aFrameInfo.mFormat,
-                                          aFrameInfo.mFrameRect);
+  auto transparency = GetTransparencyType(aFrameInfo.mFrameRect);
   PostHasTransparencyIfNeeded(transparency);
-  SurfaceFormat format = transparency == TransparencyType::eNone
-                       ? SurfaceFormat::B8G8R8X8
-                       : SurfaceFormat::B8G8R8A8;
+  mFormat = transparency == TransparencyType::eNone
+          ? SurfaceFormat::B8G8R8X8
+          : SurfaceFormat::B8G8R8A8;
 
   // Make sure there's no animation or padding if we're downscaling.
   MOZ_ASSERT_IF(Size() != OutputSize(), mNumFrames == 0);
@@ -217,7 +217,7 @@ nsPNGDecoder::CreateFrame(const FrameInfo& aFrameInfo)
   Maybe<SurfacePipe> pipe =
     SurfacePipeFactory::CreateSurfacePipe(this, mNumFrames, Size(),
                                           OutputSize(), aFrameInfo.mFrameRect,
-                                          format, pipeFlags);
+                                          mFormat, pipeFlags);
 
   if (!pipe) {
     mPipe = SurfacePipe();
@@ -259,10 +259,9 @@ nsPNGDecoder::EndImageFrame()
 
   mNumFrames++;
 
-  Opacity opacity = Opacity::SOME_TRANSPARENCY;
-  if (format == gfx::SurfaceFormat::B8G8R8X8) {
-    opacity = Opacity::FULLY_OPAQUE;
-  }
+  Opacity opacity = mFormat == SurfaceFormat::B8G8R8X8
+                  ? Opacity::FULLY_OPAQUE
+                  : Opacity::SOME_TRANSPARENCY;
 
   PostFrameStop(opacity, mAnimInfo.mDispose,
                 FrameTimeout::FromRawMilliseconds(mAnimInfo.mTimeout),
@@ -572,6 +571,13 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
 
   // Post our size to the superclass
   decoder->PostSize(frameRect.width, frameRect.height);
+
+  if (width >
+    SurfaceCache::MaximumCapacity()/(bit_depth > 8 ? 16:8)) {
+    // libpng needs space to allocate two row buffers
+    png_error(decoder->mPNG, "Image is too wide");
+  }
+
   if (decoder->HasError()) {
     // Setting the size led to an error.
     png_error(decoder->mPNG, "Sizing error");
@@ -671,11 +677,7 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
   // copy PNG info into imagelib structs (formerly png_set_dims()) //
   //---------------------------------------------------------------//
 
-  if (channels == 1 || channels == 3) {
-    decoder->format = gfx::SurfaceFormat::B8G8R8X8;
-  } else if (channels == 2 || channels == 4) {
-    decoder->format = gfx::SurfaceFormat::B8G8R8A8;
-  } else {
+  if (channels < 1 || channels > 4) {
     png_error(decoder->mPNG, "Invalid number of channels");
   }
 
@@ -702,8 +704,7 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
     // PostHasTransparency in the metadata decode if we need to. So it's
     // okay to pass IntRect(0, 0, width, height) here for animated images;
     // they will call with the proper first frame rect in the full decode.
-    auto transparency = decoder->GetTransparencyType(decoder->format,
-                                                     frameRect);
+    auto transparency = decoder->GetTransparencyType(frameRect);
     decoder->PostHasTransparencyIfNeeded(transparency);
 
     // We have the metadata we're looking for, so stop here, before we allocate
@@ -721,8 +722,7 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
     decoder->mFrameIsHidden = true;
   } else {
 #endif
-    nsresult rv = decoder->CreateFrame(FrameInfo{ decoder->format,
-                                                  frameRect,
+    nsresult rv = decoder->CreateFrame(FrameInfo{ frameRect,
                                                   isInterlaced });
     if (NS_FAILED(rv)) {
       png_error(decoder->mPNG, "CreateFrame failed");
@@ -744,6 +744,11 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
   if (interlace_type == PNG_INTERLACE_ADAM7) {
     if (frameRect.height < INT32_MAX / (frameRect.width * int32_t(channels))) {
       const size_t bufferSize = channels * frameRect.width * frameRect.height;
+
+      if (bufferSize > SurfaceCache::MaximumCapacity()) {
+        png_error(decoder->mPNG, "Insufficient memory to deinterlace image");
+      }
+
       decoder->interlacebuf = static_cast<uint8_t*>(malloc(bufferSize));
     }
     if (!decoder->interlacebuf) {
@@ -885,7 +890,7 @@ nsPNGDecoder::WriteRow(uint8_t* aRow)
       qcms_transform_data(mTransform, rowToWrite, mCMSLine, width);
 
       // Copy alpha over.
-      if (mChannels == 2 || mChannels == 4) {
+      if (HasAlphaChannel()) {
         for (uint32_t i = 0; i < width; ++i) {
           mCMSLine[4 * i + 3] = rowToWrite[mChannels * i + mChannels - 1];
         }
@@ -898,28 +903,21 @@ nsPNGDecoder::WriteRow(uint8_t* aRow)
   }
 
   // Write this row to the SurfacePipe.
-  DebugOnly<WriteState> result = WriteState::FAILURE;
-  switch (format) {
-    case SurfaceFormat::B8G8R8X8:
+  DebugOnly<WriteState> result;
+  if (HasAlphaChannel()) {
+    if (mDisablePremultipliedAlpha) {
       result = mPipe.WritePixelsToRow<uint32_t>([&]{
-        return PackRGBPixelAndAdvance(rowToWrite);
+        return PackUnpremultipliedRGBAPixelAndAdvance(rowToWrite);
       });
-      break;
-
-    case SurfaceFormat::B8G8R8A8:
-      if (mDisablePremultipliedAlpha) {
-        result = mPipe.WritePixelsToRow<uint32_t>([&]{
-          return PackUnpremultipliedRGBAPixelAndAdvance(rowToWrite);
-        });
-      } else {
-        result = mPipe.WritePixelsToRow<uint32_t>([&]{
-          return PackRGBAPixelAndAdvance(rowToWrite);
-        });
-      }
-      break;
-
-    default:
-      png_error(mPNG, "Invalid SurfaceFormat");
+    } else {
+      result = mPipe.WritePixelsToRow<uint32_t>([&]{
+        return PackRGBAPixelAndAdvance(rowToWrite);
+      });
+    }
+  } else {
+    result = mPipe.WritePixelsToRow<uint32_t>([&]{
+      return PackRGBPixelAndAdvance(rowToWrite);
+    });
   }
 
   MOZ_ASSERT(WriteState(result) != WriteState::FAILURE);
@@ -959,6 +957,33 @@ nsPNGDecoder::DoYield(png_structp aPNGStruct)
     Transition::ContinueUnbufferedAfterYield(State::PNG_DATA, consumedBytes);
 }
 
+nsresult
+nsPNGDecoder::FinishInternal()
+{
+  // We shouldn't be called in error cases.
+  MOZ_ASSERT(!HasError(), "Can't call FinishInternal on error!");
+
+  if (IsMetadataDecode()) {
+    return NS_OK;
+  }
+
+  int32_t loop_count = 0;
+#ifdef PNG_APNG_SUPPORTED
+  if (png_get_valid(mPNG, mInfo, PNG_INFO_acTL)) {
+    int32_t num_plays = png_get_num_plays(mPNG, mInfo);
+    loop_count = num_plays - 1;
+  }
+#endif
+
+  if (InFrame()) {
+    EndImageFrame();
+  }
+  PostDecodeDone(loop_count);
+
+  return NS_OK;
+}
+
+
 #ifdef PNG_APNG_SUPPORTED
 // got the header of a new frame that's coming
 void
@@ -975,7 +1000,6 @@ nsPNGDecoder::frame_info_callback(png_structp png_ptr, png_uint_32 frame_num)
   if (!previousFrameWasHidden && decoder->IsFirstFrameDecode()) {
     // We're about to get a second non-hidden frame, but we only want the first.
     // Stop decoding now. (And avoid allocating the unnecessary buffers below.)
-    decoder->PostDecodeDone();
     return decoder->DoTerminate(png_ptr, TerminalState::SUCCESS);
   }
 
@@ -1000,7 +1024,7 @@ nsPNGDecoder::frame_info_callback(png_structp png_ptr, png_uint_32 frame_num)
   }
 #endif
 
-  const FrameInfo info { decoder->format, frameRect, isInterlaced };
+  const FrameInfo info { frameRect, isInterlaced };
 
   // If the previous frame was hidden, skip the yield (which will mislead the
   // caller, who will think the previous frame was real) and just allocate the
@@ -1041,17 +1065,6 @@ nsPNGDecoder::end_callback(png_structp png_ptr, png_infop info_ptr)
   // We shouldn't get here if we've hit an error
   MOZ_ASSERT(!decoder->HasError(), "Finishing up PNG but hit error!");
 
-  int32_t loop_count = 0;
-#ifdef PNG_APNG_SUPPORTED
-  if (png_get_valid(png_ptr, info_ptr, PNG_INFO_acTL)) {
-    int32_t num_plays = png_get_num_plays(png_ptr, info_ptr);
-    loop_count = num_plays - 1;
-  }
-#endif
-
-  // Send final notifications.
-  decoder->EndImageFrame();
-  decoder->PostDecodeDone(loop_count);
   return decoder->DoTerminate(png_ptr, TerminalState::SUCCESS);
 }
 
@@ -1070,14 +1083,14 @@ nsPNGDecoder::warning_callback(png_structp png_ptr, png_const_charp warning_msg)
   MOZ_LOG(sPNGLog, LogLevel::Warning, ("libpng warning: %s\n", warning_msg));
 }
 
-Maybe<Telemetry::ID>
+Maybe<Telemetry::HistogramID>
 nsPNGDecoder::SpeedHistogram() const
 {
   return Some(Telemetry::IMAGE_DECODE_SPEED_PNG);
 }
 
 bool
-nsPNGDecoder::IsValidICO() const
+nsPNGDecoder::IsValidICOResource() const
 {
   // Only 32-bit RGBA PNGs are valid ICO resources; see here:
   //   http://blogs.msdn.com/b/oldnewthing/archive/2010/10/22/10079192.aspx

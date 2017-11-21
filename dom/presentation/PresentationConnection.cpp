@@ -15,6 +15,7 @@
 #include "mozilla/dom/PresentationConnectionCloseEvent.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIPresentationService.h"
@@ -354,9 +355,10 @@ PresentationConnection::NotifyStateChange(const nsAString& aSessionId,
                                           uint16_t aState,
                                           nsresult aReason)
 {
-  PRES_DEBUG("connection state change:id[%s], state[%x], reason[%x], role[%d]\n",
+  PRES_DEBUG("connection state change:id[%s], state[%" PRIx32
+             "], reason[%" PRIx32 "], role[%d]\n",
              NS_ConvertUTF16toUTF8(aSessionId).get(), aState,
-             aReason, mRole);
+             static_cast<uint32_t>(aReason), mRole);
 
   if (!aSessionId.Equals(mId)) {
     return NS_ERROR_INVALID_ARG;
@@ -639,7 +641,9 @@ NS_IMETHODIMP
 PresentationConnection::Cancel(nsresult aStatus)
 {
   nsCOMPtr<nsIRunnable> event =
-    NewRunnableMethod(this, &PresentationConnection::ProcessConnectionWentAway);
+    NewRunnableMethod("dom::PresentationConnection::ProcessConnectionWentAway",
+                      this,
+                      &PresentationConnection::ProcessConnectionWentAway);
   return NS_DispatchToCurrentThread(event);
 }
 NS_IMETHODIMP
@@ -734,8 +738,9 @@ PresentationConnection::AsyncCloseConnectionWithErrorMsg(const nsAString& aMessa
 
   nsString message = nsString(aMessage);
   RefPtr<PresentationConnection> self = this;
-  nsCOMPtr<nsIRunnable> r =
-    NS_NewRunnableFunction([self, message]() -> void {
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+    "dom::PresentationConnection::AsyncCloseConnectionWithErrorMsg",
+    [self, message]() -> void {
       // Set |mState| to |PresentationConnectionState::Closed| here to avoid
       // calling |ProcessStateChanged|.
       self->mState = PresentationConnectionState::Closed;

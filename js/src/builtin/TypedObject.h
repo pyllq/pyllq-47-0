@@ -536,14 +536,14 @@ class TypedObject : public ShapedObject
     static MOZ_MUST_USE bool obj_deleteProperty(JSContext* cx, HandleObject obj, HandleId id,
                                                 ObjectOpResult& result);
 
-    static MOZ_MUST_USE bool obj_enumerate(JSContext* cx, HandleObject obj,
-                                           AutoIdVector& properties, bool enumerableOnly);
-
 
     uint8_t* typedMem() const;
     uint8_t* typedMemBase() const;
 
   public:
+    static MOZ_MUST_USE bool obj_newEnumerate(JSContext* cx, HandleObject obj,
+                                              AutoIdVector& properties, bool enumerableOnly);
+
     TypedProto& typedProto() const {
         // Typed objects' prototypes can't be modified.
         return staticPrototype()->as<TypedProto>();
@@ -552,6 +552,10 @@ class TypedObject : public ShapedObject
     TypeDescr& typeDescr() const {
         return group()->typeDescr();
     }
+
+    static JS::Result<TypedObject*, JS::OOM&>
+    create(JSContext* cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
+           js::HandleShape shape, js::HandleObjectGroup group);
 
     uint32_t offset() const;
     uint32_t length() const;

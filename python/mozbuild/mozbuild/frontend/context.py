@@ -926,13 +926,6 @@ VARIABLES = {
         APK file.
         """),
 
-    'ANDROID_ECLIPSE_PROJECT_TARGETS': (dict, dict,
-        """Defines Android Eclipse project targets.
-
-        This variable should not be populated directly. Instead, it should
-        populated by calling add_android_eclipse{_library}_project().
-        """),
-
     'SOURCES': (ContextDerivedTypedListWithItems(Path, StrictOrderingOnAppendListWithFlagsFactory({'no_pgo': bool, 'flags': List})), list,
         """Source code files.
 
@@ -957,6 +950,22 @@ VARIABLES = {
 
         This variable should not be used directly; you should be using the
         RustLibrary template instead.
+        """),
+
+    'RUST_LIBRARY_TARGET_DIR': (unicode, unicode,
+        """Where CARGO_TARGET_DIR should point when compiling this library.  If
+        not set, it defaults to the current objdir.  It should be a relative path
+        to the current objdir; absolute paths should not be used.
+
+        This variable should not be used directly; you should be using the
+        RustLibrary template instead.
+        """),
+
+    'HOST_RUST_LIBRARY_FEATURES': (List, list,
+        """Cargo features to activate for this host library.
+
+        This variable should not be used directly; you should be using the
+        HostRustLibrary template instead.
         """),
 
     'UNIFIED_SOURCES': (ContextDerivedTypedList(SourcePath, StrictOrderingOnAppendList), list,
@@ -1158,12 +1167,6 @@ VARIABLES = {
 
         This variable contains a list of source code files to compile.
         with the host compiler.
-        """),
-
-    'IS_COMPONENT': (bool, bool,
-        """Whether the library contains a binary XPCOM component manifest.
-
-        Implies FORCE_SHARED_LIB.
         """),
 
     'HOST_LIBRARY_NAME': (unicode, unicode,
@@ -1827,7 +1830,6 @@ TEMPLATE_VARIABLES = {
     'HOST_PROGRAM',
     'HOST_LIBRARY_NAME',
     'HOST_SIMPLE_PROGRAMS',
-    'IS_COMPONENT',
     'IS_FRAMEWORK',
     'LIBRARY_NAME',
     'PROGRAM',
@@ -1892,35 +1894,6 @@ FUNCTIONS = {
 
         This returns a rich Java JAR type, described at
         :py:class:`mozbuild.frontend.data.JavaJarData`.
-        """),
-
-    'add_android_eclipse_project': (
-        lambda self: self._add_android_eclipse_project, (str, str),
-        """Declare an Android Eclipse project.
-
-        This is one of the supported ways to populate the
-        ANDROID_ECLIPSE_PROJECT_TARGETS variable.
-
-        The parameters are:
-        * name - project name.
-        * manifest - path to AndroidManifest.xml.
-
-        This returns a rich Android Eclipse project type, described at
-        :py:class:`mozbuild.frontend.data.AndroidEclipseProjectData`.
-        """),
-
-    'add_android_eclipse_library_project': (
-        lambda self: self._add_android_eclipse_library_project, (str,),
-        """Declare an Android Eclipse library project.
-
-        This is one of the supported ways to populate the
-        ANDROID_ECLIPSE_PROJECT_TARGETS variable.
-
-        The parameters are:
-        * name - project name.
-
-        This returns a rich Android Eclipse project type, described at
-        :py:class:`mozbuild.frontend.data.AndroidEclipseProjectData`.
         """),
 
     'export': (lambda self: self._export, (str,),
@@ -2231,17 +2204,6 @@ DEPRECATION_HINTS = {
 
             Library('foo') [ or LIBRARY_NAME = 'foo' ]
             FORCE_SHARED_LIB = True
-        ''',
-
-    'IS_COMPONENT': '''
-        Please use
-
-            XPCOMBinaryComponent('foo')
-
-        instead of
-
-            Library('foo') [ or LIBRARY_NAME = 'foo' ]
-            IS_COMPONENT = True
         ''',
 
     'IS_FRAMEWORK': '''

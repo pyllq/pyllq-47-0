@@ -4,11 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Get history service
-var histsvc = PlacesUtils.history;
-var bhist = PlacesUtils.bhistory;
-var bmsvc = PlacesUtils.bookmarks;
-
 var resultObserver = {
   insertedNode: null,
   nodeInserted(parent, node, newIndex) {
@@ -32,11 +27,11 @@ var resultObserver = {
   newTime: 0,
   nodeChangedByHistoryDetails: null,
   nodeHistoryDetailsChanged(node,
-                                         updatedVisitDate,
-                                         updatedVisitCount) {
-    this.nodeChangedByHistoryDetails = node
-    this.newTime = updatedVisitDate;
-    this.newAccessCount = updatedVisitCount;
+                            oldVisitDate,
+                            oldVisitCount) {
+    this.nodeChangedByHistoryDetails = node;
+    this.newTime = node.time;
+    this.newAccessCount = node.accessCount;
   },
 
   movedNode: null,
@@ -82,17 +77,13 @@ var resultObserver = {
 
 var testURI = uri("http://mozilla.com");
 
-function run_test() {
-  run_next_test();
-}
-
 add_test(function check_history_query() {
-  var options = histsvc.getNewQueryOptions();
+  var options = PlacesUtils.history.getNewQueryOptions();
   options.sortingMode = options.SORT_BY_DATE_DESCENDING;
   options.resultType = options.RESULTS_AS_VISIT;
-  var query = histsvc.getNewQuery();
-  var result = histsvc.executeQuery(query, options);
-  result.addObserver(resultObserver, false);
+  var query = PlacesUtils.history.getNewQuery();
+  var result = PlacesUtils.history.executeQuery(query, options);
+  result.addObserver(resultObserver);
   var root = result.root;
   root.containerOpen = true;
 
@@ -114,11 +105,12 @@ add_test(function check_history_query() {
       // nsINavHistoryResultObserver.nodeRemoved
       var removedURI = uri("http://google.com");
       PlacesTestUtils.addVisits(removedURI).then(function() {
-        bhist.removePage(removedURI);
+        return PlacesUtils.history.remove(removedURI);
+      }).then(function() {
         do_check_eq(removedURI.spec, resultObserver.removedNode.uri);
 
         // nsINavHistoryResultObserver.invalidateContainer
-        bhist.removePagesFromHost("mozilla.com", false);
+        PlacesUtils.history.removePagesFromHost("mozilla.com", false);
         do_check_eq(root.uri, resultObserver.invalidatedContainer.uri);
 
         // nsINavHistoryResultObserver.sortingChanged
@@ -128,18 +120,18 @@ add_test(function check_history_query() {
         do_check_eq(resultObserver.invalidatedContainer, result.root);
 
         // nsINavHistoryResultObserver.invalidateContainer
-        PlacesTestUtils.clearHistoryEnabled().then(() => {
+        PlacesTestUtils.clearHistory().then(() => {
           do_check_eq(root.uri, resultObserver.invalidatedContainer.uri);
 
           // nsINavHistoryResultObserver.batching
           do_check_false(resultObserver.inBatchMode);
-          histsvc.runInBatchMode({
+          PlacesUtils.history.runInBatchMode({
             runBatched(aUserData) {
               do_check_true(resultObserver.inBatchMode);
             }
           }, null);
           do_check_false(resultObserver.inBatchMode);
-          bmsvc.runInBatchMode({
+          PlacesUtils.bookmarks.runInBatchMode({
             runBatched(aUserData) {
               do_check_true(resultObserver.inBatchMode);
             }
@@ -157,12 +149,12 @@ add_test(function check_history_query() {
   });
 });
 
-add_test(function check_bookmarks_query() {
-  var options = histsvc.getNewQueryOptions();
-  var query = histsvc.getNewQuery();
-  query.setFolders([bmsvc.bookmarksMenuFolder], 1);
-  var result = histsvc.executeQuery(query, options);
-  result.addObserver(resultObserver, false);
+add_task(async function check_bookmarks_query() {
+  var options = PlacesUtils.history.getNewQueryOptions();
+  var query = PlacesUtils.history.getNewQuery();
+  query.setFolders([PlacesUtils.bookmarks.bookmarksMenuFolder], 1);
+  var result = PlacesUtils.history.executeQuery(query, options);
+  result.addObserver(resultObserver);
   var root = result.root;
   root.containerOpen = true;
 
@@ -170,7 +162,12 @@ add_test(function check_bookmarks_query() {
 
   // nsINavHistoryResultObserver.nodeInserted
   // add a bookmark
-  var testBookmark = bmsvc.insertBookmark(bmsvc.bookmarksMenuFolder, testURI, bmsvc.DEFAULT_INDEX, "foo");
+  var testBookmark =
+    await PlacesUtils.bookmarks.insert({
+      parentGuid: PlacesUtils.bookmarks.menuGuid,
+      url: testURI,
+      title: "foo"
+  });
   do_check_eq("foo", resultObserver.insertedNode.title);
   do_check_eq(testURI.spec, resultObserver.insertedNode.uri);
 
@@ -179,17 +176,29 @@ add_test(function check_bookmarks_query() {
   do_check_eq(root.uri, resultObserver.nodeChangedByHistoryDetails.uri);
 
   // nsINavHistoryResultObserver.nodeTitleChanged for a leaf node
-  bmsvc.setItemTitle(testBookmark, "baz");
+  await PlacesUtils.bookmarks.update({
+    guid: testBookmark.guid,
+    title: "baz",
+  });
   do_check_eq(resultObserver.nodeChangedByTitle.title, "baz");
   do_check_eq(resultObserver.newTitle, "baz");
 
-  var testBookmark2 = bmsvc.insertBookmark(bmsvc.bookmarksMenuFolder, uri("http://google.com"), bmsvc.DEFAULT_INDEX, "foo");
-  bmsvc.moveItem(testBookmark2, bmsvc.bookmarksMenuFolder, 0);
-  do_check_eq(resultObserver.movedNode.itemId, testBookmark2);
+  var testBookmark2 = await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.menuGuid,
+    url: "http://google.com",
+    title: "foo"
+  });
+
+  await PlacesUtils.bookmarks.update({
+    guid: testBookmark2.guid,
+    index: 0,
+    parentGuid: PlacesUtils.bookmarks.menuGuid,
+  });
+  do_check_eq(resultObserver.movedNode.bookmarkGuid, testBookmark2.guid);
 
   // nsINavHistoryResultObserver.nodeRemoved
-  bmsvc.removeItem(testBookmark2);
-  do_check_eq(testBookmark2, resultObserver.removedNode.itemId);
+  await PlacesUtils.bookmarks.remove(testBookmark2.guid);
+  do_check_eq(testBookmark2.guid, resultObserver.removedNode.bookmarkGuid);
 
   // XXX nsINavHistoryResultObserver.invalidateContainer
 
@@ -201,13 +210,13 @@ add_test(function check_bookmarks_query() {
 
   // nsINavHistoryResultObserver.batching
   do_check_false(resultObserver.inBatchMode);
-  histsvc.runInBatchMode({
+  PlacesUtils.history.runInBatchMode({
     runBatched(aUserData) {
       do_check_true(resultObserver.inBatchMode);
     }
   }, null);
   do_check_false(resultObserver.inBatchMode);
-  bmsvc.runInBatchMode({
+  PlacesUtils.bookmarks.runInBatchMode({
     runBatched(aUserData) {
       do_check_true(resultObserver.inBatchMode);
     }
@@ -222,11 +231,11 @@ add_test(function check_bookmarks_query() {
 });
 
 add_test(function check_mixed_query() {
-  var options = histsvc.getNewQueryOptions();
-  var query = histsvc.getNewQuery();
+  var options = PlacesUtils.history.getNewQueryOptions();
+  var query = PlacesUtils.history.getNewQuery();
   query.onlyBookmarked = true;
-  var result = histsvc.executeQuery(query, options);
-  result.addObserver(resultObserver, false);
+  var result = PlacesUtils.history.executeQuery(query, options);
+  result.addObserver(resultObserver);
   var root = result.root;
   root.containerOpen = true;
 
@@ -234,13 +243,13 @@ add_test(function check_mixed_query() {
 
   // nsINavHistoryResultObserver.batching
   do_check_false(resultObserver.inBatchMode);
-  histsvc.runInBatchMode({
+  PlacesUtils.history.runInBatchMode({
     runBatched(aUserData) {
       do_check_true(resultObserver.inBatchMode);
     }
   }, null);
   do_check_false(resultObserver.inBatchMode);
-  bmsvc.runInBatchMode({
+  PlacesUtils.bookmarks.runInBatchMode({
     runBatched(aUserData) {
       do_check_true(resultObserver.inBatchMode);
     }

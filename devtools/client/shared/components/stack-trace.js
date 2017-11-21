@@ -35,25 +35,30 @@ const StackTrace = createClass({
     stacktrace: PropTypes.array.isRequired,
     onViewSourceInDebugger: PropTypes.func.isRequired,
     onViewSourceInScratchpad: PropTypes.func,
+    // Service to enable the source map feature.
+    sourceMapService: PropTypes.object,
   },
 
   render() {
     let {
       stacktrace,
       onViewSourceInDebugger,
-      onViewSourceInScratchpad
+      onViewSourceInScratchpad,
+      sourceMapService,
     } = this.props;
 
     let frames = [];
-    stacktrace.forEach(s => {
+    stacktrace.forEach((s, i) => {
       if (s.asyncCause) {
         frames.push("\t", AsyncFrame({
+          key: `${i}-asyncframe`,
           asyncCause: s.asyncCause
         }), "\n");
       }
 
       let source = s.filename.split(" -> ").pop();
       frames.push("\t", Frame({
+        key: `${i}-frame`,
         frame: {
           functionDisplayName: s.functionName,
           source,
@@ -65,7 +70,8 @@ const StackTrace = createClass({
         showFullSourceUrl: true,
         onClick: (/^Scratchpad\/\d+$/.test(source))
           ? onViewSourceInScratchpad
-          : onViewSourceInDebugger
+          : onViewSourceInDebugger,
+        sourceMapService,
       }), "\n");
     });
 

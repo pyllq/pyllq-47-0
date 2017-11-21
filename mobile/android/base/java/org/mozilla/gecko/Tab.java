@@ -6,11 +6,8 @@
 package org.mozilla.gecko;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Future;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.json.JSONObject;
@@ -33,9 +30,7 @@ import org.mozilla.gecko.widget.SiteLogins;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
-import android.os.Build;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.text.TextUtils;
@@ -61,7 +56,7 @@ public class Tab {
     private Future<IconResponse> mRunningIconRequest;
 
     private boolean mHasFeeds;
-    private boolean mHasManifest;
+    private String mManifestUrl;
     private boolean mHasOpenSearch;
     private final SiteIdentity mSiteIdentity;
     private SiteLogins mSiteLogins;
@@ -74,7 +69,6 @@ public class Tab {
     private int mFaviconLoadId;
     private String mContentType;
     private boolean mHasTouchListeners;
-    private final ArrayList<View> mPluginViews;
     private int mState;
     private Bitmap mThumbnailBitmap;
     private boolean mDesktopMode;
@@ -95,8 +89,6 @@ public class Tab {
      */
     private Bundle mMostRecentHomePanelData;
 
-    private int mHistoryIndex;
-    private int mHistorySize;
     private boolean mCanDoBack;
     private boolean mCanDoForward;
 
@@ -135,9 +127,7 @@ public class Tab {
         mParentId = parentId;
         mTitle = title == null ? "" : title;
         mSiteIdentity = new SiteIdentity();
-        mHistoryIndex = -1;
         mContentType = "";
-        mPluginViews = new ArrayList<View>();
         mState = shouldShowProgress(url) ? STATE_LOADING : STATE_SUCCESS;
         mLoadProgress = LOAD_PROGRESS_INIT;
         mIconRequestBuilder = Icons.with(mAppContext).pageUrl(mUrl);
@@ -247,13 +237,9 @@ public class Tab {
 
     public Bitmap getThumbnailBitmap(int width, int height) {
         if (mThumbnailBitmap != null) {
-            // Bug 787318 - Honeycomb has a bug with bitmap caching, we can't
-            // reuse the bitmap there.
-            boolean honeycomb = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB
-                              && Build.VERSION.SDK_INT <= Build.VERSION_CODES.HONEYCOMB_MR2);
             boolean sizeChange = mThumbnailBitmap.getWidth() != width
                               || mThumbnailBitmap.getHeight() != height;
-            if (honeycomb || sizeChange) {
+            if (sizeChange) {
                 mThumbnailBitmap = null;
             }
         }
@@ -302,8 +288,8 @@ public class Tab {
         return mHasFeeds;
     }
 
-    public boolean hasManifest() {
-        return mHasManifest;
+    public String getManifestUrl() {
+        return mManifestUrl;
     }
 
     public boolean hasOpenSearch() {
@@ -391,14 +377,6 @@ public class Tab {
         return mContentType;
     }
 
-    public int getHistoryIndex() {
-        return mHistoryIndex;
-    }
-
-    public int getHistorySize() {
-        return mHistorySize;
-    }
-
     public synchronized void updateTitle(String title) {
         // Keep the title unchanged while entering reader mode.
         if (mEnteringReaderMode) {
@@ -483,8 +461,8 @@ public class Tab {
         mHasFeeds = hasFeeds;
     }
 
-    public void setHasManifest(boolean hasManifest) {
-        mHasManifest = hasManifest;
+    public void setManifestUrl(String manifestUrl) {
+        mManifestUrl = manifestUrl;
     }
 
     public void setHasOpenSearch(boolean hasOpenSearch) {
@@ -572,7 +550,9 @@ public class Tab {
     }
 
     public void doReload(boolean bypassCache) {
-        GeckoAppShell.notifyObservers("Session:Reload", "{\"bypassCache\":" + String.valueOf(bypassCache) + "}");
+        final GeckoBundle data = new GeckoBundle(1);
+        data.putBoolean("bypassCache", bypassCache);
+        EventDispatcher.getInstance().dispatch("Session:Reload", data);
     }
 
     // Our version of nsSHistory::GetCanGoBack
@@ -584,12 +564,12 @@ public class Tab {
         if (!canDoBack())
             return false;
 
-        GeckoAppShell.notifyObservers("Session:Back", "");
+        EventDispatcher.getInstance().dispatch("Session:Back", null);
         return true;
     }
 
     public void doStop() {
-        GeckoAppShell.notifyObservers("Session:Stop", "");
+        EventDispatcher.getInstance().dispatch("Session:Stop", null);
     }
 
     // Our version of nsSHistory::GetCanGoForward
@@ -601,7 +581,7 @@ public class Tab {
         if (!canDoForward())
             return false;
 
-        GeckoAppShell.notifyObservers("Session:Forward", "");
+        EventDispatcher.getInstance().dispatch("Session:Forward", null);
         return true;
     }
 
@@ -610,10 +590,7 @@ public class Tab {
         final String oldUrl = getURL();
         final boolean sameDocument = message.getBoolean("sameDocument");
         mEnteringReaderMode = ReaderModeUtils.isEnteringReaderMode(oldUrl, uri);
-        mHistoryIndex = message.getInt("historyIndex");
-        mHistorySize = message.getInt("historySize");
-        mCanDoBack = message.getBoolean("canGoBack");
-        mCanDoForward = message.getBoolean("canGoForward");
+        handleButtonStateChange(message);
 
         if (!TextUtils.equals(oldUrl, uri)) {
             updateURL(uri);
@@ -647,10 +624,10 @@ public class Tab {
 
         setContentType(message.getString("contentType"));
         updateUserRequested(message.getString("userRequested"));
-        mBaseDomain = message.getString("baseDomain");
+        mBaseDomain = message.getString("baseDomain", "");
 
         setHasFeeds(false);
-        setHasManifest(false);
+        setManifestUrl(null);
         setHasOpenSearch(false);
         mSiteIdentity.reset();
         setSiteLogins(null);
@@ -659,6 +636,11 @@ public class Tab {
         setLoadProgressIfLoading(LOAD_PROGRESS_LOCATION_CHANGE);
 
         Tabs.getInstance().notifyListeners(this, Tabs.TabEvents.LOCATION_CHANGE, oldUrl);
+    }
+
+    void handleButtonStateChange(final GeckoBundle message) {
+        mCanDoBack = message.getBoolean("canGoBack");
+        mCanDoForward = message.getBoolean("canGoForward");
     }
 
     void handleButtonStateChange(boolean canGoBack, boolean canGoForward) {
@@ -750,18 +732,6 @@ public class Tab {
         } catch (Exception e) {
             // ignore
         }
-    }
-
-    public void addPluginView(View view) {
-        mPluginViews.add(view);
-    }
-
-    public void removePluginView(View view) {
-        mPluginViews.remove(view);
-    }
-
-    public View[] getPluginViews() {
-        return mPluginViews.toArray(new View[mPluginViews.size()]);
     }
 
     public void setDesktopMode(boolean enabled) {

@@ -21,6 +21,7 @@
 #include "nsArrayUtils.h"
 #include "nsObjCExceptions.h"
 #include "nsCOMPtr.h"
+#include "nsThreadUtils.h"
 #include "nsToolkit.h"
 #include "nsCRT.h"
 
@@ -35,6 +36,7 @@
 #include "nsThemeConstants.h"
 #include "nsIWidgetListener.h"
 #include "nsIPresShell.h"
+#include "nsIScreen.h"
 
 #include "nsDragService.h"
 #include "nsClipboard.h"
@@ -67,6 +69,8 @@
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/BasicCompositor.h"
 #include "mozilla/layers/InputAPZContext.h"
+#include "mozilla/layers/WebRenderBridgeChild.h"
+#include "mozilla/webrender/WebRenderAPI.h"
 #include "mozilla/widget/CompositorWidget.h"
 #include "gfxUtils.h"
 #include "gfxPrefs.h"
@@ -116,7 +120,7 @@ using mozilla::gfx::Matrix4x4;
 // out to the bounding-box if there are more
 #define MAX_RECTS_IN_REGION 100
 
-PRLogModuleInfo* sCocoaLog = nullptr;
+LazyLogModule sCocoaLog("nsCocoaWidgets");
 
 extern "C" {
   CG_EXTERN void CGContextResetCTM(CGContextRef);
@@ -151,6 +155,13 @@ uint32_t nsChildView::sLastInputEventCount = 0;
 
 static uint32_t gNumberOfWidgetsNeedingEventThread = 0;
 
+static bool sIsTabletPointerActivated = false;
+
+static uint32_t sUniqueKeyEventId = 0;
+
+static NSMutableDictionary* sNativeKeyEventsMap =
+  [NSMutableDictionary dictionary];
+
 @interface ChildView(Private)
 
 // sets up our view, attaching it to its owning gecko view
@@ -162,7 +173,8 @@ static uint32_t gNumberOfWidgetsNeedingEventThread = 0;
                         toGeckoEvent:(WidgetWheelEvent*)outWheelEvent;
 - (void) convertCocoaMouseEvent:(NSEvent*)aMouseEvent
                    toGeckoEvent:(WidgetInputEvent*)outGeckoEvent;
-
+- (void) convertCocoaTabletPointerEvent:(NSEvent*)aMouseEvent
+                           toGeckoEvent:(WidgetMouseEvent*)outGeckoEvent;
 - (NSMenu*)contextMenu;
 
 - (BOOL)isRectObscuredBySubview:(NSRect)inRect;
@@ -198,10 +210,13 @@ static uint32_t gNumberOfWidgetsNeedingEventThread = 0;
 #endif
 
 - (LayoutDeviceIntPoint)convertWindowCoordinates:(NSPoint)aPoint;
+- (LayoutDeviceIntPoint)convertWindowCoordinatesRoundDown:(NSPoint)aPoint;
 - (IAPZCTreeManager*)apzctm;
 
 - (BOOL)inactiveWindowAcceptsMouseEvent:(NSEvent*)aEvent;
 - (void)updateWindowDraggableState;
+
+- (bool)beginOrEndGestureForEventPhase:(NSEvent*)aEvent;
 
 - (bool)shouldConsiderStartingSwipeFromEvent:(NSEvent*)aEvent;
 
@@ -261,9 +276,6 @@ FlipCocoaScreenCoordinate(NSPoint &inPoint)
 
 void EnsureLogInitialized()
 {
-  if (!sCocoaLog) {
-    sCocoaLog = PR_NewLogModule("nsCocoaWidgets");
-  }
 }
 
 namespace {
@@ -279,7 +291,8 @@ public:
   {
     // Contrary to CompositorOGL, we allow unaccelerated OpenGL contexts to be
     // used. BasicCompositor only requires very basic GL functionality.
-    RefPtr<GLContext> context = gl::GLContextProvider::CreateForWindow(aWindow, false);
+    bool forWebRender = false;
+    RefPtr<GLContext> context = gl::GLContextProvider::CreateForWindow(aWindow, forWebRender, false);
     return context ? MakeUnique<GLPresenter>(context) : nullptr;
   }
 
@@ -811,12 +824,12 @@ nsChildView::GetParent()
 float
 nsChildView::GetDPI()
 {
-  NSWindow* window = [mView window];
-  if (window && [window isKindOfClass:[BaseWindow class]]) {
-    return [(BaseWindow*)window getDPI];
+  float dpi = 96.0;
+  nsCOMPtr<nsIScreen> screen = GetWidgetScreen();
+  if (screen) {
+    screen->GetDpi(&dpi);
   }
-
-  return 96.0;
+  return dpi;
 }
 
 void
@@ -1244,6 +1257,49 @@ static NSMenuItem* NativeMenuItemWithLocation(NSMenu* menubar, NSString* locatio
   return nil;
 }
 
+bool
+nsChildView::SendEventToNativeMenuSystem(NSEvent* aEvent)
+{
+  bool handled = false;
+  nsCocoaWindow* widget = GetXULWindowWidget();
+  if (widget) {
+    nsMenuBarX* mb = widget->GetMenuBar();
+    if (mb) {
+      // Check if main menu wants to handle the event.
+      handled = mb->PerformKeyEquivalent(aEvent);
+    }
+  }
+
+  if (!handled && sApplicationMenu) {
+    // Check if application menu wants to handle the event.
+    handled = [sApplicationMenu performKeyEquivalent:aEvent];
+  }
+
+  return handled;
+}
+
+void
+nsChildView::PostHandleKeyEvent(mozilla::WidgetKeyboardEvent* aEvent)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  // We always allow keyboard events to propagate to keyDown: but if they are
+  // not handled we give menu items a chance to act. This allows for handling of
+  // custom shortcuts. Note that existing shortcuts cannot be reassigned yet and
+  // will have been handled by keyDown: before we get here.
+  NSEvent* cocoaEvent = [sNativeKeyEventsMap objectForKey:@(aEvent->mUniqueId)];
+  if (!cocoaEvent) {
+    return;
+  }
+
+  if (SendEventToNativeMenuSystem(cocoaEvent)) {
+    aEvent->PreventDefault();
+  }
+  [sNativeKeyEventsMap removeObjectForKey:@(aEvent->mUniqueId)];
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
 // Used for testing native menu system structure and event handling.
 nsresult
 nsChildView::ActivateNativeMenuItemAt(const nsAString& indexString)
@@ -1367,6 +1423,14 @@ nsChildView::Invalidate(const LayoutDeviceIntRect& aRect)
 bool
 nsChildView::WidgetTypeSupportsAcceleration()
 {
+  // We need to enable acceleration in popups which contain remote layer
+  // trees, since the remote content won't be rendered at all otherwise. This
+  // causes issues with transparency and drop shadows, so it should not be
+  // used by default in release builds.
+  if (HasRemoteContent()) {
+    return true;
+  }
+
   // Don't use OpenGL for transparent windows or for popup windows.
   return mView && [[mView window] isOpaque] &&
          ![[mView window] isKindOfClass:[PopupWindow class]];
@@ -1376,8 +1440,7 @@ bool
 nsChildView::ShouldUseOffMainThreadCompositing()
 {
   // Don't use OMTC for transparent windows or for popup windows.
-  if (!mView || ![[mView window] isOpaque] ||
-      [[mView window] isKindOfClass:[PopupWindow class]])
+  if (!WidgetTypeSupportsAcceleration())
     return false;
 
   return nsBaseWidget::ShouldUseOffMainThreadCompositing();
@@ -1796,13 +1859,12 @@ nsChildView::AttachNativeKeyEvent(mozilla::WidgetKeyboardEvent& aEvent)
   return mTextInputHandler->AttachNativeKeyEvent(aEvent);
 }
 
-bool
-nsChildView::ExecuteNativeKeyBindingRemapped(NativeKeyBindingsType aType,
-                                             const WidgetKeyboardEvent& aEvent,
-                                             DoCommandCallback aCallback,
-                                             void* aCallbackData,
-                                             uint32_t aGeckoKeyCode,
-                                             uint32_t aCocoaKeyCode)
+void
+nsChildView::GetEditCommandsRemapped(NativeKeyBindingsType aType,
+                                     const WidgetKeyboardEvent& aEvent,
+                                     nsTArray<CommandInt>& aCommands,
+                                     uint32_t aGeckoKeyCode,
+                                     uint32_t aCocoaKeyCode)
 {
   NSEvent *originalEvent = reinterpret_cast<NSEvent*>(aEvent.mNativeKeyEvent);
 
@@ -1826,20 +1888,23 @@ nsChildView::ExecuteNativeKeyBindingRemapped(NativeKeyBindingsType aType,
                       keyCode:aCocoaKeyCode];
 
   NativeKeyBindings* keyBindings = NativeKeyBindings::GetInstance(aType);
-  return keyBindings->Execute(modifiedEvent, aCallback, aCallbackData);
+  keyBindings->GetEditCommands(modifiedEvent, aCommands);
 }
 
-bool
-nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
-                                     const WidgetKeyboardEvent& aEvent,
-                                     DoCommandCallback aCallback,
-                                     void* aCallbackData)
+void
+nsChildView::GetEditCommands(NativeKeyBindingsType aType,
+                             const WidgetKeyboardEvent& aEvent,
+                             nsTArray<CommandInt>& aCommands)
 {
+  // Validate the arguments.
+  nsIWidget::GetEditCommands(aType, aEvent, aCommands);
+
   // If the key is a cursor-movement arrow, and the current selection has
   // vertical writing-mode, we'll remap so that the movement command
   // generated (in terms of characters/lines) will be appropriate for
   // the physical direction of the arrow.
   if (aEvent.mKeyCode >= NS_VK_LEFT && aEvent.mKeyCode <= NS_VK_DOWN) {
+    // XXX This may be expensive. Should use the cache in TextInputHandler.
     WidgetQueryContentEvent query(true, eQuerySelectedText, this);
     DispatchWindowEvent(query);
 
@@ -1879,23 +1944,13 @@ nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
         break;
       }
 
-      return ExecuteNativeKeyBindingRemapped(aType, aEvent, aCallback,
-                                             aCallbackData,
-                                             geckoKey, cocoaKey);
+      GetEditCommandsRemapped(aType, aEvent, aCommands, geckoKey, cocoaKey);
+      return;
     }
   }
 
   NativeKeyBindings* keyBindings = NativeKeyBindings::GetInstance(aType);
-  return keyBindings->Execute(aEvent, aCallback, aCallbackData);
-}
-
-nsIMEUpdatePreference
-nsChildView::GetIMEUpdatePreference()
-{
-  // XXX Shouldn't we move floating window which shows composition string
-  //     when plugin has focus and its parent is scrolled or the window is
-  //     moved?
-  return nsIMEUpdatePreference();
+  keyBindings->GetEditCommands(aEvent, aCommands);
 }
 
 NSView<mozView>* nsChildView::GetEditorView()
@@ -1991,7 +2046,9 @@ nsChildView::PrepareWindowEffects()
     mIsCoveringTitlebar = [(ChildView*)mView isCoveringTitlebar];
     NSInteger styleMask = [[mView window] styleMask];
     bool wasFullscreen = mIsFullscreen;
-    mIsFullscreen = (styleMask & NSFullScreenWindowMask) || !(styleMask & NSTitledWindowMask);
+    nsCocoaWindow* windowWidget = GetXULWindowWidget();
+    mIsFullscreen = (styleMask & NSFullScreenWindowMask) ||
+                    (windowWidget && windowWidget->InFullScreenMode());
 
     canBeOpaque = mIsFullscreen && wasFullscreen;
     if (canBeOpaque && VibrancyManager::SystemSupportsVibrancy()) {
@@ -2020,11 +2077,65 @@ nsChildView::CleanupWindowEffects()
   mTitlebarImage = nullptr;
 }
 
+void
+nsChildView::AddWindowOverlayWebRenderCommands(layers::WebRenderBridgeChild* aWrBridge,
+                                               wr::DisplayListBuilder& aBuilder)
+{
+  PrepareWindowEffects();
+
+  LayoutDeviceIntRegion updatedTitlebarRegion;
+  updatedTitlebarRegion.And(mUpdatedTitlebarRegion, mTitlebarRect);
+  mUpdatedTitlebarRegion.SetEmpty();
+
+  if (mTitlebarCGContext) {
+    gfx::IntSize size(CGBitmapContextGetWidth(mTitlebarCGContext),
+                      CGBitmapContextGetHeight(mTitlebarCGContext));
+    size_t stride = CGBitmapContextGetBytesPerRow(mTitlebarCGContext);
+    size_t titlebarCGContextDataLength = stride * size.height;
+    gfx::SurfaceFormat format = gfx::SurfaceFormat::B8G8R8A8;
+    wr::ByteBuffer buffer(
+      titlebarCGContextDataLength,
+      static_cast<uint8_t *>(CGBitmapContextGetData(mTitlebarCGContext)));
+
+    if (mTitlebarImageKey &&
+        mTitlebarImageSize != size) {
+      // Delete wr::ImageKey. wr::ImageKey does not support size change.
+      CleanupWebRenderWindowOverlay(aWrBridge);
+      MOZ_ASSERT(mTitlebarImageKey.isNothing());
+    }
+
+    if (!mTitlebarImageKey) {
+      mTitlebarImageKey = Some(aWrBridge->GetNextImageKey());
+      aWrBridge->SendAddImage(*mTitlebarImageKey, size, stride, format, buffer);
+      mTitlebarImageSize = size;
+      updatedTitlebarRegion.SetEmpty();
+    }
+
+    if (!updatedTitlebarRegion.IsEmpty()) {
+      aWrBridge->SendUpdateImage(*mTitlebarImageKey, size, format, buffer);
+    }
+
+    wr::LayoutRect rect = wr::ToLayoutRect(mTitlebarRect);
+    aBuilder.PushImage(wr::LayoutRect{ { 0, 0 }, { float(size.width), float(size.height) } },
+                       rect, wr::ImageRendering::Auto, *mTitlebarImageKey);
+  }
+}
+
+void
+nsChildView::CleanupWebRenderWindowOverlay(layers::WebRenderBridgeChild* aWrBridge)
+{
+  if (mTitlebarImageKey) {
+    aWrBridge->SendDeleteImage(*mTitlebarImageKey);
+    mTitlebarImageKey = Nothing();
+  }
+}
+
 bool
 nsChildView::PreRender(WidgetRenderingContext* aContext)
 {
   UniquePtr<GLManager> manager(GLManager::CreateGLManager(aContext->mLayerManager));
-  if (!manager) {
+  gl::GLContext* gl = manager ? manager->gl() : aContext->mGL;
+  if (!gl) {
     return true;
   }
 
@@ -2033,7 +2144,7 @@ nsChildView::PreRender(WidgetRenderingContext* aContext)
   // composition is done, thus keeping the GL context locked forever.
   mViewTearDownLock.Lock();
 
-  NSOpenGLContext *glContext = GLContextCGL::Cast(manager->gl())->GetNSOpenGLContext();
+  NSOpenGLContext *glContext = GLContextCGL::Cast(gl)->GetNSOpenGLContext();
 
   if (![(ChildView*)mView preRender:glContext]) {
     mViewTearDownLock.Unlock();
@@ -2046,10 +2157,11 @@ void
 nsChildView::PostRender(WidgetRenderingContext* aContext)
 {
   UniquePtr<GLManager> manager(GLManager::CreateGLManager(aContext->mLayerManager));
-  if (!manager) {
+  gl::GLContext* gl = manager ? manager->gl() : aContext->mGL;
+  if (!gl) {
     return;
   }
-  NSOpenGLContext *glContext = GLContextCGL::Cast(manager->gl())->GetNSOpenGLContext();
+  NSOpenGLContext *glContext = GLContextCGL::Cast(gl)->GetNSOpenGLContext();
   [(ChildView*)mView postRender:glContext];
   mViewTearDownLock.Unlock();
 }
@@ -2848,14 +2960,15 @@ nsChildView::DispatchAPZWheelInputEvent(InputData& aEvent, bool aCanTriggerSwipe
   if (mAPZC) {
     uint64_t inputBlockId = 0;
     ScrollableLayerGuid guid;
+    nsEventStatus result = nsEventStatus_eIgnore;
 
-    nsEventStatus result = mAPZC->ReceiveInputEvent(aEvent, &guid, &inputBlockId);
-    if (result == nsEventStatus_eConsumeNoDefault) {
-      return;
-    }
-
-    switch(aEvent.mInputType) {
+    switch (aEvent.mInputType) {
       case PANGESTURE_INPUT: {
+        result = mAPZC->ReceiveInputEvent(aEvent, &guid, &inputBlockId);
+        if (result == nsEventStatus_eConsumeNoDefault) {
+          return;
+        }
+
         PanGestureInput& panInput = aEvent.AsPanGestureInput();
 
         event = panInput.ToWidgetWheelEvent(this);
@@ -2889,7 +3002,16 @@ nsChildView::DispatchAPZWheelInputEvent(InputData& aEvent, bool aCanTriggerSwipe
         break;
       }
       case SCROLLWHEEL_INPUT: {
+        // For wheel events on OS X, send it to APZ using the WidgetInputEvent
+        // variant of ReceiveInputEvent, because the IAPZCTreeManager version of
+        // that function has special handling (for delta multipliers etc.) that
+        // we need to run. Using the InputData variant would bypass that and
+        // go straight to the APZCTreeManager subclass.
         event = aEvent.AsScrollWheelInput().ToWidgetWheelEvent(this);
+        result = mAPZC->ReceiveInputEvent(event, &guid, &inputBlockId);
+        if (result == nsEventStatus_eConsumeNoDefault) {
+          return;
+        }
         break;
       };
       default:
@@ -2976,7 +3098,7 @@ public:
   explicit AutoBackgroundSetter(NSView* aView) {
     if (nsCocoaFeatures::OnElCapitanOrLater() &&
         [[aView window] isKindOfClass:[ToolbarWindow class]]) {
-      mWindow = (ToolbarWindow*)[aView window];
+      mWindow = [(ToolbarWindow*)[aView window] retain];
       [mWindow setTemporaryBackgroundColor];
     } else {
       mWindow = nullptr;
@@ -2986,11 +3108,12 @@ public:
   ~AutoBackgroundSetter() {
     if (mWindow) {
       [mWindow restoreBackgroundColor];
+      [mWindow release];
     }
   }
 
 private:
-  ToolbarWindow* mWindow;
+  ToolbarWindow* mWindow; // strong
 };
 
 void
@@ -3157,7 +3280,7 @@ class WidgetsReleaserRunnable final : public mozilla::Runnable
 {
 public:
   explicit WidgetsReleaserRunnable(nsTArray<nsCOMPtr<nsIWidget>>&& aWidgetArray)
-    : mWidgetArray(aWidgetArray)
+    : mozilla::Runnable("WidgetsReleaserRunnable"), mWidgetArray(aWidgetArray)
   {
   }
 
@@ -3192,38 +3315,27 @@ NSEvent* gLastDragMouseDownEvent = nil;
   if (!initialized) {
     // Inform the OS about the types of services (from the "Services" menu)
     // that we can handle.
-
-    NSArray* sendTypes =
-      [[NSArray alloc] initWithObjects:NSPasteboardTypeString,
-                                       NSPasteboardTypeHTML,
-                                       nil];
-    NSArray* returnTypes =
-      [[NSArray alloc] initWithObjects:NSPasteboardTypeString,
-                                       NSPasteboardTypeHTML,
-                                       nil];
-
-    [NSApp registerServicesMenuSendTypes:sendTypes returnTypes:returnTypes];
-
-    [sendTypes release];
-    [returnTypes release];
-
+    NSArray* types = @[[UTIHelper stringFromPboardType:NSPasteboardTypeString],
+                       [UTIHelper stringFromPboardType:NSPasteboardTypeHTML]];
+    [NSApp registerServicesMenuSendTypes:types returnTypes:types];
     initialized = YES;
   }
 }
 
 + (void)registerViewForDraggedTypes:(NSView*)aView
 {
-  [aView registerForDraggedTypes:[NSArray arrayWithObjects:
-                                    NSFilenamesPboardType,
-                                    NSPasteboardTypeString,
-                                    NSPasteboardTypeHTML,
-                                    NSURLPboardType,
-                                    kPasteboardTypeFileURLPromise,
-                                    kWildcardPboardType,
-                                    kCorePboardType_url,
-                                    kCorePboardType_urld,
-                                    kCorePboardType_urln,
-                                    nil]];
+  [aView registerForDraggedTypes:
+    [NSArray arrayWithObjects:
+      [UTIHelper stringFromPboardType:NSFilenamesPboardType],
+      [UTIHelper stringFromPboardType:kMozFileUrlsPboardType],
+      [UTIHelper stringFromPboardType:NSPasteboardTypeString],
+      [UTIHelper stringFromPboardType:NSPasteboardTypeHTML],
+      [UTIHelper stringFromPboardType:(NSString*)kPasteboardTypeFileURLPromise],
+      [UTIHelper stringFromPboardType:kMozWildcardPboardType],
+      [UTIHelper stringFromPboardType:kPublicUrlPboardType],
+      [UTIHelper stringFromPboardType:kPublicUrlNamePboardType],
+      [UTIHelper stringFromPboardType:kUrlsWithTitlesPboardType],
+      nil]];
 }
 
 // initWithFrame:geckoChild:
@@ -3711,12 +3823,6 @@ NSEvent* gLastDragMouseDownEvent = nil;
 {
   CGContextRef cgContext = (CGContextRef)[[NSGraphicsContext currentContext] graphicsPort];
   [self drawRect:aRect inContext:cgContext];
-
-  // If we're a transparent window and our contents have changed, we need
-  // to make sure the shadow is updated to the new contents.
-  if ([[self window] isKindOfClass:[BaseWindow class]]) {
-    [(BaseWindow*)[self window] deferredInvalidateShadow];
-  }
 }
 
 - (void)drawRect:(NSRect)aRect inContext:(CGContextRef)aContext
@@ -3757,8 +3863,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
     return;
   }
 
-  PROFILER_LABEL("ChildView", "drawRect",
-    js::ProfileEntry::Category::GRAPHICS);
+  AUTO_PROFILER_LABEL("ChildView::drawRect", GRAPHICS);
 
   // The CGContext that drawRect supplies us with comes with a transform that
   // scales one user space unit to one Cocoa point, which can consist of
@@ -3825,8 +3930,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
 - (void)drawUsingOpenGL
 {
-  PROFILER_LABEL("ChildView", "drawUsingOpenGL",
-    js::ProfileEntry::Category::GRAPHICS);
+  AUTO_PROFILER_LABEL("ChildView::drawUsingOpenGL", GRAPHICS);
 
   if (![self isUsingOpenGL] || !mGeckoChild->IsVisible())
     return;
@@ -4172,8 +4276,10 @@ NSEvent* gLastDragMouseDownEvent = nil;
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  if (!anEvent || !mGeckoChild)
+  if (!anEvent || !mGeckoChild ||
+      [self beginOrEndGestureForEventPhase:anEvent]) {
     return;
+  }
 
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
 
@@ -4202,22 +4308,14 @@ NSEvent* gLastDragMouseDownEvent = nil;
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-- (void)beginGestureWithEvent:(NSEvent *)anEvent
-{
-  if (!anEvent)
-    return;
-
-  mGestureState = eGestureState_StartGesture;
-  mCumulativeMagnification = 0;
-  mCumulativeRotation = 0.0;
-}
-
 - (void)magnifyWithEvent:(NSEvent *)anEvent
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  if (!anEvent || !mGeckoChild)
+  if (!anEvent || !mGeckoChild ||
+      [self beginOrEndGestureForEventPhase:anEvent]) {
     return;
+  }
 
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
 
@@ -4240,16 +4338,41 @@ NSEvent* gLastDragMouseDownEvent = nil;
     return;
   }
 
-  // Setup the event.
-  WidgetSimpleGestureEvent geckoEvent(true, msg, mGeckoChild);
-  geckoEvent.mDelta = deltaZ;
-  [self convertCocoaMouseEvent:anEvent toGeckoEvent:&geckoEvent];
+  // This sends the pinch gesture value as a fake wheel event that has the
+  // control key pressed so that pages can implement custom pinch gesture
+  // handling. It may seem strange that this doesn't use a wheel event with
+  // the deltaZ property set, but this matches Chrome's behavior as described
+  // at https://code.google.com/p/chromium/issues/detail?id=289887
+  //
+  // The intent of the formula below is to produce numbers similar to Chrome's
+  // implementation of this feature. Chrome implements deltaY using the formula
+  // "-100 * log(1 + [event magnification])" which is unfortunately incorrect.
+  // All deltas for a single pinch gesture should sum to 0 if the start and end
+  // of a pinch gesture end up in the same place. This doesn't happen in Chrome
+  // because they followed Apple's misleading documentation, which implies that
+  // "1 + [event magnification]" is the scale factor. The scale factor is
+  // instead "pow(ratio, [event magnification])" so "[event magnification]" is
+  // already in log space.
+  //
+  // The multiplication by the backing scale factor below counteracts the
+  // division by the backing scale factor in WheelEvent.
+  WidgetWheelEvent geckoWheelEvent(true, EventMessage::eWheel, mGeckoChild);
+  [self convertCocoaMouseEvent:anEvent toGeckoEvent:&geckoWheelEvent];
+  double backingScale = mGeckoChild->BackingScaleFactor();
+  geckoWheelEvent.mDeltaY = -100.0 * [anEvent magnification] * backingScale;
+  geckoWheelEvent.mModifiers |= MODIFIER_CONTROL;
+  mGeckoChild->DispatchWindowEvent(geckoWheelEvent);
 
-  // Send the event.
-  mGeckoChild->DispatchWindowEvent(geckoEvent);
+  // If the fake wheel event wasn't stopped, then send a normal magnify event.
+  if (!geckoWheelEvent.mFlags.mDefaultPrevented) {
+    WidgetSimpleGestureEvent geckoEvent(true, msg, mGeckoChild);
+    geckoEvent.mDelta = deltaZ;
+    [self convertCocoaMouseEvent:anEvent toGeckoEvent:&geckoEvent];
+    mGeckoChild->DispatchWindowEvent(geckoEvent);
 
-  // Keep track of the cumulative magnification for the final "magnify" event.
-  mCumulativeMagnification += deltaZ;
+    // Keep track of the cumulative magnification for the final "magnify" event.
+    mCumulativeMagnification += deltaZ;
+  }
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
@@ -4258,7 +4381,8 @@ NSEvent* gLastDragMouseDownEvent = nil;
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  if (!anEvent || !mGeckoChild) {
+  if (!anEvent || !mGeckoChild ||
+      [self beginOrEndGestureForEventPhase:anEvent]) {
     return;
   }
 
@@ -4282,8 +4406,10 @@ NSEvent* gLastDragMouseDownEvent = nil;
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  if (!anEvent || !mGeckoChild)
+  if (!anEvent || !mGeckoChild ||
+      [self beginOrEndGestureForEventPhase:anEvent]) {
     return;
+  }
 
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
 
@@ -4323,6 +4449,50 @@ NSEvent* gLastDragMouseDownEvent = nil;
   mCumulativeRotation += rotation;
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
+// `beginGestureWithEvent` and `endGestureWithEvent` are not called for
+// applications that link against the macOS 10.11 or later SDK when we're
+// running on macOS 10.11 or later. For compatibility with all supported macOS
+// versions, we have to call {begin,end}GestureWithEvent ourselves based on
+// the event phase when we're handling gestures.
+- (bool)beginOrEndGestureForEventPhase:(NSEvent*)aEvent
+{
+  if (!aEvent) {
+    return false;
+  }
+
+  bool usingElCapitanOrLaterSDK = true;
+#if !defined(MAC_OS_X_VERSION_10_11) || \
+    MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_11
+  usingElCapitanOrLaterSDK = false;
+#endif
+
+  if (nsCocoaFeatures::OnElCapitanOrLater() && usingElCapitanOrLaterSDK) {
+    if (aEvent.phase == NSEventPhaseBegan) {
+      [self beginGestureWithEvent:aEvent];
+      return true;
+    }
+
+    if (aEvent.phase == NSEventPhaseEnded ||
+        aEvent.phase == NSEventPhaseCancelled) {
+      [self endGestureWithEvent:aEvent];
+      return true;
+    }
+  }
+
+  return false;
+}
+
+- (void)beginGestureWithEvent:(NSEvent*)aEvent
+{
+  if (!aEvent) {
+    return;
+  }
+
+  mGestureState = eGestureState_StartGesture;
+  mCumulativeMagnification = 0;
+  mCumulativeRotation = 0.0;
 }
 
 - (void)endGestureWithEvent:(NSEvent *)anEvent
@@ -4834,16 +5004,20 @@ AccumulateIntegerDelta(NSEvent* aEvent)
 static gfx::IntPoint
 GetIntegerDeltaForEvent(NSEvent* aEvent)
 {
-  if (nsCocoaFeatures::OnSierraOrLater()) {
+  if (nsCocoaFeatures::OnSierraOrLater() && [aEvent hasPreciseScrollingDeltas]) {
+    // Pixel scroll events (events with hasPreciseScrollingDeltas == YES)
+    // carry pixel deltas in the scrollingDeltaX/Y fields and line scroll
+    // information in the deltaX/Y fields.
+    // Prior to 10.12, these line scroll fields would be zero for most pixel
+    // scroll events and non-zero for some, whenever at least a full line
+    // worth of pixel scrolling had accumulated. That's the behavior we want.
+    // Starting with 10.12 however, pixel scroll events no longer accumulate
+    // deltaX and deltaY; they just report floating point values for every
+    // single event. So we need to do our own accumulation.
     return AccumulateIntegerDelta(aEvent);
   }
 
-  // Pre-10.12, deltaX/deltaY had the accumulation behavior that we want, and
-  // it worked more reliably than doing it on our own, so use it on pre-10.12
-  // versions. For example, with a traditional USB mouse, the first wheel
-  // "tick" would always senda line scroll of at least one line, but with our
-  // own accumulation you sometimes need to do multiple wheel ticks before one
-  // line has been accumulated.
+  // For line scrolls, or pre-10.12, just use the rounded up value of deltaX / deltaY.
   return gfx::IntPoint(RoundUp([aEvent deltaX]), RoundUp([aEvent deltaY]));
 }
 
@@ -4891,8 +5065,12 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
 
   NSPoint locationInWindow = nsCocoaUtils::EventLocationForWindow(theEvent, [self window]);
 
+  // Use convertWindowCoordinatesRoundDown when converting the position to
+  // integer screen pixels in order to ensure that coordinates which are just
+  // inside the right / bottom edges of the window don't end up outside of the
+  // window after rounding.
   ScreenPoint position = ViewAs<ScreenPixel>(
-    [self convertWindowCoordinates:locationInWindow],
+    [self convertWindowCoordinatesRoundDown:locationInWindow],
     PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent);
 
   bool usePreciseDeltas = nsCocoaUtils::HasPreciseScrollingDeltas(theEvent) &&
@@ -5183,9 +5361,10 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
     case NSOtherMouseDown:
     case NSOtherMouseUp:
     case NSOtherMouseDragged:
+    case NSMouseMoved:
       if ([aMouseEvent subtype] == NSTabletPointEventSubtype) {
-        mouseEvent->pressure = [aMouseEvent pressure];
-        MOZ_ASSERT(mouseEvent->pressure >= 0.0 && mouseEvent->pressure <= 1.0);
+        [self convertCocoaTabletPointerEvent:aMouseEvent
+                                toGeckoEvent:mouseEvent->AsMouseEvent()];
       }
       break;
 
@@ -5195,6 +5374,35 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
   }
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
+- (void) convertCocoaTabletPointerEvent:(NSEvent*)aPointerEvent
+                           toGeckoEvent:(WidgetMouseEvent*)aOutGeckoEvent
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN
+  if (!aOutGeckoEvent || !sIsTabletPointerActivated) {
+    return;
+  }
+  if ([aPointerEvent type] != NSMouseMoved) {
+    aOutGeckoEvent->pressure = [aPointerEvent pressure];
+    MOZ_ASSERT(aOutGeckoEvent->pressure >= 0.0 &&
+               aOutGeckoEvent->pressure <= 1.0);
+  }
+  aOutGeckoEvent->inputSource = nsIDOMMouseEvent::MOZ_SOURCE_PEN;
+  aOutGeckoEvent->tiltX = lround([aPointerEvent tilt].x * 90);
+  aOutGeckoEvent->tiltY = lround([aPointerEvent tilt].y * 90);
+  aOutGeckoEvent->tangentialPressure = [aPointerEvent tangentialPressure];
+  // Make sure the twist value is in the range of 0-359.
+  int32_t twist = fmod([aPointerEvent rotation], 360);
+  aOutGeckoEvent->twist = twist >= 0 ? twist : twist + 360;
+  NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
+- (void)tabletProximity:(NSEvent *)theEvent
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN
+  sIsTabletPointerActivated = [theEvent isEnteringProximity];
+  NS_OBJC_END_TRY_ABORT_BLOCK
 }
 
 - (BOOL)shouldZoomOnDoubleClick
@@ -5439,15 +5647,20 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
 #endif // #if !defined(RELEASE_OR_BETA) || defined(DEBUG)
 
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
-  bool handled = false;
-  if (mGeckoChild && mTextInputHandler) {
-    handled = mTextInputHandler->HandleKeyDownEvent(theEvent);
-  }
-
-  // We always allow keyboard events to propagate to keyDown: but if they are not
-  // handled we give special Application menu items a chance to act.
-  if (!handled && sApplicationMenu) {
-    [sApplicationMenu performKeyEquivalent:theEvent];
+  if (mGeckoChild) {
+    if (mTextInputHandler) {
+      sUniqueKeyEventId++;
+      [sNativeKeyEventsMap setObject:theEvent forKey:@(sUniqueKeyEventId)];
+      // Purge old native events, in case we're still holding on to them. We
+      // keep at most 10 references to 10 different native events.
+      [sNativeKeyEventsMap removeObjectForKey:@(sUniqueKeyEventId - 10)];
+      mTextInputHandler->HandleKeyDownEvent(theEvent, sUniqueKeyEventId);
+    } else {
+      // There was no text input handler. Offer the event to the native menu
+      // system to check if there are any registered custom shortcuts for this
+      // event.
+      mGeckoChild->SendEventToNativeMenuSystem(theEvent);
+    }
   }
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
@@ -5469,9 +5682,7 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
 - (void)insertNewline:(id)sender
 {
   if (mTextInputHandler) {
-    NSAttributedString *attrStr = [[NSAttributedString alloc] initWithString:@"\n"];
-    mTextInputHandler->InsertText(attrStr);
-    [attrStr release];
+    mTextInputHandler->InsertNewline();
   }
 }
 
@@ -5622,6 +5833,16 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
   return mGeckoChild->CocoaPointsToDevPixels(localPoint);
 }
 
+- (LayoutDeviceIntPoint)convertWindowCoordinatesRoundDown:(NSPoint)aPoint
+{
+  if (!mGeckoChild) {
+    return LayoutDeviceIntPoint(0, 0);
+  }
+
+  NSPoint localPoint = [self convertPoint:aPoint fromView:nil];
+  return mGeckoChild->CocoaPointsToDevPixelsRoundDown(localPoint);
+}
+
 - (IAPZCTreeManager*)apzctm
 {
   return mGeckoChild ? mGeckoChild->APZCTM() : nullptr;
@@ -5656,7 +5877,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
     if (aMessage == eDragOver) {
       // fire the drag event at the source. Just ignore whether it was
       // cancelled or not as there isn't actually a means to stop the drag
-      mDragService->FireDragEventAtSource(eDrag);
+      mDragService->FireDragEventAtSource(
+        eDrag, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
       dragSession->SetCanDrop(false);
     } else if (aMessage == eDrop) {
       // We make the assumption that the dragOver handlers have correctly set
@@ -5668,7 +5890,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
         nsCOMPtr<nsIDOMNode> sourceNode;
         dragSession->GetSourceNode(getter_AddRefs(sourceNode));
         if (!sourceNode) {
-          mDragService->EndDragSession(false);
+          mDragService->EndDragSession(
+            false, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
         }
         return NSDragOperationNone;
       }
@@ -5729,7 +5952,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
           // initiated in a different app. End the drag session,
           // since we're done with it for now (until the user
           // drags back into mozilla).
-          mDragService->EndDragSession(false);
+          mDragService->EndDragSession(
+            false, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
         }
       }
       default:
@@ -5846,7 +6070,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
         dataTransfer->SetDropEffectInt(nsIDragService::DRAGDROP_ACTION_NONE);
     }
 
-    mDragService->EndDragSession(true);
+    mDragService->EndDragSession(
+      true, nsCocoaUtils::ModifiersForEvent(currentEvent));
     NS_RELEASE(mDragService);
   }
 
@@ -5929,27 +6154,43 @@ provideDataForType:(NSString*)aType
     unsigned int typeCount = [pasteboardOutputDict count];
     NSMutableArray* types = [NSMutableArray arrayWithCapacity:typeCount + 1];
     [types addObjectsFromArray:[pasteboardOutputDict allKeys]];
-    [types addObject:kWildcardPboardType];
+    [types addObject:[UTIHelper stringFromPboardType:kMozWildcardPboardType]];
     for (unsigned int k = 0; k < typeCount; k++) {
       NSString* curType = [types objectAtIndex:k];
-      if ([curType isEqualToString:NSPasteboardTypeString] ||
-          [curType isEqualToString:kCorePboardType_url] ||
-          [curType isEqualToString:kCorePboardType_urld] ||
-          [curType isEqualToString:kCorePboardType_urln]) {
+      if ([curType isEqualToString:
+            [UTIHelper stringFromPboardType:NSPasteboardTypeString]] ||
+          [curType isEqualToString:
+            [UTIHelper stringFromPboardType:kPublicUrlPboardType]] ||
+          [curType isEqualToString:
+            [UTIHelper stringFromPboardType:kPublicUrlNamePboardType]] ||
+          [curType isEqualToString:
+            [UTIHelper stringFromPboardType:(NSString*)kUTTypeFileURL]]) {
         [aPasteboard setString:[pasteboardOutputDict valueForKey:curType]
                        forType:curType];
-      } else if ([curType isEqualToString:NSPasteboardTypeHTML]) {
+      } else if ([curType isEqualToString:
+                   [UTIHelper stringFromPboardType:
+                     kUrlsWithTitlesPboardType]]) {
+        [aPasteboard setPropertyList:[pasteboardOutputDict valueForKey:curType]
+                       forType:curType];
+      } else if ([curType isEqualToString:
+                   [UTIHelper stringFromPboardType:NSPasteboardTypeHTML]]) {
         [aPasteboard setString:
           (nsClipboard::WrapHtmlForSystemPasteboard(
             [pasteboardOutputDict valueForKey:curType]))
                       forType:curType];
-      } else if ([curType isEqualToString:NSPasteboardTypeTIFF] ||
-                 [curType isEqualToString:kCustomTypesPboardType]) {
+      } else if ([curType isEqualToString:
+                   [UTIHelper stringFromPboardType:NSPasteboardTypeTIFF]] ||
+                 [curType isEqualToString:
+                   [UTIHelper stringFromPboardType:kMozCustomTypesPboardType]]) {
         [aPasteboard setData:[pasteboardOutputDict valueForKey:curType]
                      forType:curType];
-      } else if (
-        [curType isEqualToString:(NSString*)kPasteboardTypeFileURLPromise] ||
-        [curType isEqualToString:NSFilenamesPboardType]) {
+      } else if ([curType isEqualToString:
+                   [UTIHelper stringFromPboardType:kMozFileUrlsPboardType]]) {
+        [aPasteboard writeObjects:[pasteboardOutputDict valueForKey:curType]];
+      } else if ([curType isEqualToString:
+                   [UTIHelper stringFromPboardType:
+                     (NSString*)kPasteboardTypeFileURLPromise]]) {
+
 
         nsCOMPtr<nsIFile> targFile;
         NS_NewLocalFile(EmptyString(), true, getter_AddRefs(targFile));
@@ -6047,14 +6288,15 @@ provideDataForType:(NSString*)aType
   // or HTML from us or no data at all AND when the service will either not
   // send back any data to us or will send a string or HTML back to us.
 
-#define IsSupportedType(typeStr) \
-  ([typeStr isEqualToString:NSPasteboardTypeString] || \
-   [typeStr isEqualToString:NSPasteboardTypeHTML])
-
   id result = nil;
 
-  if ((!sendType || IsSupportedType(sendType)) &&
-      (!returnType || IsSupportedType(returnType))) {
+  NSString* stringType =
+    [UTIHelper stringFromPboardType:NSPasteboardTypeString];
+  NSString* htmlType = [UTIHelper stringFromPboardType:NSPasteboardTypeHTML];
+  if ((!sendType || [sendType isEqualToString:stringType] ||
+        [sendType isEqualToString:htmlType]) &&
+      (!returnType || [returnType isEqualToString:stringType] ||
+        [returnType isEqualToString:htmlType])) {
     if (mGeckoChild) {
       // Assume that this object will be able to handle this request.
       result = self;
@@ -6082,8 +6324,6 @@ provideDataForType:(NSString*)aType
     }
   }
 
-#undef IsSupportedType
-
   // Give the superclass a chance if this object will not handle this request.
   if (!result)
     result = [super validRequestorForSendType:sendType returnType:returnType];
@@ -6101,9 +6341,14 @@ provideDataForType:(NSString*)aType
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
 
   // Make sure that the service will accept strings or HTML.
-  if ([types containsObject:NSPasteboardTypeString] == NO &&
-      [types containsObject:NSPasteboardTypeHTML] == NO)
+  if (![types containsObject:
+         [UTIHelper stringFromPboardType:NSStringPboardType]] &&
+      ![types containsObject:
+         [UTIHelper stringFromPboardType:NSPasteboardTypeString]] &&
+      ![types containsObject:
+         [UTIHelper stringFromPboardType:NSPasteboardTypeHTML]]) {
     return NO;
+  }
 
   // Bail out if there is no Gecko object.
   if (!mGeckoChild)
@@ -6129,22 +6374,28 @@ provideDataForType:(NSString*)aType
     NSString* currentKey = [declaredTypes objectAtIndex:i];
     id currentValue = [pasteboardOutputDict valueForKey:currentKey];
 
-    if ([currentKey isEqualToString:NSPasteboardTypeString] ||
-        [currentKey isEqualToString:kCorePboardType_url] ||
-        [currentKey isEqualToString:kCorePboardType_urld] ||
-        [currentKey isEqualToString:kCorePboardType_urln]) {
+    if ([currentKey isEqualToString:
+          [UTIHelper stringFromPboardType:NSPasteboardTypeString]] ||
+        [currentKey isEqualToString:
+          [UTIHelper stringFromPboardType:kPublicUrlPboardType]] ||
+        [currentKey isEqualToString:
+          [UTIHelper stringFromPboardType:kPublicUrlNamePboardType]]) {
       [pboard setString:currentValue forType:currentKey];
-    } else if ([currentKey isEqualToString:NSPasteboardTypeHTML]) {
+    } else if ([currentKey isEqualToString:
+                 [UTIHelper stringFromPboardType:NSPasteboardTypeHTML]]) {
       [pboard setString:(nsClipboard::WrapHtmlForSystemPasteboard(currentValue))
                 forType:currentKey];
-    } else if ([currentKey isEqualToString:NSPasteboardTypeTIFF]) {
+    } else if ([currentKey isEqualToString:
+                 [UTIHelper stringFromPboardType:NSPasteboardTypeTIFF]]) {
       [pboard setData:currentValue forType:currentKey];
     } else if ([currentKey isEqualToString:
-                 (NSString*)kPasteboardTypeFileURLPromise]) {
+                 [UTIHelper stringFromPboardType:
+                   (NSString*)kPasteboardTypeFileURLPromise]] ||
+               [currentKey isEqualToString:
+                 [UTIHelper stringFromPboardType:kUrlsWithTitlesPboardType]]) {
       [pboard setPropertyList:currentValue forType:currentKey];
     }
   }
-
   return YES;
 
   NS_OBJC_END_TRY_ABORT_BLOCK_RETURN(NO);
@@ -6364,6 +6615,10 @@ nsChildView::GetSelectionAsPlaintext(nsAString& aResult)
 
 #endif /* ACCESSIBILITY */
 
++ (uint32_t)sUniqueKeyEventId { return sUniqueKeyEventId; }
+
++ (NSMutableDictionary*)sNativeKeyEventsMap { return sNativeKeyEventsMap; }
+
 @end
 
 #pragma mark -
@@ -6581,7 +6836,7 @@ HandleEvent(CGEventTapProxy aProxy, CGEventType aType,
 {
   char aLocal;
   profiler_register_thread("APZC Event Thread", &aLocal);
-  PR_SetCurrentThreadName("APZC Event Thread");
+  NS_SetCurrentThreadName("APZC Event Thread");
 
   mThread = [NSThread currentThread];
   ProcessSerialNumber currentProcess;

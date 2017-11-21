@@ -52,7 +52,6 @@
 #include "nsIDOMElement.h"
 #include "nsIDocumentLoaderFactory.h"
 #include "nsIObserverService.h"
-#include "prprf.h"
 
 #include "nsIScreenManager.h"
 #include "nsIScreen.h"
@@ -72,6 +71,8 @@
 #include "mozilla/MouseEvents.h"
 
 #include "nsPIWindowRoot.h"
+
+#include "gfxPlatform.h"
 
 #ifdef XP_MACOSX
 #include "nsINativeMenuService.h"
@@ -149,9 +150,16 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
   DesktopIntRect deskRect(initialX, initialY, aInitialWidth, aInitialHeight);
 
   // Create top level window
-  mWindow = do_CreateInstance(kWindowCID, &rv);
-  if (NS_OK != rv) {
-    return rv;
+  if (gfxPlatform::IsHeadless()) {
+    mWindow = nsIWidget::CreateHeadlessWidget();
+    if (!mWindow) {
+      return NS_ERROR_FAILURE;
+    }
+  } else {
+    mWindow = do_CreateInstance(kWindowCID, &rv);
+    if (NS_OK != rv) {
+      return rv;
+    }
   }
 
   /* This next bit is troublesome. We carry two different versions of a pointer
@@ -200,7 +208,7 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
 
   r.x = r.y = 0;
   nsCOMPtr<nsIBaseWindow> docShellAsWin(do_QueryInterface(mDocShell));
-  NS_ENSURE_SUCCESS(docShellAsWin->InitWindow(nullptr, mWindow, 
+  NS_ENSURE_SUCCESS(docShellAsWin->InitWindow(nullptr, mWindow,
    r.x, r.y, r.width, r.height), NS_ERROR_FAILURE);
   NS_ENSURE_SUCCESS(docShellAsWin->Create(), NS_ERROR_FAILURE);
 
@@ -249,10 +257,11 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
                          nsIWebNavigation::LOAD_FLAGS_NONE,
                          nullptr,
                          nullptr,
-                         nullptr);
+                         nullptr,
+                         nsContentUtils::GetSystemPrincipal());
     NS_ENSURE_SUCCESS(rv, rv);
   }
-                     
+
   return rv;
 }
 
@@ -322,7 +331,7 @@ nsWebShellWindow::RequestWindowClose(nsIWidget* aWidget)
     RefPtr<nsPresContext> presContext = presShell->GetPresContext();
 
     nsEventStatus status = nsEventStatus_eIgnore;
-    WidgetMouseEvent event(true, eWindowClose, nullptr,
+    WidgetMouseEvent event(true, eClose, nullptr,
                            WidgetMouseEvent::eReal);
     if (NS_SUCCEEDED(eventTarget->DispatchDOMEvent(&event, nullptr, presContext, &status)) &&
         status == nsEventStatus_eConsumeNoDefault)
@@ -413,6 +422,18 @@ nsWebShellWindow::FullscreenChanged(bool aInFullscreen)
 }
 
 void
+nsWebShellWindow::OcclusionStateChanged(bool aIsFullyOccluded)
+{
+  nsCOMPtr<nsPIDOMWindowOuter> ourWindow =
+    mDocShell ? mDocShell->GetWindow() : nullptr;
+  if (ourWindow) {
+    MOZ_ASSERT(ourWindow->IsOuterWindow());
+    // And always fire a user-defined occlusionstatechange event on the window
+    ourWindow->DispatchCustomEvent(NS_LITERAL_STRING("occlusionstatechange"));
+  }
+}
+
+void
 nsWebShellWindow::OSToolbarButtonPressed()
 {
   // Keep a reference as setting the chrome flags can fire events.
@@ -480,6 +501,9 @@ nsWebShellWindow::WindowDeactivated()
 #ifdef USE_NATIVE_MENUS
 static void LoadNativeMenus(nsIDOMDocument *aDOMDoc, nsIWidget *aParentWindow)
 {
+  if (gfxPlatform::IsHeadless()) {
+    return;
+  }
   nsCOMPtr<nsINativeMenuService> nms = do_GetService("@mozilla.org/widget/nativemenuservice;1");
   if (!nms) {
     return;
@@ -508,6 +532,7 @@ static void LoadNativeMenus(nsIDOMDocument *aDOMDoc, nsIWidget *aParentWindow)
 namespace mozilla {
 
 class WebShellWindowTimerCallback final : public nsITimerCallback
+                                        , public nsINamed
 {
 public:
   explicit WebShellWindowTimerCallback(nsWebShellWindow* aWindow)
@@ -526,13 +551,19 @@ public:
     return NS_OK;
   }
 
+  NS_IMETHOD GetName(nsACString& aName) override
+  {
+    aName.AssignLiteral("WebShellWindowTimerCallback");
+    return NS_OK;
+  }
+
 private:
   ~WebShellWindowTimerCallback() {}
 
   RefPtr<nsWebShellWindow> mWindow;
 };
 
-NS_IMPL_ISUPPORTS(WebShellWindowTimerCallback, nsITimerCallback)
+NS_IMPL_ISUPPORTS(WebShellWindowTimerCallback, nsITimerCallback, nsINamed)
 
 } // namespace mozilla
 
@@ -587,7 +618,7 @@ nsWebShellWindow::OnStateChange(nsIWebProgress *aProgress,
 {
   // If the notification is not about a document finishing, then just
   // ignore it...
-  if (!(aStateFlags & nsIWebProgressListener::STATE_STOP) || 
+  if (!(aStateFlags & nsIWebProgressListener::STATE_STOP) ||
       !(aStateFlags & nsIWebProgressListener::STATE_IS_NETWORK)) {
     return NS_OK;
   }
@@ -636,7 +667,7 @@ nsWebShellWindow::OnLocationChange(nsIWebProgress *aProgress,
   return NS_OK;
 }
 
-NS_IMETHODIMP 
+NS_IMETHODIMP
 nsWebShellWindow::OnStatusChange(nsIWebProgress* aWebProgress,
                                  nsIRequest* aRequest,
                                  nsresult aStatus,
@@ -682,7 +713,7 @@ bool nsWebShellWindow::ExecuteCloseHandler()
       contentViewer->GetPresContext(getter_AddRefs(presContext));
 
       nsEventStatus status = nsEventStatus_eIgnore;
-      WidgetMouseEvent event(true, eWindowClose, nullptr,
+      WidgetMouseEvent event(true, eClose, nullptr,
                              WidgetMouseEvent::eReal);
 
       nsresult rv =
